@@ -6,7 +6,7 @@
 # It is hard to separate this output
 # from mysql.json
 --source include/have_only_innodb.inc
---source include/have_no_vector_index.inc
+--source include/have_vector_index.inc
 
 #########################
 #  how to record this test JSON result content mismatch
@@ -196,7 +196,7 @@ CREATE TABLE t18_ (a INT NOT NULL, b INT)
 --exec $IBD2SDI $MYSQLD_DATADIR/mysql.ibd -d $JSON_FILE_PATH 2>&1
 --source ../include/ibd2sdi_replace_mysql.inc
 if ($MTR_RECORD == 0) {
---diff_files $SRC_DIR/mysql.json $JSON_FILE_PATH
+--diff_files $SRC_DIR/mysql_with_vector.json $JSON_FILE_PATH
 }
 
 --echo # Check SDI from t1.ibd
