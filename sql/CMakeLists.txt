@@ -645,6 +645,7 @@ IF(HAVE_VECTOR_INDEX)
   LIST(APPEND SQL_SHARED_SOURCES
     vector/vector_index_backend.cc
     vector/vector_index_backend_hnswlib.cc
+    vector/vector_index_backend_faiss.cc
     vector/vector_index_build_options.cc
     vector/vector_index_diagnostics.cc
     vector/vector_index_identity.cc

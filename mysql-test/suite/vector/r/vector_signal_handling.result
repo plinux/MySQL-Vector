@@ -1,0 +1,13 @@
+#
+# Verify vector-enabled mysqld can route SIGUSR1 through the MySQL signal handler.
+#
+# restart:--log-error=MYSQLD_LOG --log_output=FILE
+# Send SIGUSR1 and wait for the error log to be recreated.
+# Check that the rotated and recreated logs both exist.
+SELECT COUNT(*) > 0 AS has_vector_faiss_build_threads
+FROM performance_schema.global_variables
+WHERE variable_name = 'vector_faiss_build_threads';
+has_vector_faiss_build_threads
+1
+# CLEAN UP
+# restart:

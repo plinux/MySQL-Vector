@@ -513,6 +513,8 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
       return std::make_unique<external_backend>(dimension, metric);
 
     case backend_provider::kFaiss:
+      return std::make_unique<faiss_backend>(dimension, metric, mode, index_name);
+
     case backend_provider::kDiskAnn:
       return nullptr;
 

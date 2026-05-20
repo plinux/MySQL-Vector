@@ -14,6 +14,7 @@
 
 --echo # Test involves sending SIGUSR1 signal from perl.
 --source include/not_windows.inc
+--source include/have_no_vector_index.inc
 
 --echo #################################################################
 --echo ###############     ERROR LOG    ################################

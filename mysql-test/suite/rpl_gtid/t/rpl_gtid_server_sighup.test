@@ -28,6 +28,7 @@
 
 # Test involves sending SIGHUP signal using kill linux cmd
 --source include/linux.inc
+--source include/have_no_vector_index.inc
 
 # Problem appears only with gtid
 

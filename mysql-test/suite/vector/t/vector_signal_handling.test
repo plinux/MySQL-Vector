@@ -1,0 +1,47 @@
+--source include/linux.inc
+--source include/have_vector_index.inc
+
+--echo #
+--echo # Verify vector-enabled mysqld can route SIGUSR1 through the MySQL signal handler.
+--echo #
+
+--let MYSQLD_LOG= $MYSQL_TMP_DIR/vector_signal_handling.log
+--let $restart_parameters= restart:--log-error=$MYSQLD_LOG --log_output=FILE
+--replace_result $MYSQLD_LOG MYSQLD_LOG
+--source include/restart_mysqld.inc
+
+--let MYSQLD_PIDFILE= `SELECT @@pid_file;`
+
+--echo # Send SIGUSR1 and wait for the error log to be recreated.
+--perl
+  use strict;
+  use warnings;
+  my $pidfile = $ENV{"MYSQLD_PIDFILE"} or die("pidfile not set");
+  my $log = $ENV{"MYSQLD_LOG"} or die("log file not set");
+  open(my $fh, "<", $pidfile) or die "cannot open file $pidfile";
+  my $pid = <$fh>;
+  close($fh);
+  chomp($pid);
+  rename $log, "$log.1" or die "cannot rename $log: $!";
+  kill "USR1", $pid or die "could not send SIGUSR1 to $pid: $!";
+  for (my $wait_cnt = 60; $wait_cnt > 0; --$wait_cnt) {
+    last if -e $log;
+    sleep 1;
+  }
+  die "timed out waiting for error log recreation" unless -e $log;
+EOF
+
+--echo # Check that the rotated and recreated logs both exist.
+--file_exists $MYSQLD_LOG
+--file_exists $MYSQLD_LOG.1
+
+SELECT COUNT(*) > 0 AS has_vector_faiss_build_threads
+  FROM performance_schema.global_variables
+ WHERE variable_name = 'vector_faiss_build_threads';
+
+--echo # CLEAN UP
+--remove_file $MYSQLD_LOG
+--remove_file $MYSQLD_LOG.1
+
+--let $restart_parameters= restart:
+--source include/restart_mysqld.inc
