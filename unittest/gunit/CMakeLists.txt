@@ -315,9 +315,11 @@ IF(HAVE_VECTOR_INDEX)
     vector_index_metadata_store
     vector_index_registry
     vector_index_service
+    vector_dml_sync
     vector_mapped_search
     vector_status
     vector_index_truth_store
+    vector_trx_participant
     vector_utils
   )
 ENDIF()

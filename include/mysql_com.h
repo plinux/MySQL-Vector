@@ -190,7 +190,12 @@
 #define EXPLICIT_NULL_FLAG                        \
   (1 << 27) /**< Field is explicitly specified as \
                NULL by the user */
+#ifdef HAVE_VECTOR_INDEX
+/** Intern: Field declared as VECTOR(dim). */
+#define FIELD_IS_VECTOR (1 << 28)
+#else
 /* 1 << 28 is unused. */
+#endif
 
 /** Field will not be loaded in secondary engine. */
 #define NOT_SECONDARY_FLAG (1 << 29)

@@ -2976,6 +2976,15 @@ constexpr const decltype(handlerton::flags)
  */
 #define HTON_SUPPORTS_EXTERNAL_SOURCE (1 << 21)
 
+#ifdef HAVE_VECTOR_INDEX
+/**
+  Engine needs per-transaction 2PC callbacks but must not change global TC
+  topology. This is intended for hidden auxiliary participants whose durable
+  truth is owned by another real storage engine.
+*/
+#define HTON_NO_GLOBAL_2PC (1 << 22)
+#endif
+
 inline bool secondary_engine_supports_ddl(const handlerton *hton) {
   assert(hton->flags & HTON_IS_SECONDARY_ENGINE);
 
