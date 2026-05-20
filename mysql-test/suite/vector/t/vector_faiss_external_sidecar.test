@@ -1,0 +1,74 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: FAISS EXTERNAL sidecar snapshot persists across restart
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_faiss_sidecar', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_UPSERT('idx_faiss_sidecar', 1, VEC_FROMTEXT('[1,2]'));
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+
+--let $datadir=`SELECT @@datadir`
+--let $manifest_file=$datadir/mysql_vector_index/6964785f66616973735f73696465636172/faiss_external.manifest.v1
+--let $snapshot_glob=$datadir/mysql_vector_index/6964785f66616973735f73696465636172/faiss_external.snapshot.*.v1
+--exec test -f $manifest_file
+--exec /bin/sh -c "ls $snapshot_glob >/dev/null 2>&1"
+
+--source include/restart_mysqld.inc
+
+--replace_regex /external_manifest_generation":[0-9]+/external_manifest_generation":<num>/
+SELECT VEC_INDEX_INFO('idx_faiss_sidecar');
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+
+SET @recover_fallback_before = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks');
+
+--exec /bin/sh -c "ls $snapshot_glob | xargs -I{} sh -c 'printf \"broken-sidecar\\n\" > \"{}\"'"
+SELECT VEC_INDEX_RECOVER('idx_faiss_sidecar');
+SELECT (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks') - @recover_fallback_before;
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+  WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.recover_fallback_count';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+  WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.last_recover_fallback_ts'
+  AND Value > '0';
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+
+--source include/restart_mysqld.inc
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+  WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.recover_fallback_count'
+  AND Value = '1';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+  WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.last_recover_fallback_ts'
+  AND Value > '0';
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+
+SET @recover_fallback_before_manifest = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks');
+--exec printf "broken-manifest\n" > $manifest_file
+SELECT VEC_INDEX_RECOVER('idx_faiss_sidecar');
+SELECT (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks') - @recover_fallback_before_manifest;
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+  WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.recover_fallback_count'
+  AND Value = '2';
+--exec test -f $manifest_file.corrupt
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+
+SELECT VEC_INDEX_DROP('idx_faiss_sidecar');
+--exec test ! -d $datadir/mysql_vector_index/6964785f66616973735f73696465636172

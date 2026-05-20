@@ -1,0 +1,70 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: configure DISKANN build worker count
+--echo #
+
+SET GLOBAL vector_diskann_build_threads=2;
+SELECT @@global.vector_diskann_build_threads;
+
+SELECT VEC_INDEX_CREATE('idx_diskann_thread_global', 2, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN');
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_thread_global'),
+                    '$.diskann_build_threads') AS inherited_threads;
+
+SELECT VEC_INDEX_CREATE('idx_diskann_thread_stmt', 2, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN', 3);
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_thread_stmt'),
+                    '$.diskann_build_threads') AS statement_threads;
+
+SELECT VEC_INDEX_CREATE('idx_diskann_thread_zero', 2, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN', 0);
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_thread_zero'),
+                    '$.diskann_build_threads') AS statement_zero_threads;
+
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_thread_stmt',
+                                          48, 96, 4);
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_thread_stmt'),
+                    '$.diskann_max_degree') AS max_degree,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_thread_stmt'),
+                    '$.diskann_build_complexity') AS build_complexity,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_thread_stmt'),
+                    '$.diskann_build_threads') AS build_threads;
+SHOW VECTOR STATUS FOR INDEX 'idx_diskann_thread_stmt'
+WHERE Variable_name = 'idx_diskann_thread_stmt.diskann_max_degree';
+SHOW VECTOR STATUS FOR INDEX 'idx_diskann_thread_stmt'
+WHERE Variable_name LIKE 'idx_diskann_thread_stmt.diskann_build_%';
+
+--disable_warnings
+DROP TABLE IF EXISTS t_diskann_thread_ddl;
+--enable_warnings
+CREATE TABLE t_diskann_thread_ddl(id INT PRIMARY KEY, v VECTOR(2));
+CREATE VECTOR INDEX ON t_diskann_thread_ddl(v)
+  WITH (2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN', 4);
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_diskann_thread_ddl.v'),
+                    '$.diskann_build_threads') AS ddl_threads;
+SHOW VECTOR STATUS FOR INDEX 'test.t_diskann_thread_ddl.v'
+WHERE Variable_name = 'test.t_diskann_thread_ddl.v.diskann_build_threads';
+
+--Error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_CREATE('idx_diskann_thread_bad', 2, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN', 65536);
+
+--disable_warnings
+DROP TABLE IF EXISTS t_diskann_thread_bad;
+--enable_warnings
+CREATE TABLE t_diskann_thread_bad(id INT PRIMARY KEY, v VECTOR(2));
+--Error ER_WRONG_ARGUMENTS
+CREATE VECTOR INDEX ON t_diskann_thread_bad(v)
+  WITH (2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN', 65536);
+
+--Error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_thread_stmt',
+                                          48, 96, 65536);
+
+DROP TABLE t_diskann_thread_bad;
+DROP TABLE t_diskann_thread_ddl;
+SELECT VEC_INDEX_DROP('idx_diskann_thread_stmt');
+SELECT VEC_INDEX_DROP('idx_diskann_thread_global');
+SELECT VEC_INDEX_DROP('idx_diskann_thread_zero');
+SET GLOBAL vector_diskann_build_threads=DEFAULT;

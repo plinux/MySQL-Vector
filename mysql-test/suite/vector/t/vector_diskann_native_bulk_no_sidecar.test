@@ -1,0 +1,72 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: DISKANN native bulk build avoids external sidecar
+--echo #
+
+--disable_query_log
+--let $temp_inc=$MYSQL_TMP_DIR/have_diskann_native.inc
+--let inc_tmp=$temp_inc
+--perl
+use strict;
+my $lib = $ENV{'MYSQL_VECTOR_DISKANN_LIB'} // '';
+my $have_diskann_native = ($lib ne '' && -f $lib) ? 1 : 0;
+my $temp_inc = $ENV{'inc_tmp'} or die "inc_tmp not set";
+open(my $file, '>', $temp_inc) or die "can't open file \"$temp_inc\": $!";
+print {$file} "--let \$have_diskann_native= $have_diskann_native\n";
+close($file);
+EOF
+--source $temp_inc
+--remove_file $temp_inc
+--enable_query_log
+if (!$have_diskann_native)
+{
+  --skip Test requires MYSQL_VECTOR_DISKANN_LIB to point to native DISKANN library
+}
+
+SELECT VEC_INDEX_CREATE('idx_diskann_native_bulk', 2, 'EUCLIDEAN', 'EXTERNAL',
+  'DISKANN');
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_diskann_native_bulk');
+
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_diskann_native_bulk', @txn, 1, '[1,0]');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_diskann_native_bulk', @txn, 2, '[2,0]');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_diskann_native_bulk', @txn, 3, '[3,0]');
+SELECT VEC_INDEX_TXN_COMMIT(@txn);
+
+SELECT VEC_INDEX_BULK_BUILD('idx_diskann_native_bulk');
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+    '$.external_manifest_present') AS external_manifest_present,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+    '$.external_manifest_generation') AS external_manifest_generation,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'), '$.entry_count')
+    AS entry_count,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+    '$.committed_entry_count') AS committed_entry_count;
+SELECT VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2);
+
+--let $datadir=`SELECT @@datadir`
+--let $index_hex=6964785f6469736b616e6e5f6e61746976655f62756c6b
+--let $diskann_manifest=$datadir/mysql_vector_index/$index_hex/diskann_external.manifest.v1
+--let $diskann_snapshot_glob=$datadir/mysql_vector_index/$index_hex/diskann_external.snapshot.*.v1
+--let $faiss_manifest=$datadir/mysql_vector_index/$index_hex/faiss_external.manifest.v1
+--exec test ! -f $diskann_manifest
+--exec /bin/sh -c "if ls $diskann_snapshot_glob >/dev/null 2>&1; then exit 1; else exit 0; fi"
+--exec test ! -f $faiss_manifest
+
+SELECT VEC_INDEX_UPSERT('idx_diskann_native_bulk', 4, VEC_FROMTEXT('[0,1]'));
+SELECT VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[0,1]'), 1);
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+    '$.external_manifest_present') AS external_manifest_present,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+    '$.external_manifest_generation') AS external_manifest_generation,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'), '$.entry_count')
+    AS entry_count,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+    '$.committed_entry_count') AS committed_entry_count;
+--exec test ! -f $diskann_manifest
+--exec /bin/sh -c "if ls $diskann_snapshot_glob >/dev/null 2>&1; then exit 1; else exit 0; fi"
+--exec test ! -f $faiss_manifest
+
+SELECT VEC_INDEX_DROP('idx_diskann_native_bulk');
+--exec test ! -d $datadir/mysql_vector_index/$index_hex

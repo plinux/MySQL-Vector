@@ -1,0 +1,23 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: configure DISKANN search complexity through SQL functions
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_diskann_search_complexity', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann_search_complexity', 80);
+
+--replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
+SELECT VEC_INDEX_INFO('idx_diskann_search_complexity');
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_search_complexity';
+
+--source include/restart_mysqld.inc
+
+--replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
+SELECT VEC_INDEX_INFO('idx_diskann_search_complexity');
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_search_complexity';
+
+SELECT VEC_INDEX_DROP('idx_diskann_search_complexity');

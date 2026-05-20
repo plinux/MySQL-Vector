@@ -1,0 +1,96 @@
+#
+# WL#vector-v1: bulk load and shadow rebuild path
+#
+SELECT VEC_INDEX_CREATE('idx_bulk', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_bulk', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_bulk');
+VEC_INDEX_BULK_LOAD_BEGIN('idx_bulk')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'),
+'$.lifecycle_state')) AS state;
+state
+bulk_loading
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk', @txn, 1, '[1,1]');
+VEC_INDEX_STAGE_UPSERT('idx_bulk', @txn, 1, '[1,1]')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk', @txn, 2, '[2,2]');
+VEC_INDEX_STAGE_UPSERT('idx_bulk', @txn, 2, '[2,2]')
+1
+SELECT VEC_INDEX_TXN_COMMIT(@txn);
+VEC_INDEX_TXN_COMMIT(@txn)
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.entry_count') AS entry_count,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.committed_entry_count')
+AS committed_entry_count,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.pending_apply_count')
+AS pending_apply_count;
+entry_count	committed_entry_count	pending_apply_count
+0	2	2
+SELECT VEC_INDEX_SEARCH('idx_bulk', '[1,1]', 10);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_BULK_BUILD('idx_bulk');
+VEC_INDEX_BULK_BUILD('idx_bulk')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'),
+'$.lifecycle_state')) AS state;
+state
+ready
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.entry_count') AS entry_count,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.committed_entry_count')
+AS committed_entry_count,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.pending_apply_count')
+AS pending_apply_count;
+entry_count	committed_entry_count	pending_apply_count
+2	2	0
+SELECT VEC_INDEX_SEARCH('idx_bulk', '[1,1]', 10);
+VEC_INDEX_SEARCH('idx_bulk', '[1,1]', 10)
+[1,2]
+SET @pending_txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk', @pending_txn, 3, '[3,3]');
+VEC_INDEX_STAGE_UPSERT('idx_bulk', @pending_txn, 3, '[3,3]')
+1
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_bulk');
+ERROR HY000: Incorrect arguments to vec_index_bulk_load_begin
+SELECT VEC_INDEX_TXN_ROLLBACK(@pending_txn);
+VEC_INDEX_TXN_ROLLBACK(@pending_txn)
+1
+SELECT VEC_INDEX_DROP('idx_bulk');
+VEC_INDEX_DROP('idx_bulk')
+1
+SELECT VEC_INDEX_CREATE('idx_bulk_hnsw', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_bulk_hnsw', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB')
+1
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_bulk_hnsw');
+VEC_INDEX_BULK_LOAD_BEGIN('idx_bulk_hnsw')
+1
+SET @hnsw_txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 1, '[1,0]');
+VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 1, '[1,0]')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 2, '[2,0]');
+VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 2, '[2,0]')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 3, '[3,0]');
+VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 3, '[3,0]')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 4, '[4,0]');
+VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 4, '[4,0]')
+1
+SELECT VEC_INDEX_TXN_COMMIT(@hnsw_txn);
+VEC_INDEX_TXN_COMMIT(@hnsw_txn)
+1
+SELECT VEC_INDEX_BULK_BUILD('idx_bulk_hnsw');
+VEC_INDEX_BULK_BUILD('idx_bulk_hnsw')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk_hnsw'), '$.entry_count')
+AS hnsw_entry_count;
+hnsw_entry_count
+4
+SELECT VEC_INDEX_SEARCH('idx_bulk_hnsw', '[4,0]', 2);
+VEC_INDEX_SEARCH('idx_bulk_hnsw', '[4,0]', 2)
+[4,3]
+SELECT VEC_INDEX_DROP('idx_bulk_hnsw');
+VEC_INDEX_DROP('idx_bulk_hnsw')
+1

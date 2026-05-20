@@ -1,0 +1,30 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: recover mutable DISKANN serving state from committed snapshot
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_diskann_restore', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_UPSERT('idx_diskann_restore', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_restore', 9, VEC_FROMTEXT('[9,9]'));
+SELECT VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[1,1]'), 1);
+
+--source include/restart_mysqld.inc
+
+--replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
+SELECT VEC_INDEX_INFO('idx_diskann_restore');
+SELECT VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[1,1]'), 1);
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_diskann_restore.writable';
+--let $assert_text= DISKANN restore reports external manifest present
+--let $manifest_present= query_get_value("SHOW VECTOR STATUS FOR INDEX idx_diskann_restore WHERE Variable_name = 'idx_diskann_restore.external_manifest_present'", Value, 1)
+--let $assert_cond= $manifest_present = 1
+--source include/assert.inc
+--let $manifest_generation= query_get_value("SHOW VECTOR STATUS FOR INDEX idx_diskann_restore WHERE Variable_name = 'idx_diskann_restore.external_manifest_generation'", Value, 1)
+--let $assert_text= DISKANN restore reports external manifest generation greater than zero
+--let $assert_cond= $manifest_generation > 0
+--source include/assert.inc
+SELECT VEC_INDEX_UPSERT('idx_diskann_restore', 3, VEC_FROMTEXT('[3,3]'));
+SELECT VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[3,3]'), 1);
+
+SELECT VEC_INDEX_DROP('idx_diskann_restore');

@@ -1,0 +1,36 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: vector tuning survives rename lifecycle
+--echo #
+
+DROP TABLE IF EXISTS t_vector_tuning_lifecycle;
+CREATE TABLE t_vector_tuning_lifecycle (
+  id INT PRIMARY KEY,
+  v VECTOR(4)
+) ENGINE=InnoDB;
+
+CREATE VECTOR INDEX ON t_vector_tuning_lifecycle(v)
+  WITH (4, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(
+  'test.t_vector_tuning_lifecycle.v', 2, 1, 1, 1);
+
+ALTER TABLE t_vector_tuning_lifecycle RENAME COLUMN v TO w;
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_tuning_lifecycle.w'
+  WHERE Variable_name = 'test.t_vector_tuning_lifecycle.w.backend_variant'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle.w.faiss_nlist'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle.w.faiss_nprobe'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle.w.faiss_pq_m'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle.w.faiss_pq_bits'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle.w.faiss_build_threads';
+
+RENAME TABLE t_vector_tuning_lifecycle TO t_vector_tuning_lifecycle_renamed;
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_tuning_lifecycle_renamed.w'
+  WHERE Variable_name = 'test.t_vector_tuning_lifecycle_renamed.w.backend_variant'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle_renamed.w.faiss_nlist'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle_renamed.w.faiss_nprobe'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle_renamed.w.faiss_pq_m'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle_renamed.w.faiss_pq_bits'
+     OR Variable_name = 'test.t_vector_tuning_lifecycle_renamed.w.faiss_build_threads';
+
+DROP TABLE t_vector_tuning_lifecycle_renamed;

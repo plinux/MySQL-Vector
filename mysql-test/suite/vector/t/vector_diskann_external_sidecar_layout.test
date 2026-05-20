@@ -1,0 +1,27 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: DISKANN EXTERNAL sidecar uses provider-specific layout
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_diskann_sidecar', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_UPSERT('idx_diskann_sidecar', 1, VEC_FROMTEXT('[1,2]'));
+SELECT VEC_INDEX_SEARCH('idx_diskann_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+
+--let $datadir=`SELECT @@datadir`
+--let $index_hex=6964785f6469736b616e6e5f73696465636172
+--let $diskann_manifest=$datadir/mysql_vector_index/$index_hex/diskann_external.manifest.v1
+--let $diskann_snapshot_glob=$datadir/mysql_vector_index/$index_hex/diskann_external.snapshot.*.v1
+--let $faiss_manifest=$datadir/mysql_vector_index/$index_hex/faiss_external.manifest.v1
+--exec test -f $diskann_manifest
+--exec /bin/sh -c "ls $diskann_snapshot_glob >/dev/null 2>&1"
+--exec test ! -f $faiss_manifest
+
+--source include/restart_mysqld.inc
+
+--replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_diskann_sidecar');
+SELECT VEC_INDEX_SEARCH('idx_diskann_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+
+SELECT VEC_INDEX_DROP('idx_diskann_sidecar');
+--exec test ! -d $datadir/mysql_vector_index/$index_hex

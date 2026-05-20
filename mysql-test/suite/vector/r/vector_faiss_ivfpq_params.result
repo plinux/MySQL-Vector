@@ -1,0 +1,71 @@
+#
+# WL#vector-v1: configure FAISS IVF_PQ params through SQL functions
+#
+SELECT VEC_INDEX_CREATE('idx_faiss_ivfpq', 4, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_faiss_ivfpq', 4, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivfpq', 1, VEC_FROMTEXT('[1,0,0,0]'));
+VEC_INDEX_UPSERT('idx_faiss_ivfpq', 1, VEC_FROMTEXT('[1,0,0,0]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivfpq', 2, VEC_FROMTEXT('[0,1,0,0]'));
+VEC_INDEX_UPSERT('idx_faiss_ivfpq', 2, VEC_FROMTEXT('[0,1,0,0]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivfpq', 3, VEC_FROMTEXT('[0,0,1,0]'));
+VEC_INDEX_UPSERT('idx_faiss_ivfpq', 3, VEC_FROMTEXT('[0,0,1,0]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivfpq', 4, VEC_FROMTEXT('[0,0,0,1]'));
+VEC_INDEX_UPSERT('idx_faiss_ivfpq', 4, VEC_FROMTEXT('[0,0,0,1]'))
+1
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_faiss_ivfpq', 2, 1, 1, 1);
+VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_faiss_ivfpq', 2, 1, 1, 1)
+1
+SELECT VEC_INDEX_INFO('idx_faiss_ivfpq');
+VEC_INDEX_INFO('idx_faiss_ivfpq')
+{"dimension":4,"metric":"euclidean","mode":"external","provider":"faiss","backend_variant":"ivf_pq","schema_name":null,"table_name":null,"column_name":null,"search_ef":64,"hnsw_m":32,"hnsw_ef_construction":40,"hnsw_build_threads":0,"faiss_nlist":2,"faiss_nprobe":1,"faiss_pq_m":1,"faiss_pq_bits":1,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":1,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":4,"committed_entry_count":4}
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.backend_variant';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.backend_variant	ivf_pq
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_nlist';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.faiss_nlist	2
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_nprobe';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.faiss_nprobe	1
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_pq_m';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.faiss_pq_m	1
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_pq_bits';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.faiss_pq_bits	1
+# restart
+SELECT VEC_INDEX_INFO('idx_faiss_ivfpq');
+VEC_INDEX_INFO('idx_faiss_ivfpq')
+{"dimension":4,"metric":"euclidean","mode":"external","provider":"faiss","backend_variant":"ivf_pq","schema_name":null,"table_name":null,"column_name":null,"search_ef":64,"hnsw_m":32,"hnsw_ef_construction":40,"hnsw_build_threads":0,"faiss_nlist":2,"faiss_nprobe":1,"faiss_pq_m":1,"faiss_pq_bits":1,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":1,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":4,"committed_entry_count":4}
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.backend_variant';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.backend_variant	ivf_pq
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_nlist';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.faiss_nlist	2
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_nprobe';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.faiss_nprobe	1
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_pq_m';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.faiss_pq_m	1
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_pq_bits';
+Section	Variable_name	Value
+INDEX_STATE	idx_faiss_ivfpq.faiss_pq_bits	1
+SELECT VEC_INDEX_DROP('idx_faiss_ivfpq');
+VEC_INDEX_DROP('idx_faiss_ivfpq')
+1

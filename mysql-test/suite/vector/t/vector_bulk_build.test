@@ -1,0 +1,58 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: bulk load and shadow rebuild path
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_bulk', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_bulk');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'),
+  '$.lifecycle_state')) AS state;
+
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk', @txn, 1, '[1,1]');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk', @txn, 2, '[2,2]');
+SELECT VEC_INDEX_TXN_COMMIT(@txn);
+
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.entry_count') AS entry_count,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.committed_entry_count')
+    AS committed_entry_count,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.pending_apply_count')
+    AS pending_apply_count;
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH('idx_bulk', '[1,1]', 10);
+
+SELECT VEC_INDEX_BULK_BUILD('idx_bulk');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'),
+  '$.lifecycle_state')) AS state;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.entry_count') AS entry_count,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.committed_entry_count')
+    AS committed_entry_count,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.pending_apply_count')
+    AS pending_apply_count;
+SELECT VEC_INDEX_SEARCH('idx_bulk', '[1,1]', 10);
+
+SET @pending_txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk', @pending_txn, 3, '[3,3]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_bulk');
+SELECT VEC_INDEX_TXN_ROLLBACK(@pending_txn);
+
+SELECT VEC_INDEX_DROP('idx_bulk');
+
+SELECT VEC_INDEX_CREATE('idx_bulk_hnsw', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_bulk_hnsw');
+
+SET @hnsw_txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 1, '[1,0]');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 2, '[2,0]');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 3, '[3,0]');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk_hnsw', @hnsw_txn, 4, '[4,0]');
+SELECT VEC_INDEX_TXN_COMMIT(@hnsw_txn);
+
+SELECT VEC_INDEX_BULK_BUILD('idx_bulk_hnsw');
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk_hnsw'), '$.entry_count')
+  AS hnsw_entry_count;
+SELECT VEC_INDEX_SEARCH('idx_bulk_hnsw', '[4,0]', 2);
+SELECT VEC_INDEX_DROP('idx_bulk_hnsw');

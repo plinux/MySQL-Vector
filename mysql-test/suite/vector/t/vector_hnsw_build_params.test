@@ -1,0 +1,36 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: configure HNSW build parameters through SQL functions
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_hnsw_mem', 2, 'COSINE', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_CREATE('idx_hnsw_ext', 2, 'COSINE', 'EXTERNAL', 'FAISS');
+
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw_mem', 24, 320);
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw_ext', 48, 96);
+
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_hnsw_mem');
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_hnsw_ext');
+
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'idx_hnsw_%.hnsw_m';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'idx_hnsw_%.hnsw_ef_construction';
+
+--source include/restart_mysqld.inc
+
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_hnsw_mem');
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_hnsw_ext');
+
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'idx_hnsw_%.hnsw_m';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'idx_hnsw_%.hnsw_ef_construction';
+
+SELECT VEC_INDEX_DROP('idx_hnsw_mem');
+SELECT VEC_INDEX_DROP('idx_hnsw_ext');

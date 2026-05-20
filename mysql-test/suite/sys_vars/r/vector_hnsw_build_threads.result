@@ -1,0 +1,90 @@
+#
+# WL#vector-v1: configure HNSWLIB build worker count
+#
+SET GLOBAL vector_hnsw_build_threads=2;
+SELECT @@global.vector_hnsw_build_threads;
+@@global.vector_hnsw_build_threads
+2
+SELECT VEC_INDEX_CREATE('idx_hnsw_thread_global', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_hnsw_thread_global', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw_thread_global'),
+'$.hnsw_build_threads') AS inherited_threads;
+inherited_threads
+2
+SELECT VEC_INDEX_CREATE('idx_hnsw_thread_stmt', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB', 3);
+VEC_INDEX_CREATE('idx_hnsw_thread_stmt', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB', 3)
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw_thread_stmt'),
+'$.hnsw_build_threads') AS statement_threads;
+statement_threads
+3
+SELECT VEC_INDEX_CREATE('idx_hnsw_thread_zero', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB', 0);
+VEC_INDEX_CREATE('idx_hnsw_thread_zero', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB', 0)
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw_thread_zero'),
+'$.hnsw_build_threads') AS statement_zero_threads;
+statement_zero_threads
+2
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_hnsw_thread_stmt');
+VEC_INDEX_BULK_LOAD_BEGIN('idx_hnsw_thread_stmt')
+1
+SET @hnsw_thread_txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_hnsw_thread_stmt', @hnsw_thread_txn, 1,
+'[1,0]');
+VEC_INDEX_STAGE_UPSERT('idx_hnsw_thread_stmt', @hnsw_thread_txn, 1,
+'[1,0]')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_hnsw_thread_stmt', @hnsw_thread_txn, 2,
+'[2,0]');
+VEC_INDEX_STAGE_UPSERT('idx_hnsw_thread_stmt', @hnsw_thread_txn, 2,
+'[2,0]')
+1
+SELECT VEC_INDEX_TXN_COMMIT(@hnsw_thread_txn);
+VEC_INDEX_TXN_COMMIT(@hnsw_thread_txn)
+1
+SELECT VEC_INDEX_BULK_BUILD('idx_hnsw_thread_stmt');
+VEC_INDEX_BULK_BUILD('idx_hnsw_thread_stmt')
+1
+SELECT VEC_INDEX_SEARCH('idx_hnsw_thread_stmt', '[2,0]', 1);
+VEC_INDEX_SEARCH('idx_hnsw_thread_stmt', '[2,0]', 1)
+[2]
+DROP TABLE IF EXISTS t_hnsw_thread_ddl;
+CREATE TABLE t_hnsw_thread_ddl(id INT PRIMARY KEY, v VECTOR(2));
+INSERT INTO t_hnsw_thread_ddl VALUES (1, VEC_FROMTEXT('[1,1]'));
+CREATE VECTOR INDEX ON t_hnsw_thread_ddl(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB', 4);
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_hnsw_thread_ddl.v'),
+'$.hnsw_build_threads') AS ddl_threads;
+ddl_threads
+4
+SHOW VECTOR STATUS FOR INDEX 'test.t_hnsw_thread_ddl.v'
+WHERE Variable_name = 'test.t_hnsw_thread_ddl.v.hnsw_build_threads';
+Section	Variable_name	Value
+INDEX_STATE	test.t_hnsw_thread_ddl.v.hnsw_build_threads	4
+SELECT VEC_INDEX_CREATE('idx_hnsw_thread_bad', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB', 65536);
+ERROR HY000: Incorrect arguments to vec_index_create
+DROP TABLE IF EXISTS t_hnsw_thread_bad;
+CREATE TABLE t_hnsw_thread_bad(id INT PRIMARY KEY, v VECTOR(2));
+CREATE VECTOR INDEX ON t_hnsw_thread_bad(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB', 65536);
+ERROR HY000: Incorrect arguments to CREATE VECTOR INDEX
+DROP TABLE t_hnsw_thread_bad;
+DROP TABLE t_hnsw_thread_ddl;
+SELECT VEC_INDEX_DROP('idx_hnsw_thread_stmt');
+VEC_INDEX_DROP('idx_hnsw_thread_stmt')
+1
+SELECT VEC_INDEX_DROP('idx_hnsw_thread_global');
+VEC_INDEX_DROP('idx_hnsw_thread_global')
+1
+SELECT VEC_INDEX_DROP('idx_hnsw_thread_zero');
+VEC_INDEX_DROP('idx_hnsw_thread_zero')
+1
+SET GLOBAL vector_hnsw_build_threads=DEFAULT;

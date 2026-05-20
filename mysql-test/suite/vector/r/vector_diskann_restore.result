@@ -1,0 +1,37 @@
+#
+# WL#vector-v1: recover mutable DISKANN serving state from committed snapshot
+#
+SELECT VEC_INDEX_CREATE('idx_diskann_restore', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_diskann_restore', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN')
+1
+SELECT VEC_INDEX_UPSERT('idx_diskann_restore', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_diskann_restore', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_diskann_restore', 9, VEC_FROMTEXT('[9,9]'));
+VEC_INDEX_UPSERT('idx_diskann_restore', 9, VEC_FROMTEXT('[9,9]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[1,1]'), 1)
+[1]
+# restart
+SELECT VEC_INDEX_INFO('idx_diskann_restore');
+VEC_INDEX_INFO('idx_diskann_restore')
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","backend_variant":"diskann_garnet","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":32,"diskann_build_complexity":64,"diskann_build_threads":0,"diskann_search_complexity":64,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":0,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":1,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":2,"committed_entry_count":2}
+SELECT VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[1,1]'), 1)
+[1]
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_diskann_restore.writable';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_diskann_restore.writable	1
+include/assert.inc [DISKANN restore reports external manifest present]
+include/assert.inc [DISKANN restore reports external manifest generation greater than zero]
+SELECT VEC_INDEX_UPSERT('idx_diskann_restore', 3, VEC_FROMTEXT('[3,3]'));
+VEC_INDEX_UPSERT('idx_diskann_restore', 3, VEC_FROMTEXT('[3,3]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[3,3]'), 1);
+VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[3,3]'), 1)
+[3]
+SELECT VEC_INDEX_DROP('idx_diskann_restore');
+VEC_INDEX_DROP('idx_diskann_restore')
+1

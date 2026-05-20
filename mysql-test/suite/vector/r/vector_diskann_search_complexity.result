@@ -1,0 +1,27 @@
+#
+# WL#vector-v1: configure DISKANN search complexity through SQL functions
+#
+SELECT VEC_INDEX_CREATE('idx_diskann_search_complexity', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_diskann_search_complexity', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN')
+1
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann_search_complexity', 80);
+VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann_search_complexity', 80)
+1
+SELECT VEC_INDEX_INFO('idx_diskann_search_complexity');
+VEC_INDEX_INFO('idx_diskann_search_complexity')
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","backend_variant":"diskann_garnet","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":32,"diskann_build_complexity":64,"diskann_build_threads":0,"diskann_search_complexity":80,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":0,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_search_complexity';
+Section	Variable_name	Value
+INDEX_STATE	idx_diskann_search_complexity.diskann_search_complexity	80
+# restart
+SELECT VEC_INDEX_INFO('idx_diskann_search_complexity');
+VEC_INDEX_INFO('idx_diskann_search_complexity')
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","backend_variant":"diskann_garnet","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":32,"diskann_build_complexity":64,"diskann_build_threads":0,"diskann_search_complexity":80,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":0,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_search_complexity';
+Section	Variable_name	Value
+INDEX_STATE	idx_diskann_search_complexity.diskann_search_complexity	80
+SELECT VEC_INDEX_DROP('idx_diskann_search_complexity');
+VEC_INDEX_DROP('idx_diskann_search_complexity')
+1

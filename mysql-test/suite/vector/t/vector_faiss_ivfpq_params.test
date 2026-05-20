@@ -1,0 +1,43 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: configure FAISS IVF_PQ params through SQL functions
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_faiss_ivfpq', 4, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivfpq', 1, VEC_FROMTEXT('[1,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivfpq', 2, VEC_FROMTEXT('[0,1,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivfpq', 3, VEC_FROMTEXT('[0,0,1,0]'));
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivfpq', 4, VEC_FROMTEXT('[0,0,0,1]'));
+
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_faiss_ivfpq', 2, 1, 1, 1);
+
+--replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_faiss_ivfpq');
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.backend_variant';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_nlist';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_nprobe';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_pq_m';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_pq_bits';
+
+--source include/restart_mysqld.inc
+
+--replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_faiss_ivfpq');
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.backend_variant';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_nlist';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_nprobe';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_pq_m';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_faiss_ivfpq.faiss_pq_bits';
+
+SELECT VEC_INDEX_DROP('idx_faiss_ivfpq');

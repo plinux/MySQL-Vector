@@ -1,0 +1,93 @@
+#
+# WL#vector-v1: FAISS EXTERNAL sidecar snapshot persists across restart
+#
+SELECT VEC_INDEX_CREATE('idx_faiss_sidecar', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_faiss_sidecar', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_UPSERT('idx_faiss_sidecar', 1, VEC_FROMTEXT('[1,2]'));
+VEC_INDEX_UPSERT('idx_faiss_sidecar', 1, VEC_FROMTEXT('[1,2]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+# restart
+SELECT VEC_INDEX_INFO('idx_faiss_sidecar');
+VEC_INDEX_INFO('idx_faiss_sidecar')
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"faiss","backend_variant":"hnsw","schema_name":null,"table_name":null,"column_name":null,"search_ef":64,"hnsw_m":32,"hnsw_ef_construction":40,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":0,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":1,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+SET @recover_fallback_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks');
+SELECT VEC_INDEX_RECOVER('idx_faiss_sidecar');
+VEC_INDEX_RECOVER('idx_faiss_sidecar')
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks') - @recover_fallback_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks') - @recover_fallback_before
+1
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.recover_fallback_count';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_faiss_sidecar.recover_fallback_count	1
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.last_recover_fallback_ts'
+  AND Value > '<num>';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_faiss_sidecar.last_recover_fallback_ts	<num>
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+# restart
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.recover_fallback_count'
+  AND Value = '1';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_faiss_sidecar.recover_fallback_count	1
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.last_recover_fallback_ts'
+  AND Value > '<num>';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_faiss_sidecar.last_recover_fallback_ts	<num>
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+SET @recover_fallback_before_manifest = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks');
+SELECT VEC_INDEX_RECOVER('idx_faiss_sidecar');
+VEC_INDEX_RECOVER('idx_faiss_sidecar')
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks') - @recover_fallback_before_manifest;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks') - @recover_fallback_before_manifest
+1
+SHOW VECTOR STATUS FOR INDEX idx_faiss_sidecar
+WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_faiss_sidecar.recover_fallback_count'
+  AND Value = '2';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_faiss_sidecar.recover_fallback_count	2
+SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+SELECT VEC_INDEX_DROP('idx_faiss_sidecar');
+VEC_INDEX_DROP('idx_faiss_sidecar')
+1

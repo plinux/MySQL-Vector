@@ -1,0 +1,133 @@
+#
+# WL#vector-v1: tuning and debug function error branches
+#
+SELECT VEC_INDEX_CREATE('idx_tune_native', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_tune_native', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_CREATE('idx_tune_hnsw', 2, 'COSINE', 'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_tune_hnsw', 2, 'COSINE', 'MEMORY', 'HNSWLIB')
+1
+SELECT VEC_INDEX_CREATE('idx_tune_faiss', 2, 'COSINE', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_tune_faiss', 2, 'COSINE', 'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_CREATE('idx_tune_diskann', 2, 'COSINE', 'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_tune_diskann', 2, 'COSINE', 'EXTERNAL', 'DISKANN')
+1
+SELECT VEC_INDEX_SET_SEARCH_EF(NULL, 32);
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_tune_hnsw', NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_tune_hnsw', 0);
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_tune_missing', 32);
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_tune_native', 32);
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS(NULL, 16, 200);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_tune_hnsw', NULL, 200);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_tune_hnsw', 16, NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_tune_hnsw', 0, 200);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_tune_hnsw', 16, 0);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_tune_missing', 16, 200);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_tune_native', 16, 200);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS(NULL, 64, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_tune_faiss', NULL, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_tune_faiss', 64, NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_tune_faiss', -1, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_tune_faiss', 64, -1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_tune_missing', 64, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_tune_hnsw', 64, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(NULL, 64, 8, 8, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_faiss', NULL, 8, 8, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_faiss', 64, NULL, 8, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_faiss', 64, 8, NULL, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_faiss', 64, 8, 8, NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_faiss', 0, 8, 8, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_faiss', 64, 0, 8, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_faiss', 64, 8, 0, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_faiss', 64, 8, 8, 0);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_missing', 64, 8, 8, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_tune_diskann', 64, 8, 8, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS(NULL, 24, 90);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_tune_diskann', NULL, 90);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_tune_diskann', 24, NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_tune_diskann', 0, 90);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_tune_diskann', 24, 0);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_tune_missing', 24, 90);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_tune_faiss', 24, 90);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(NULL, 120);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_tune_diskann', NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_tune_diskann', 0);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_tune_missing', 120);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_tune_hnsw', 120);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX(NULL);
+ERROR HY000: Incorrect arguments to vec_debug_truth_store_get_hex
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('');
+ERROR HY000: Incorrect arguments to vec_debug_truth_store_get_hex
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared');
+VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared')
+
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX(NULL, '00');
+ERROR HY000: Incorrect arguments to vec_debug_truth_store_set_hex
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('', '00');
+ERROR HY000: Incorrect arguments to vec_debug_truth_store_set_hex
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('prepared', NULL);
+VEC_DEBUG_TRUTH_STORE_SET_HEX('prepared', NULL)
+1
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', 'xyz');
+ERROR HY000: Incorrect arguments to vec_debug_truth_store_set_hex
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('manifest', NULL);
+VEC_DEBUG_TRUTH_STORE_SET_HEX('manifest', NULL)
+1
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest');
+VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest')
+
+SELECT VEC_INDEX_DROP('idx_tune_native');
+VEC_INDEX_DROP('idx_tune_native')
+1
+SELECT VEC_INDEX_DROP('idx_tune_hnsw');
+VEC_INDEX_DROP('idx_tune_hnsw')
+1
+SELECT VEC_INDEX_DROP('idx_tune_faiss');
+VEC_INDEX_DROP('idx_tune_faiss')
+1
+SELECT VEC_INDEX_DROP('idx_tune_diskann');
+VEC_INDEX_DROP('idx_tune_diskann')
+1

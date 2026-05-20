@@ -1,0 +1,67 @@
+#
+# WL#vector-v1: configure DISKANN build parameters through SQL functions
+#
+SELECT VEC_INDEX_CREATE('idx_diskann_params', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_diskann_params', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN')
+1
+SELECT VEC_INDEX_UPSERT('idx_diskann_params', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_diskann_params', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+CAST(1 AS JSON))
+1
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_params', 48, 96);
+VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_params', 48, 96)
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+CAST(1 AS JSON))
+1
+SELECT VEC_INDEX_REBUILD('idx_diskann_params');
+VEC_INDEX_REBUILD('idx_diskann_params')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+CAST(1 AS JSON))
+1
+SELECT VEC_INDEX_INFO('idx_diskann_params');
+VEC_INDEX_INFO('idx_diskann_params')
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","backend_variant":"diskann_garnet","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":48,"diskann_build_complexity":96,"diskann_build_threads":0,"diskann_search_complexity":64,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":2,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'idx_diskann_params.diskann_%';
+Section	Variable_name	Value
+INDEX_STATE	idx_diskann_params.diskann_max_degree	48
+INDEX_STATE	idx_diskann_params.diskann_build_complexity	96
+INDEX_STATE	idx_diskann_params.diskann_build_threads	0
+INDEX_STATE	idx_diskann_params.diskann_search_complexity	64
+# restart
+SELECT VEC_INDEX_INFO('idx_diskann_params');
+VEC_INDEX_INFO('idx_diskann_params')
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","backend_variant":"diskann_garnet","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":48,"diskann_build_complexity":96,"diskann_build_threads":0,"diskann_search_complexity":64,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":2,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+CAST(1 AS JSON))
+1
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'idx_diskann_params.diskann_%';
+Section	Variable_name	Value
+INDEX_STATE	idx_diskann_params.diskann_max_degree	48
+INDEX_STATE	idx_diskann_params.diskann_build_complexity	96
+INDEX_STATE	idx_diskann_params.diskann_build_threads	0
+INDEX_STATE	idx_diskann_params.diskann_search_complexity	64
+SELECT VEC_INDEX_DROP('idx_diskann_params');
+VEC_INDEX_DROP('idx_diskann_params')
+1

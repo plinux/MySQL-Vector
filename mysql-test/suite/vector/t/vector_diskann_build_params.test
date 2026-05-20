@@ -1,0 +1,37 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: configure DISKANN build parameters through SQL functions
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_diskann_params', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_UPSERT('idx_diskann_params', 1, VEC_FROMTEXT('[1,1]'));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+  CAST(1 AS JSON));
+
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_params', 48, 96);
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+  CAST(1 AS JSON));
+SELECT VEC_INDEX_REBUILD('idx_diskann_params');
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+  CAST(1 AS JSON));
+
+--replace_regex /"external_manifest_present":[01]/"external_manifest_present":<bool>/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_error_ts":[0-9]+/"last_error_ts":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_diskann_params');
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'idx_diskann_params.diskann_%';
+
+--source include/restart_mysqld.inc
+
+--replace_regex /"external_manifest_present":[01]/"external_manifest_present":<bool>/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_error_ts":[0-9]+/"last_error_ts":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_diskann_params');
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
+  CAST(1 AS JSON));
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'idx_diskann_params.diskann_%';
+
+SELECT VEC_INDEX_DROP('idx_diskann_params');

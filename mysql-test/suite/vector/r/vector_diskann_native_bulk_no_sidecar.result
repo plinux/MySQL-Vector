@@ -1,0 +1,59 @@
+#
+# WL#vector-v1: DISKANN native bulk build avoids external sidecar
+#
+SELECT VEC_INDEX_CREATE('idx_diskann_native_bulk', 2, 'EUCLIDEAN', 'EXTERNAL',
+'DISKANN');
+VEC_INDEX_CREATE('idx_diskann_native_bulk', 2, 'EUCLIDEAN', 'EXTERNAL',
+'DISKANN')
+1
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_diskann_native_bulk');
+VEC_INDEX_BULK_LOAD_BEGIN('idx_diskann_native_bulk')
+1
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_diskann_native_bulk', @txn, 1, '[1,0]');
+VEC_INDEX_STAGE_UPSERT('idx_diskann_native_bulk', @txn, 1, '[1,0]')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_diskann_native_bulk', @txn, 2, '[2,0]');
+VEC_INDEX_STAGE_UPSERT('idx_diskann_native_bulk', @txn, 2, '[2,0]')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_diskann_native_bulk', @txn, 3, '[3,0]');
+VEC_INDEX_STAGE_UPSERT('idx_diskann_native_bulk', @txn, 3, '[3,0]')
+1
+SELECT VEC_INDEX_TXN_COMMIT(@txn);
+VEC_INDEX_TXN_COMMIT(@txn)
+1
+SELECT VEC_INDEX_BULK_BUILD('idx_diskann_native_bulk');
+VEC_INDEX_BULK_BUILD('idx_diskann_native_bulk')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+'$.external_manifest_present') AS external_manifest_present,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+'$.external_manifest_generation') AS external_manifest_generation,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'), '$.entry_count')
+AS entry_count,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+'$.committed_entry_count') AS committed_entry_count;
+external_manifest_present	external_manifest_generation	entry_count	committed_entry_count
+0	0	3	3
+SELECT VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2);
+VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2)
+[1,2]
+SELECT VEC_INDEX_UPSERT('idx_diskann_native_bulk', 4, VEC_FROMTEXT('[0,1]'));
+VEC_INDEX_UPSERT('idx_diskann_native_bulk', 4, VEC_FROMTEXT('[0,1]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[0,1]'), 1);
+VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[0,1]'), 1)
+[4]
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+'$.external_manifest_present') AS external_manifest_present,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+'$.external_manifest_generation') AS external_manifest_generation,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'), '$.entry_count')
+AS entry_count,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
+'$.committed_entry_count') AS committed_entry_count;
+external_manifest_present	external_manifest_generation	entry_count	committed_entry_count
+0	0	4	4
+SELECT VEC_INDEX_DROP('idx_diskann_native_bulk');
+VEC_INDEX_DROP('idx_diskann_native_bulk')
+1
