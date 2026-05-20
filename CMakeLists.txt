@@ -125,6 +125,10 @@ ENDIF()
 
 OPTION(WITH_DEBUG "Use dbug/safemutex" OFF)
 OPTION(CHECK_ERRMSG_FORMAT "Check printf format for English error messages" OFF)
+OPTION(HAVE_VECTOR_INDEX "Build MySQL Vector support" OFF)
+IF(HAVE_VECTOR_INDEX)
+  ADD_COMPILE_DEFINITIONS(HAVE_VECTOR_INDEX=1)
+ENDIF()
 
 # Use a default manufacturer if no manufacturer was identified.
 SET(MANUFACTURER_DOCSTRING
@@ -1626,6 +1630,9 @@ ENDIF()
 
 # Run platform tests
 INCLUDE(configure.cmake)
+
+INCLUDE(cmake/vector.cmake)
+MYSQL_VECTOR_CONFIGURE_BACKENDS()
 
 # Common defines and includes
 ADD_DEFINITIONS(-D__STDC_LIMIT_MACROS)     # Enable C99 limit macros

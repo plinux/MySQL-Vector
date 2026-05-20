@@ -948,6 +948,7 @@ TARGET_LINK_LIBRARIES(sql_main ${MYSQLD_STATIC_PLUGIN_LIBS}
 # google::protobuf::io::CodedOutputStream::WriteVarint64ToArray
 # which may or may not be inlined.
 TARGET_LINK_LIBRARIES(sql_main ext::libprotobuf-lite)
+MYSQL_VECTOR_LINK_BACKENDS(sql_main)
 
 ADD_LIBRARY(sql_gis STATIC ${SQL_GIS_SOURCES})
 ADD_DEPENDENCIES(sql_gis GenServerSource)
