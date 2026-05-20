@@ -1,0 +1,92 @@
+#
+# WL#vector-v1: item_vectorfunc direct writes with sql_log_bin disabled
+#
+SET sql_log_bin=0;
+SELECT VEC_INDEX_CREATE('idx_item_nobinlog', 2);
+VEC_INDEX_CREATE('idx_item_nobinlog', 2)
+1
+SELECT VEC_INDEX_CREATE('idx_item_nobinlog_hnsw', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_item_nobinlog_hnsw', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB')
+1
+SELECT VEC_INDEX_CREATE('idx_item_nobinlog_faiss', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_item_nobinlog_faiss', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_CREATE('idx_item_nobinlog_diskann', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_item_nobinlog_diskann', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN')
+1
+SELECT VEC_INDEX_UPSERT('idx_item_nobinlog', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_item_nobinlog', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_item_nobinlog_hnsw', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_item_nobinlog_hnsw', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_item_nobinlog_faiss', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_item_nobinlog_faiss', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_item_nobinlog_diskann', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_item_nobinlog_diskann', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_item_nobinlog', VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('idx_item_nobinlog', VEC_FROMTEXT('[1,1]'), 1)
+[1]
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_item_nobinlog_hnsw', 96);
+VEC_INDEX_SET_SEARCH_EF('idx_item_nobinlog_hnsw', 96)
+1
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_item_nobinlog_hnsw', 24, 320);
+VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_item_nobinlog_hnsw', 24, 320)
+1
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_item_nobinlog_faiss', 2, 1);
+VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_item_nobinlog_faiss', 2, 1)
+1
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_item_nobinlog_faiss', 2, 1, 1, 1);
+VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_item_nobinlog_faiss', 2, 1, 1, 1)
+1
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_item_nobinlog_diskann', 48, 96);
+VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_item_nobinlog_diskann', 48, 96)
+1
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_item_nobinlog_diskann', 80);
+VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_item_nobinlog_diskann', 80)
+1
+SELECT VEC_INDEX_ERASE('idx_item_nobinlog', 1);
+VEC_INDEX_ERASE('idx_item_nobinlog', 1)
+1
+SELECT VEC_INDEX_SEARCH('idx_item_nobinlog', VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('idx_item_nobinlog', VEC_FROMTEXT('[1,1]'), 1)
+[]
+SELECT VEC_INDEX_REBUILD('idx_item_nobinlog');
+VEC_INDEX_REBUILD('idx_item_nobinlog')
+1
+SELECT VEC_INDEX_REBUILD('idx_item_nobinlog_faiss');
+VEC_INDEX_REBUILD('idx_item_nobinlog_faiss')
+1
+SELECT VEC_INDEX_REBUILD('idx_item_nobinlog_diskann');
+VEC_INDEX_REBUILD('idx_item_nobinlog_diskann')
+1
+SELECT VEC_INDEX_RECOVER('idx_item_nobinlog');
+VEC_INDEX_RECOVER('idx_item_nobinlog')
+1
+SELECT VEC_INDEX_RECOVER('idx_item_nobinlog_faiss');
+VEC_INDEX_RECOVER('idx_item_nobinlog_faiss')
+1
+SELECT VEC_INDEX_RECOVER('idx_item_nobinlog_diskann');
+VEC_INDEX_RECOVER('idx_item_nobinlog_diskann')
+1
+SELECT VEC_INDEX_REBUILD_ALL();
+VEC_INDEX_REBUILD_ALL()
+4
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+4
+SELECT VEC_INDEX_DROP('idx_item_nobinlog');
+VEC_INDEX_DROP('idx_item_nobinlog')
+1
+SELECT VEC_INDEX_DROP('idx_item_nobinlog_hnsw');
+VEC_INDEX_DROP('idx_item_nobinlog_hnsw')
+1
+SELECT VEC_INDEX_DROP('idx_item_nobinlog_faiss');
+VEC_INDEX_DROP('idx_item_nobinlog_faiss')
+1
+SELECT VEC_INDEX_DROP('idx_item_nobinlog_diskann');
+VEC_INDEX_DROP('idx_item_nobinlog_diskann')
+1
+SET sql_log_bin=1;

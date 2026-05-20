@@ -1,0 +1,44 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: AliSQL vidx reusable semantics (adapted for MySQL v1)
+--echo #
+
+--echo # Reuse from AliSQL vidx_func: NULL and empty-vector behavior
+SELECT VEC_TOTEXT(x'');
+SELECT VEC_TOTEXT(NULL);
+SELECT VECTOR_DIM(x'');
+SELECT VECTOR_DIM(NULL);
+SELECT VEC_FROMTEXT(NULL);
+
+--echo # Reuse from AliSQL vidx_func: wrong parameter count
+--error ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT
+SELECT VEC_TOTEXT();
+--error ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT
+SELECT VECTOR_DIM();
+--error ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT
+SELECT VECTOR_DIM(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[1,2]'));
+
+--echo # Reuse from AliSQL vidx_dml: prepared statement with vector argument
+CREATE TABLE t_compat (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+INSERT INTO t_compat VALUES (1, VEC_FROMTEXT('[1,2]'));
+INSERT INTO t_compat VALUES (2, VEC_FROMTEXT('[2,3]'));
+INSERT INTO t_compat VALUES (3, VEC_FROMTEXT('[3,4]'));
+
+PREPARE stmt FROM
+  'SELECT id FROM t_compat ORDER BY VEC_DISTANCE_EUCLIDEAN(v, ?) LIMIT ?';
+SET @vec = VEC_FROMTEXT('[2,2]');
+SET @k = 2;
+SELECT id FROM t_compat ORDER BY VEC_DISTANCE_EUCLIDEAN(v, @vec) LIMIT 2;
+EXECUTE stmt USING @vec, @k;
+
+SET @vec = VEC_FROMTEXT('[2,2,2]');
+--error ER_WRONG_ARGUMENTS
+EXECUTE stmt USING @vec, @k;
+
+DEALLOCATE PREPARE stmt;
+DROP TABLE t_compat;

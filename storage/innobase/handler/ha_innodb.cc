@@ -99,6 +99,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "dd/dd.h"
 #include "dd/dictionary.h"
 #include "dd/impl/bootstrap/bootstrap_ctx.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "dd/impl/tables/vector_index_truth_tables.h"
+#endif
 #include "dd/properties.h"
 #include "dd/types/index.h"
 #include "dd/types/object_table.h"
@@ -137,6 +140,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "log0meb.h"
 #include "log0pfs.h"
 #include "log0pre_8_0_30.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "log0recv.h"
+#endif
 #include "log0sys.h"
 #include "log0write.h"
 #include "mem0mem.h"
@@ -4089,6 +4095,26 @@ static bool innobase_dict_recover(dict_recovery_mode_t dict_recovery_mode,
                                 DICT_ERR_IGNORE_NONE);
       dict_sys->ddl_log = dd_table_open_on_name(
           thd, nullptr, "mysql/innodb_ddl_log", false, DICT_ERR_IGNORE_NONE);
+#ifdef HAVE_VECTOR_INDEX
+      dict_sys->vector_truth_metadata = dd_table_open_on_name(
+          thd, nullptr, "mysql/vector_index_truth_metadata", false,
+          DICT_ERR_IGNORE_NONE);
+      dict_sys->vector_truth_committed = dd_table_open_on_name(
+          thd, nullptr, "mysql/vector_index_truth_committed", false,
+          DICT_ERR_IGNORE_NONE);
+      dict_sys->vector_truth_manifest = dd_table_open_on_name(
+          thd, nullptr, "mysql/vector_index_truth_manifest", false,
+          DICT_ERR_IGNORE_NONE);
+      dict_sys->vector_truth_changelog = dd_table_open_on_name(
+          thd, nullptr, "mysql/vector_index_truth_changelog", false,
+          DICT_ERR_IGNORE_NONE);
+      dict_sys->vector_truth_prepared = dd_table_open_on_name(
+          thd, nullptr, "mysql/vector_index_truth_prepared", false,
+          DICT_ERR_IGNORE_NONE);
+      dict_sys->vector_truth_store_quarantine = dd_table_open_on_name(
+          thd, nullptr, "mysql/vector_index_truth_store_quarantine", false,
+          DICT_ERR_IGNORE_NONE);
+#endif
       log_ddl = ut::new_withkey<Log_DDL>(UT_NEW_THIS_FILE_PSI_KEY);
   }
 
@@ -5511,6 +5537,22 @@ static int innobase_init_files(dict_init_mode_t dict_init_mode,
   if (err != DB_SUCCESS) {
     return innodb_init_abort();
   }
+
+#ifdef HAVE_VECTOR_INDEX
+  if (srv_vector_upgrade_require_clean_shutdown &&
+      dd::bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade_from_before(
+          dd::bootstrap::DD_VERSION_80024) &&
+      recv_needed_recovery) {
+    ib::error()
+        << "Cannot upgrade to the vector-enabled data dictionary after "
+           "InnoDB redo recovery. Start the old server version, set "
+           "innodb_fast_shutdown=0, shut down cleanly, and retry the "
+           "upgrade, or start with "
+           "--innodb-vector-upgrade-require-clean-shutdown=OFF to bypass "
+           "this vector upgrade safeguard.";
+    return innodb_init_abort();
+  }
+#endif
 
   if (srv_is_upgrade_mode) {
     if (!dict_sys_table_id_build()) {
@@ -13052,6 +13094,15 @@ static bool innobase_ddse_dict_init(
   tables->push_back(innodb_table_stats);
   tables->push_back(innodb_index_stats);
   tables->push_back(innodb_ddl_log);
+#ifdef HAVE_VECTOR_INDEX
+  tables->push_back(&dd::tables::Vector_index_truth_metadata::instance());
+  tables->push_back(&dd::tables::Vector_index_truth_committed::instance());
+  tables->push_back(&dd::tables::Vector_index_truth_manifest::instance());
+  tables->push_back(&dd::tables::Vector_index_truth_changelog::instance());
+  tables->push_back(&dd::tables::Vector_index_truth_prepared::instance());
+  tables->push_back(
+      &dd::tables::Vector_index_truth_store_quarantine::instance());
+#endif
 
   LogErr(SYSTEM_LEVEL, ER_IB_MSG_INNODB_END_INITIALIZE);
 
@@ -22086,6 +22137,17 @@ static MYSQL_SYSVAR_ULONG(
     " values are 0, 1 (faster) or 2 (fastest - crash-like).",
     nullptr, nullptr, 1, 0, 2, 0);
 
+#ifdef HAVE_VECTOR_INDEX
+static MYSQL_SYSVAR_BOOL(
+    vector_upgrade_require_clean_shutdown,
+    srv_vector_upgrade_require_clean_shutdown,
+    PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_READONLY | PLUGIN_VAR_NOPERSIST,
+    "Refuse upgrades into a vector-enabled data dictionary if InnoDB had to "
+    "perform redo recovery during this startup. Restart the old server, set "
+    "innodb_fast_shutdown=0, shut down cleanly, then retry the upgrade.",
+    nullptr, nullptr, false);
+#endif
+
 static MYSQL_SYSVAR_BOOL(
     file_per_table, srv_file_per_table, PLUGIN_VAR_NOCMDARG,
     "Stores each InnoDB table to an .ibd file in the database dir.", nullptr,
@@ -23231,6 +23293,9 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(api_enable_mdl),
     MYSQL_SYSVAR(api_disable_rowlock),
     MYSQL_SYSVAR(fast_shutdown),
+#ifdef HAVE_VECTOR_INDEX
+    MYSQL_SYSVAR(vector_upgrade_require_clean_shutdown),
+#endif
     MYSQL_SYSVAR(read_io_threads),
     MYSQL_SYSVAR(write_io_threads),
     MYSQL_SYSVAR(file_per_table),

@@ -1,0 +1,31 @@
+#
+# WL#vector-v1: item_vectorfunc formatter failure branches
+#
+SELECT VEC_INDEX_CREATE('idx_formatter_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_formatter_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_formatter_fail', 1, VEC_FROMTEXT('[1,2]'));
+VEC_INDEX_UPSERT('idx_formatter_fail', 1, VEC_FROMTEXT('[1,2]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_formatter_fail', 2, VEC_FROMTEXT('[2,2]'));
+VEC_INDEX_UPSERT('idx_formatter_fail', 2, VEC_FROMTEXT('[2,2]'))
+1
+SELECT VEC_INDEX_INFO('idx_formatter_fail');
+VEC_INDEX_INFO('idx_formatter_fail')
+NULL
+SELECT VEC_INDEX_SEARCH('idx_formatter_fail', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_formatter_fail', VEC_FROMTEXT('[1,2]'), 1)
+NULL
+SELECT VEC_INDEX_SEARCH_BATCH('idx_formatter_fail',
+CONCAT(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[2,2]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('idx_formatter_fail',
+CONCAT(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[2,2]')), 2, 1)
+NULL
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_formatter_fail',
+VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH_WITH_DISTANCE('idx_formatter_fail',
+VEC_FROMTEXT('[1,2]'), 1)
+NULL
+SELECT VEC_INDEX_DROP('idx_formatter_fail');
+VEC_INDEX_DROP('idx_formatter_fail')
+1

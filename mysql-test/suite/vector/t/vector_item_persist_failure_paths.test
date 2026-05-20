@@ -1,0 +1,41 @@
+--source include/have_vector_index.inc
+
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: item_vectorfunc persist-failure error branches
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_item_pf_a', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_CREATE('idx_item_pf_b', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_item_pf_a', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5);
+
+--disable_query_log
+SET GLOBAL debug = '+d,vector_truth_store_fail_save';
+--enable_query_log
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_CREATE('idx_item_pf_create_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT('idx_item_pf_a', 2, VEC_FROMTEXT('[2,2]'));
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_ERASE('idx_item_pf_a', 1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_REBUILD('idx_item_pf_a');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_RECOVER('idx_item_pf_a');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_REBUILD_ALL();
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_RECOVER_ALL();
+SELECT VEC_INDEX_DROP('idx_item_pf_b');
+
+--disable_query_log
+SET GLOBAL debug = '-d,vector_truth_store_fail_save';
+--enable_query_log
+
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5);
+SELECT VEC_INDEX_DROP('idx_item_pf_a');
+SELECT VEC_INDEX_DROP('idx_item_pf_b');

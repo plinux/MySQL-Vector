@@ -1,0 +1,133 @@
+#
+# WL#vector-v1: item_vectorfunc shape-heavy branches
+#
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]
+SELECT VEC_INDEX_CREATE('idx_item_shape_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_item_shape_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_item_shape_mem', 7, VEC_FROMTEXT('[7,7]'));
+VEC_INDEX_UPSERT('idx_item_shape_mem', 7, VEC_FROMTEXT('[7,7]'))
+1
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_item_shape_mem"]
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.backend_variant');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.backend_variant')
+null
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.schema_name');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.schema_name')
+null
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.table_name');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.table_name')
+null
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.column_name');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.column_name')
+null
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.supports_mutations');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.supports_mutations')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.lifecycle_state');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.lifecycle_state')
+"ready"
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.entry_count');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.entry_count')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.committed_entry_count');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.committed_entry_count')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.pending_apply_count');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.pending_apply_count')
+0
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.external_manifest_present');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.external_manifest_present')
+0
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.external_manifest_generation');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_shape_mem'), '$.external_manifest_generation')
+0
+DROP TABLE IF EXISTS t_item_shape_map;
+CREATE TABLE t_item_shape_map (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_item_shape_map VALUES (1, VEC_FROMTEXT('[1,1]'));
+CREATE VECTOR INDEX ON t_item_shape_map(v)
+WITH (2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_item_shape_mem","test.t_item_shape_map.v"]
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.backend_variant'));
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.backend_variant'))
+hnsw
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.schema_name'));
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.schema_name'))
+test
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.table_name'));
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.table_name'))
+t_item_shape_map
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.column_name'));
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.column_name'))
+v
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.external_manifest_present');
+JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.external_manifest_present')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.external_manifest_generation') > 0;
+JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.external_manifest_generation') > 0
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.entry_count');
+JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.entry_count')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.committed_entry_count');
+JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.committed_entry_count')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.pending_apply_count');
+JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.pending_apply_count')
+0
+SELECT VEC_INDEX_CREATE('idx_item_shape_txn', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_item_shape_txn', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SET @txn_shape = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_shape_txn', @txn_shape, 10, VEC_FROMTEXT('[10,10]'));
+VEC_INDEX_STAGE_UPSERT('idx_item_shape_txn', @txn_shape, 10, VEC_FROMTEXT('[10,10]'))
+1
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_shape, 'sp_keep_latest');
+VEC_INDEX_TXN_SAVEPOINT(@txn_shape, 'sp_keep_latest')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_shape_txn', @txn_shape, 20, VEC_FROMTEXT('[20,20]'));
+VEC_INDEX_STAGE_UPSERT('idx_item_shape_txn', @txn_shape, 20, VEC_FROMTEXT('[20,20]'))
+1
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_shape, 'sp_keep_latest');
+VEC_INDEX_TXN_SAVEPOINT(@txn_shape, 'sp_keep_latest')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_shape_txn', @txn_shape, 30, VEC_FROMTEXT('[30,30]'));
+VEC_INDEX_STAGE_UPSERT('idx_item_shape_txn', @txn_shape, 30, VEC_FROMTEXT('[30,30]'))
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn_shape);
+VEC_INDEX_TXN_PENDING(@txn_shape)
+3
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_shape, 'sp_keep_latest');
+VEC_INDEX_TXN_ROLLBACK_TO(@txn_shape, 'sp_keep_latest')
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn_shape);
+VEC_INDEX_TXN_PENDING(@txn_shape)
+2
+SELECT VEC_INDEX_TXN_COMMIT(@txn_shape);
+VEC_INDEX_TXN_COMMIT(@txn_shape)
+1
+SELECT JSON_CONTAINS(VEC_INDEX_SEARCH('idx_item_shape_txn', VEC_FROMTEXT('[20,20]'), 4), CAST(20 AS JSON));
+JSON_CONTAINS(VEC_INDEX_SEARCH('idx_item_shape_txn', VEC_FROMTEXT('[20,20]'), 4), CAST(20 AS JSON))
+1
+SELECT JSON_CONTAINS(VEC_INDEX_SEARCH('idx_item_shape_txn', VEC_FROMTEXT('[30,30]'), 4), CAST(30 AS JSON));
+JSON_CONTAINS(VEC_INDEX_SEARCH('idx_item_shape_txn', VEC_FROMTEXT('[30,30]'), 4), CAST(30 AS JSON))
+0
+SELECT VEC_INDEX_DROP('idx_item_shape_txn');
+VEC_INDEX_DROP('idx_item_shape_txn')
+1
+SELECT VEC_INDEX_DROP('idx_item_shape_mem');
+VEC_INDEX_DROP('idx_item_shape_mem')
+1
+DROP TABLE t_item_shape_map;
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]

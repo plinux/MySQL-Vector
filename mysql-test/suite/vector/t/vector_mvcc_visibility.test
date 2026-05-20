@@ -1,0 +1,112 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: MVCC visibility for vector DML synchronization
+--echo #
+
+DROP TABLE IF EXISTS t_vec_mvcc;
+CREATE TABLE t_vec_mvcc (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+CREATE VECTOR INDEX ON t_vec_mvcc(v) WITH (2);
+SET @mvcc_candidates_before = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_search_mvcc_candidate_rows');
+INSERT INTO t_vec_mvcc VALUES (1, VEC_FROMTEXT('[1,1]'));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[1,1]', 8), CAST(1 AS JSON));
+
+connect (con1,localhost,root,,test,,);
+connect (con2,localhost,root,,test,,);
+
+connection con1;
+START TRANSACTION;
+INSERT INTO t_vec_mvcc VALUES (2, VEC_FROMTEXT('[2,2]'));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[2,2]', 8), CAST(2 AS JSON));
+
+connection con2;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[2,2]', 8), CAST(2 AS JSON));
+
+connection con1;
+COMMIT;
+
+connection con2;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[2,2]', 8), CAST(2 AS JSON));
+
+connection con1;
+START TRANSACTION;
+INSERT INTO t_vec_mvcc VALUES (3, VEC_FROMTEXT('[3,3]'));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[3,3]', 8), CAST(3 AS JSON));
+
+connection con2;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[3,3]', 8), CAST(3 AS JSON));
+
+connection con1;
+ROLLBACK;
+
+connection con2;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[3,3]', 8), CAST(3 AS JSON));
+
+connection con1;
+START TRANSACTION;
+UPDATE t_vec_mvcc SET v=VEC_FROMTEXT('[9,9]') WHERE id=1;
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[9,9]', 1);
+
+connection con2;
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[9,9]', 1);
+
+connection con1;
+COMMIT;
+
+connection con2;
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[9,9]', 1);
+
+connection con1;
+START TRANSACTION;
+DELETE FROM t_vec_mvcc WHERE id=1;
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[9,9]', 1);
+
+connection con2;
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[9,9]', 1);
+
+connection con1;
+COMMIT;
+
+connection con2;
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[9,9]', 1);
+
+connection con1;
+START TRANSACTION;
+INSERT INTO t_vec_mvcc VALUES (5, VEC_FROMTEXT('[5,5]'));
+SAVEPOINT sp_search;
+DELETE FROM t_vec_mvcc WHERE id=5;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[5,5]', 8), CAST(5 AS JSON));
+ROLLBACK TO SAVEPOINT sp_search;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc.v', '[5,5]', 8), CAST(5 AS JSON));
+ROLLBACK;
+
+connection default;
+disconnect con1;
+disconnect con2;
+
+SET @mvcc_candidates_after = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_search_mvcc_candidate_rows');
+--let $assert_text= mapped MVCC search records candidate rows
+--let $assert_cond= @mvcc_candidates_after > @mvcc_candidates_before
+--source include/assert.inc
+
+DROP VECTOR INDEX ON t_vec_mvcc(v);
+DROP TABLE t_vec_mvcc;

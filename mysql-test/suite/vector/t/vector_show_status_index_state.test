@@ -1,0 +1,34 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: SHOW VECTOR STATUS index state rows
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_CREATE('idx_ext', 2, 'COSINE', 'EXTERNAL', 'FAISS');
+
+SHOW VECTOR STATUS LIKE 'idx_mem.%';
+SHOW VECTOR STATUS LIKE 'idx_ext.%';
+SHOW VECTOR STATUS FOR INDEX idx_ext;
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name LIKE 'idx_ext.%';
+
+DROP TABLE IF EXISTS t_vec_status_meta;
+CREATE TABLE t_vec_status_meta (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_status_meta(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('test.t_vec_status_meta.v');
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_status_meta.v'
+  WHERE Section = 'INDEX_STATE'
+    AND Variable_name LIKE 'test.t_vec_status_meta.v.%';
+DROP VECTOR INDEX ON t_vec_status_meta(v);
+DROP TABLE t_vec_status_meta;
+
+SELECT VEC_INDEX_DROP('idx_mem');
+SELECT VEC_INDEX_DROP('idx_ext');
+
+SHOW VECTOR STATUS LIKE 'idx_mem.%';
+SHOW VECTOR STATUS LIKE 'idx_ext.%';

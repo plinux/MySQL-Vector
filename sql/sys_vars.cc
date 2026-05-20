@@ -51,6 +51,9 @@
 #include <zlib.h>
 #include <atomic>
 #include <limits>
+#ifdef HAVE_VECTOR_INDEX
+#include <string>
+#endif
 
 #include "include/compression.h"
 

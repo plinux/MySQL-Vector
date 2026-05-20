@@ -1,0 +1,59 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: mapped vector search follows read-view visibility
+--echo #
+
+DROP TABLE IF EXISTS t_vec_mvcc_snapshot;
+CREATE TABLE t_vec_mvcc_snapshot (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+CREATE VECTOR INDEX ON t_vec_mvcc_snapshot(v) WITH (2);
+INSERT INTO t_vec_mvcc_snapshot VALUES (1, VEC_FROMTEXT('[1,1]'));
+INSERT INTO t_vec_mvcc_snapshot VALUES (4, VEC_FROMTEXT('[8,8]'));
+
+connect (con1,localhost,root,,test,,);
+connect (con2,localhost,root,,test,,);
+
+connection con2;
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+START TRANSACTION WITH CONSISTENT SNAPSHOT;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[2,2]', 8), CAST(2 AS JSON));
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[9,9]', 1);
+
+connection con1;
+INSERT INTO t_vec_mvcc_snapshot VALUES (2, VEC_FROMTEXT('[2,2]'));
+UPDATE t_vec_mvcc_snapshot SET v=VEC_FROMTEXT('[9,9]') WHERE id=1;
+
+connection con2;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[2,2]', 8), CAST(2 AS JSON));
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[9,9]', 1);
+COMMIT;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[2,2]', 8), CAST(2 AS JSON));
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[9,9]', 1);
+
+connection con2;
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+START TRANSACTION;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[3,3]', 8), CAST(3 AS JSON));
+
+connection con1;
+INSERT INTO t_vec_mvcc_snapshot VALUES (3, VEC_FROMTEXT('[3,3]'));
+
+connection con2;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[3,3]', 8), CAST(3 AS JSON));
+ROLLBACK;
+
+connection default;
+disconnect con1;
+disconnect con2;
+
+DROP VECTOR INDEX ON t_vec_mvcc_snapshot(v);
+DROP TABLE t_vec_mvcc_snapshot;

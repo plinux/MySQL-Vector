@@ -63,6 +63,10 @@
 #include "sql/table.h"        // TABLE
 #include "sql/transaction.h"  // trans_commit_stmt()
 #include "sql/transaction_info.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_registry.h"
+#include "sql/vector/vector_index_truth_store.h"
+#endif
 #include "sql_string.h"
 #include "thr_lock.h"
 
@@ -142,6 +146,14 @@ enum class Truncate_result {
   FAILED_SKIP_BINLOG,
   FAILED_OPEN
 };
+
+#ifdef HAVE_VECTOR_INDEX
+bool reset_vector_indexes_for_table(const char *db_name, const char *table_name) {
+  if (db_name == nullptr || table_name == nullptr) return true;
+  return vector_index_registry::reset_mapped_indexes_for_table(db_name,
+                                                               table_name);
+}
+#endif
 
 /**
   Open and truncate a locked base table.
@@ -505,6 +517,16 @@ void Sql_cmd_truncate_table::truncate_base(THD *thd, Table_ref *table_ref) {
           table_ref->db, table_ref->table_name, &table_def)) {
     return;
   }
+#ifdef HAVE_VECTOR_INDEX
+  if (table_def != nullptr &&
+      !vector_index_truth_store::internal_sql_active() &&
+      vector_index_truth_store::is_truth_store_table(table_ref->db,
+                                                    table_ref->table_name)) {
+    my_error(ER_NO_SUCH_TABLE, MYF(0), table_ref->db, table_ref->table_name);
+    return;
+  }
+#endif
+
   if (table_def == nullptr ||
       table_def->hidden() == dd::Abstract_table::HT_HIDDEN_SE) {
     my_error(ER_NO_SUCH_TABLE, MYF(0), table_ref->db, table_ref->table_name);
@@ -748,10 +770,27 @@ bool Sql_cmd_truncate_table::execute(THD *thd) {
   Table_ref *first_table = thd->lex->query_block->get_table_list();
   if (check_one_table_access(thd, DROP_ACL, first_table)) return true;
 
+#ifdef HAVE_VECTOR_INDEX
+  const bool temporary_table = is_temporary_table(first_table);
+  if (temporary_table)
+    truncate_temporary(thd, first_table);
+  else
+    truncate_base(thd, first_table);
+
+  if (!m_error && !temporary_table &&
+      !reset_vector_indexes_for_table(first_table->db, first_table->table_name)) {
+    if (!thd->is_error()) {
+      my_error(ER_INTERNAL_ERROR, MYF(0),
+               "Failed to reset vector indexes after truncate");
+    }
+    m_error = true;
+  }
+#else
   if (is_temporary_table(first_table))
     truncate_temporary(thd, first_table);
   else
     truncate_base(thd, first_table);
+#endif
 
   if (!m_error) my_ok(thd);
 

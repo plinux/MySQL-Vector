@@ -696,6 +696,12 @@ pool to data files, cleanly shutting down the redo log.
 If innodb_fast_shutdown=2, shutdown will effectively 'crash' InnoDB
 (but lose no committed transactions). */
 extern ulong srv_fast_shutdown;
+
+#ifdef HAVE_VECTOR_INDEX
+/** Refuse DD upgrade into a vector-enabled version after redo recovery. */
+extern bool srv_vector_upgrade_require_clean_shutdown;
+#endif
+
 extern bool srv_innodb_status;
 
 extern unsigned long long srv_stats_transient_sample_pages;

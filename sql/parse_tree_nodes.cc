@@ -629,8 +629,20 @@ bool PT_joined_table::contextualize_tabs(Parse_context *pc) {
   }
 
   char buff[NAME_LEN + 1];
+#if defined(HAVE_VECTOR_INDEX) && defined(HAVE_FAISS)
+  /*
+    Deep join trees recurse through contextualize_tabs() and the ON-node
+    contextualizer.  Leave enough headroom for check_stack_overrun() itself
+    to evaluate debug hooks and format ER_STACK_OVERRUN_NEED_MORE when native
+    FAISS links OpenMP/BLAS runtimes into mysqld.
+  */
+  if (check_stack_overrun(pc->thd, 4 * STACK_MIN_SIZE,
+                          pointer_cast<uchar *>(buff)))
+    return true; /* purecov: inspected */
+#else
   if (check_stack_overrun(pc->thd, STACK_MIN_SIZE, pointer_cast<uchar *>(buff)))
     return true; /* purecov: inspected */
+#endif
 
   if (m_left_pt_table->contextualize(pc) || m_right_pt_table->contextualize(pc))
     return true;

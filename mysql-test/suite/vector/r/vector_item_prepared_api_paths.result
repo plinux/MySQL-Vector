@@ -1,0 +1,132 @@
+#
+# WL#vector-v1: prepared statement coverage for item_vectorfunc APIs
+#
+SET sql_log_bin=0;
+PREPARE stmt_create FROM
+'SELECT VEC_INDEX_CREATE(?, ?, ?, ?, ?)';
+SET @idx = 'idx_item_ps_mem';
+SET @dim = 2;
+SET @metric = 'EUCLIDEAN';
+SET @mode = 'MEMORY';
+SET @provider = 'HNSWLIB';
+EXECUTE stmt_create USING @idx, @dim, @metric, @mode, @provider;
+VEC_INDEX_CREATE(?, ?, ?, ?, ?)
+1
+DEALLOCATE PREPARE stmt_create;
+PREPARE stmt_set_ef FROM
+'SELECT VEC_INDEX_SET_SEARCH_EF(?, ?)';
+SET @search_ef = 96;
+EXECUTE stmt_set_ef USING @idx, @search_ef;
+VEC_INDEX_SET_SEARCH_EF(?, ?)
+1
+DEALLOCATE PREPARE stmt_set_ef;
+PREPARE stmt_upsert FROM
+'SELECT VEC_INDEX_UPSERT(?, ?, ?)';
+SET @doc_id = 1;
+SET @vec = VEC_FROMTEXT('[1,1]');
+EXECUTE stmt_upsert USING @idx, @doc_id, @vec;
+VEC_INDEX_UPSERT(?, ?, ?)
+1
+SET @doc_id = 2;
+SET @vec = VEC_FROMTEXT('[2,2]');
+EXECUTE stmt_upsert USING @idx, @doc_id, @vec;
+VEC_INDEX_UPSERT(?, ?, ?)
+1
+DEALLOCATE PREPARE stmt_upsert;
+PREPARE stmt_search FROM
+'SELECT VEC_INDEX_SEARCH(?, ?, ?)';
+SET @query = VEC_FROMTEXT('[1,1]');
+SET @k = 2;
+EXECUTE stmt_search USING @idx, @query, @k;
+VEC_INDEX_SEARCH(?, ?, ?)
+[1,2]
+DEALLOCATE PREPARE stmt_search;
+PREPARE stmt_search_distance FROM
+'SELECT VEC_INDEX_SEARCH_WITH_DISTANCE(?, ?, ?)';
+EXECUTE stmt_search_distance USING @idx, @query, @k;
+VEC_INDEX_SEARCH_WITH_DISTANCE(?, ?, ?)
+[{"doc_id":1,"distance":0},{"doc_id":2,"distance":1.4142135623730951}]
+DEALLOCATE PREPARE stmt_search_distance;
+PREPARE stmt_info FROM
+'SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO(?), ''$.backend_variant''))';
+EXECUTE stmt_info USING @idx;
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO(?), '$.backend_variant'))
+hnsw
+DEALLOCATE PREPARE stmt_info;
+SET @txn_id = VEC_INDEX_TXN_BEGIN();
+PREPARE stmt_pending FROM
+'SELECT VEC_INDEX_TXN_PENDING(?)';
+EXECUTE stmt_pending USING @txn_id;
+VEC_INDEX_TXN_PENDING(?)
+0
+DEALLOCATE PREPARE stmt_pending;
+PREPARE stmt_stage_upsert FROM
+'SELECT VEC_INDEX_STAGE_UPSERT(?, ?, ?, ?)';
+SET @doc_id = 3;
+SET @vec = VEC_FROMTEXT('[3,3]');
+EXECUTE stmt_stage_upsert USING @idx, @txn_id, @doc_id, @vec;
+VEC_INDEX_STAGE_UPSERT(?, ?, ?, ?)
+1
+DEALLOCATE PREPARE stmt_stage_upsert;
+PREPARE stmt_savepoint FROM
+'SELECT VEC_INDEX_TXN_SAVEPOINT(?, ?)';
+SET @sp = 'sp1';
+EXECUTE stmt_savepoint USING @txn_id, @sp;
+VEC_INDEX_TXN_SAVEPOINT(?, ?)
+1
+DEALLOCATE PREPARE stmt_savepoint;
+PREPARE stmt_stage_upsert2 FROM
+'SELECT VEC_INDEX_STAGE_UPSERT(?, ?, ?, ?)';
+SET @doc_id = 4;
+SET @vec = VEC_FROMTEXT('[4,4]');
+EXECUTE stmt_stage_upsert2 USING @idx, @txn_id, @doc_id, @vec;
+VEC_INDEX_STAGE_UPSERT(?, ?, ?, ?)
+1
+DEALLOCATE PREPARE stmt_stage_upsert2;
+PREPARE stmt_rollback_to FROM
+'SELECT VEC_INDEX_TXN_ROLLBACK_TO(?, ?)';
+EXECUTE stmt_rollback_to USING @txn_id, @sp;
+VEC_INDEX_TXN_ROLLBACK_TO(?, ?)
+1
+DEALLOCATE PREPARE stmt_rollback_to;
+PREPARE stmt_release FROM
+'SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(?, ?)';
+EXECUTE stmt_release USING @txn_id, @sp;
+VEC_INDEX_TXN_RELEASE_SAVEPOINT(?, ?)
+1
+DEALLOCATE PREPARE stmt_release;
+PREPARE stmt_commit FROM
+'SELECT VEC_INDEX_TXN_COMMIT(?)';
+EXECUTE stmt_commit USING @txn_id;
+VEC_INDEX_TXN_COMMIT(?)
+1
+DEALLOCATE PREPARE stmt_commit;
+PREPARE stmt_search_after_commit FROM
+'SELECT VEC_INDEX_SEARCH(?, ?, ?)';
+SET @query = VEC_FROMTEXT('[3,3]');
+SET @k = 4;
+EXECUTE stmt_search_after_commit USING @idx, @query, @k;
+VEC_INDEX_SEARCH(?, ?, ?)
+[3,2,1]
+DEALLOCATE PREPARE stmt_search_after_commit;
+SET @txn_id = VEC_INDEX_TXN_BEGIN();
+PREPARE stmt_stage_erase FROM
+'SELECT VEC_INDEX_STAGE_ERASE(?, ?, ?)';
+SET @doc_id = 2;
+EXECUTE stmt_stage_erase USING @idx, @txn_id, @doc_id;
+VEC_INDEX_STAGE_ERASE(?, ?, ?)
+1
+DEALLOCATE PREPARE stmt_stage_erase;
+PREPARE stmt_rollback FROM
+'SELECT VEC_INDEX_TXN_ROLLBACK(?)';
+EXECUTE stmt_rollback USING @txn_id;
+VEC_INDEX_TXN_ROLLBACK(?)
+1
+DEALLOCATE PREPARE stmt_rollback;
+PREPARE stmt_drop FROM
+'SELECT VEC_INDEX_DROP(?)';
+EXECUTE stmt_drop USING @idx;
+VEC_INDEX_DROP(?)
+1
+DEALLOCATE PREPARE stmt_drop;
+SET sql_log_bin=1;

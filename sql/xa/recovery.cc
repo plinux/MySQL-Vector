@@ -194,6 +194,9 @@ bool xa::recovery::recover_one_ht(THD *, plugin_ref plugin, void *arg) {
   int got;
 
   if (ht->state == SHOW_OPTION_YES && ht->recover) {
+#ifdef HAVE_VECTOR_INDEX
+    bool found_internal_xids_in_ht = false;
+#endif
     ::recovery_statistics external_stats{{0, 0, 0}, {0, 0, 0}};
     ::recovery_statistics internal_stats{{0, 0, 0}, {0, 0, 0}};
     while (
@@ -219,6 +222,9 @@ bool xa::recovery::recover_one_ht(THD *, plugin_ref plugin, void *arg) {
                               // nothing to do in regards to internally
                               // coordinated transactions
           ++info->found_my_xids;
+#ifdef HAVE_VECTOR_INDEX
+          found_internal_xids_in_ht = true;
+#endif
           continue;
         }
 
@@ -227,6 +233,9 @@ bool xa::recovery::recover_one_ht(THD *, plugin_ref plugin, void *arg) {
       }
       if (got < info->len) break;
     }
+#ifdef HAVE_VECTOR_INDEX
+    if (found_internal_xids_in_ht) ++info->found_my_xids_in_engines;
+#endif
     bool has_failures =
         ::has_failures(internal_stats) || ::has_failures(external_stats);
     LogErr(has_failures ? ERROR_LEVEL : INFORMATION_LEVEL,

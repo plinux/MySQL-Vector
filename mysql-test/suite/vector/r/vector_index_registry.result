@@ -1,0 +1,244 @@
+#
+# WL#vector-v1: SQL wrapper for vector index registry service
+#
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]
+SELECT VEC_INDEX_CREATE('idx_mem', 2);
+VEC_INDEX_CREATE('idx_mem', 2)
+1
+SELECT VEC_INDEX_CREATE('idx_mem', 2);
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_INFO('idx_mem');
+VEC_INDEX_INFO('idx_mem')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_mem"]
+SELECT VEC_INDEX_UPSERT('idx_mem', 1, '[1,1]');
+VEC_INDEX_UPSERT('idx_mem', 1, '[1,1]')
+1
+SELECT VEC_INDEX_UPSERT('idx_mem', 2, VEC_FROMTEXT('[2,1]'));
+VEC_INDEX_UPSERT('idx_mem', 2, VEC_FROMTEXT('[2,1]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_mem', '[1.1,1.1]', 2);
+VEC_INDEX_SEARCH('idx_mem', '[1.1,1.1]', 2)
+[1,2]
+SELECT VEC_INDEX_INFO('idx_mem');
+VEC_INDEX_INFO('idx_mem')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":2,"committed_entry_count":2}
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_mem', '[1,1]', 2);
+VEC_INDEX_SEARCH_WITH_DISTANCE('idx_mem', '[1,1]', 2)
+[{"doc_id":1,"distance":0},{"doc_id":2,"distance":1}]
+SELECT VEC_INDEX_UPSERT('idx_mem', 3, VEC_FROMTEXT('[1,2,3]'));
+ERROR HY000: Incorrect arguments to vec_index_upsert
+SELECT VEC_INDEX_UPSERT('idx_mem', 4, 'not-a-vector');
+ERROR HY000: Incorrect arguments to vec_index_upsert
+SELECT VEC_INDEX_ERASE('idx_mem', 2);
+VEC_INDEX_ERASE('idx_mem', 2)
+1
+SELECT VEC_INDEX_SEARCH('idx_mem', '[1.1,1.1]', 2);
+VEC_INDEX_SEARCH('idx_mem', '[1.1,1.1]', 2)
+[1]
+SELECT VEC_INDEX_INFO('idx_mem');
+VEC_INDEX_INFO('idx_mem')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SELECT VEC_INDEX_REBUILD('idx_mem');
+VEC_INDEX_REBUILD('idx_mem')
+1
+SELECT VEC_INDEX_SEARCH('idx_mem', '[1.1,1.1]', 2);
+VEC_INDEX_SEARCH('idx_mem', '[1.1,1.1]', 2)
+[1]
+SELECT VEC_INDEX_INFO('idx_mem');
+VEC_INDEX_INFO('idx_mem')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":2,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SELECT VEC_INDEX_CREATE('idx_hnsw', 2, 'COSINE', 'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_hnsw', 2, 'COSINE', 'MEMORY', 'HNSWLIB')
+1
+SELECT VEC_INDEX_UPSERT('idx_hnsw', 10, VEC_FROMTEXT('[1,0]'));
+VEC_INDEX_UPSERT('idx_hnsw', 10, VEC_FROMTEXT('[1,0]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_hnsw', '[1,0]', 1);
+VEC_INDEX_SEARCH('idx_hnsw', '[1,0]', 1)
+[10]
+SELECT VEC_INDEX_CREATE('idx_hnsw_large', 784, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB');
+VEC_INDEX_CREATE('idx_hnsw_large', 784, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB')
+1
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw_large', 16, 200);
+VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw_large', 16, 200)
+1
+SELECT VEC_INDEX_UPSERT(
+'idx_hnsw_large', 1000,
+CONCAT(
+'[',
+REPEAT('0,', 783),
+'0]'
+  ));
+VEC_INDEX_UPSERT(
+'idx_hnsw_large', 1000,
+CONCAT(
+'[',
+REPEAT('0,', 783),
+'0]'
+  ))
+1
+SELECT VEC_INDEX_UPSERT(
+'idx_hnsw_large', 1001,
+CONCAT(
+'[',
+REPEAT('0,', 782),
+'1,0]'
+  ));
+VEC_INDEX_UPSERT(
+'idx_hnsw_large', 1001,
+CONCAT(
+'[',
+REPEAT('0,', 782),
+'1,0]'
+  ))
+1
+SELECT VEC_INDEX_UPSERT(
+'idx_hnsw_large', 1002,
+CONCAT(
+'[',
+REPEAT('0,', 781),
+'1,1,0]'
+  ));
+VEC_INDEX_UPSERT(
+'idx_hnsw_large', 1002,
+CONCAT(
+'[',
+REPEAT('0,', 781),
+'1,1,0]'
+  ))
+1
+SELECT JSON_LENGTH(
+VEC_INDEX_SEARCH(
+'idx_hnsw_large',
+CONCAT('[', REPEAT('0,', 783), '0]'),
+3));
+JSON_LENGTH(
+VEC_INDEX_SEARCH(
+'idx_hnsw_large',
+CONCAT('[', REPEAT('0,', 783), '0]'),
+3))
+3
+SELECT VEC_INDEX_INFO('idx_hnsw_large');
+VEC_INDEX_INFO('idx_hnsw_large')
+{"dimension":784,"metric":"euclidean","mode":"memory","provider":"hnswlib","backend_variant":"hnsw","schema_name":null,"table_name":null,"column_name":null,"search_ef":64,"hnsw_m":16,"hnsw_ef_construction":200,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":3,"committed_entry_count":3}
+SELECT VEC_INDEX_CREATE('idx_ext_native', 2, 'EUCLIDEAN', 'EXTERNAL', 'NATIVE');
+VEC_INDEX_CREATE('idx_ext_native', 2, 'EUCLIDEAN', 'EXTERNAL', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_ext_native', 100, VEC_FROMTEXT('[1,2]'));
+VEC_INDEX_UPSERT('idx_ext_native', 100, VEC_FROMTEXT('[1,2]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1);
+VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1)
+[100]
+SELECT VEC_INDEX_REBUILD('idx_ext_native');
+VEC_INDEX_REBUILD('idx_ext_native')
+1
+SELECT VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1);
+VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1)
+[100]
+SELECT VEC_INDEX_RECOVER('idx_ext_native');
+VEC_INDEX_RECOVER('idx_ext_native')
+1
+SELECT VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1);
+VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1)
+[100]
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+4
+SELECT VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1);
+VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1)
+[100]
+SELECT VEC_INDEX_INFO('idx_ext_native');
+VEC_INDEX_INFO('idx_ext_native')
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":4,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SELECT VEC_INDEX_CREATE('idx_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_ext","idx_ext_native","idx_hnsw","idx_hnsw_large","idx_mem"]
+SELECT VEC_INDEX_INFO('idx_ext');
+VEC_INDEX_INFO('idx_ext')
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"faiss","backend_variant":"hnsw","schema_name":null,"table_name":null,"column_name":null,"search_ef":64,"hnsw_m":32,"hnsw_ef_construction":40,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3)
+[]
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_ext', '[1,1]', 3);
+VEC_INDEX_SEARCH_WITH_DISTANCE('idx_ext', '[1,1]', 3)
+[]
+SELECT VEC_INDEX_UPSERT('idx_ext', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_ext', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3)
+[1]
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_ext', '[1,1]', 3);
+VEC_INDEX_SEARCH_WITH_DISTANCE('idx_ext', '[1,1]', 3)
+[{"doc_id":1,"distance":0}]
+SELECT VEC_INDEX_REBUILD_ALL();
+VEC_INDEX_REBUILD_ALL()
+5
+SELECT VEC_INDEX_SEARCH('idx_hnsw', '[1,0]', 1);
+VEC_INDEX_SEARCH('idx_hnsw', '[1,0]', 1)
+[10]
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3)
+[1]
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+5
+SELECT VEC_INDEX_SEARCH('idx_hnsw', '[1,0]', 1);
+VEC_INDEX_SEARCH('idx_hnsw', '[1,0]', 1)
+[10]
+SELECT VEC_INDEX_REBUILD('idx_ext');
+VEC_INDEX_REBUILD('idx_ext')
+1
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3)
+[1]
+SELECT VEC_INDEX_ERASE('idx_ext', 1);
+VEC_INDEX_ERASE('idx_ext', 1)
+1
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3)
+[]
+SELECT VEC_INDEX_CREATE('idx_bad', 2, 'MANHATTAN', 'MEMORY', 'NATIVE');
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_INFO('missing');
+ERROR HY000: Incorrect arguments to vec_index_info
+SELECT VEC_INDEX_REBUILD('missing');
+ERROR HY000: Incorrect arguments to vec_index_rebuild
+SELECT VEC_INDEX_RECOVER('missing');
+ERROR HY000: Incorrect arguments to vec_index_recover
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('missing', VEC_FROMTEXT('[1,1]'), 1);
+ERROR HY000: Incorrect arguments to vec_index_search_with_distance
+SELECT VEC_INDEX_SEARCH('missing', VEC_FROMTEXT('[1,1]'), 1);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_DROP('idx_mem');
+VEC_INDEX_DROP('idx_mem')
+1
+SELECT VEC_INDEX_DROP('idx_hnsw');
+VEC_INDEX_DROP('idx_hnsw')
+1
+SELECT VEC_INDEX_DROP('idx_hnsw_large');
+VEC_INDEX_DROP('idx_hnsw_large')
+1
+SELECT VEC_INDEX_DROP('idx_ext_native');
+VEC_INDEX_DROP('idx_ext_native')
+1
+SELECT VEC_INDEX_DROP('idx_ext');
+VEC_INDEX_DROP('idx_ext')
+1
+SELECT VEC_INDEX_DROP('idx_ext');
+VEC_INDEX_DROP('idx_ext')
+0
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]

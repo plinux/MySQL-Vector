@@ -1,0 +1,58 @@
+#
+# WL#vector-v1: mapped vector search follows read-view visibility
+#
+DROP TABLE IF EXISTS t_vec_mvcc_snapshot;
+Warnings:
+Note	1051	Unknown table 'test.t_vec_mvcc_snapshot'
+CREATE TABLE t_vec_mvcc_snapshot (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_mvcc_snapshot(v) WITH (2);
+INSERT INTO t_vec_mvcc_snapshot VALUES (1, VEC_FROMTEXT('[1,1]'));
+INSERT INTO t_vec_mvcc_snapshot VALUES (4, VEC_FROMTEXT('[8,8]'));
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+START TRANSACTION WITH CONSISTENT SNAPSHOT;
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[2,2]', 8), CAST(2 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[2,2]', 8), CAST(2 AS JSON))
+0
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[9,9]', 1);
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[9,9]', 1)
+[4]
+INSERT INTO t_vec_mvcc_snapshot VALUES (2, VEC_FROMTEXT('[2,2]'));
+UPDATE t_vec_mvcc_snapshot SET v=VEC_FROMTEXT('[9,9]') WHERE id=1;
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[2,2]', 8), CAST(2 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[2,2]', 8), CAST(2 AS JSON))
+0
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[9,9]', 1);
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[9,9]', 1)
+[4]
+COMMIT;
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[2,2]', 8), CAST(2 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[2,2]', 8), CAST(2 AS JSON))
+1
+SELECT VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[9,9]', 1);
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[9,9]', 1)
+[1]
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+START TRANSACTION;
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[3,3]', 8), CAST(3 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[3,3]', 8), CAST(3 AS JSON))
+0
+INSERT INTO t_vec_mvcc_snapshot VALUES (3, VEC_FROMTEXT('[3,3]'));
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[3,3]', 8), CAST(3 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_mvcc_snapshot.v', '[3,3]', 8), CAST(3 AS JSON))
+1
+ROLLBACK;
+DROP VECTOR INDEX ON t_vec_mvcc_snapshot(v);
+DROP TABLE t_vec_mvcc_snapshot;

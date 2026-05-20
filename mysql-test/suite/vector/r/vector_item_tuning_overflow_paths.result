@@ -1,0 +1,131 @@
+#
+# WL#vector-v1: item_vectorfunc tuning overflow argument branches
+#
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_overflow', 4294967296);
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT VEC_INDEX_SET_SEARCH_EF(NULL, 32);
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_overflow', 4294967296, 32);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_overflow', 32, 4294967296);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS(NULL, 32, 32);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_overflow', 32, 0);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_overflow', 4294967296, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_overflow', 1, 4294967296);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS(NULL, 1, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_overflow', 1, -1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_overflow', 4294967296, 1, 1, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_overflow', 1, 4294967296, 1, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_overflow', 1, 1, 4294967296, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_overflow', 1, 1, 1, 4294967296);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(NULL, 1, 1, 1, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_overflow', 1, 0, 1, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_overflow', 1, 1, 0, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_overflow', 1, 1, 1, 0);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_overflow', 4294967296, 32);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_overflow', 32, 4294967296);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS(NULL, 32, 32);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_overflow', 32, 0);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_overflow', 4294967296);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(NULL, 32);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SET @idx_missing = 'idx_missing_tuning_runtime';
+SET @tuning_a = 16;
+SET @tuning_b = 32;
+SET @tuning_zero = 0;
+SELECT VEC_INDEX_SET_SEARCH_EF(@idx_missing, @tuning_a);
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS(@idx_missing, @tuning_a, @tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS(@idx_missing, @tuning_a, @tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(@idx_missing, @tuning_a, @tuning_b,
+@tuning_a, @tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS(@idx_missing, @tuning_a, @tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(@idx_missing, @tuning_a);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SET @idx_existing = 'idx_tuning_runtime';
+SELECT VEC_INDEX_CREATE(@idx_existing, 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE(@idx_existing, 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SET @tuning_null = NULL;
+SELECT VEC_INDEX_SET_SEARCH_EF(@idx_existing, @tuning_null);
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS(@idx_existing, @tuning_null,
+@tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS(@idx_existing, @tuning_a,
+@tuning_null);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS(@idx_existing, @tuning_null,
+@tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS(@idx_existing, @tuning_a,
+@tuning_null);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(@idx_existing, @tuning_null,
+@tuning_b, @tuning_a, @tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(@idx_existing, @tuning_a,
+@tuning_null, @tuning_a, @tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(@idx_existing, @tuning_a,
+@tuning_b, @tuning_null, @tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(@idx_existing, @tuning_a,
+@tuning_b, @tuning_a, @tuning_null);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS(@idx_existing, @tuning_null,
+@tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS(@idx_existing, @tuning_a,
+@tuning_null);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(@idx_existing, @tuning_null);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS(@idx_existing, @tuning_a,
+@tuning_zero);
+ERROR HY000: Incorrect arguments to vec_index_set_hnsw_build_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(@idx_existing, @tuning_a,
+@tuning_zero, @tuning_a, @tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(@idx_existing, @tuning_a,
+@tuning_b, @tuning_zero, @tuning_b);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(@idx_existing, @tuning_a,
+@tuning_b, @tuning_a, @tuning_zero);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivfpq_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS(@idx_existing, @tuning_a,
+@tuning_zero);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_DROP(@idx_existing);
+VEC_INDEX_DROP(@idx_existing)
+1
+SET @idx_missing = NULL;
+SET @idx_existing = NULL;
+SET @tuning_a = NULL;
+SET @tuning_b = NULL;
+SET @tuning_zero = NULL;
+SET @tuning_null = NULL;

@@ -159,6 +159,9 @@
 #include "sql/table.h"
 #include "sql/transaction.h"  // trans_rollback_stmt
 #include "sql/transaction_info.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_dml_sync.h"
+#endif
 #include "sql/tztime.h"  // Time_zone
 #include "thr_lock.h"
 #define window_size Log_throttle::LOG_THROTTLE_WINDOW_SIZE
@@ -12464,6 +12467,12 @@ error:
 int Write_rows_log_event::do_exec_row(const Relay_log_info *const rli) {
   assert(m_table != nullptr);
   int error = write_row(rli, rbr_exec_mode == RBR_EXEC_MODE_IDEMPOTENT);
+#ifdef HAVE_VECTOR_INDEX
+  if (!error &&
+      vector_dml_sync::stage_insert_row(thd, m_table, m_table->record[0])) {
+    error = ER_INTERNAL_ERROR;
+  }
+#endif
 
   if (error && !thd->is_error()) {
     assert(0);
@@ -12577,6 +12586,12 @@ int Delete_rows_log_event::do_exec_row(const Relay_log_info *const) {
   /* m_table->record[0] contains the BI */
   m_table->mark_columns_per_binlog_row_image(thd);
   error = m_table->file->ha_delete_row(m_table->record[0]);
+#ifdef HAVE_VECTOR_INDEX
+  if (!error &&
+      vector_dml_sync::stage_delete_row(thd, m_table, m_table->record[0])) {
+    error = ER_INTERNAL_ERROR;
+  }
+#endif
   m_table->default_column_bitmaps();
   return error;
 }
@@ -12743,6 +12758,12 @@ int Update_rows_log_event::do_exec_row(const Relay_log_info *const rli) {
   m_table->mark_columns_per_binlog_row_image(thd);
   error = m_table->file->ha_update_row(m_table->record[1], m_table->record[0]);
   if (error == HA_ERR_RECORD_IS_THE_SAME) error = 0;
+#ifdef HAVE_VECTOR_INDEX
+  if (!error && vector_dml_sync::stage_update_row(
+                    thd, m_table, m_table->record[1], m_table->record[0])) {
+    error = ER_INTERNAL_ERROR;
+  }
+#endif
   m_table->default_column_bitmaps();
 
   return error;

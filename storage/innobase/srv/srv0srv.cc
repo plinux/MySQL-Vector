@@ -53,6 +53,10 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include <chrono>
 #include <limits>
+#ifdef HAVE_VECTOR_INDEX
+#include <string>
+#include <vector>
+#endif
 
 #include "btr0sea.h"
 #include "buf0flu.h"
@@ -80,6 +84,10 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "row0mysql.h"
 #include "sql/sql_class.h"
 #include "sql_thd_internal_api.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_status.h"
+#endif
 #include "srv0mon.h"
 
 #include "my_dbug.h"
@@ -565,6 +573,11 @@ pool to data files, cleanly shutting down the redo log.
 If innodb_fast_shutdown=2, shutdown will effectively 'crash' InnoDB
 (but lose no committed transactions). */
 ulong srv_fast_shutdown;
+
+#ifdef HAVE_VECTOR_INDEX
+/** Refuse DD upgrade into a vector-enabled version after redo recovery. */
+bool srv_vector_upgrade_require_clean_shutdown = false;
+#endif
 
 /* Generate a innodb_status.<pid> file */
 bool srv_innodb_status = false;
@@ -1542,6 +1555,78 @@ bool srv_printf_innodb_monitor(FILE *file, bool nowait, ulint *trx_start_pos,
           time_elapsed,
       ((ulint)srv_stats.n_system_rows_read - srv_n_system_rows_read_old) /
           time_elapsed);
+
+#ifdef HAVE_VECTOR_INDEX
+#ifndef UNIV_HOTBACKUP
+  fputs(
+      "--------------------\n"
+      "VECTOR OBSERVABILITY\n"
+      "--------------------\n",
+      file);
+
+  vector_status::snapshot vector_snapshot;
+  vector_status::read_snapshot(&vector_snapshot);
+
+  fprintf(file, "vector metadata: load_fail=%llu, persist_fail=%llu\n",
+          static_cast<unsigned long long>(vector_snapshot.metadata_load_failures),
+          static_cast<unsigned long long>(
+              vector_snapshot.metadata_persist_failures));
+
+  fprintf(file, "vector truth store: backend=%s, transactional=%u\n",
+          vector_index_truth_store::active_backend_name(),
+          vector_index_truth_store::active_backend_transactional() ? 1U : 0U);
+
+  fprintf(file, "vector truth-store persist: requests=%llu, failures=%llu\n",
+          static_cast<unsigned long long>(
+              vector_snapshot.truth_store_persist_requests),
+          static_cast<unsigned long long>(
+              vector_snapshot.truth_store_persist_failures));
+
+  fprintf(
+      file,
+      "vector committed snapshot: rows=%llu, load_fail=%llu, persist_fail=%llu\n",
+      static_cast<unsigned long long>(vector_snapshot.committed_snapshot_rows),
+      static_cast<unsigned long long>(vector_snapshot.committed_load_failures),
+      static_cast<unsigned long long>(
+          vector_snapshot.committed_persist_failures));
+
+  fprintf(
+      file,
+      "vector manifest: version=%llu, metadata_ckpt=%llu, committed_ckpt=%llu, "
+      "change_log_ckpt=%llu, load_fail=%llu, persist_fail=%llu\n",
+      static_cast<unsigned long long>(vector_snapshot.manifest_version),
+      static_cast<unsigned long long>(
+          vector_snapshot.manifest_metadata_checkpoint),
+      static_cast<unsigned long long>(
+          vector_snapshot.manifest_committed_checkpoint),
+      static_cast<unsigned long long>(
+          vector_snapshot.manifest_change_log_checkpoint),
+      static_cast<unsigned long long>(vector_snapshot.manifest_load_failures),
+      static_cast<unsigned long long>(
+          vector_snapshot.manifest_persist_failures));
+
+  fprintf(
+      file,
+      "vector change-log: load_fail=%llu, replay_fail=%llu, persist_fail=%llu, "
+      "backend_recover_fallback=%llu\n",
+      static_cast<unsigned long long>(vector_snapshot.change_log_load_failures),
+      static_cast<unsigned long long>(
+          vector_snapshot.change_log_replay_failures),
+      static_cast<unsigned long long>(
+          vector_snapshot.change_log_persist_failures),
+      static_cast<unsigned long long>(
+          vector_snapshot.backend_recover_fallbacks));
+
+  fprintf(
+      file,
+      "vector artifact rollback: persist_artifact=%llu, "
+      "persist_artifact_fail=%llu\n",
+      static_cast<unsigned long long>(
+          vector_snapshot.persist_artifact_rollbacks),
+      static_cast<unsigned long long>(
+          vector_snapshot.persist_artifact_rollback_failures));
+#endif /* !UNIV_HOTBACKUP */
+#endif
 
   srv_n_rows_inserted_old = srv_stats.n_rows_inserted;
   srv_n_rows_updated_old = srv_stats.n_rows_updated;

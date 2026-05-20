@@ -64,6 +64,9 @@ static constexpr uint DD_VERSION_80017 = 80017;
 static constexpr uint DD_VERSION_80021 = 80021;
 static constexpr uint DD_VERSION_80022 = 80022;
 static constexpr uint DD_VERSION_80023 = 80023;
+#ifdef HAVE_VECTOR_INDEX
+static constexpr uint DD_VERSION_80024 = 80024;
+#endif
 
 /*
   Set of supported DD version labels. A supported DD version is a version
@@ -73,10 +76,17 @@ static constexpr uint DD_VERSION_80023 = 80023;
   downgrade, we instead have to check the MINOR_DOWNGRADE_THRESHOLD, which is
   stored in the 'dd_properties' table by the server from which we downgrade.
 */
+#ifdef HAVE_VECTOR_INDEX
+static std::set<uint> supported_dd_versions = {
+    DD_VERSION_80011, DD_VERSION_80012, DD_VERSION_80013, DD_VERSION_80014,
+    DD_VERSION_80015, DD_VERSION_80016, DD_VERSION_80017, DD_VERSION_80021,
+    DD_VERSION_80022, DD_VERSION_80023, DD_VERSION_80024};
+#else
 static std::set<uint> supported_dd_versions = {
     DD_VERSION_80011, DD_VERSION_80012, DD_VERSION_80013, DD_VERSION_80014,
     DD_VERSION_80015, DD_VERSION_80016, DD_VERSION_80017, DD_VERSION_80021,
     DD_VERSION_80022, DD_VERSION_80023};
+#endif
 
 // Individual server version labels that we can refer to.
 static constexpr uint SERVER_VERSION_50700 = 50700;

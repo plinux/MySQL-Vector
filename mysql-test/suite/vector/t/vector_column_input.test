@@ -1,0 +1,32 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: VECTOR column text input and validation behavior
+--echo #
+
+CREATE TABLE t_vector_input (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+INSERT INTO t_vector_input VALUES (1, '[1,2]');
+INSERT INTO t_vector_input VALUES (2, ' [ 3.5 , 4.5 ] ');
+INSERT INTO t_vector_input VALUES (3, VEC_FROMTEXT('[5,6]'));
+
+SET @txt = '[7,8]';
+INSERT INTO t_vector_input VALUES (4, @txt);
+
+SELECT id, VEC_TOTEXT(v) FROM t_vector_input ORDER BY id;
+SELECT id, VECTOR_DIM(v),
+       ROUND(VEC_DISTANCE_EUCLIDEAN(v, VEC_FROMTEXT('[0,0]')), 6) AS d
+  FROM t_vector_input
+ WHERE id = 4;
+
+--error ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+INSERT INTO t_vector_input VALUES (10, '[1,2,3]');
+--error ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+INSERT INTO t_vector_input VALUES (11, 'not-a-vector');
+--error ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+INSERT INTO t_vector_input VALUES (12, x'000102');
+
+DROP TABLE t_vector_input;

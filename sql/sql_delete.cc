@@ -88,6 +88,9 @@
 #include "sql/transaction_info.h"
 #include "sql/trigger_def.h"
 #include "sql/uniques.h"  // Unique
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_dml_sync.h"
+#endif
 
 class COND_EQUAL;
 class Item_exists_subselect;
@@ -121,6 +124,14 @@ bool DeleteCurrentRowAndProcessTriggers(THD *thd, TABLE *table,
     }
   }
 
+#ifdef HAVE_VECTOR_INDEX
+  vector_dml_sync::prepared_changes vector_changes;
+  if (vector_dml_sync::prepare_delete_row(table, table->record[0],
+                                          &vector_changes)) {
+    return true;
+  }
+#endif
+
   if (const int delete_error = table->file->ha_delete_row(table->record[0]);
       delete_error != 0) {
     myf error_flags = MYF(0);
@@ -133,6 +144,12 @@ bool DeleteCurrentRowAndProcessTriggers(THD *thd, TABLE *table,
     // to a warning, so we need to check the error flag in the THD.
     return thd->is_error();
   }
+
+#ifdef HAVE_VECTOR_INDEX
+  if (vector_dml_sync::stage_prepared_changes(thd, vector_changes)) {
+    return true;
+  }
+#endif
 
   ++*deleted_rows;
 
@@ -318,6 +335,9 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
       - We will not be binlogging this statement in row-based, and
       - there should be no delete triggers associated with the table.
   */
+#ifdef HAVE_VECTOR_INDEX
+  if (!vector_dml_sync::has_vector_columns(table)) {
+#endif
   if (!using_limit && const_cond_result && !no_rows &&
       !(specialflag & SPECIAL_NO_NEW_FUNC) &&
       ((!thd->is_current_stmt_binlog_format_row() ||  // not ROW binlog-format
@@ -361,6 +381,9 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
     }
     /* Handler didn't support fast delete; Delete rows one by one */
   }
+#ifdef HAVE_VECTOR_INDEX
+  }
+#endif
 
   if (*conds != nullptr) {
     COND_EQUAL *cond_equal = nullptr;

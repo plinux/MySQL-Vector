@@ -59,6 +59,9 @@
 #include "sql/table.h"
 #include "sql/thd_raii.h"
 #include "sql/transaction.h"  // trans_commit_stmt
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_truth_store.h"
+#endif
 
 namespace dd {
 class Schema;
@@ -298,6 +301,15 @@ bool mysql_rename_tables(THD *thd, Table_ref *table_list) {
     if (thd->dd_client()->acquire(table->db, table->table_name, &table_def)) {
       return true;
     }
+#ifdef HAVE_VECTOR_INDEX
+    if (!vector_index_truth_store::internal_sql_active() &&
+        vector_index_truth_store::is_truth_store_table(table->db,
+                                                      table->table_name)) {
+      my_error(ER_NO_SUCH_TABLE, MYF(0), table->db, table->table_name);
+      return true;
+    }
+#endif
+
     if (table_def && table_def->hidden() == dd::Abstract_table::HT_HIDDEN_SE) {
       my_error(ER_NO_SUCH_TABLE, MYF(0), table->db, table->table_name);
       return true;

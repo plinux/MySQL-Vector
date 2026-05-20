@@ -1,0 +1,31 @@
+#
+# WL#vector-v1: VECTOR column text input and validation behavior
+#
+CREATE TABLE t_vector_input (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_input VALUES (1, '[1,2]');
+INSERT INTO t_vector_input VALUES (2, ' [ 3.5 , 4.5 ] ');
+INSERT INTO t_vector_input VALUES (3, VEC_FROMTEXT('[5,6]'));
+SET @txt = '[7,8]';
+INSERT INTO t_vector_input VALUES (4, @txt);
+SELECT id, VEC_TOTEXT(v) FROM t_vector_input ORDER BY id;
+id	VEC_TOTEXT(v)
+1	[1,2]
+2	[3.5,4.5]
+3	[5,6]
+4	[7,8]
+SELECT id, VECTOR_DIM(v),
+ROUND(VEC_DISTANCE_EUCLIDEAN(v, VEC_FROMTEXT('[0,0]')), 6) AS d
+FROM t_vector_input
+WHERE id = 4;
+id	VECTOR_DIM(v)	d
+4	2	10.630146
+INSERT INTO t_vector_input VALUES (10, '[1,2,3]');
+ERROR HY000: Incorrect vector value: '<binary>' for column 'v' at row 1
+INSERT INTO t_vector_input VALUES (11, 'not-a-vector');
+ERROR HY000: Incorrect vector value: '<binary>' for column 'v' at row 1
+INSERT INTO t_vector_input VALUES (12, x'000102');
+ERROR HY000: Incorrect vector value: '<binary>' for column 'v' at row 1
+DROP TABLE t_vector_input;

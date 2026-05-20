@@ -1,0 +1,59 @@
+#
+# WL#vector-v1: persist large vector truth rows through InnoDB LONGBLOB
+#
+SELECT VEC_INDEX_CREATE('idx_large_truth_payload', 8192);
+VEC_INDEX_CREATE('idx_large_truth_payload', 8192)
+1
+SET @large_vector = CONCAT('[', REPEAT('1,', 8191), '1]');
+SELECT VEC_INDEX_UPSERT('idx_large_truth_payload', 1,
+VEC_FROMTEXT(@large_vector));
+VEC_INDEX_UPSERT('idx_large_truth_payload', 1,
+VEC_FROMTEXT(@large_vector))
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_large_truth_payload', VEC_FROMTEXT(@large_vector), 1),
+CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_large_truth_payload', VEC_FROMTEXT(@large_vector), 1),
+CAST(1 AS JSON))
+1
+SET @large_vector_2 = CONCAT('[', REPEAT('2,', 8191), '2]');
+SELECT VEC_INDEX_UPSERT('idx_large_truth_payload', 1,
+VEC_FROMTEXT(@large_vector_2));
+VEC_INDEX_UPSERT('idx_large_truth_payload', 1,
+VEC_FROMTEXT(@large_vector_2))
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_large_truth_payload', VEC_FROMTEXT(@large_vector_2), 1),
+CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_large_truth_payload', VEC_FROMTEXT(@large_vector_2), 1),
+CAST(1 AS JSON))
+1
+SELECT VEC_INDEX_ERASE('idx_large_truth_payload', 1);
+VEC_INDEX_ERASE('idx_large_truth_payload', 1)
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_large_truth_payload', VEC_FROMTEXT(@large_vector_2), 1),
+CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_large_truth_payload', VEC_FROMTEXT(@large_vector_2), 1),
+CAST(1 AS JSON))
+0
+SELECT VEC_INDEX_UPSERT('idx_large_truth_payload', 1,
+VEC_FROMTEXT(@large_vector));
+VEC_INDEX_UPSERT('idx_large_truth_payload', 1,
+VEC_FROMTEXT(@large_vector))
+1
+# restart
+SET @large_vector = CONCAT('[', REPEAT('1,', 8191), '1]');
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_large_truth_payload', VEC_FROMTEXT(@large_vector), 1),
+CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_large_truth_payload', VEC_FROMTEXT(@large_vector), 1),
+CAST(1 AS JSON))
+1
+SELECT VEC_INDEX_DROP('idx_large_truth_payload');
+VEC_INDEX_DROP('idx_large_truth_payload')
+1

@@ -1,0 +1,21 @@
+#
+# WL#vector-v1: block CHANGE/MODIFY on indexed VECTOR column
+#
+DROP TABLE IF EXISTS t_vector_change_dim_guard;
+Warnings:
+Note	1051	Unknown table 'test.t_vector_change_dim_guard'
+CREATE TABLE t_vector_change_dim_guard (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vector_change_dim_guard(v) WITH (2);
+ALTER TABLE t_vector_change_dim_guard CHANGE COLUMN v w VECTOR(3);
+ERROR 42000: This version of MySQL doesn't yet support 'ALTER CHANGE/MODIFY on VECTOR indexed column requires unchanged VECTOR(dim); DROP VECTOR INDEX first'
+ALTER TABLE t_vector_change_dim_guard CHANGE COLUMN v v VECTOR(3);
+ERROR 42000: This version of MySQL doesn't yet support 'ALTER CHANGE/MODIFY on VECTOR indexed column requires unchanged VECTOR(dim); DROP VECTOR INDEX first'
+ALTER TABLE t_vector_change_dim_guard MODIFY COLUMN v VECTOR(3);
+ERROR 42000: This version of MySQL doesn't yet support 'ALTER CHANGE/MODIFY on VECTOR indexed column requires unchanged VECTOR(dim); DROP VECTOR INDEX first'
+SHOW VECTOR STATUS LIKE 'test.t_vector_change_dim_guard.v.dimension';
+Section	Variable_name	Value
+INDEX_STATE	test.t_vector_change_dim_guard.v.dimension	2
+DROP TABLE t_vector_change_dim_guard;

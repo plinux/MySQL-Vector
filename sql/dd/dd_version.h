@@ -192,7 +192,7 @@
   - Bug#31587625: PERFORMANCE DEGRADATION AFTER WL14073: Adds definer index for
     mysql.{events, routines, tables, triggers}.
 
-  80023: Current.
+  80023: Published in MySQL 8.0.46. Current when HAVE_VECTOR_INDEX is disabled.
   ----------------------------------------------------------------------------
   Changes from version 80022:
 
@@ -200,14 +200,26 @@
   - Bug#31867653 changes the type of mysql.table_partition_values.list_num from
     TINYINT to SMALLINT.
 
-  80024: Next DD version number after the previous is public.
+  80024: Current when HAVE_VECTOR_INDEX is enabled.
   ----------------------------------------------------------------------------
   Changes from version 80023:
-  - No changes, this version number is not active yet.
+  - Adds hidden InnoDB vector truth-store DDSE tables:
+    mysql.vector_index_truth_metadata,
+    mysql.vector_index_truth_committed,
+    mysql.vector_index_truth_manifest,
+    mysql.vector_index_truth_changelog,
+    mysql.vector_index_truth_prepared and
+    mysql.vector_index_truth_store_quarantine. Before public release,
+    committed/changelog/prepared moved from singleton payload artifacts to
+    row-level truth-store tables.
  */
 namespace dd {
 
+#ifdef HAVE_VECTOR_INDEX
+static const uint DD_VERSION = 80024;
+#else
 static const uint DD_VERSION = 80023;
+#endif
 static_assert(DD_VERSION <= MYSQL_VERSION_ID,
               "This release can not use a version number from the future");
 

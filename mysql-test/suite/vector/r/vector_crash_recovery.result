@@ -1,0 +1,35 @@
+#
+# WL#vector-v1: crash restart preserves committed vector changes only
+#
+DROP TABLE IF EXISTS t_vec_crash;
+Warnings:
+Note	1051	Unknown table 'test.t_vec_crash'
+CREATE TABLE t_vec_crash (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_crash(v) WITH (2);
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["test.t_vec_crash.v"]
+START TRANSACTION;
+INSERT INTO t_vec_crash VALUES (1, VEC_FROMTEXT('[1,1]'));
+COMMIT;
+START TRANSACTION;
+INSERT INTO t_vec_crash VALUES (2, VEC_FROMTEXT('[2,2]'));
+# Kill and restart
+SELECT id, VEC_TOTEXT(v) FROM t_vec_crash ORDER BY id;
+id	VEC_TOTEXT(v)
+1	[1,1]
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_crash.v', '[1,1]', 8), CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_crash.v', '[1,1]', 8), CAST(1 AS JSON))
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_crash.v', '[2,2]', 8), CAST(2 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_crash.v', '[2,2]', 8), CAST(2 AS JSON))
+0
+DROP VECTOR INDEX ON t_vec_crash(v);
+DROP TABLE t_vec_crash;

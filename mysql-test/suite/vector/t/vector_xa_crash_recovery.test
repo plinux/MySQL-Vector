@@ -1,0 +1,33 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: XA crash recovery preserves prepared vector changes
+--echo #
+
+DROP TABLE IF EXISTS t_vec_xa_crash;
+CREATE TABLE t_vec_xa_crash (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_xa_crash(v) WITH (2);
+
+XA START 'vec_xa_crash';
+INSERT INTO t_vec_xa_crash VALUES (1, VEC_FROMTEXT('[1,1]'));
+XA END 'vec_xa_crash';
+XA PREPARE 'vec_xa_crash';
+
+CALL mtr.add_suppression("Found 2 prepared XA transactions");
+
+--source include/kill_and_restart_mysqld.inc
+
+XA RECOVER;
+SELECT COUNT(*) FROM t_vec_xa_crash WHERE id = 1;
+
+XA COMMIT 'vec_xa_crash';
+SELECT id, VEC_TOTEXT(v) FROM t_vec_xa_crash ORDER BY id;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 8), CAST(1 AS JSON));
+XA RECOVER;
+
+DROP VECTOR INDEX ON t_vec_xa_crash(v);
+DROP TABLE t_vec_xa_crash;

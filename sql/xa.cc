@@ -269,6 +269,9 @@ int ha_recover(Xid_commit_list *commit_list, Xa_state_list *xa_list) {
   xarecover_st info;
   DBUG_TRACE;
   info.found_foreign_xids = info.found_my_xids = 0;
+#ifdef HAVE_VECTOR_INDEX
+  info.found_my_xids_in_engines = 0;
+#endif
   info.commit_list = commit_list;
   info.dry_run = (info.commit_list == nullptr &&
                   tc_heuristic_recover == TC_HEURISTIC_NOT_USED);
@@ -342,6 +345,28 @@ int ha_recover(Xid_commit_list *commit_list, Xa_state_list *xa_list) {
   if (info.found_foreign_xids)
     LogErr(WARNING_LEVEL, ER_XA_RECOVER_FOUND_XA_TRX, info.found_foreign_xids);
   if (info.dry_run && info.found_my_xids) {
+#ifdef HAVE_VECTOR_INDEX
+    /*
+      Hidden auxiliary participants may need 2PC callbacks for transactions
+      that touch their own state. If such a participant is counted in the global
+      TC topology but reports no prepared internal XIDs during crash recovery,
+      and exactly one real engine reports internal XIDs with no external XIDs,
+      the durable work is equivalent to the legacy single-engine case and can
+      safely use the existing rollback recovery path. If multiple engines report
+      internal XIDs, keep the conservative no-TC abort path.
+    */
+    if (info.found_foreign_xids == 0 && info.found_my_xids_in_engines == 1) {
+      info.dry_run = false;
+      info.found_my_xids = 0;
+      info.found_foreign_xids = 0;
+      info.found_my_xids_in_engines = 0;
+      if (plugin_foreach(nullptr, xa::recovery::recover_one_ht,
+                         MYSQL_STORAGE_ENGINE_PLUGIN, &info)) {
+        return 1;
+      }
+      return 0;
+    }
+#endif
     LogErr(ERROR_LEVEL, ER_XA_RECOVER_EXPLANATION, info.found_my_xids,
            opt_tc_log_file);
     return 1;

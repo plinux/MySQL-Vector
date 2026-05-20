@@ -1,0 +1,86 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: prepared statement coverage for item txn edge paths
+--echo #
+
+SET sql_log_bin=0;
+
+PREPARE stmt_create FROM
+  'SELECT VEC_INDEX_CREATE(?, ?, ?, ?, ?)';
+SET @idx = 'idx_item_ps_txn_edges';
+SET @dim = 2;
+SET @metric = 'EUCLIDEAN';
+SET @mode = 'MEMORY';
+SET @provider = 'HNSWLIB';
+EXECUTE stmt_create USING @idx, @dim, @metric, @mode, @provider;
+DEALLOCATE PREPARE stmt_create;
+
+SET @txn_id = VEC_INDEX_TXN_BEGIN();
+SET @sp_missing = 'missing';
+SET @sp = 'sp1';
+SET @vec = VEC_FROMTEXT('[1,1]');
+SET @doc_id = 1;
+
+PREPARE stmt_pending FROM
+  'SELECT VEC_INDEX_TXN_PENDING(?)';
+EXECUTE stmt_pending USING @txn_id;
+DEALLOCATE PREPARE stmt_pending;
+
+PREPARE stmt_rollback_to FROM
+  'SELECT VEC_INDEX_TXN_ROLLBACK_TO(?, ?)';
+--error ER_WRONG_ARGUMENTS
+EXECUTE stmt_rollback_to USING @txn_id, @sp_missing;
+DEALLOCATE PREPARE stmt_rollback_to;
+
+PREPARE stmt_release FROM
+  'SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(?, ?)';
+--error ER_WRONG_ARGUMENTS
+EXECUTE stmt_release USING @txn_id, @sp_missing;
+DEALLOCATE PREPARE stmt_release;
+
+PREPARE stmt_savepoint FROM
+  'SELECT VEC_INDEX_TXN_SAVEPOINT(?, ?)';
+EXECUTE stmt_savepoint USING @txn_id, @sp;
+DEALLOCATE PREPARE stmt_savepoint;
+
+PREPARE stmt_release_ok FROM
+  'SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(?, ?)';
+EXECUTE stmt_release_ok USING @txn_id, @sp;
+--error ER_WRONG_ARGUMENTS
+EXECUTE stmt_release_ok USING @txn_id, @sp;
+DEALLOCATE PREPARE stmt_release_ok;
+
+PREPARE stmt_stage_upsert FROM
+  'SELECT VEC_INDEX_STAGE_UPSERT(?, ?, ?, ?)';
+EXECUTE stmt_stage_upsert USING @idx, @txn_id, @doc_id, @vec;
+DEALLOCATE PREPARE stmt_stage_upsert;
+
+PREPARE stmt_rebuild_all FROM
+  'SELECT VEC_INDEX_REBUILD_ALL()';
+--error ER_WRONG_ARGUMENTS
+EXECUTE stmt_rebuild_all;
+DEALLOCATE PREPARE stmt_rebuild_all;
+
+PREPARE stmt_recover_all FROM
+  'SELECT VEC_INDEX_RECOVER_ALL()';
+--error ER_WRONG_ARGUMENTS
+EXECUTE stmt_recover_all;
+DEALLOCATE PREPARE stmt_recover_all;
+
+PREPARE stmt_rollback FROM
+  'SELECT VEC_INDEX_TXN_ROLLBACK(?)';
+EXECUTE stmt_rollback USING @txn_id;
+DEALLOCATE PREPARE stmt_rollback;
+
+PREPARE stmt_pending_after FROM
+  'SELECT VEC_INDEX_TXN_PENDING(?)';
+EXECUTE stmt_pending_after USING @txn_id;
+DEALLOCATE PREPARE stmt_pending_after;
+
+PREPARE stmt_drop FROM
+  'SELECT VEC_INDEX_DROP(?)';
+EXECUTE stmt_drop USING @idx;
+DEALLOCATE PREPARE stmt_drop;
+
+SET sql_log_bin=1;

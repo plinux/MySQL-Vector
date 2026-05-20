@@ -148,6 +148,9 @@
 #include "sql/table_trigger_dispatcher.h"  // Table_trigger_dispatcher
 #include "sql/thd_raii.h"
 #include "sql/transaction.h"  // trans_rollback_stmt
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_truth_store.h"
+#endif
 #include "sql/transaction_info.h"
 #include "sql/trigger_chain.h"  // Trigger_chain
 #include "sql/xa.h"
@@ -3371,6 +3374,16 @@ share_found:
       // Error is reported by the dictionary subsystem.
       goto err_lock;
     }
+
+#ifdef HAVE_VECTOR_INDEX
+    if (!vector_index_truth_store::internal_truth_store_access_allowed(thd) &&
+        vector_index_truth_store::is_truth_store_table(share->db.str,
+                                                      share->table_name.str)) {
+      my_error(ER_NO_SUCH_TABLE, MYF(0), table_list->db,
+               table_list->table_name);
+      goto err_lock;
+    }
+#endif
 
     if (table_def && table_def->hidden() == dd::Abstract_table::HT_HIDDEN_SE) {
       my_error(ER_NO_SUCH_TABLE, MYF(0), table_list->db,

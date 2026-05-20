@@ -1,0 +1,23 @@
+#
+# WL#vector-v1: DROP DATABASE should clean mapped vector indexes
+#
+DROP DATABASE IF EXISTS vec_dropdb;
+Warnings:
+Note	1008	Can't drop database 'vec_dropdb'; database doesn't exist
+CREATE DATABASE vec_dropdb;
+CREATE TABLE vec_dropdb.t_vec_dropdb (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON vec_dropdb.t_vec_dropdb(v) WITH (2);
+INSERT INTO vec_dropdb.t_vec_dropdb VALUES (1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["vec_dropdb.t_vec_dropdb.v"]
+SELECT VEC_INDEX_SEARCH('vec_dropdb.t_vec_dropdb.v', '[1,1]', 1);
+VEC_INDEX_SEARCH('vec_dropdb.t_vec_dropdb.v', '[1,1]', 1)
+[1]
+DROP DATABASE vec_dropdb;
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]

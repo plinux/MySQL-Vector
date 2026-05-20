@@ -874,6 +874,11 @@ MySQL clients support the protocol:
 #include "sql/transaction.h"
 #include "sql/tztime.h"  // Time_zone
 #include "sql/udf_service_impl.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_registry.h"
+#include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_status.h"
+#endif
 #include "sql/xa.h"
 #include "sql/xa/transaction_cache.h"  // xa::Transaction_cache
 #include "sql_common.h"                // mysql_client_plugin_init
@@ -2644,6 +2649,9 @@ static void clean_up(bool print_message) {
   if (!opt_noacl) udf_unload_udfs();
   table_def_start_shutdown();
   delegates_shutdown();
+#ifdef HAVE_VECTOR_INDEX
+  vector_index_truth_store::shutdown_selected_backend();
+#endif
   plugin_shutdown();
   gtid_server_cleanup();  // after plugin_shutdown
   delete_optimizer_cost_module();
@@ -9670,6 +9678,233 @@ static int show_deprecated_use_i_s_processlist_last_timestamp(THD *,
   return 0;
 }
 
+#ifdef HAVE_VECTOR_INDEX
+static int show_vector_status_value(uint64_t value, SHOW_VAR *var, char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) = static_cast<long long>(value);
+  return 0;
+}
+
+static int show_vector_index_create_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::index_create_requests(), var, buf);
+}
+
+static int show_vector_index_drop_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::index_drop_requests(), var, buf);
+}
+
+static int show_vector_metadata_load_failures(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::metadata_load_failures(), var, buf);
+}
+
+static int show_vector_metadata_persist_failures(THD *, SHOW_VAR *var,
+                                                 char *buf) {
+  return show_vector_status_value(vector_status::metadata_persist_failures(), var,
+                                  buf);
+}
+
+static int show_vector_committed_load_failures(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::committed_load_failures(), var,
+                                  buf);
+}
+
+static int show_vector_committed_persist_failures(THD *, SHOW_VAR *var,
+                                                  char *buf) {
+  return show_vector_status_value(vector_status::committed_persist_failures(), var,
+                                  buf);
+}
+
+static int show_vector_manifest_load_failures(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::manifest_load_failures(), var,
+                                  buf);
+}
+
+static int show_vector_manifest_persist_failures(THD *, SHOW_VAR *var,
+                                                 char *buf) {
+  return show_vector_status_value(vector_status::manifest_persist_failures(), var,
+                                  buf);
+}
+
+static int show_vector_change_log_load_failures(THD *, SHOW_VAR *var,
+                                                char *buf) {
+  return show_vector_status_value(vector_status::change_log_load_failures(), var,
+                                  buf);
+}
+
+static int show_vector_change_log_replay_failures(THD *, SHOW_VAR *var,
+                                                  char *buf) {
+  return show_vector_status_value(vector_status::change_log_replay_failures(), var,
+                                  buf);
+}
+
+static int show_vector_change_log_persist_failures(THD *, SHOW_VAR *var,
+                                                   char *buf) {
+  return show_vector_status_value(vector_status::change_log_persist_failures(), var,
+                                  buf);
+}
+
+static int show_vector_backend_recover_fallbacks(THD *, SHOW_VAR *var,
+                                                 char *buf) {
+  return show_vector_status_value(vector_status::backend_recover_fallbacks(), var,
+                                  buf);
+}
+
+static int show_vector_registered_indexes(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::registered_indexes(), var, buf);
+}
+
+static int show_vector_committed_snapshot_rows(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::committed_snapshot_rows(), var,
+                                  buf);
+}
+
+static int show_vector_manifest_version(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::manifest_version(), var, buf);
+}
+
+static int show_vector_manifest_metadata_checkpoint(THD *, SHOW_VAR *var,
+                                                    char *buf) {
+  return show_vector_status_value(vector_status::manifest_metadata_checkpoint(), var,
+                                  buf);
+}
+
+static int show_vector_manifest_committed_checkpoint(THD *, SHOW_VAR *var,
+                                                     char *buf) {
+  return show_vector_status_value(vector_status::manifest_committed_checkpoint(),
+                                  var, buf);
+}
+
+static int show_vector_manifest_change_log_checkpoint(THD *, SHOW_VAR *var,
+                                                      char *buf) {
+  return show_vector_status_value(vector_status::manifest_change_log_checkpoint(),
+                                  var, buf);
+}
+
+static int show_vector_rebuild_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::rebuild_requests(), var, buf);
+}
+
+static int show_vector_recover_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::recover_requests(), var, buf);
+}
+
+static int show_vector_rebuild_all_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::rebuild_all_requests(), var, buf);
+}
+
+static int show_vector_recover_all_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::recover_all_requests(), var, buf);
+}
+
+static int show_vector_search_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::search_requests(), var, buf);
+}
+
+static int show_vector_search_failures(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::search_failures(), var, buf);
+}
+
+static int show_vector_search_results_returned(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::search_results_returned(), var,
+                                  buf);
+}
+
+static int show_vector_search_mvcc_candidate_rows(THD *, SHOW_VAR *var,
+                                                  char *buf) {
+  return show_vector_status_value(vector_status::search_mvcc_candidate_rows(),
+                                  var, buf);
+}
+
+static int show_vector_search_mvcc_expansions(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::search_mvcc_expansions(), var,
+                                  buf);
+}
+
+static int show_vector_search_mvcc_limit_hits(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::search_mvcc_limit_hits(), var,
+                                  buf);
+}
+
+static int show_vector_stage_upsert_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::stage_upsert_requests(), var, buf);
+}
+
+static int show_vector_stage_erase_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::stage_erase_requests(), var, buf);
+}
+
+static int show_vector_txn_commit_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::txn_commit_requests(), var, buf);
+}
+
+static int show_vector_txn_commit_failures(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::txn_commit_failures(), var, buf);
+}
+
+static int show_vector_txn_rollback_requests(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::txn_rollback_requests(), var,
+                                  buf);
+}
+
+static int show_vector_runtime_state_rollbacks(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::runtime_state_rollbacks(), var,
+                                  buf);
+}
+
+static int show_vector_runtime_state_rollback_failures(THD *, SHOW_VAR *var,
+                                                       char *buf) {
+  return show_vector_status_value(vector_status::runtime_state_rollback_failures(),
+                                  var, buf);
+}
+
+static int show_vector_persist_artifact_rollbacks(THD *, SHOW_VAR *var,
+                                                  char *buf) {
+  return show_vector_status_value(vector_status::persist_artifact_rollbacks(), var,
+                                  buf);
+}
+
+static int show_vector_persist_artifact_rollback_failures(THD *, SHOW_VAR *var,
+                                                          char *buf) {
+  return show_vector_status_value(
+      vector_status::persist_artifact_rollback_failures(), var, buf);
+}
+
+static int show_vector_truth_store_persist_requests(THD *, SHOW_VAR *var,
+                                                    char *buf) {
+  return show_vector_status_value(vector_status::truth_store_persist_requests(), var,
+                                  buf);
+}
+
+static int show_vector_truth_store_persist_failures(THD *, SHOW_VAR *var,
+                                                    char *buf) {
+  return show_vector_status_value(vector_status::truth_store_persist_failures(),
+                                  var, buf);
+}
+
+static int show_vector_pending_txn_changes(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::pending_txn_changes(), var, buf);
+}
+
+static int show_vector_apply_latency_ms(THD *, SHOW_VAR *var, char *buf) {
+  return show_vector_status_value(vector_status::apply_latency_ms(), var, buf);
+}
+
+static int show_vector_truth_store_backend(THD *, SHOW_VAR *var, char *buf) {
+  const char *name = vector_index_truth_store::active_backend_name();
+  var->type = SHOW_CHAR;
+  var->value = buf;
+  snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE, "%s", name != nullptr ? name : "unknown");
+  return 0;
+}
+
+static int show_vector_truth_store_transactional(THD *, SHOW_VAR *var,
+                                                 char *buf) {
+  return show_vector_status_value(
+      vector_index_truth_store::active_backend_transactional() ? 1 : 0, var, buf);
+}
+#endif
+
 SHOW_VAR status_vars[] = {
     {"Aborted_clients", (char *)&aborted_threads, SHOW_LONG, SHOW_SCOPE_GLOBAL},
     {"Aborted_connects", (char *)&show_aborted_connects, SHOW_FUNC,
@@ -10036,6 +10271,114 @@ SHOW_VAR status_vars[] = {
     {"Deprecated_use_i_s_processlist_last_timestamp",
      (char *)&show_deprecated_use_i_s_processlist_last_timestamp, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
+#ifdef HAVE_VECTOR_INDEX
+    {"Vector_index_create_requests", (char *)&show_vector_index_create_requests,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_index_drop_requests", (char *)&show_vector_index_drop_requests,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_metadata_load_failures", (char *)&show_vector_metadata_load_failures,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_metadata_persist_failures",
+     (char *)&show_vector_metadata_persist_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_committed_load_failures",
+     (char *)&show_vector_committed_load_failures, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_committed_persist_failures",
+     (char *)&show_vector_committed_persist_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_manifest_load_failures", (char *)&show_vector_manifest_load_failures,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_manifest_persist_failures",
+     (char *)&show_vector_manifest_persist_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_change_log_load_failures",
+     (char *)&show_vector_change_log_load_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_change_log_replay_failures",
+     (char *)&show_vector_change_log_replay_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_change_log_persist_failures",
+     (char *)&show_vector_change_log_persist_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_recover_fallbacks",
+     (char *)&show_vector_backend_recover_fallbacks, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_registered_indexes", (char *)&show_vector_registered_indexes,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_committed_snapshot_rows",
+     (char *)&show_vector_committed_snapshot_rows, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_manifest_version", (char *)&show_vector_manifest_version, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_manifest_metadata_checkpoint",
+     (char *)&show_vector_manifest_metadata_checkpoint, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_manifest_committed_checkpoint",
+     (char *)&show_vector_manifest_committed_checkpoint, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_manifest_change_log_checkpoint",
+     (char *)&show_vector_manifest_change_log_checkpoint, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_rebuild_requests", (char *)&show_vector_rebuild_requests, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_recover_requests", (char *)&show_vector_recover_requests, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_rebuild_all_requests", (char *)&show_vector_rebuild_all_requests,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_recover_all_requests", (char *)&show_vector_recover_all_requests,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_search_requests", (char *)&show_vector_search_requests, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_search_failures", (char *)&show_vector_search_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_search_results_returned",
+     (char *)&show_vector_search_results_returned, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_search_mvcc_candidate_rows",
+     (char *)&show_vector_search_mvcc_candidate_rows, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_search_mvcc_expansions",
+     (char *)&show_vector_search_mvcc_expansions, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_search_mvcc_limit_hits",
+     (char *)&show_vector_search_mvcc_limit_hits, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_stage_upsert_requests", (char *)&show_vector_stage_upsert_requests,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_stage_erase_requests", (char *)&show_vector_stage_erase_requests,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_txn_commit_requests", (char *)&show_vector_txn_commit_requests,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_txn_commit_failures", (char *)&show_vector_txn_commit_failures,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_txn_rollback_requests", (char *)&show_vector_txn_rollback_requests,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_runtime_state_rollbacks",
+     (char *)&show_vector_runtime_state_rollbacks, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_runtime_state_rollback_failures",
+     (char *)&show_vector_runtime_state_rollback_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_persist_artifact_rollbacks",
+     (char *)&show_vector_persist_artifact_rollbacks, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_persist_artifact_rollback_failures",
+     (char *)&show_vector_persist_artifact_rollback_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_truth_store_persist_requests",
+     (char *)&show_vector_truth_store_persist_requests, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_truth_store_persist_failures",
+     (char *)&show_vector_truth_store_persist_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_pending_txn_changes", (char *)&show_vector_pending_txn_changes,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_apply_latency_ms", (char *)&show_vector_apply_latency_ms, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_truth_store_backend", (char *)&show_vector_truth_store_backend,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_truth_store_transactional",
+     (char *)&show_vector_truth_store_transactional, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+#endif
     {NullS, NullS, SHOW_FUNC, SHOW_SCOPE_ALL}};
 
 void add_terminator(vector<my_option> *options) {

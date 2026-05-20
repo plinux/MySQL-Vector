@@ -24,6 +24,10 @@
 #include "sql/transaction.h"
 
 #include <stddef.h>
+#ifdef HAVE_VECTOR_INDEX
+#include <cstdint>
+#include <string>
+#endif
 
 #include "lex_string.h"
 #include "m_ctype.h"
@@ -55,7 +59,33 @@
 #include "sql/system_variables.h"
 #include "sql/tc_log.h"
 #include "sql/transaction_info.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_registry.h"
+#endif
 #include "sql/xa.h"
+
+#ifdef HAVE_VECTOR_INDEX
+namespace {
+
+uint64_t vector_thd_id(const THD *thd) {
+  return static_cast<uint64_t>(thd->thread_id());
+}
+
+std::string to_savepoint_name(const LEX_STRING &name) {
+  return std::string(name.str, name.length);
+}
+
+bool report_vector_sync_error(const char *msg) {
+  my_error(ER_INTERNAL_ERROR, MYF(0), msg);
+  return true;
+}
+
+void discard_empty_vector_thd_txn(THD *thd) {
+  vector_index_registry::discard_empty_thd_txn(vector_thd_id(thd));
+}
+
+}  // namespace
+#endif
 
 /**
   Helper: Tell tracker (if any) that transaction ended.
@@ -296,6 +326,10 @@ bool trans_commit(THD *thd, bool ignore_global_read_lock) {
 
   thd->m_transactional_ddl.post_ddl();
 
+#ifdef HAVE_VECTOR_INDEX
+  discard_empty_vector_thd_txn(thd);
+#endif
+
   return res;
 }
 
@@ -380,6 +414,9 @@ bool trans_commit_implicit(THD *thd, bool ignore_global_read_lock) {
   }
 
   thd->locked_tables_list.adjust_renamed_tablespace_mdls(&thd->mdl_context);
+#ifdef HAVE_VECTOR_INDEX
+  discard_empty_vector_thd_txn(thd);
+#endif
   return res;
 }
 
@@ -428,6 +465,10 @@ bool trans_rollback(THD *thd) {
   thd->locked_tables_list.discard_renamed_tablespace_mdls();
 
   thd->m_transactional_ddl.post_ddl();
+
+#ifdef HAVE_VECTOR_INDEX
+  discard_empty_vector_thd_txn(thd);
+#endif
 
   return res;
 }
@@ -485,6 +526,10 @@ bool trans_rollback_implicit(THD *thd) {
     thd->dd_client()->rollback_modified_objects();
 
   thd->locked_tables_list.discard_renamed_tablespace_mdls();
+
+#ifdef HAVE_VECTOR_INDEX
+  discard_empty_vector_thd_txn(thd);
+#endif
 
   return res;
 }
@@ -743,6 +788,13 @@ bool trans_savepoint(THD *thd, LEX_STRING name) {
         name.str);
   }
 
+#ifdef HAVE_VECTOR_INDEX
+  if (!vector_index_registry::savepoint_thd_txn(vector_thd_id(thd),
+                                                to_savepoint_name(name))) {
+    return report_vector_sync_error("vector savepoint creation failed");
+  }
+#endif
+
   return false;
 }
 
@@ -814,6 +866,13 @@ bool trans_rollback_to_savepoint(THD *thd, LEX_STRING name) {
         ->rollback_to_savepoint(name.str);
   }
 
+#ifdef HAVE_VECTOR_INDEX
+  if (!res && !vector_index_registry::rollback_to_savepoint_thd_txn(
+                  vector_thd_id(thd), to_savepoint_name(name))) {
+    return report_vector_sync_error("vector rollback to savepoint failed");
+  }
+#endif
+
   return res;
 }
 
@@ -852,6 +911,13 @@ bool trans_release_savepoint(THD *thd, LEX_STRING name) {
     thd->get_transaction()->get_transaction_write_set_ctx()->del_savepoint(
         name.str);
   }
+
+#ifdef HAVE_VECTOR_INDEX
+  if (!res && !vector_index_registry::release_savepoint_thd_txn(
+                  vector_thd_id(thd), to_savepoint_name(name))) {
+    return report_vector_sync_error("vector release savepoint failed");
+  }
+#endif
 
   return res;
 }

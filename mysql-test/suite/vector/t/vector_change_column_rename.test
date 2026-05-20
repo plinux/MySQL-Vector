@@ -1,0 +1,24 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: vector index sync on ALTER CHANGE COLUMN rename
+--echo #
+
+DROP TABLE IF EXISTS t_vector_change_column_rename;
+CREATE TABLE t_vector_change_column_rename (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+INSERT INTO t_vector_change_column_rename VALUES (1, VEC_FROMTEXT('[1,0]'));
+CREATE VECTOR INDEX ON t_vector_change_column_rename(v)
+  WITH (2, 'COSINE', 'EXTERNAL', 'FAISS');
+
+ALTER TABLE t_vector_change_column_rename CHANGE COLUMN v w VECTOR(2);
+
+SELECT VEC_INDEX_LIST();
+INSERT INTO t_vector_change_column_rename VALUES (2, VEC_FROMTEXT('[0,1]'));
+SELECT VEC_INDEX_SEARCH('test.t_vector_change_column_rename.w',
+                        VEC_FROMTEXT('[0,1]'), 1);
+
+DROP TABLE t_vector_change_column_rename;

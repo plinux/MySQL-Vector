@@ -1,0 +1,44 @@
+#
+# WL#vector-v1: item_vectorfunc persist-failure error branches
+#
+SELECT VEC_INDEX_CREATE('idx_item_pf_a', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_item_pf_a', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_CREATE('idx_item_pf_b', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_item_pf_b', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_item_pf_a', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_item_pf_a', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5);
+VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5)
+[1]
+SELECT VEC_INDEX_CREATE('idx_item_pf_create_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_UPSERT('idx_item_pf_a', 2, VEC_FROMTEXT('[2,2]'));
+ERROR HY000: Incorrect arguments to vec_index_upsert
+SELECT VEC_INDEX_ERASE('idx_item_pf_a', 1);
+ERROR HY000: Incorrect arguments to vec_index_erase
+SELECT VEC_INDEX_REBUILD('idx_item_pf_a');
+ERROR HY000: Incorrect arguments to vec_index_rebuild
+SELECT VEC_INDEX_RECOVER('idx_item_pf_a');
+ERROR HY000: Incorrect arguments to vec_index_recover
+SELECT VEC_INDEX_REBUILD_ALL();
+ERROR HY000: Incorrect arguments to vec_index_rebuild_all
+SELECT VEC_INDEX_RECOVER_ALL();
+ERROR HY000: Incorrect arguments to vec_index_recover_all
+SELECT VEC_INDEX_DROP('idx_item_pf_b');
+VEC_INDEX_DROP('idx_item_pf_b')
+0
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_item_pf_a","idx_item_pf_b"]
+SELECT VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5);
+VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5)
+[1]
+SELECT VEC_INDEX_DROP('idx_item_pf_a');
+VEC_INDEX_DROP('idx_item_pf_a')
+1
+SELECT VEC_INDEX_DROP('idx_item_pf_b');
+VEC_INDEX_DROP('idx_item_pf_b')
+1

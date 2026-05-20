@@ -115,6 +115,9 @@
 #include "sql/transaction_info.h"
 #include "sql/trigger_chain.h"
 #include "sql/trigger_def.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_dml_sync.h"
+#endif
 #include "sql/visible_fields.h"
 #include "template_utils.h"
 #include "thr_lock.h"
@@ -848,12 +851,20 @@ bool Sql_cmd_update::update_single_table(THD *thd) {
     /// read_removal is only used by NDB storage engine
     bool read_removal = false;
 
+#ifdef HAVE_VECTOR_INDEX
+    if (has_after_triggers || vector_dml_sync::has_vector_columns(table)) {
+      /*
+        The table requires row-by-row synchronization, so updates must be
+        applied immediately.
+      */
+#else
     if (has_after_triggers) {
       /*
         The table has AFTER UPDATE triggers that might access to subject
         table and therefore might need update to be done immediately.
         So we turn-off the batching.
       */
+#endif
       (void)table->file->ha_extra(HA_EXTRA_UPDATE_CANNOT_BATCH);
       will_batch = false;
     } else {
@@ -992,13 +1003,27 @@ bool Sql_cmd_update::update_single_table(THD *thd) {
           updated_rows -= dup_key_found;
         } else {
           /* Non-batched update */
-          error =
-              table->file->ha_update_row(table->record[1], table->record[0]);
+#ifdef HAVE_VECTOR_INDEX
+          error = vector_dml_sync::has_vector_columns(table)
+                      ? vector_dml_sync::update_row_and_stage_changes(thd, table)
+                      : table->file->ha_update_row(table->record[1],
+                                                   table->record[0]);
+#else
+          error = table->file->ha_update_row(table->record[1],
+                                             table->record[0]);
+#endif
         }
+#ifdef HAVE_VECTOR_INDEX
+        if (error == 0) {
+          updated_rows++;
+        } else if (error == HA_ERR_RECORD_IS_THE_SAME)
+          error = 0;
+#else
         if (error == 0)
           updated_rows++;
         else if (error == HA_ERR_RECORD_IS_THE_SAME)
           error = 0;
+#endif
         else {
           if (table->file->is_fatal_error(error)) error_flags |= ME_FATALERROR;
 
@@ -2499,9 +2524,17 @@ bool UpdateRowsIterator::DoImmediateUpdatesAndBufferRowIds(
         }
 
         ++m_updated_rows;
+#ifdef HAVE_VECTOR_INDEX
+        error = vector_dml_sync::has_vector_columns(table)
+                    ? vector_dml_sync::update_row_and_stage_changes(thd(), table)
+                    : table->file->ha_update_row(table->record[1],
+                                                 table->record[0]);
+        if (error && error != HA_ERR_RECORD_IS_THE_SAME) {
+#else
         if ((error = table->file->ha_update_row(table->record[1],
                                                 table->record[0])) &&
             error != HA_ERR_RECORD_IS_THE_SAME) {
+#endif
           --m_updated_rows;
           myf error_flags = MYF(0);
           if (table->file->is_fatal_error(error)) error_flags |= ME_FATALERROR;
@@ -2786,12 +2819,26 @@ bool UpdateRowsIterator::DoDelayedUpdates(bool *trans_safe,
           continue;
         }
 
+#ifdef HAVE_VECTOR_INDEX
+        local_error = vector_dml_sync::has_vector_columns(table)
+                          ? vector_dml_sync::update_row_and_stage_changes(thd(), table)
+                          : table->file->ha_update_row(table->record[1],
+                                                       table->record[0]);
+#else
         local_error =
             table->file->ha_update_row(table->record[1], table->record[0]);
+#endif
+#ifdef HAVE_VECTOR_INDEX
+        if (!local_error) {
+          ++m_updated_rows;
+        } else if (local_error == HA_ERR_RECORD_IS_THE_SAME)
+          local_error = 0;
+#else
         if (!local_error)
           ++m_updated_rows;
         else if (local_error == HA_ERR_RECORD_IS_THE_SAME)
           local_error = 0;
+#endif
         else {
           if (table->file->is_fatal_error(local_error))
             error_flags |= ME_FATALERROR;

@@ -1,0 +1,165 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: SQL DDL for vector index lifecycle
+--echo #
+
+DROP TABLE IF EXISTS t_vector_ddl;
+CREATE TABLE t_vector_ddl (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+INSERT INTO t_vector_ddl VALUES (9, VEC_FROMTEXT('[9,9]'));
+CREATE VECTOR INDEX ON t_vector_ddl(v) WITH (2);
+SHOW CREATE TABLE t_vector_ddl;
+CREATE VECTOR INDEX IF NOT EXISTS ON t_vector_ddl(v) WITH (2);
+SELECT VEC_INDEX_SEARCH('test.t_vector_ddl.v', VEC_FROMTEXT('[9,9]'), 1);
+
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl.v'
+  WHERE Variable_name != 'test.t_vector_ddl.v.apply_latency_ms';
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl.v'
+  WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'test.t_vector_ddl.v.dimension';
+
+INSERT INTO t_vector_ddl VALUES (1, VEC_FROMTEXT('[1,2]'));
+SELECT VEC_INDEX_SEARCH('test.t_vector_ddl.v', VEC_FROMTEXT('[1,2]'), 1);
+
+DROP VECTOR INDEX ON t_vector_ddl(v);
+DROP VECTOR INDEX IF EXISTS ON t_vector_ddl(v);
+
+CREATE TABLE t_vector_ddl_bad (
+  id INT PRIMARY KEY,
+  c INT,
+  v VECTOR(3)
+) ENGINE=InnoDB;
+--error ER_WRONG_ARGUMENTS
+CREATE VECTOR INDEX ON t_vector_ddl_bad(c) WITH (3);
+--error ER_WRONG_ARGUMENTS
+CREATE VECTOR INDEX ON t_vector_ddl_bad(v) WITH (2);
+DROP TABLE t_vector_ddl_bad;
+
+CREATE VECTOR INDEX ON t_vector_ddl(v)
+  WITH (2, 'COSINE', 'EXTERNAL', 'FAISS');
+SHOW VECTOR STATUS LIKE 'test.t_vector_ddl.v.metric';
+SHOW VECTOR STATUS LIKE 'test.t_vector_ddl.v.mode';
+SHOW VECTOR STATUS LIKE 'test.t_vector_ddl.v.provider';
+SELECT VEC_INDEX_SEARCH('test.t_vector_ddl.v', VEC_FROMTEXT('[9,9]'), 1);
+DROP VECTOR INDEX ON t_vector_ddl(v);
+
+DROP TABLE IF EXISTS t_vector_ddl_rename;
+CREATE TABLE t_vector_ddl_rename (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_ddl_rename VALUES (5, VEC_FROMTEXT('[5,5]'));
+CREATE VECTOR INDEX ON t_vector_ddl_rename(v)
+  WITH (2, 'COSINE', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_LIST();
+RENAME TABLE t_vector_ddl_rename TO t_vector_ddl_renamed;
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('test.t_vector_ddl_renamed.v', VEC_FROMTEXT('[5,5]'), 1);
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
+  WHERE Variable_name != 'test.t_vector_ddl_renamed.v.apply_latency_ms';
+DROP TABLE t_vector_ddl_renamed;
+
+DROP TABLE IF EXISTS t_vector_alter_rename;
+CREATE TABLE t_vector_alter_rename (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_alter_rename VALUES (7, VEC_FROMTEXT('[7,7]'));
+CREATE VECTOR INDEX ON t_vector_alter_rename(v)
+  WITH (2, 'COSINE', 'EXTERNAL', 'FAISS');
+ALTER TABLE t_vector_alter_rename RENAME TO t_vector_alter_renamed;
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('test.t_vector_alter_renamed.v', VEC_FROMTEXT('[7,7]'), 1);
+DROP TABLE t_vector_alter_renamed;
+
+DROP TABLE IF EXISTS t_vector_alter_col_rename;
+CREATE TABLE t_vector_alter_col_rename (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_alter_col_rename VALUES (11, VEC_FROMTEXT('[11,11]'));
+CREATE VECTOR INDEX ON t_vector_alter_col_rename(v)
+  WITH (2, 'COSINE', 'EXTERNAL', 'FAISS');
+ALTER TABLE t_vector_alter_col_rename
+  MODIFY COLUMN v VECTOR(2) COMMENT 'same-dim change stays allowed';
+ALTER TABLE t_vector_alter_col_rename RENAME COLUMN v TO w;
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('test.t_vector_alter_col_rename.w', VEC_FROMTEXT('[11,11]'), 1);
+DROP TABLE t_vector_alter_col_rename;
+
+DROP TABLE IF EXISTS t_vector_alter_dropcol;
+CREATE TABLE t_vector_alter_dropcol (
+  id INT PRIMARY KEY,
+  v VECTOR(2),
+  c INT
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vector_alter_dropcol(v) WITH (2);
+SHOW VECTOR STATUS LIKE 'test.t_vector_alter_dropcol.v.%';
+ALTER TABLE t_vector_alter_dropcol DROP COLUMN v;
+SHOW VECTOR STATUS LIKE 'test.t_vector_alter_dropcol.v.%';
+DROP TABLE t_vector_alter_dropcol;
+
+DROP TABLE IF EXISTS t_vector_ddl_composite_pk;
+CREATE TABLE t_vector_ddl_composite_pk (
+  id1 INT,
+  id2 INT,
+  v VECTOR(2),
+  PRIMARY KEY(id1, id2)
+) ENGINE=InnoDB;
+--error ER_NOT_SUPPORTED_YET
+CREATE VECTOR INDEX ON t_vector_ddl_composite_pk(v) WITH (2);
+DROP TABLE t_vector_ddl_composite_pk;
+
+DROP TABLE IF EXISTS t_vector_ddl_char_pk;
+CREATE TABLE t_vector_ddl_char_pk (
+  id VARCHAR(32) PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+--error ER_NOT_SUPPORTED_YET
+CREATE VECTOR INDEX ON t_vector_ddl_char_pk(v) WITH (2);
+DROP TABLE t_vector_ddl_char_pk;
+
+DROP TABLE IF EXISTS t_vector_ddl_no_pk;
+CREATE TABLE t_vector_ddl_no_pk (
+  id INT,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+--error ER_NOT_SUPPORTED_YET
+CREATE VECTOR INDEX ON t_vector_ddl_no_pk(v) WITH (2);
+DROP TABLE t_vector_ddl_no_pk;
+
+DROP TEMPORARY TABLE IF EXISTS t_vector_ddl_tmp;
+CREATE TEMPORARY TABLE t_vector_ddl_tmp (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+--error ER_NOT_SUPPORTED_YET
+CREATE VECTOR INDEX ON t_vector_ddl_tmp(v) WITH (2);
+--error ER_NOT_SUPPORTED_YET
+DROP VECTOR INDEX ON t_vector_ddl_tmp(v);
+DROP TEMPORARY TABLE t_vector_ddl_tmp;
+
+DROP TABLE IF EXISTS t_vector_ddl_large;
+CREATE TABLE t_vector_ddl_large (
+  id INT PRIMARY KEY,
+  v VECTOR(784)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_ddl_large VALUES
+  (1, CONCAT('[', REPEAT('0,', 783), '0]')),
+  (2, CONCAT('[', REPEAT('0,', 782), '1,0]')),
+  (3, CONCAT('[', REPEAT('0,', 781), '1,1,0]'));
+CREATE VECTOR INDEX ON t_vector_ddl_large(v)
+  WITH (784, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT JSON_LENGTH(
+  VEC_INDEX_SEARCH(
+    'test.t_vector_ddl_large.v',
+    CONCAT('[', REPEAT('0,', 783), '0]'),
+    3));
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('test.t_vector_ddl_large.v');
+DROP TABLE t_vector_ddl_large;
+DROP TABLE t_vector_ddl;

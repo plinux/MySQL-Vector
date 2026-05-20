@@ -412,8 +412,18 @@ bool Item_func::fix_fields(THD *thd, Item **) {
     MIPS, it takes about 22kB to make one recursive
     call to Item_func::fix_fields())
   */
+#if defined(HAVE_VECTOR_INDEX) && defined(HAVE_FAISS)
+  /*
+    Native FAISS links OpenMP/BLAS runtimes into mysqld.  Those runtimes reduce
+    the effective per-thread stack headroom before this recursive guard trips,
+    so reserve extra margin only for native FAISS builds.
+  */
+  if (check_stack_overrun(thd, STACK_MIN_SIZE * 3 + 8192, buff))
+    return true;    // Fatal error if flag is set!
+#else
   if (check_stack_overrun(thd, STACK_MIN_SIZE * 2, buff))
     return true;    // Fatal error if flag is set!
+#endif
   if (arg_count) {  // Print purify happy
     for (arg = args, arg_end = args + arg_count; arg != arg_end; arg++) {
       if (fix_func_arg(thd, arg)) return true;

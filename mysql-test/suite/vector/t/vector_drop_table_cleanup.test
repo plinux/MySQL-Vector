@@ -1,0 +1,24 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: drop table should clean mapped vector indexes
+--echo #
+
+DROP TABLE IF EXISTS t_vec_drop_cleanup;
+CREATE TABLE t_vec_drop_cleanup (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+CREATE VECTOR INDEX ON t_vec_drop_cleanup(v) WITH (2);
+INSERT INTO t_vec_drop_cleanup VALUES (1, VEC_FROMTEXT('[1,1]'));
+
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('test.t_vec_drop_cleanup.v', '[1,1]', 1);
+
+DROP TABLE t_vec_drop_cleanup;
+SELECT VEC_INDEX_LIST();
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_LIST();

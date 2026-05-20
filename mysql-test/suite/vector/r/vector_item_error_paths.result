@@ -1,0 +1,229 @@
+#
+# WL#vector-v1: item_vectorfunc null/error branches
+#
+SELECT VEC_TOTEXT('abc');
+ERROR HY000: Incorrect arguments to vec_totext
+SELECT VEC_NORMALIZE('abc');
+ERROR HY000: Incorrect arguments to vec_normalize
+SELECT VEC_DOT_PRODUCT(NULL, VEC_FROMTEXT('[1]'));
+VEC_DOT_PRODUCT(NULL, VEC_FROMTEXT('[1]'))
+NULL
+SELECT VEC_DOT_PRODUCT(VEC_FROMTEXT('[1]'), NULL);
+VEC_DOT_PRODUCT(VEC_FROMTEXT('[1]'), NULL)
+NULL
+SELECT VEC_INNER_PRODUCT(NULL, VEC_FROMTEXT('[1]'));
+VEC_INNER_PRODUCT(NULL, VEC_FROMTEXT('[1]'))
+NULL
+SELECT VEC_INNER_PRODUCT(VEC_FROMTEXT('[1]'), NULL);
+VEC_INNER_PRODUCT(VEC_FROMTEXT('[1]'), NULL)
+NULL
+SELECT VEC_DISTANCE_EUCLIDEAN(NULL, VEC_FROMTEXT('[1]'));
+VEC_DISTANCE_EUCLIDEAN(NULL, VEC_FROMTEXT('[1]'))
+NULL
+SELECT VEC_DISTANCE_EUCLIDEAN(VEC_FROMTEXT('[1]'), NULL);
+VEC_DISTANCE_EUCLIDEAN(VEC_FROMTEXT('[1]'), NULL)
+NULL
+SELECT VEC_DISTANCE_COSINE(NULL, VEC_FROMTEXT('[1]'));
+VEC_DISTANCE_COSINE(NULL, VEC_FROMTEXT('[1]'))
+NULL
+SELECT VEC_DISTANCE_COSINE(VEC_FROMTEXT('[1]'), NULL);
+VEC_DISTANCE_COSINE(VEC_FROMTEXT('[1]'), NULL)
+NULL
+SELECT VEC_DISTANCE(NULL, VEC_FROMTEXT('[1]'));
+VEC_DISTANCE(NULL, VEC_FROMTEXT('[1]'))
+NULL
+SELECT VEC_DISTANCE(VEC_FROMTEXT('[1]'), NULL);
+VEC_DISTANCE(VEC_FROMTEXT('[1]'), NULL)
+NULL
+SELECT VEC_DISTANCE(VEC_FROMTEXT('[1]'), VEC_FROMTEXT('[1]'), NULL);
+VEC_DISTANCE(VEC_FROMTEXT('[1]'), VEC_FROMTEXT('[1]'), NULL)
+NULL
+SELECT VEC_INDEX_CREATE('idx_item_err_zero_dim', 0);
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_CREATE(NULL, 2);
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_CREATE('idx_item_err_dim_null', NULL);
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_CREATE('idx_item_err_null_optional', 2, NULL, NULL, NULL);
+VEC_INDEX_CREATE('idx_item_err_null_optional', 2, NULL, NULL, NULL)
+0
+SELECT VEC_INDEX_CREATE('idx_item_err_mode_null', 2, 'EUCLIDEAN', NULL, 'NATIVE');
+VEC_INDEX_CREATE('idx_item_err_mode_null', 2, 'EUCLIDEAN', NULL, 'NATIVE')
+0
+SELECT VEC_INDEX_CREATE('idx_item_err_provider_null', 2, 'EUCLIDEAN', 'MEMORY', NULL);
+VEC_INDEX_CREATE('idx_item_err_provider_null', 2, 'EUCLIDEAN', 'MEMORY', NULL)
+0
+SELECT VEC_INDEX_CREATE('idx_item_err', 2);
+VEC_INDEX_CREATE('idx_item_err', 2)
+1
+SELECT VEC_INDEX_DROP(NULL);
+VEC_INDEX_DROP(NULL)
+0
+SELECT VEC_INDEX_UPSERT(NULL, 1, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Incorrect arguments to vec_index_upsert
+SELECT VEC_INDEX_UPSERT('idx_item_err', -1, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Incorrect arguments to vec_index_upsert
+SELECT VEC_INDEX_UPSERT('idx_item_err', 1, 'bad-vector');
+ERROR HY000: Incorrect arguments to vec_index_upsert
+SELECT VEC_INDEX_ERASE(NULL, 1);
+ERROR HY000: Incorrect arguments to vec_index_erase
+SELECT VEC_INDEX_ERASE('idx_item_err', NULL);
+ERROR HY000: Incorrect arguments to vec_index_erase
+SELECT VEC_INDEX_ERASE('idx_item_err', -1);
+ERROR HY000: Incorrect arguments to vec_index_erase
+SELECT VEC_INDEX_SEARCH(NULL, VEC_FROMTEXT('[1,1]'), 1);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_SEARCH('idx_item_err', NULL, 1);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_SEARCH('idx_item_err', VEC_FROMTEXT('[1,1]'), NULL);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_SEARCH('idx_item_err', VEC_FROMTEXT('[1,1]'), -1);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_SEARCH('idx_item_err', VEC_FROMTEXT('[1,1]'), 10001);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE(NULL, VEC_FROMTEXT('[1,1]'), 1);
+ERROR HY000: Incorrect arguments to vec_index_search_with_distance
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_item_err', NULL, 1);
+ERROR HY000: Incorrect arguments to vec_index_search_with_distance
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_item_err', VEC_FROMTEXT('[1,1]'), NULL);
+ERROR HY000: Incorrect arguments to vec_index_search_with_distance
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_item_err', VEC_FROMTEXT('[1,1]'), -1);
+ERROR HY000: Incorrect arguments to vec_index_search_with_distance
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_item_err', VEC_FROMTEXT('[1,1]'), 10001);
+ERROR HY000: Incorrect arguments to vec_index_search_with_distance
+SELECT VEC_INDEX_SEARCH_BATCH(NULL, VEC_FROMTEXT('[1,1]'), 1, 1);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_err', NULL, 1, 1);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_err', VEC_FROMTEXT('[1,1]'), NULL, 1);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_err', VEC_FROMTEXT('[1,1]'), 1, NULL);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_err', VEC_FROMTEXT('[1,1]'), 0, 1);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_err', VEC_FROMTEXT('[1,1]'), 1, -1);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_err', VEC_FROMTEXT('[1,1]'), 1025, 1);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_err', VEC_FROMTEXT('[1,1]'), 1024, 65);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SELECT VEC_INDEX_SEARCH('idx_item_missing', VEC_FROMTEXT('[1,1]'), 1);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_item_missing', VEC_FROMTEXT('[1,1]'), 1);
+ERROR HY000: Incorrect arguments to vec_index_search_with_distance
+SELECT VEC_INDEX_REBUILD(NULL);
+ERROR HY000: Incorrect arguments to vec_index_rebuild
+SELECT VEC_INDEX_RECOVER(NULL);
+ERROR HY000: Incorrect arguments to vec_index_recover
+SELECT VEC_INDEX_INFO(NULL);
+ERROR HY000: Incorrect arguments to vec_index_info
+SELECT VEC_INDEX_REBUILD('idx_item_missing');
+ERROR HY000: Incorrect arguments to vec_index_rebuild
+SELECT VEC_INDEX_RECOVER('idx_item_missing');
+ERROR HY000: Incorrect arguments to vec_index_recover
+SELECT VEC_INDEX_TXN_PENDING(-1);
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
+SELECT VEC_INDEX_TXN_PENDING(NULL);
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
+SELECT VEC_INDEX_TXN_PENDING(99999);
+VEC_INDEX_TXN_PENDING(99999)
+0
+SET @txn_item = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_TXN_PENDING(@txn_item);
+VEC_INDEX_TXN_PENDING(@txn_item)
+0
+SELECT VEC_INDEX_STAGE_UPSERT(NULL, @txn_item, 1, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', NULL, 1, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', -1, 1, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, NULL, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, -1, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, 1, 'bad-vector');
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_missing', @txn_item, 1, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, 5, VEC_FROMTEXT('[5,5]'));
+VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, 5, VEC_FROMTEXT('[5,5]'))
+1
+SELECT VEC_INDEX_STAGE_ERASE(NULL, @txn_item, 5);
+ERROR HY000: Incorrect arguments to vec_index_stage_erase
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', NULL, 5);
+ERROR HY000: Incorrect arguments to vec_index_stage_erase
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', -1, 5);
+ERROR HY000: Incorrect arguments to vec_index_stage_erase
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, NULL);
+ERROR HY000: Incorrect arguments to vec_index_stage_erase
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, -1);
+ERROR HY000: Incorrect arguments to vec_index_stage_erase
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_missing', @txn_item, 5);
+ERROR HY000: Incorrect arguments to vec_index_stage_erase
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, 5);
+VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, 5)
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn_item);
+VEC_INDEX_TXN_PENDING(@txn_item)
+2
+SELECT VEC_INDEX_REBUILD_ALL();
+ERROR HY000: Incorrect arguments to vec_index_rebuild_all
+SELECT VEC_INDEX_RECOVER_ALL();
+ERROR HY000: Incorrect arguments to vec_index_recover_all
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_item, NULL);
+ERROR HY000: Incorrect arguments to vec_index_txn_savepoint
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_item, NULL);
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback_to
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_item, NULL);
+ERROR HY000: Incorrect arguments to vec_index_txn_release_savepoint
+SELECT VEC_INDEX_TXN_SAVEPOINT(NULL, 'sp_null_txn');
+ERROR HY000: Incorrect arguments to vec_index_txn_savepoint
+SELECT VEC_INDEX_TXN_SAVEPOINT(-1, 'sp_neg');
+ERROR HY000: Incorrect arguments to vec_index_txn_savepoint
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_item, '');
+ERROR HY000: Incorrect arguments to vec_index_txn_savepoint
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(-1, 'sp_neg');
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback_to
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_item, '');
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback_to
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(-1, 'sp_neg');
+ERROR HY000: Incorrect arguments to vec_index_txn_release_savepoint
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_item, '');
+ERROR HY000: Incorrect arguments to vec_index_txn_release_savepoint
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(NULL, 'sp_null_txn');
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback_to
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(NULL, 'sp_null_txn');
+ERROR HY000: Incorrect arguments to vec_index_txn_release_savepoint
+SELECT VEC_INDEX_TXN_SAVEPOINT(99999, 'sp_missing_txn');
+VEC_INDEX_TXN_SAVEPOINT(99999, 'sp_missing_txn')
+1
+SELECT VEC_INDEX_TXN_COMMIT(NULL);
+ERROR HY000: Incorrect arguments to vec_index_txn_commit
+SELECT VEC_INDEX_TXN_COMMIT(-1);
+ERROR HY000: Incorrect arguments to vec_index_txn_commit
+SELECT VEC_INDEX_TXN_COMMIT(99999);
+VEC_INDEX_TXN_COMMIT(99999)
+1
+SELECT VEC_INDEX_TXN_ROLLBACK(NULL);
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback
+SELECT VEC_INDEX_TXN_ROLLBACK(-1);
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_item);
+VEC_INDEX_TXN_ROLLBACK(@txn_item)
+1
+SELECT VEC_INDEX_TXN_ROLLBACK(99999);
+VEC_INDEX_TXN_ROLLBACK(99999)
+1
+SELECT VEC_INDEX_DROP('idx_item_err');
+VEC_INDEX_DROP('idx_item_err')
+1
+SELECT VEC_INDEX_DROP('idx_item_err_null_optional');
+VEC_INDEX_DROP('idx_item_err_null_optional')
+0
+SELECT VEC_INDEX_DROP('idx_item_err_mode_null');
+VEC_INDEX_DROP('idx_item_err_mode_null')
+0
+SELECT VEC_INDEX_DROP('idx_item_err_provider_null');
+VEC_INDEX_DROP('idx_item_err_provider_null')
+0

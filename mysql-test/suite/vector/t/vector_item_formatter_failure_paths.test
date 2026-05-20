@@ -1,0 +1,34 @@
+--source include/have_vector_index.inc
+
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: item_vectorfunc formatter failure branches
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_formatter_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_formatter_fail', 1, VEC_FROMTEXT('[1,2]'));
+SELECT VEC_INDEX_UPSERT('idx_formatter_fail', 2, VEC_FROMTEXT('[2,2]'));
+
+--disable_query_log
+SET SESSION debug = '+d,vector_item_fail_append_json_number';
+--enable_query_log
+
+SELECT VEC_INDEX_INFO('idx_formatter_fail');
+SELECT VEC_INDEX_SEARCH('idx_formatter_fail', VEC_FROMTEXT('[1,2]'), 1);
+SELECT VEC_INDEX_SEARCH_BATCH('idx_formatter_fail',
+  CONCAT(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[2,2]')), 2, 1);
+
+--disable_query_log
+SET SESSION debug = '-d,vector_item_fail_append_json_number';
+SET SESSION debug = '+d,vector_item_fail_append_json_real';
+--enable_query_log
+
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_formatter_fail',
+  VEC_FROMTEXT('[1,2]'), 1);
+
+--disable_query_log
+SET SESSION debug = '-d,vector_item_fail_append_json_real';
+--enable_query_log
+
+SELECT VEC_INDEX_DROP('idx_formatter_fail');

@@ -170,6 +170,12 @@
 #include "sql/sql_plugin_ref.h"
 #include "sql/sql_resolver.h"  // setup_order
 #include "sql/sql_show.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_dml_sync.h"
+#include "sql/vector/vector_index_ddl_formatter.h"
+#include "sql/vector/vector_index_identity.h"
+#include "sql/vector/vector_index_registry.h"
+#endif
 #include "sql/sql_tablespace.h"  // validate_tablespace_name
 #include "sql/sql_time.h"        // make_truncated_value_warning
 #include "sql/sql_trigger.h"     // change_trigger_table_name
@@ -183,6 +189,9 @@
 #include "sql/transaction.h"  // trans_commit_stmt
 #include "sql/transaction_info.h"
 #include "sql/trigger.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_truth_store.h"
+#endif
 #include "sql/xa.h"
 #include "sql_string.h"
 #include "template_utils.h"
@@ -471,6 +480,26 @@ static bool is_any_check_constraints_evaluation_required(
 
 static bool check_if_field_used_by_generated_column_or_default(
     TABLE *table, const Field *field, const Alter_info *alter_info);
+
+#ifdef HAVE_VECTOR_INDEX
+struct Vector_like_index_spec {
+  std::string column_name;
+  vector_index_registry::index_info info;
+};
+
+static bool collect_vector_like_index_specs(
+    const char *db_name, const char *table_name,
+    std::vector<Vector_like_index_spec> *specs);
+static bool create_vector_like_indexes(
+    THD *thd, const char *db_name, const char *table_name,
+    const std::vector<Vector_like_index_spec> &specs,
+    std::vector<std::string> *created_index_names);
+static void rollback_vector_like_indexes(
+    const std::vector<std::string> &created_index_names);
+static bool append_vector_like_index_ddls(
+    THD *thd, const char *db_name, const char *table_name,
+    const std::vector<Vector_like_index_spec> &specs, String *query);
+#endif
 
 /**
   RAII class to control the atomic DDL commit on slave.
@@ -2470,6 +2499,16 @@ static bool rm_table_check_fks(THD *thd, Drop_tables_ctx *drop_ctx) {
       return true;
     assert(table_def != nullptr);
 
+#ifdef HAVE_VECTOR_INDEX
+    if (!vector_index_truth_store::internal_sql_active() &&
+        vector_index_truth_store::is_truth_store_table(table->db,
+                                                      table->table_name)) {
+      my_error(ER_NO_SUCH_TABLE, MYF(0), table->db, table->table_name);
+      assert(true);
+      return true;
+    }
+#endif
+
     if (table_def && table_def->hidden() == dd::Abstract_table::HT_HIDDEN_SE) {
       my_error(ER_NO_SUCH_TABLE, MYF(0), table->db, table->table_name);
       assert(true);
@@ -2843,6 +2882,16 @@ static bool drop_base_table(THD *thd, const Drop_tables_ctx &drop_ctx,
   if (thd->dd_client()->acquire(table->db, table->table_name, &table_def))
     return true;
   assert(table_def != nullptr);
+
+#ifdef HAVE_VECTOR_INDEX
+  if (!vector_index_truth_store::internal_sql_active() &&
+      vector_index_truth_store::is_truth_store_table(table->db,
+                                                    table->table_name)) {
+    my_error(ER_NO_SUCH_TABLE, MYF(0), table->db, table->table_name);
+    assert(true);
+    return true;
+  }
+#endif
 
   if (table_def && table_def->hidden() == dd::Abstract_table::HT_HIDDEN_SE) {
     my_error(ER_NO_SUCH_TABLE, MYF(0), table->db, table->table_name);
@@ -10840,6 +10889,175 @@ bool mysql_rename_table(THD *thd, handlerton *base, const char *old_db,
     true  error
 */
 
+#ifdef HAVE_VECTOR_INDEX
+static bool collect_vector_like_index_specs(
+    const char *db_name, const char *table_name,
+    std::vector<Vector_like_index_spec> *specs) {
+  if (db_name == nullptr || table_name == nullptr || specs == nullptr) {
+    return false;
+  }
+
+  specs->clear();
+  std::vector<std::string> index_names;
+  if (!vector_index_registry::list_indexes(&index_names)) return false;
+
+  for (const std::string &index_name : index_names) {
+    if (!vector_index_identity::matches_table(index_name, db_name,
+                                              table_name)) {
+      continue;
+    }
+
+    vector_index_registry::index_info info;
+    if (!vector_index_registry::get_index_info(index_name, &info)) continue;
+
+    vector_index_identity::mapped_index_identity identity;
+    if (!vector_index_identity::parse_index_name(index_name, &identity)) {
+      continue;
+    }
+
+    Vector_like_index_spec spec;
+    spec.column_name = identity.column_name;
+    spec.info = info;
+    specs->push_back(std::move(spec));
+  }
+
+  std::sort(specs->begin(), specs->end(),
+            [](const Vector_like_index_spec &lhs,
+               const Vector_like_index_spec &rhs) {
+              return lhs.column_name < rhs.column_name;
+            });
+  return true;
+}
+
+static bool create_vector_like_indexes(
+    THD *thd, const char *db_name, const char *table_name,
+    const std::vector<Vector_like_index_spec> &specs,
+    std::vector<std::string> *created_index_names) {
+  if (thd == nullptr || db_name == nullptr || table_name == nullptr) return false;
+  if (created_index_names != nullptr) created_index_names->clear();
+
+  dd::cache::Dictionary_client *dd_client = thd->dd_client();
+  dd::cache::Dictionary_client::Auto_releaser releaser(dd_client);
+  const dd::Table *table_def = nullptr;
+  if (dd_client->acquire(db_name, table_name, &table_def) || table_def == nullptr) {
+    return false;
+  }
+
+  std::string doc_id_column_name;
+  const dd::Index *primary_index = nullptr;
+  for (const dd::Index *index : table_def->indexes()) {
+    if (index->type() != dd::Index::IT_PRIMARY || index->is_hidden()) continue;
+    primary_index = index;
+    break;
+  }
+  if (primary_index != nullptr) {
+    size_t visible_part_count = 0;
+    const dd::Column *doc_id_column = nullptr;
+    for (const dd::Index_element *element : primary_index->elements()) {
+      if (element->is_hidden()) continue;
+      ++visible_part_count;
+      doc_id_column = &element->column();
+    }
+    if (visible_part_count == 1 && doc_id_column != nullptr) {
+      doc_id_column_name = doc_id_column->name();
+    }
+  }
+
+  for (const Vector_like_index_spec &spec : specs) {
+    const vector_index_registry::index_info &info = spec.info;
+    const std::string index_name =
+        vector_index_identity::make_index_name(db_name, table_name,
+                                               spec.column_name);
+    const uint32_t create_build_threads =
+        vector_index_ddl_formatter::first_nonzero_build_threads(info);
+    vector_index_registry::create_index_options options;
+    if (create_build_threads != 0) {
+      options.build_threads_specified = true;
+      options.build_threads = create_build_threads;
+    }
+    if (!vector_index_registry::create_mapped_index(
+            index_name, info.dimension, info.metric, info.mode, info.provider,
+            db_name, table_name, spec.column_name, doc_id_column_name,
+            options)) {
+      return false;
+    }
+    if (info.search_ef != 0 &&
+        !vector_index_registry::set_search_ef(index_name, info.search_ef)) {
+      return false;
+    }
+    if ((info.hnsw_m != 0 || info.hnsw_ef_construction != 0) &&
+        !vector_index_registry::set_hnsw_build_params(
+            index_name, info.hnsw_m, info.hnsw_ef_construction)) {
+      return false;
+    }
+    if ((info.faiss_nlist != 0 || info.faiss_nprobe != 0) &&
+        !vector_index_registry::set_faiss_ivf_params(
+            index_name, info.faiss_nlist, info.faiss_nprobe)) {
+      return false;
+    }
+    if ((info.faiss_pq_m != 0 || info.faiss_pq_bits != 0) &&
+        !vector_index_registry::set_faiss_ivf_pq_params(
+            index_name, info.faiss_nlist, info.faiss_nprobe, info.faiss_pq_m,
+            info.faiss_pq_bits)) {
+      return false;
+    }
+    if ((info.diskann_max_degree != 0 || info.diskann_build_complexity != 0) &&
+        !vector_index_registry::set_diskann_build_params(
+            index_name, info.diskann_max_degree, info.diskann_build_complexity,
+            info.diskann_build_threads)) {
+      return false;
+    }
+    if (info.diskann_build_threads != 0 && info.diskann_max_degree == 0 &&
+        info.diskann_build_complexity == 0 &&
+        !vector_index_registry::set_diskann_build_threads(
+            index_name, info.diskann_build_threads)) {
+      return false;
+    }
+    if (info.diskann_search_complexity != 0 &&
+        !vector_index_registry::set_diskann_search_complexity(
+            index_name, info.diskann_search_complexity)) {
+      return false;
+    }
+    if (created_index_names != nullptr) {
+      created_index_names->push_back(index_name);
+    }
+  }
+  return true;
+}
+
+static void rollback_vector_like_indexes(
+    const std::vector<std::string> &created_index_names) {
+  for (auto it = created_index_names.rbegin(); it != created_index_names.rend();
+       ++it) {
+    (void)vector_index_registry::drop_index(*it);
+  }
+}
+
+static bool append_vector_like_index_ddls(
+    THD *thd, const char *db_name, const char *table_name,
+    const std::vector<Vector_like_index_spec> &specs, String *query) {
+  if (thd == nullptr || db_name == nullptr || table_name == nullptr ||
+      query == nullptr) {
+    return false;
+  }
+
+  for (const Vector_like_index_spec &spec : specs) {
+    const std::string index_name =
+        vector_index_identity::make_index_name(db_name, table_name,
+                                               spec.column_name);
+    vector_index_ddl_formatter::append_create_statement(
+        thd, query, db_name, strlen(db_name), table_name, strlen(table_name),
+        true, spec.column_name, spec.info,
+        vector_index_ddl_formatter::first_nonzero_build_threads(spec.info));
+    vector_index_ddl_formatter::append_tuning_statements(
+        thd, query, index_name, spec.info,
+        vector_index_ddl_formatter::tuning_emit_policy::k_emit_nonzero);
+  }
+
+  return false;
+}
+#endif
+
 bool mysql_create_like_table(THD *thd, Table_ref *table, Table_ref *src_table,
                              HA_CREATE_INFO *create_info) {
   Alter_info local_alter_info(thd->mem_root);
@@ -10848,6 +11066,10 @@ bool mysql_create_like_table(THD *thd, Table_ref *table, Table_ref *src_table,
   uint not_used;
   Tablespace_hash_set tablespace_set(PSI_INSTRUMENT_ME);
   handlerton *post_ddl_ht = nullptr;
+#ifdef HAVE_VECTOR_INDEX
+  std::vector<Vector_like_index_spec> vector_like_specs;
+  std::vector<std::string> created_vector_indexes;
+#endif
   dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
 
   DBUG_TRACE;
@@ -10928,6 +11150,20 @@ bool mysql_create_like_table(THD *thd, Table_ref *table, Table_ref *src_table,
   /* Partition info is not handled by mysql_prepare_alter_table() call. */
   if (src_table->table->part_info)
     thd->work_part_info = src_table->table->part_info->get_clone(thd);
+
+#ifdef HAVE_VECTOR_INDEX
+  if (!(create_info->options & HA_LEX_CREATE_TMP_TABLE) &&
+      vector_dml_sync::has_vector_columns(src_table->table)) {
+    if (!collect_vector_like_index_specs(src_table->db, src_table->table_name,
+                                         &vector_like_specs)) {
+      if (!thd->is_error()) {
+        my_error(ER_INTERNAL_ERROR, MYF(0),
+                 "Failed to inspect vector indexes for CREATE TABLE LIKE");
+      }
+      return true;
+    }
+  }
+#endif
 
   // Add the tablespace name, if used.
   if (src_table->table->s->tablespace &&
@@ -11030,6 +11266,14 @@ bool mysql_create_like_table(THD *thd, Table_ref *table, Table_ref *src_table,
           false,  // No FKs, no need to lookup parent keys
           &is_trans, &post_ddl_ht))
     goto err;
+
+#ifdef HAVE_VECTOR_INDEX
+  if (!vector_like_specs.empty() &&
+      !create_vector_like_indexes(thd, table->db, table->table_name,
+                                  vector_like_specs, &created_vector_indexes)) {
+    goto err;
+  }
+#endif
 
   /*
     Ensure that table or view does not exist and we have an exclusive lock on
@@ -11142,6 +11386,13 @@ bool mysql_create_like_table(THD *thd, Table_ref *table, Table_ref *src_table,
               false /* SHOW CREATE TABLE */);
 
           assert(result == 0);  // store_create_info() always return 0
+#ifdef HAVE_VECTOR_INDEX
+          if (!vector_like_specs.empty() &&
+              append_vector_like_index_ddls(thd, table->db, table->table_name,
+                                            vector_like_specs, &query)) {
+            goto err;
+          }
+#endif
 
           if (new_table) {
             assert(thd->open_tables == table->table);
@@ -11218,6 +11469,11 @@ bool mysql_create_like_table(THD *thd, Table_ref *table, Table_ref *src_table,
   return false;
 
 err:
+#ifdef HAVE_VECTOR_INDEX
+  if (!created_vector_indexes.empty()) {
+    rollback_vector_like_indexes(created_vector_indexes);
+  }
+#endif
   if (!(create_info->options & HA_LEX_CREATE_TMP_TABLE)) {
     trans_rollback_stmt(thd);
     /*

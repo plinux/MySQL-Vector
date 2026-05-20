@@ -1,0 +1,67 @@
+#
+# WL#vector-v1: roundtrip structured and row truth-store artifacts
+#
+SELECT VEC_INDEX_CREATE('idx_truth_artifact_roundtrip', 2);
+VEC_INDEX_CREATE('idx_truth_artifact_roundtrip', 2)
+1
+SELECT VEC_INDEX_UPSERT('idx_truth_artifact_roundtrip', 1,
+VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_truth_artifact_roundtrip', 1,
+VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @large_hex) AS metadata_set;
+metadata_set
+1
+SELECT LENGTH(VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata')) = LENGTH(@large_hex)
+AS metadata_roundtrip;
+metadata_roundtrip
+1
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('manifest', @large_hex) AS manifest_set;
+manifest_set
+1
+SELECT LENGTH(VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest')) = LENGTH(@large_hex)
+AS manifest_roundtrip;
+manifest_roundtrip
+1
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('committed', @committed_hex)
+AS committed_set;
+committed_set
+1
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('committed') = @committed_hex
+AS committed_roundtrip;
+committed_roundtrip
+1
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('changelog', @changelog_hex)
+AS changelog_set;
+changelog_set
+1
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('changelog') = @changelog_hex
+AS changelog_roundtrip;
+changelog_roundtrip
+1
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('prepared', @prepared_hex)
+AS prepared_set;
+prepared_set
+1
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared') = @prepared_hex
+AS prepared_roundtrip;
+prepared_roundtrip
+1
+VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @metadata_orig)
+1
+VEC_DEBUG_TRUTH_STORE_SET_HEX('manifest', @manifest_orig)
+1
+VEC_DEBUG_TRUTH_STORE_SET_HEX('committed', @committed_orig)
+1
+VEC_DEBUG_TRUTH_STORE_SET_HEX('changelog', @changelog_orig)
+1
+VEC_DEBUG_TRUTH_STORE_SET_HEX('prepared', @prepared_orig)
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_truth_artifact_roundtrip', VEC_FROMTEXT('[1,1]'), 1),
+CAST(1 AS JSON)) AS search_after_restore;
+search_after_restore
+1
+SELECT VEC_INDEX_DROP('idx_truth_artifact_roundtrip');
+VEC_INDEX_DROP('idx_truth_artifact_roundtrip')
+1

@@ -1,0 +1,30 @@
+#
+# WL#vector-v1: prune change-log rows when dropping vector index
+#
+SET @ckpt_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_change_log_checkpoint');
+SELECT VEC_INDEX_CREATE('idx_change_log_prune', 2);
+VEC_INDEX_CREATE('idx_change_log_prune', 2)
+1
+SELECT VEC_INDEX_UPSERT('idx_change_log_prune', 1, '[1,1]');
+VEC_INDEX_UPSERT('idx_change_log_prune', 1, '[1,1]')
+1
+SET @ckpt_after_upsert = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_change_log_checkpoint');
+SELECT @ckpt_after_upsert > @ckpt_before;
+@ckpt_after_upsert > @ckpt_before
+1
+SELECT VEC_INDEX_DROP('idx_change_log_prune');
+VEC_INDEX_DROP('idx_change_log_prune')
+1
+SET @ckpt_after_drop = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_change_log_checkpoint');
+SELECT @ckpt_after_drop;
+@ckpt_after_drop
+0

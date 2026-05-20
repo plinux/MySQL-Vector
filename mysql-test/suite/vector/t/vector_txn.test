@@ -1,0 +1,99 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: transactional semantics for VECTOR(dim)
+--echo #
+
+--echo # non-vector savepoint management must not register a vector participant
+CREATE TABLE t_plain_txn (
+  id INT PRIMARY KEY
+) ENGINE=InnoDB;
+FLUSH STATUS;
+SET autocommit=0;
+INSERT INTO t_plain_txn VALUES (1);
+SELECT VARIABLE_VALUE INTO @handler_commit_before_savepoint
+  FROM performance_schema.session_status
+  WHERE VARIABLE_NAME='Handler_commit';
+SAVEPOINT sp_plain_txn;
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED) -
+       @handler_commit_before_savepoint AS handler_commit_delta_after_savepoint
+  FROM performance_schema.session_status
+  WHERE VARIABLE_NAME='Handler_commit';
+ROLLBACK;
+SET autocommit=1;
+DROP TABLE t_plain_txn;
+
+CREATE TABLE t_txn (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+--echo # rollback should discard uncommitted vector rows
+START TRANSACTION;
+INSERT INTO t_txn VALUES (1, VEC_FROMTEXT('[1,1]'));
+SELECT COUNT(*) FROM t_txn WHERE id=1;
+ROLLBACK;
+SELECT COUNT(*) FROM t_txn WHERE id=1;
+
+--echo # savepoint rollback should restore vector value
+START TRANSACTION;
+INSERT INTO t_txn VALUES (2, VEC_FROMTEXT('[2,2]'));
+SAVEPOINT sv1;
+UPDATE t_txn SET v=VEC_FROMTEXT('[9,9]') WHERE id=2;
+SELECT id, VEC_TOTEXT(v) FROM t_txn WHERE id=2;
+ROLLBACK TO SAVEPOINT sv1;
+SELECT id, VEC_TOTEXT(v) FROM t_txn WHERE id=2;
+COMMIT;
+
+--echo # uncommitted vector writes are not visible from another connection
+connect (con1,localhost,root,,);
+connection default;
+START TRANSACTION;
+INSERT INTO t_txn VALUES (3, VEC_FROMTEXT('[3,3]'));
+SELECT COUNT(*) FROM t_txn WHERE id=3;
+connection con1;
+SELECT COUNT(*) FROM t_txn WHERE id=3;
+connection default;
+COMMIT;
+connection con1;
+SELECT COUNT(*) FROM t_txn WHERE id=3;
+disconnect con1;
+connection default;
+
+--echo # committed rows participate in exact vector distance ordering
+SELECT id FROM t_txn ORDER BY VEC_DISTANCE(v, VEC_FROMTEXT('[0,0]')) LIMIT 3;
+
+DROP TABLE t_txn;
+
+--echo # vector index savepoint rollback should discard staged index writes
+CREATE TABLE t_txn_savepoint_idx (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_txn_savepoint_idx(v) WITH (2);
+START TRANSACTION;
+INSERT INTO t_txn_savepoint_idx VALUES (4, VEC_FROMTEXT('[4,4]'));
+SAVEPOINT sp_vector_idx;
+INSERT INTO t_txn_savepoint_idx VALUES (9, VEC_FROMTEXT('[9,9]'));
+ROLLBACK TO SAVEPOINT sp_vector_idx;
+COMMIT;
+SELECT VEC_INDEX_SEARCH('test.t_txn_savepoint_idx.v', '[9,9]', 1);
+
+--echo # savepoint before the first vector DML should still guard vector writes
+--echo # The nearest committed row remains id=4; id=7 must not be visible.
+START TRANSACTION;
+SAVEPOINT sp_before_vector_dml;
+INSERT INTO t_txn_savepoint_idx VALUES (7, VEC_FROMTEXT('[7,7]'));
+ROLLBACK TO SAVEPOINT sp_before_vector_dml;
+COMMIT;
+SELECT VEC_INDEX_SEARCH('test.t_txn_savepoint_idx.v', '[7,7]', 1);
+
+--echo # release savepoint after vector DML should not be processed twice
+START TRANSACTION;
+SAVEPOINT sp_release_vector;
+INSERT INTO t_txn_savepoint_idx VALUES (8, VEC_FROMTEXT('[8,8]'));
+RELEASE SAVEPOINT sp_release_vector;
+COMMIT;
+SELECT VEC_INDEX_SEARCH('test.t_txn_savepoint_idx.v', '[8,8]', 1);
+
+DROP TABLE t_txn_savepoint_idx;

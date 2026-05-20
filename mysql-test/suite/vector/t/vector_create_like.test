@@ -1,0 +1,88 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: CREATE TABLE LIKE copies mapped vector indexes
+--echo #
+
+DROP TABLE IF EXISTS t_vector_like_dst;
+DROP TABLE IF EXISTS t_vector_like_src;
+
+CREATE TABLE t_vector_like_src (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_like_src VALUES (1, VEC_FROMTEXT('[1,1]'));
+CREATE VECTOR INDEX ON t_vector_like_src(v)
+  WITH (2, 'COSINE', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS(
+  'test.t_vector_like_src.v', 2, 1);
+
+CREATE TABLE t_vector_like_dst LIKE t_vector_like_src;
+SELECT VEC_INDEX_LIST();
+SHOW CREATE TABLE t_vector_like_dst;
+
+INSERT INTO t_vector_like_dst VALUES (2, VEC_FROMTEXT('[2,2]'));
+SELECT VEC_INDEX_SEARCH('test.t_vector_like_dst.v', VEC_FROMTEXT('[2,2]'), 1);
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_like_dst.v'
+  WHERE Variable_name = 'test.t_vector_like_dst.v.provider'
+     OR Variable_name = 'test.t_vector_like_dst.v.mode'
+     OR Variable_name = 'test.t_vector_like_dst.v.backend_variant'
+     OR Variable_name = 'test.t_vector_like_dst.v.faiss_nlist'
+     OR Variable_name = 'test.t_vector_like_dst.v.faiss_nprobe';
+
+DROP TABLE t_vector_like_dst;
+DROP TABLE t_vector_like_src;
+
+DROP TABLE IF EXISTS t_vector_like_hnsw_dst;
+DROP TABLE IF EXISTS t_vector_like_hnsw_src;
+
+CREATE TABLE t_vector_like_hnsw_src (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_like_hnsw_src VALUES (1, VEC_FROMTEXT('[1,0]'));
+CREATE VECTOR INDEX ON t_vector_like_hnsw_src(v)
+  WITH (2, 'COSINE', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('test.t_vector_like_hnsw_src.v', 24, 320);
+SELECT VEC_INDEX_SET_SEARCH_EF('test.t_vector_like_hnsw_src.v', 96);
+
+CREATE TABLE t_vector_like_hnsw_dst LIKE t_vector_like_hnsw_src;
+SHOW CREATE TABLE t_vector_like_hnsw_dst;
+INSERT INTO t_vector_like_hnsw_dst VALUES (2, VEC_FROMTEXT('[0,1]'));
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_like_hnsw_dst.v'
+  WHERE Variable_name = 'test.t_vector_like_hnsw_dst.v.provider'
+     OR Variable_name = 'test.t_vector_like_hnsw_dst.v.mode'
+     OR Variable_name = 'test.t_vector_like_hnsw_dst.v.search_ef'
+     OR Variable_name = 'test.t_vector_like_hnsw_dst.v.hnsw_m'
+     OR Variable_name = 'test.t_vector_like_hnsw_dst.v.hnsw_ef_construction';
+
+DROP TABLE t_vector_like_hnsw_dst;
+DROP TABLE t_vector_like_hnsw_src;
+
+DROP TABLE IF EXISTS t_vector_like_diskann_dst;
+DROP TABLE IF EXISTS t_vector_like_diskann_src;
+
+CREATE TABLE t_vector_like_diskann_src (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_like_diskann_src VALUES (1, VEC_FROMTEXT('[1,1]'));
+CREATE VECTOR INDEX ON t_vector_like_diskann_src(v)
+  WITH (2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS(
+  'test.t_vector_like_diskann_src.v', 48, 96);
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(
+  'test.t_vector_like_diskann_src.v', 80);
+
+CREATE TABLE t_vector_like_diskann_dst LIKE t_vector_like_diskann_src;
+SHOW CREATE TABLE t_vector_like_diskann_dst;
+INSERT INTO t_vector_like_diskann_dst VALUES (2, VEC_FROMTEXT('[2,2]'));
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_like_diskann_dst.v'
+  WHERE Variable_name = 'test.t_vector_like_diskann_dst.v.provider'
+     OR Variable_name = 'test.t_vector_like_diskann_dst.v.mode'
+     OR Variable_name = 'test.t_vector_like_diskann_dst.v.diskann_max_degree'
+     OR Variable_name = 'test.t_vector_like_diskann_dst.v.diskann_build_complexity'
+     OR Variable_name = 'test.t_vector_like_diskann_dst.v.diskann_search_complexity';
+
+DROP TABLE t_vector_like_diskann_dst;
+DROP TABLE t_vector_like_diskann_src;

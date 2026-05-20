@@ -702,6 +702,33 @@ bool fetch_schema_component_names_by_criteria(
 namespace dd {
 namespace cache {
 
+#ifdef HAVE_VECTOR_INDEX
+namespace {
+
+bool is_vector_truth_table_name(const dd::String_type &schema_name,
+                                const dd::String_type &table_name) {
+  if (my_strcasecmp(system_charset_info, schema_name.c_str(), "mysql") != 0)
+    return false;
+
+  return my_strcasecmp(system_charset_info, table_name.c_str(),
+                       "vector_index_truth_metadata") == 0 ||
+         my_strcasecmp(system_charset_info, table_name.c_str(),
+                       "vector_index_truth_committed") == 0 ||
+         my_strcasecmp(system_charset_info, table_name.c_str(),
+                       "vector_index_truth_manifest") == 0 ||
+         my_strcasecmp(system_charset_info, table_name.c_str(),
+                       "vector_index_truth_changelog") == 0 ||
+         my_strcasecmp(system_charset_info, table_name.c_str(),
+                       "vector_index_truth_prepared") == 0 ||
+         my_strcasecmp(system_charset_info, table_name.c_str(),
+                       "vector_index_truth_store") == 0 ||
+         my_strcasecmp(system_charset_info, table_name.c_str(),
+                       "vector_index_truth_store_quarantine") == 0;
+}
+
+}  // namespace
+#endif
+
 /**
   Inherit from an instantiation of the template to allow
   forward-declaring in Dictionary_client.
@@ -2056,11 +2083,20 @@ bool Dictionary_client::fetch_schema_table_names_by_engine(
     auto table_type = static_cast<dd::Abstract_table::enum_hidden_type>(
         r->read_int(dd::tables::Tables::FIELD_HIDDEN));
     dd::String_type engine_name = r->read_str(dd::tables::Tables::FIELD_ENGINE);
+#ifdef HAVE_VECTOR_INDEX
+    dd::String_type table_name = r->read_str(dd::tables::Tables::FIELD_NAME);
 
+    // Select visible tables names.
+    return (!is_vector_truth_table_name(schema->name(), table_name) &&
+            table_type == dd::Abstract_table::HT_VISIBLE &&
+            (my_strcasecmp(system_charset_info, engine_name.c_str(),
+                           engine.c_str()) == 0));
+#else
     // Select visible tables names.
     return (table_type == dd::Abstract_table::HT_VISIBLE &&
             (my_strcasecmp(system_charset_info, engine_name.c_str(),
                            engine.c_str()) == 0));
+#endif
   };
   return fetch_schema_component_names_by_criteria<Abstract_table>(
       m_thd, schema, names, fetch_criteria);
@@ -2071,6 +2107,10 @@ bool Dictionary_client::fetch_schema_table_names_by_engine(
 bool Dictionary_client::fetch_schema_table_names_not_hidden_by_se(
     const Schema *schema, std::vector<String_type> *names) const {
   auto fetch_criteria = [&](Raw_record *r) -> bool {
+#ifdef HAVE_VECTOR_INDEX
+    dd::String_type table_name = r->read_str(dd::tables::Tables::FIELD_NAME);
+    if (is_vector_truth_table_name(schema->name(), table_name)) return false;
+#endif
     return static_cast<dd::Abstract_table::enum_hidden_type>(
                r->read_int(dd::tables::Tables::FIELD_HIDDEN)) !=
            dd::Abstract_table::HT_HIDDEN_SE;
@@ -2084,6 +2124,10 @@ template <>
 bool Dictionary_client::fetch_schema_component_names<Abstract_table>(
     const Schema *schema, std::vector<String_type> *names) const {
   auto fetch_criteria = [&](Raw_record *r) -> bool {
+#ifdef HAVE_VECTOR_INDEX
+    dd::String_type table_name = r->read_str(dd::tables::Tables::FIELD_NAME);
+    if (is_vector_truth_table_name(schema->name(), table_name)) return false;
+#endif
     return static_cast<dd::Abstract_table::enum_hidden_type>(
                r->read_int(dd::tables::Tables::FIELD_HIDDEN)) ==
            dd::Abstract_table::HT_VISIBLE;  // Select visible tables names.

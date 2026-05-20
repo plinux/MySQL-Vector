@@ -1,0 +1,575 @@
+#
+# WL#vector-v1: vector observability via SHOW STATUS (Vector_*)
+#
+SET @create_req_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_index_create_requests');
+SET @drop_req_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_index_drop_requests');
+SET @metadata_load_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_metadata_load_failures');
+SET @metadata_persist_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_metadata_persist_failures');
+SET @manifest_load_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_load_failures');
+SET @manifest_persist_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_persist_failures');
+SET @change_log_load_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_change_log_load_failures');
+SET @change_log_replay_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_change_log_replay_failures');
+SET @change_log_persist_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_change_log_persist_failures');
+SET @backend_recover_fallback_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks');
+SET @registered_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_registered_indexes');
+SET @rebuild_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_rebuild_requests');
+SET @recover_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_recover_requests');
+SET @rebuild_all_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_rebuild_all_requests');
+SET @recover_all_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_recover_all_requests');
+SET @search_req_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_requests');
+SET @search_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_failures');
+SET @search_result_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_results_returned');
+SET @search_mvcc_candidates_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_mvcc_candidate_rows');
+SET @search_mvcc_expansions_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_mvcc_expansions');
+SET @search_mvcc_limit_hits_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_mvcc_limit_hits');
+SET @stage_upsert_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_stage_upsert_requests');
+SET @stage_erase_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_stage_erase_requests');
+SET @commit_req_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_txn_commit_requests');
+SET @commit_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_txn_commit_failures');
+SET @rollback_req_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_txn_rollback_requests');
+SET @runtime_rollback_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_runtime_state_rollbacks');
+SET @runtime_rollback_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_runtime_state_rollback_failures');
+SET @artifact_rollback_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollbacks');
+SET @artifact_rollback_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollback_failures');
+SET @truth_store_persist_req_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_persist_requests');
+SET @truth_store_persist_fail_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_persist_failures');
+SET @pending_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_pending_txn_changes');
+SET @manifest_version_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_version');
+SET @manifest_meta_ckpt_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_metadata_checkpoint');
+SET @manifest_committed_ckpt_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_committed_checkpoint');
+SET @manifest_change_log_ckpt_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_change_log_checkpoint');
+SELECT VEC_INDEX_CREATE('idx_status', 2);
+VEC_INDEX_CREATE('idx_status', 2)
+1
+SELECT VEC_INDEX_UPSERT('idx_status', 1, '[1,2]');
+VEC_INDEX_UPSERT('idx_status', 1, '[1,2]')
+1
+SET @txn1 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_status', @txn1, 2, '[2,2]');
+VEC_INDEX_STAGE_UPSERT('idx_status', @txn1, 2, '[2,2]')
+1
+SELECT VEC_INDEX_STAGE_ERASE('idx_status', @txn1, 1);
+VEC_INDEX_STAGE_ERASE('idx_status', @txn1, 1)
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn1);
+VEC_INDEX_TXN_PENDING(@txn1)
+2
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn1);
+VEC_INDEX_TXN_ROLLBACK(@txn1)
+1
+SELECT VEC_INDEX_SEARCH('idx_status', '[1,2]', 1);
+VEC_INDEX_SEARCH('idx_status', '[1,2]', 1)
+[1]
+SELECT VEC_INDEX_SEARCH('idx_missing_status', '[1,2]', 1);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_REBUILD('idx_status');
+VEC_INDEX_REBUILD('idx_status')
+1
+SELECT VEC_INDEX_RECOVER('idx_status');
+VEC_INDEX_RECOVER('idx_status')
+1
+SELECT VEC_INDEX_REBUILD_ALL();
+VEC_INDEX_REBUILD_ALL()
+1
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+1
+SELECT VEC_INDEX_CREATE('idx_ext_status', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_ext_status', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
+1
+SET @txn2 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_ext_status', @txn2, 9, '[9,9]');
+VEC_INDEX_STAGE_UPSERT('idx_ext_status', @txn2, 9, '[9,9]')
+1
+SELECT VEC_INDEX_TXN_COMMIT(@txn2);
+VEC_INDEX_TXN_COMMIT(@txn2)
+1
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn2);
+VEC_INDEX_TXN_ROLLBACK(@txn2)
+1
+SELECT VEC_INDEX_DROP('idx_status');
+VEC_INDEX_DROP('idx_status')
+1
+SELECT VEC_INDEX_DROP('idx_ext_status');
+VEC_INDEX_DROP('idx_ext_status')
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_index_create_requests') - @create_req_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_index_create_requests') - @create_req_before
+2
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_index_drop_requests') - @drop_req_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_index_drop_requests') - @drop_req_before
+2
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_metadata_load_failures') - @metadata_load_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_metadata_load_failures') - @metadata_load_fail_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_metadata_persist_failures') - @metadata_persist_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_metadata_persist_failures') - @metadata_persist_fail_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_load_failures') - @manifest_load_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_load_failures') - @manifest_load_fail_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_persist_failures') - @manifest_persist_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_persist_failures') - @manifest_persist_fail_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_change_log_load_failures') - @change_log_load_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_change_log_load_failures') - @change_log_load_fail_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_change_log_replay_failures') - @change_log_replay_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_change_log_replay_failures') - @change_log_replay_fail_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_change_log_persist_failures') - @change_log_persist_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_change_log_persist_failures') - @change_log_persist_fail_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks') - @backend_recover_fallback_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks') - @backend_recover_fallback_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_registered_indexes') - @registered_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_registered_indexes') - @registered_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_rebuild_requests') - @rebuild_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_rebuild_requests') - @rebuild_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_recover_requests') - @recover_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_recover_requests') - @recover_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_rebuild_all_requests') - @rebuild_all_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_rebuild_all_requests') - @rebuild_all_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_recover_all_requests') - @recover_all_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_recover_all_requests') - @recover_all_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_requests') - @search_req_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_requests') - @search_req_before
+2
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_failures') - @search_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_failures') - @search_fail_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_results_returned') - @search_result_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_results_returned') - @search_result_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_mvcc_candidate_rows') - @search_mvcc_candidates_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_mvcc_candidate_rows') - @search_mvcc_candidates_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_mvcc_expansions') - @search_mvcc_expansions_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_mvcc_expansions') - @search_mvcc_expansions_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_mvcc_limit_hits') - @search_mvcc_limit_hits_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_search_mvcc_limit_hits') - @search_mvcc_limit_hits_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_stage_upsert_requests') - @stage_upsert_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_stage_upsert_requests') - @stage_upsert_before
+3
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_stage_erase_requests') - @stage_erase_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_stage_erase_requests') - @stage_erase_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_txn_commit_requests') - @commit_req_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_txn_commit_requests') - @commit_req_before
+2
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_txn_commit_failures') - @commit_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_txn_commit_failures') - @commit_fail_before
+0
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_txn_rollback_requests') - @rollback_req_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_txn_rollback_requests') - @rollback_req_before
+2
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_runtime_state_rollbacks') >= @runtime_rollback_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_runtime_state_rollbacks') >= @runtime_rollback_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_runtime_state_rollback_failures') >= @runtime_rollback_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_runtime_state_rollback_failures') >= @runtime_rollback_fail_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollbacks') >= @artifact_rollback_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollbacks') >= @artifact_rollback_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollback_failures') >= @artifact_rollback_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollback_failures') >= @artifact_rollback_fail_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_persist_requests') > @truth_store_persist_req_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_persist_requests') > @truth_store_persist_req_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_persist_failures') >= @truth_store_persist_fail_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_persist_failures') >= @truth_store_persist_fail_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_pending_txn_changes') - @pending_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_pending_txn_changes') - @pending_before
+0
+SELECT (
+SELECT COUNT(*)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_apply_latency_ms');
+(
+SELECT COUNT(*)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_apply_latency_ms')
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_apply_latency_ms') > 0;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_apply_latency_ms') > 0
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_version') > @manifest_version_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_version') > @manifest_version_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_metadata_checkpoint') >= @manifest_meta_ckpt_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_metadata_checkpoint') >= @manifest_meta_ckpt_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_committed_checkpoint') >= @manifest_committed_ckpt_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_committed_checkpoint') >= @manifest_committed_ckpt_before
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_change_log_checkpoint') >= @manifest_change_log_ckpt_before;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_manifest_change_log_checkpoint') >= @manifest_change_log_ckpt_before
+1
+SELECT (
+SELECT VARIABLE_VALUE
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_backend');
+(
+SELECT VARIABLE_VALUE
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_backend')
+mysql
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_transactional');
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_transactional')
+1

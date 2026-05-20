@@ -1,0 +1,30 @@
+#
+# WL#Vector: CREATE VECTOR INDEX rolls back local state on binlog failure
+#
+DROP TABLE IF EXISTS t_vector_ddl_binlog_fail;
+CREATE TABLE t_vector_ddl_binlog_fail (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_ddl_binlog_fail VALUES
+(1, VEC_FROMTEXT('[1,1]')),
+(2, VEC_FROMTEXT('[2,2]'));
+CREATE VECTOR INDEX ON t_vector_ddl_binlog_fail(v) WITH (2);
+ERROR HY000: Internal error: CREATE VECTOR INDEX
+SELECT VEC_INDEX_INFO('test.t_vector_ddl_binlog_fail.v');
+ERROR HY000: Incorrect arguments to vec_index_info
+CREATE VECTOR INDEX ON t_vector_ddl_binlog_fail(v) WITH (2);
+SELECT VEC_INDEX_SEARCH('test.t_vector_ddl_binlog_fail.v',
+VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('test.t_vector_ddl_binlog_fail.v',
+VEC_FROMTEXT('[1,1]'), 1)
+[1]
+DROP VECTOR INDEX ON t_vector_ddl_binlog_fail(v);
+ERROR HY000: Internal error: DROP VECTOR INDEX
+SELECT VEC_INDEX_SEARCH('test.t_vector_ddl_binlog_fail.v',
+VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('test.t_vector_ddl_binlog_fail.v',
+VEC_FROMTEXT('[1,1]'), 1)
+[1]
+DROP VECTOR INDEX ON t_vector_ddl_binlog_fail(v);
+DROP TABLE t_vector_ddl_binlog_fail;

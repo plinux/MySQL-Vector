@@ -1,0 +1,111 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: staged vector index transaction semantics
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_txn', 2);
+
+SET @txn1 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn1, 1, '[1,1]');
+SELECT VEC_INDEX_TXN_PENDING(@txn1);
+SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
+SELECT VEC_INDEX_TXN_COMMIT(@txn1);
+SELECT VEC_INDEX_TXN_PENDING(@txn1);
+SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_txn');
+
+SET @txn2 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn2, 2, '[2,2]');
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn2);
+SELECT VEC_INDEX_SEARCH('idx_txn', '[2,2]', 10);
+
+SET @txn3 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_ERASE('idx_txn', @txn3, 1);
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn3);
+SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
+
+SET @txn4 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_ERASE('idx_txn', @txn4, 1);
+SELECT VEC_INDEX_TXN_COMMIT(@txn4);
+SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_txn');
+
+SET @txn_sp = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp, 100, '[10,10]');
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_sp, 'sp1');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp, 101, '[11,11]');
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_sp, 'sp2');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp, 102, '[12,12]');
+SELECT VEC_INDEX_TXN_PENDING(@txn_sp);
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_sp, 'sp2');
+SELECT VEC_INDEX_TXN_PENDING(@txn_sp);
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_sp, 'sp2');
+SELECT VEC_INDEX_TXN_COMMIT(@txn_sp);
+SELECT VEC_INDEX_TXN_PENDING(@txn_sp);
+SELECT VEC_INDEX_SEARCH('idx_txn', '[12,12]', 10);
+
+SET @txn_sp2 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp2, 103, '[13,13]');
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_sp2, 'keep');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp2, 104, '[14,14]');
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_sp2, 'keep');
+SELECT VEC_INDEX_TXN_COMMIT(@txn_sp2);
+SELECT VEC_INDEX_SEARCH('idx_txn', '[14,14]', 10);
+
+SELECT VEC_INDEX_CREATE('idx_ext_txn', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+SET @txn5 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_ext_txn', @txn5, 10, '[1,1]');
+SELECT VEC_INDEX_TXN_COMMIT(@txn5);
+SELECT VEC_INDEX_SEARCH('idx_ext_txn', '[1,1]', 10);
+
+SELECT VEC_INDEX_CREATE('idx_ext_native_txn', 2, 'EUCLIDEAN', 'EXTERNAL', 'NATIVE');
+SET @txn6 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_ext_native_txn', @txn6, 20, '[2,2]');
+SELECT VEC_INDEX_TXN_COMMIT(@txn6);
+SELECT VEC_INDEX_SEARCH('idx_ext_native_txn', '[2,2]', 10);
+SELECT VEC_INDEX_REBUILD('idx_ext_native_txn');
+SELECT VEC_INDEX_SEARCH('idx_ext_native_txn', '[2,2]', 10);
+SELECT VEC_INDEX_RECOVER_ALL();
+SELECT VEC_INDEX_SEARCH('idx_ext_native_txn', '[2,2]', 10);
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', -1, 1, '[1,1]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_COMMIT(-1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_ROLLBACK(-1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_PENDING(-1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn2, '');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn2, 'missing');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn2, 'missing');
+
+SET @txn_rb = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_rb, 201, '[2,2]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_REBUILD('idx_txn');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_RECOVER('idx_txn');
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_rb);
+SELECT VEC_INDEX_REBUILD('idx_txn');
+SELECT VEC_INDEX_RECOVER('idx_txn');
+
+SET @txn_rb_all = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_rb_all, 301, '[3,3]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_REBUILD_ALL();
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_RECOVER_ALL();
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_rb_all);
+SELECT VEC_INDEX_REBUILD_ALL();
+SELECT VEC_INDEX_RECOVER_ALL();
+
+SELECT VEC_INDEX_DROP('idx_txn');
+SELECT VEC_INDEX_DROP('idx_ext_txn');
+SELECT VEC_INDEX_DROP('idx_ext_native_txn');

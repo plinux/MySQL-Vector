@@ -1,0 +1,212 @@
+#
+# WL#vector-v1: staged vector index transaction semantics
+#
+SELECT VEC_INDEX_CREATE('idx_txn', 2);
+VEC_INDEX_CREATE('idx_txn', 2)
+1
+SET @txn1 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn1, 1, '[1,1]');
+VEC_INDEX_STAGE_UPSERT('idx_txn', @txn1, 1, '[1,1]')
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn1);
+VEC_INDEX_TXN_PENDING(@txn1)
+1
+SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
+VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10)
+[]
+SELECT VEC_INDEX_TXN_COMMIT(@txn1);
+VEC_INDEX_TXN_COMMIT(@txn1)
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn1);
+VEC_INDEX_TXN_PENDING(@txn1)
+0
+SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
+VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10)
+[1]
+SELECT VEC_INDEX_INFO('idx_txn');
+VEC_INDEX_INFO('idx_txn')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SET @txn2 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn2, 2, '[2,2]');
+VEC_INDEX_STAGE_UPSERT('idx_txn', @txn2, 2, '[2,2]')
+1
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn2);
+VEC_INDEX_TXN_ROLLBACK(@txn2)
+1
+SELECT VEC_INDEX_SEARCH('idx_txn', '[2,2]', 10);
+VEC_INDEX_SEARCH('idx_txn', '[2,2]', 10)
+[1]
+SET @txn3 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_ERASE('idx_txn', @txn3, 1);
+VEC_INDEX_STAGE_ERASE('idx_txn', @txn3, 1)
+1
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn3);
+VEC_INDEX_TXN_ROLLBACK(@txn3)
+1
+SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
+VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10)
+[1]
+SET @txn4 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_ERASE('idx_txn', @txn4, 1);
+VEC_INDEX_STAGE_ERASE('idx_txn', @txn4, 1)
+1
+SELECT VEC_INDEX_TXN_COMMIT(@txn4);
+VEC_INDEX_TXN_COMMIT(@txn4)
+1
+SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
+VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10)
+[]
+SELECT VEC_INDEX_INFO('idx_txn');
+VEC_INDEX_INFO('idx_txn')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+SET @txn_sp = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp, 100, '[10,10]');
+VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp, 100, '[10,10]')
+1
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_sp, 'sp1');
+VEC_INDEX_TXN_SAVEPOINT(@txn_sp, 'sp1')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp, 101, '[11,11]');
+VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp, 101, '[11,11]')
+1
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_sp, 'sp2');
+VEC_INDEX_TXN_SAVEPOINT(@txn_sp, 'sp2')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp, 102, '[12,12]');
+VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp, 102, '[12,12]')
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn_sp);
+VEC_INDEX_TXN_PENDING(@txn_sp)
+3
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_sp, 'sp2');
+VEC_INDEX_TXN_ROLLBACK_TO(@txn_sp, 'sp2')
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn_sp);
+VEC_INDEX_TXN_PENDING(@txn_sp)
+2
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_sp, 'sp2');
+VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_sp, 'sp2')
+1
+SELECT VEC_INDEX_TXN_COMMIT(@txn_sp);
+VEC_INDEX_TXN_COMMIT(@txn_sp)
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn_sp);
+VEC_INDEX_TXN_PENDING(@txn_sp)
+0
+SELECT VEC_INDEX_SEARCH('idx_txn', '[12,12]', 10);
+VEC_INDEX_SEARCH('idx_txn', '[12,12]', 10)
+[101,100]
+SET @txn_sp2 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp2, 103, '[13,13]');
+VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp2, 103, '[13,13]')
+1
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_sp2, 'keep');
+VEC_INDEX_TXN_SAVEPOINT(@txn_sp2, 'keep')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp2, 104, '[14,14]');
+VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_sp2, 104, '[14,14]')
+1
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_sp2, 'keep');
+VEC_INDEX_TXN_ROLLBACK_TO(@txn_sp2, 'keep')
+1
+SELECT VEC_INDEX_TXN_COMMIT(@txn_sp2);
+VEC_INDEX_TXN_COMMIT(@txn_sp2)
+1
+SELECT VEC_INDEX_SEARCH('idx_txn', '[14,14]', 10);
+VEC_INDEX_SEARCH('idx_txn', '[14,14]', 10)
+[103,101,100]
+SELECT VEC_INDEX_CREATE('idx_ext_txn', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_ext_txn', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN')
+1
+SET @txn5 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_ext_txn', @txn5, 10, '[1,1]');
+VEC_INDEX_STAGE_UPSERT('idx_ext_txn', @txn5, 10, '[1,1]')
+1
+SELECT VEC_INDEX_TXN_COMMIT(@txn5);
+VEC_INDEX_TXN_COMMIT(@txn5)
+1
+SELECT VEC_INDEX_SEARCH('idx_ext_txn', '[1,1]', 10);
+VEC_INDEX_SEARCH('idx_ext_txn', '[1,1]', 10)
+[10]
+SELECT VEC_INDEX_CREATE('idx_ext_native_txn', 2, 'EUCLIDEAN', 'EXTERNAL', 'NATIVE');
+VEC_INDEX_CREATE('idx_ext_native_txn', 2, 'EUCLIDEAN', 'EXTERNAL', 'NATIVE')
+1
+SET @txn6 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_ext_native_txn', @txn6, 20, '[2,2]');
+VEC_INDEX_STAGE_UPSERT('idx_ext_native_txn', @txn6, 20, '[2,2]')
+1
+SELECT VEC_INDEX_TXN_COMMIT(@txn6);
+VEC_INDEX_TXN_COMMIT(@txn6)
+1
+SELECT VEC_INDEX_SEARCH('idx_ext_native_txn', '[2,2]', 10);
+VEC_INDEX_SEARCH('idx_ext_native_txn', '[2,2]', 10)
+[20]
+SELECT VEC_INDEX_REBUILD('idx_ext_native_txn');
+VEC_INDEX_REBUILD('idx_ext_native_txn')
+1
+SELECT VEC_INDEX_SEARCH('idx_ext_native_txn', '[2,2]', 10);
+VEC_INDEX_SEARCH('idx_ext_native_txn', '[2,2]', 10)
+[20]
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+3
+SELECT VEC_INDEX_SEARCH('idx_ext_native_txn', '[2,2]', 10);
+VEC_INDEX_SEARCH('idx_ext_native_txn', '[2,2]', 10)
+[20]
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', -1, 1, '[1,1]');
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_TXN_COMMIT(-1);
+ERROR HY000: Incorrect arguments to vec_index_txn_commit
+SELECT VEC_INDEX_TXN_ROLLBACK(-1);
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback
+SELECT VEC_INDEX_TXN_PENDING(-1);
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn2, '');
+ERROR HY000: Incorrect arguments to vec_index_txn_savepoint
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn2, 'missing');
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback_to
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn2, 'missing');
+ERROR HY000: Incorrect arguments to vec_index_txn_release_savepoint
+SET @txn_rb = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_rb, 201, '[2,2]');
+VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_rb, 201, '[2,2]')
+1
+SELECT VEC_INDEX_REBUILD('idx_txn');
+ERROR HY000: Incorrect arguments to vec_index_rebuild
+SELECT VEC_INDEX_RECOVER('idx_txn');
+ERROR HY000: Incorrect arguments to vec_index_recover
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_rb);
+VEC_INDEX_TXN_ROLLBACK(@txn_rb)
+1
+SELECT VEC_INDEX_REBUILD('idx_txn');
+VEC_INDEX_REBUILD('idx_txn')
+1
+SELECT VEC_INDEX_RECOVER('idx_txn');
+VEC_INDEX_RECOVER('idx_txn')
+1
+SET @txn_rb_all = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_rb_all, 301, '[3,3]');
+VEC_INDEX_STAGE_UPSERT('idx_txn', @txn_rb_all, 301, '[3,3]')
+1
+SELECT VEC_INDEX_REBUILD_ALL();
+ERROR HY000: Incorrect arguments to vec_index_rebuild_all
+SELECT VEC_INDEX_RECOVER_ALL();
+ERROR HY000: Incorrect arguments to vec_index_recover_all
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_rb_all);
+VEC_INDEX_TXN_ROLLBACK(@txn_rb_all)
+1
+SELECT VEC_INDEX_REBUILD_ALL();
+VEC_INDEX_REBUILD_ALL()
+3
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+3
+SELECT VEC_INDEX_DROP('idx_txn');
+VEC_INDEX_DROP('idx_txn')
+1
+SELECT VEC_INDEX_DROP('idx_ext_txn');
+VEC_INDEX_DROP('idx_ext_txn')
+1
+SELECT VEC_INDEX_DROP('idx_ext_native_txn');
+VEC_INDEX_DROP('idx_ext_native_txn')
+1

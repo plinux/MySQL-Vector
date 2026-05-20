@@ -1,0 +1,141 @@
+#
+# WL#vector-v1: item_vectorfunc binlog helper failure branches
+#
+SELECT VEC_INDEX_CREATE('idx_item_binlog_fail_mem', 2, 'COSINE', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_item_binlog_fail_mem', 2, 'COSINE', 'MEMORY', 'NATIVE')
+0
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_item_binlog_fail_mem"]
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_mem'), '$.backend_variant');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_mem'), '$.backend_variant')
+null
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_mem', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_item_binlog_fail_mem', 1, VEC_FROMTEXT('[1,1]'))
+0
+SELECT VEC_INDEX_SEARCH('idx_item_binlog_fail_mem', VEC_FROMTEXT('[1,1]'), 2);
+VEC_INDEX_SEARCH('idx_item_binlog_fail_mem', VEC_FROMTEXT('[1,1]'), 2)
+[1]
+SELECT VEC_INDEX_ERASE('idx_item_binlog_fail_mem', 1);
+VEC_INDEX_ERASE('idx_item_binlog_fail_mem', 1)
+0
+SELECT VEC_INDEX_SEARCH('idx_item_binlog_fail_mem', VEC_FROMTEXT('[1,1]'), 2);
+VEC_INDEX_SEARCH('idx_item_binlog_fail_mem', VEC_FROMTEXT('[1,1]'), 2)
+[]
+SELECT VEC_INDEX_CREATE('idx_item_binlog_fail_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_item_binlog_fail_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN')
+0
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.backend_variant'));
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.backend_variant'))
+diskann_garnet
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_item_binlog_fail_ext', 48, 96);
+VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_item_binlog_fail_ext', 48, 96)
+0
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_item_binlog_fail_ext', 80);
+VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_item_binlog_fail_ext', 80)
+0
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_max_degree');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_max_degree')
+48
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_build_complexity');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_build_complexity')
+96
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_search_complexity');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_search_complexity')
+80
+SELECT VEC_INDEX_CREATE('idx_item_binlog_fail_faiss', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_item_binlog_fail_faiss', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
+0
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_item_binlog_fail_faiss', 96);
+VEC_INDEX_SET_SEARCH_EF('idx_item_binlog_fail_faiss', 96)
+0
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_item_binlog_fail_faiss', 24, 320);
+VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_item_binlog_fail_faiss', 24, 320)
+0
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.search_ef');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.search_ef')
+96
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.hnsw_m');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.hnsw_m')
+24
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.hnsw_ef_construction');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.hnsw_ef_construction')
+320
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_faiss', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_item_binlog_fail_faiss', 1, VEC_FROMTEXT('[1,1]'))
+0
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_faiss', 2, VEC_FROMTEXT('[2,2]'));
+VEC_INDEX_UPSERT('idx_item_binlog_fail_faiss', 2, VEC_FROMTEXT('[2,2]'))
+0
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_item_binlog_fail_faiss', 2, 1);
+VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_item_binlog_fail_faiss', 2, 1)
+0
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.backend_variant'));
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.backend_variant'))
+ivf_flat
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.faiss_nlist');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.faiss_nlist')
+2
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.faiss_nprobe');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.faiss_nprobe')
+1
+SELECT VEC_INDEX_CREATE('idx_item_binlog_fail_ivfpq', 4, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_item_binlog_fail_ivfpq', 4, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
+0
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 1, VEC_FROMTEXT('[1,0,0,0]'));
+VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 1, VEC_FROMTEXT('[1,0,0,0]'))
+0
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 2, VEC_FROMTEXT('[0,1,0,0]'));
+VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 2, VEC_FROMTEXT('[0,1,0,0]'))
+0
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 3, VEC_FROMTEXT('[0,0,1,0]'));
+VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 3, VEC_FROMTEXT('[0,0,1,0]'))
+0
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 4, VEC_FROMTEXT('[0,0,0,1]'));
+VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 4, VEC_FROMTEXT('[0,0,0,1]'))
+0
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_item_binlog_fail_ivfpq', 2, 1, 1, 1);
+VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_item_binlog_fail_ivfpq', 2, 1, 1, 1)
+0
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.backend_variant'));
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.backend_variant'))
+ivf_pq
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_nlist');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_nlist')
+2
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_nprobe');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_nprobe')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_pq_m');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_pq_m')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_pq_bits');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_pq_bits')
+1
+SELECT VEC_INDEX_REBUILD('idx_item_binlog_fail_mem');
+VEC_INDEX_REBUILD('idx_item_binlog_fail_mem')
+0
+SELECT VEC_INDEX_RECOVER('idx_item_binlog_fail_mem');
+VEC_INDEX_RECOVER('idx_item_binlog_fail_mem')
+0
+SELECT VEC_INDEX_REBUILD_ALL();
+VEC_INDEX_REBUILD_ALL()
+0
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+0
+SELECT VEC_INDEX_DROP('idx_item_binlog_fail_mem');
+VEC_INDEX_DROP('idx_item_binlog_fail_mem')
+0
+SELECT VEC_INDEX_DROP('idx_item_binlog_fail_ext');
+VEC_INDEX_DROP('idx_item_binlog_fail_ext')
+0
+SELECT VEC_INDEX_DROP('idx_item_binlog_fail_faiss');
+VEC_INDEX_DROP('idx_item_binlog_fail_faiss')
+0
+SELECT VEC_INDEX_DROP('idx_item_binlog_fail_ivfpq');
+VEC_INDEX_DROP('idx_item_binlog_fail_ivfpq')
+0
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]

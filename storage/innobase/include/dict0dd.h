@@ -298,6 +298,15 @@ const innodb_dd_table_t innodb_dd_table[] = {
     INNODB_DD_TABLE("innodb_table_stats", 1),
     INNODB_DD_TABLE("innodb_index_stats", 1),
     INNODB_DD_TABLE("innodb_ddl_log", 2),
+#ifdef HAVE_VECTOR_INDEX
+    /* Keep these counts aligned with vector_index_truth_tables.cc. */
+    INNODB_DD_TABLE("vector_index_truth_metadata", 1),
+    INNODB_DD_TABLE("vector_index_truth_committed", 1),
+    INNODB_DD_TABLE("vector_index_truth_manifest", 1),
+    INNODB_DD_TABLE("vector_index_truth_changelog", 1),
+    INNODB_DD_TABLE("vector_index_truth_prepared", 1),
+    INNODB_DD_TABLE("vector_index_truth_store_quarantine", 1),
+#endif
 
     INNODB_DD_TABLE("catalogs", 2),
     INNODB_DD_TABLE("character_sets", 3),

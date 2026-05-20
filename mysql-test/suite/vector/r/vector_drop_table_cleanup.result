@@ -1,0 +1,26 @@
+#
+# WL#vector-v1: drop table should clean mapped vector indexes
+#
+DROP TABLE IF EXISTS t_vec_drop_cleanup;
+Warnings:
+Note	1051	Unknown table 'test.t_vec_drop_cleanup'
+CREATE TABLE t_vec_drop_cleanup (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_drop_cleanup(v) WITH (2);
+INSERT INTO t_vec_drop_cleanup VALUES (1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["test.t_vec_drop_cleanup.v"]
+SELECT VEC_INDEX_SEARCH('test.t_vec_drop_cleanup.v', '[1,1]', 1);
+VEC_INDEX_SEARCH('test.t_vec_drop_cleanup.v', '[1,1]', 1)
+[1]
+DROP TABLE t_vec_drop_cleanup;
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]
+# restart
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]

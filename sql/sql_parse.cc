@@ -167,6 +167,9 @@
 #include "sql/sql_table.h"          // mysql_create_table
 #include "sql/sql_trigger.h"        // add_table_for_trigger
 #include "sql/sql_udf.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_registry.h"
+#endif
 #include "sql/sql_view.h"  // mysql_create_view
 #include "sql/strfunc.h"
 #include "sql/system_variables.h"  // System_status_var
@@ -3661,6 +3664,25 @@ int mysql_execute_command(THD *thd, bool first_level) {
       }
 
       if (mysql_rename_tables(thd, first_table)) goto error;
+#ifdef HAVE_VECTOR_INDEX
+      for (table = first_table; table;
+           table = table->next_local->next_local) {
+        if (table->db == nullptr || table->table_name == nullptr ||
+            table->next_local == nullptr || table->next_local->db == nullptr ||
+            table->next_local->table_name == nullptr) {
+          continue;
+        }
+        if (!vector_index_registry::rename_indexes_for_table(
+                table->db, table->table_name, table->next_local->db,
+                table->next_local->table_name)) {
+          if (!thd->is_error()) {
+            my_error(ER_INTERNAL_ERROR, MYF(0),
+                     "Failed to rename vector indexes for table");
+          }
+          goto error;
+        }
+      }
+#endif
       break;
     }
     case SQLCOM_CHECKSUM: {
@@ -3701,6 +3723,23 @@ int mysql_execute_command(THD *thd, bool first_level) {
       /* DDL and binlog write order are protected by metadata locks. */
       res = mysql_rm_table(thd, first_table, lex->drop_if_exists,
                            lex->drop_temporary);
+#ifdef HAVE_VECTOR_INDEX
+      if (!res && !lex->drop_temporary) {
+        for (Table_ref *table = first_table; table != nullptr;
+             table = table->next_local) {
+          if (table->db == nullptr || table->table_name == nullptr) continue;
+          if (!vector_index_registry::drop_indexes_for_table(
+                  table->db, table->table_name)) {
+            if (!thd->is_error()) {
+              my_error(ER_INTERNAL_ERROR, MYF(0),
+                       "Failed to drop vector indexes for table");
+            }
+            res = true;
+            goto error;
+          }
+        }
+      }
+#endif
       /* when dropping temporary tables if @@session_track_state_change is ON
          then send the boolean tracker in the OK packet */
       if (!res && lex->drop_temporary) {
@@ -3885,6 +3924,16 @@ int mysql_execute_command(THD *thd, bool first_level) {
                        false))
         break;
       res = mysql_rm_db(thd, to_lex_cstring(lex->name), lex->drop_if_exists);
+#ifdef HAVE_VECTOR_INDEX
+      if (!res &&
+          !vector_index_registry::drop_indexes_for_database(lex->name.str)) {
+        if (!thd->is_error()) {
+          my_error(ER_INTERNAL_ERROR, MYF(0),
+                   "Failed to drop vector indexes for database");
+        }
+        res = true;
+      }
+#endif
       break;
     }
     case SQLCOM_ALTER_DB: {
@@ -5620,6 +5669,23 @@ bool Alter_info::add_field(
                       uint_geom_type, gcol_info, default_val_expr, srid, hidden,
                       is_array))
     return true;
+
+#ifdef HAVE_VECTOR_INDEX
+  if (new_field->flags & FIELD_IS_VECTOR) {
+    static constexpr ulonglong kVectorElementSize = sizeof(float);
+    char *end = nullptr;
+    const ulonglong vector_bytes =
+        (length != nullptr) ? strtoull(length, &end, 10) : 0;
+    if (length == nullptr || end == length || *end != '\0' || vector_bytes == 0 ||
+        vector_bytes % kVectorElementSize != 0 ||
+        vector_bytes / kVectorElementSize > UINT_MAX32) {
+      my_error(ER_INVALID_FIELD_SIZE, MYF(0), field_name->str);
+      return true;
+    }
+    new_field->vector_dim =
+        static_cast<uint32>(vector_bytes / kVectorElementSize);
+  }
+#endif
 
   for (const auto &a : cf_appliers) {
     if (a(new_field, this)) return true;

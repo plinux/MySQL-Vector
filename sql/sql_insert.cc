@@ -104,6 +104,9 @@
 #include "sql/transaction.h"  // trans_commit_stmt
 #include "sql/transaction_info.h"
 #include "sql/trigger_def.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_dml_sync.h"
+#endif
 #include "sql/visible_fields.h"
 #include "sql_string.h"
 #include "template_utils.h"
@@ -1752,6 +1755,10 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
   MY_BITMAP *save_read_set, *save_write_set;
   ulonglong prev_insert_id = table->file->next_insert_id;
   ulonglong insert_id_for_cur_row = 0;
+#ifdef HAVE_VECTOR_INDEX
+  const bool has_vector_columns = vector_dml_sync::has_vector_columns(table);
+  bool stage_insert_after_write = false;
+#endif
   DBUG_TRACE;
 
   /* Here we are using separate MEM_ROOT as this memory should be freed once we
@@ -1764,6 +1771,13 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
   save_write_set = table->write_set;
 
   const enum_duplicates duplicate_handling = info->get_duplicate_handling();
+
+#ifdef HAVE_VECTOR_INDEX
+  auto stage_insert_change = [&]() -> bool {
+    return has_vector_columns &&
+           vector_dml_sync::stage_insert_row(thd, table, table->record[0]);
+  };
+#endif
 
   if (duplicate_handling == DUP_REPLACE || duplicate_handling == DUP_UPDATE) {
     assert(duplicate_handling != DUP_UPDATE || update != nullptr);
@@ -1974,6 +1988,15 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
             goto ok_or_after_trg_err;
           }
 
+#ifdef HAVE_VECTOR_INDEX
+          vector_dml_sync::prepared_changes vector_changes;
+          if (has_vector_columns &&
+              vector_dml_sync::prepare_update_row(table, table->record[1],
+                                                  table->record[0],
+                                                  &vector_changes))
+            goto before_trg_err;
+#endif
+
           if ((error = table->file->ha_update_row(table->record[1],
                                                   table->record[0])) &&
               error != HA_ERR_RECORD_IS_THE_SAME) {
@@ -1990,10 +2013,20 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
             goto ok_or_after_trg_err; /* Ignoring a not fatal error, return 0 */
           }
 
+#ifdef HAVE_VECTOR_INDEX
+          if (error != HA_ERR_RECORD_IS_THE_SAME) {
+            if (has_vector_columns &&
+                vector_dml_sync::stage_prepared_changes(thd, vector_changes))
+              goto before_trg_err;
+            info->stats.updated++;
+          } else
+            error = 0;
+#else
           if (error != HA_ERR_RECORD_IS_THE_SAME)
             info->stats.updated++;
           else
             error = 0;
+#endif
           /*
             If ON DUP KEY UPDATE updates a row instead of inserting one, it's
             like a regular UPDATE statement: it should not affect the value of a
@@ -2062,14 +2095,33 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
         if (last_uniq_key(table, key_nr) &&
             !table->s->is_referenced_by_foreign_key() &&
             (!table->triggers || !table->triggers->has_delete_triggers())) {
+#ifdef HAVE_VECTOR_INDEX
+          vector_dml_sync::prepared_changes vector_changes;
+          if (has_vector_columns &&
+              vector_dml_sync::prepare_update_row(table, table->record[1],
+                                                  table->record[0],
+                                                  &vector_changes))
+            goto before_trg_err;
+#endif
+
           if ((error = table->file->ha_update_row(table->record[1],
                                                   table->record[0])) &&
               error != HA_ERR_RECORD_IS_THE_SAME)
             goto err;
+#ifdef HAVE_VECTOR_INDEX
+          if (error != HA_ERR_RECORD_IS_THE_SAME) {
+            if (has_vector_columns &&
+                vector_dml_sync::stage_prepared_changes(thd, vector_changes))
+              goto before_trg_err;
+            info->stats.deleted++;
+          } else
+            error = 0;
+#else
           if (error != HA_ERR_RECORD_IS_THE_SAME)
             info->stats.deleted++;
           else
             error = 0;
+#endif
           thd->record_first_successful_insert_id_in_cur_stmt(
               table->file->insert_id_for_cur_row);
           /*
@@ -2078,12 +2130,25 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
           */
           goto after_trg_n_copied_inc;
         } else {
+#ifdef HAVE_VECTOR_INDEX
+          vector_dml_sync::prepared_changes vector_changes;
+          if (has_vector_columns &&
+              vector_dml_sync::prepare_delete_row(table, table->record[1],
+                                                  &vector_changes))
+            goto before_trg_err;
+#endif
+
           if (table->triggers &&
               table->triggers->process_triggers(thd, TRG_EVENT_DELETE,
                                                 TRG_ACTION_BEFORE, true))
             goto before_trg_err;
           if ((error = table->file->ha_delete_row(table->record[1]))) goto err;
           info->stats.deleted++;
+#ifdef HAVE_VECTOR_INDEX
+          if (has_vector_columns &&
+              vector_dml_sync::stage_prepared_changes(thd, vector_changes))
+            goto before_trg_err;
+#endif
           if (!table->file->has_transactions())
             thd->get_transaction()->mark_modified_non_trans_table(
                 Transaction_ctx::STMT);
@@ -2107,6 +2172,9 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
      */
     if (table->file->insert_id_for_cur_row == 0)
       table->file->insert_id_for_cur_row = insert_id_for_cur_row;
+#ifdef HAVE_VECTOR_INDEX
+    stage_insert_after_write = true;
+#endif
 
     thd->record_first_successful_insert_id_in_cur_stmt(
         table->file->insert_id_for_cur_row);
@@ -2130,6 +2198,11 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
     table->file->restore_auto_increment(prev_insert_id);
     goto ok_or_after_trg_err;
   }
+#ifdef HAVE_VECTOR_INDEX
+  else {
+    stage_insert_after_write = true;
+  }
+#endif
 
 after_trg_n_copied_inc:
   info->stats.copied++;
@@ -2140,6 +2213,11 @@ after_trg_n_copied_inc:
                               thd, TRG_EVENT_INSERT, TRG_ACTION_AFTER, true));
 
 ok_or_after_trg_err:
+#ifdef HAVE_VECTOR_INDEX
+  if (!trg_error && stage_insert_after_write && stage_insert_change()) {
+    goto before_trg_err;
+  }
+#endif
   if (key) my_safe_afree(key, table->s->max_unique_length, MAX_KEY_LENGTH);
   if (!table->file->has_transactions())
     thd->get_transaction()->mark_modified_non_trans_table(

@@ -1,0 +1,122 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: SQL wrapper for vector index registry service
+--echo #
+
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_CREATE('idx_mem', 2);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_CREATE('idx_mem', 2);
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_mem');
+SELECT VEC_INDEX_LIST();
+
+SELECT VEC_INDEX_UPSERT('idx_mem', 1, '[1,1]');
+SELECT VEC_INDEX_UPSERT('idx_mem', 2, VEC_FROMTEXT('[2,1]'));
+SELECT VEC_INDEX_SEARCH('idx_mem', '[1.1,1.1]', 2);
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_mem');
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_mem', '[1,1]', 2);
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT('idx_mem', 3, VEC_FROMTEXT('[1,2,3]'));
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT('idx_mem', 4, 'not-a-vector');
+
+SELECT VEC_INDEX_ERASE('idx_mem', 2);
+SELECT VEC_INDEX_SEARCH('idx_mem', '[1.1,1.1]', 2);
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_mem');
+SELECT VEC_INDEX_REBUILD('idx_mem');
+SELECT VEC_INDEX_SEARCH('idx_mem', '[1.1,1.1]', 2);
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_mem');
+
+SELECT VEC_INDEX_CREATE('idx_hnsw', 2, 'COSINE', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_UPSERT('idx_hnsw', 10, VEC_FROMTEXT('[1,0]'));
+SELECT VEC_INDEX_SEARCH('idx_hnsw', '[1,0]', 1);
+
+SELECT VEC_INDEX_CREATE('idx_hnsw_large', 784, 'EUCLIDEAN', 'MEMORY',
+                        'HNSWLIB');
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw_large', 16, 200);
+SELECT VEC_INDEX_UPSERT(
+  'idx_hnsw_large', 1000,
+  CONCAT(
+    '[',
+    REPEAT('0,', 783),
+    '0]'
+  ));
+SELECT VEC_INDEX_UPSERT(
+  'idx_hnsw_large', 1001,
+  CONCAT(
+    '[',
+    REPEAT('0,', 782),
+    '1,0]'
+  ));
+SELECT VEC_INDEX_UPSERT(
+  'idx_hnsw_large', 1002,
+  CONCAT(
+    '[',
+    REPEAT('0,', 781),
+    '1,1,0]'
+  ));
+SELECT JSON_LENGTH(
+  VEC_INDEX_SEARCH(
+    'idx_hnsw_large',
+    CONCAT('[', REPEAT('0,', 783), '0]'),
+    3));
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_hnsw_large');
+
+SELECT VEC_INDEX_CREATE('idx_ext_native', 2, 'EUCLIDEAN', 'EXTERNAL', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_ext_native', 100, VEC_FROMTEXT('[1,2]'));
+SELECT VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1);
+SELECT VEC_INDEX_REBUILD('idx_ext_native');
+SELECT VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1);
+SELECT VEC_INDEX_RECOVER('idx_ext_native');
+SELECT VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1);
+SELECT VEC_INDEX_RECOVER_ALL();
+SELECT VEC_INDEX_SEARCH('idx_ext_native', '[1,2]', 1);
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_ext_native');
+
+SELECT VEC_INDEX_CREATE('idx_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_LIST();
+--replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+SELECT VEC_INDEX_INFO('idx_ext');
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_ext', '[1,1]', 3);
+SELECT VEC_INDEX_UPSERT('idx_ext', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_ext', '[1,1]', 3);
+SELECT VEC_INDEX_REBUILD_ALL();
+SELECT VEC_INDEX_SEARCH('idx_hnsw', '[1,0]', 1);
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+SELECT VEC_INDEX_RECOVER_ALL();
+SELECT VEC_INDEX_SEARCH('idx_hnsw', '[1,0]', 1);
+SELECT VEC_INDEX_REBUILD('idx_ext');
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+SELECT VEC_INDEX_ERASE('idx_ext', 1);
+SELECT VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3);
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_CREATE('idx_bad', 2, 'MANHATTAN', 'MEMORY', 'NATIVE');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_INFO('missing');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_REBUILD('missing');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_RECOVER('missing');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('missing', VEC_FROMTEXT('[1,1]'), 1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH('missing', VEC_FROMTEXT('[1,1]'), 1);
+
+SELECT VEC_INDEX_DROP('idx_mem');
+SELECT VEC_INDEX_DROP('idx_hnsw');
+SELECT VEC_INDEX_DROP('idx_hnsw_large');
+SELECT VEC_INDEX_DROP('idx_ext_native');
+SELECT VEC_INDEX_DROP('idx_ext');
+SELECT VEC_INDEX_DROP('idx_ext');
+SELECT VEC_INDEX_LIST();

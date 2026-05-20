@@ -1,0 +1,101 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: SHOW VECTOR STATUS (Phase A)
+--echo #
+
+--let $truth_store_backend= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_backend'", Value, 1)
+--let $truth_store_transactional= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_transactional'", Value, 1)
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS;
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS LIKE 'Vector_pending%';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS LIKE 'Vector_search_%';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Variable_name = 'Vector_search_requests';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name LIKE 'Vector_truth_store_persist_%';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name = 'Vector_change_log_replay_failures';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name = 'Vector_backend_recover_fallbacks';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name LIKE 'Vector_%rollback%';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name LIKE 'Vector_rebuild_%';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name = 'Vector_search_requests'
+  AND Value >= '0';
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name = 'Vector_search_requests'
+  AND Value > '999999999999';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_GAUGES'
+  AND Variable_name LIKE 'Vector_manifest_%';
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_GAUGES'
+  AND Variable_name = 'Vector_truth_store_backend';
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_GAUGES'
+  AND Variable_name = 'Vector_truth_store_transactional';
+--disable_query_log
+--eval SHOW VECTOR STATUS WHERE Section = 'GLOBAL_GAUGES' AND Variable_name = 'Vector_truth_store_backend' AND Value = '$truth_store_backend';
+--eval SHOW VECTOR STATUS WHERE Section = 'GLOBAL_GAUGES' AND Variable_name = 'Vector_truth_store_transactional' AND Value = '$truth_store_transactional';
+--enable_query_log
+SHOW VECTOR STATUS WHERE Section != 'GLOBAL_COUNTERS'
+  AND Variable_name = 'Vector_truth_store_backend';
+SHOW VECTOR STATUS WHERE Section <> 'GLOBAL_COUNTERS'
+  AND Variable_name = 'Vector_truth_store_transactional';
+SHOW VECTOR STATUS WHERE Variable_name NOT LIKE 'Vector_search_%'
+  AND Variable_name = 'Vector_truth_store_backend';
+SHOW VECTOR STATUS WHERE Variable_name != 'Vector_truth_store_backend'
+  AND Variable_name = 'Vector_truth_store_backend';
+SHOW VECTOR STATUS WHERE Variable_name = 'Vector_truth_store_backend'
+  OR Variable_name = 'Vector_truth_store_transactional';
+--disable_query_log
+--eval SHOW VECTOR STATUS WHERE Variable_name = 'Vector_truth_store_backend' OR Variable_name = 'Vector_truth_store_transactional' AND Value = '$truth_store_transactional';
+--enable_query_log
+
+SELECT VEC_INDEX_CREATE('idx_show_filter', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name LIKE 'idx_show_filter.%'
+  AND Value = '0';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_show_filter.recover_fallback_count'
+  AND Value = '0';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'Vector_backend_manifest_present_indexes'
+  AND Value >= '0';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'Vector_backend_manifest_generation_max'
+  AND Value >= '0';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_rebuild_progress'
+  AND Value = '100';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_recover_progress'
+  AND Value = '100';
+SELECT VEC_INDEX_UPSERT('idx_show_filter', 1, VEC_FROMTEXT('[1,1]'));
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_apply_latency_ms'
+  AND Value > '0';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS FOR INDEX idx_show_filter
+  WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_show_filter.apply_latency_ms'
+  AND Value > '0';
+SHOW VECTOR STATUS FOR INDEX idx_show_filter
+  WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_show_filter.external_manifest_present'
+  AND Value = '1';
+SHOW VECTOR STATUS FOR INDEX idx_show_filter
+  WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_show_filter.external_manifest_generation'
+  AND Value > '0';
+SELECT VEC_INDEX_DROP('idx_show_filter');

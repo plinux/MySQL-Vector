@@ -1,0 +1,20 @@
+#
+# WL#vector-v1: vector DML stays valid after ALTER COLUMN rename
+#
+DROP TABLE IF EXISTS t_vector_alter_column_dml;
+Warnings:
+Note	1051	Unknown table 'test.t_vector_alter_column_dml'
+CREATE TABLE t_vector_alter_column_dml (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_alter_column_dml VALUES (1, VEC_FROMTEXT('[1,1]'));
+CREATE VECTOR INDEX ON t_vector_alter_column_dml(v) WITH (2);
+ALTER TABLE t_vector_alter_column_dml RENAME COLUMN v TO w;
+INSERT INTO t_vector_alter_column_dml VALUES (2, VEC_FROMTEXT('[2,2]'));
+SELECT VEC_INDEX_SEARCH('test.t_vector_alter_column_dml.w',
+VEC_FROMTEXT('[2,2]'), 1);
+VEC_INDEX_SEARCH('test.t_vector_alter_column_dml.w',
+VEC_FROMTEXT('[2,2]'), 1)
+[2]
+DROP TABLE t_vector_alter_column_dml;

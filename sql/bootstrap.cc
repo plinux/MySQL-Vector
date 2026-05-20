@@ -66,6 +66,9 @@
 #include "sql/system_variables.h"
 #include "sql/thd_raii.h"
 #include "sql/transaction_info.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_truth_store.h"
+#endif
 
 namespace bootstrap {
 
@@ -177,6 +180,11 @@ static bool handle_bootstrap_impl(handle_bootstrap_args *args) {
       return true;
     }
   }
+
+#ifdef HAVE_VECTOR_INDEX
+  if (!vector_index_truth_store::bootstrap_initialize_selected_backend(thd))
+    return true;
+#endif
 
   return false;
 }

@@ -843,7 +843,12 @@ int ha_initialize_handlerton(st_plugin_int *plugin) {
       tmp = hton->savepoint_offset;
       hton->savepoint_offset = savepoint_alloc_size;
       savepoint_alloc_size += tmp;
+#ifdef HAVE_VECTOR_INDEX
+      if (hton->prepare && !(hton->flags & HTON_NO_GLOBAL_2PC))
+        total_ha_2pc++;
+#else
       if (hton->prepare) total_ha_2pc++;
+#endif
       break;
     }
       [[fallthrough]];

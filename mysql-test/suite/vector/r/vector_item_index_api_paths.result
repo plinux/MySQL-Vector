@@ -1,0 +1,215 @@
+#
+# WL#vector-v1: item_vectorfunc index API branch coverage paths
+#
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]
+SELECT VEC_INDEX_CREATE('idx_item_api_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_item_api_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_CREATE('idx_item_api_ext', 2, 'COSINE', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_item_api_ext', 2, 'COSINE', 'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_item_api_ext","idx_item_api_mem"]
+SELECT VEC_INDEX_INFO('idx_item_api_mem');
+VEC_INDEX_INFO('idx_item_api_mem')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":0,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+SELECT VEC_INDEX_INFO('idx_item_api_ext');
+VEC_INDEX_INFO('idx_item_api_ext')
+{"dimension":2,"metric":"cosine","mode":"external","provider":"faiss","backend_variant":"hnsw","schema_name":null,"table_name":null,"column_name":null,"search_ef":64,"hnsw_m":32,"hnsw_ef_construction":40,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":0,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+SELECT VEC_INDEX_INFO('idx_item_api_missing');
+ERROR HY000: Incorrect arguments to vec_index_info
+PREPARE ps_vec_dim FROM 'SELECT VECTOR_DIM(?)';
+SET @ps_vec_dim_arg = VEC_FROMTEXT('[1,2,3]');
+EXECUTE ps_vec_dim USING @ps_vec_dim_arg;
+VECTOR_DIM(?)
+3
+DEALLOCATE PREPARE ps_vec_dim;
+PREPARE ps_vec_distance FROM 'SELECT ROUND(VEC_DISTANCE(?, ?, ?), 6)';
+SET @ps_vec_distance_lhs = VEC_FROMTEXT('[1,0]');
+SET @ps_vec_distance_rhs = VEC_FROMTEXT('[0,1]');
+SET @ps_vec_distance_metric = 'COSINE';
+EXECUTE ps_vec_distance USING @ps_vec_distance_lhs, @ps_vec_distance_rhs,
+@ps_vec_distance_metric;
+ROUND(VEC_DISTANCE(?, ?, ?), 6)
+1
+DEALLOCATE PREPARE ps_vec_distance;
+SELECT VEC_INDEX_UPSERT('idx_item_api_mem', 1, '[1,2]');
+VEC_INDEX_UPSERT('idx_item_api_mem', 1, '[1,2]')
+1
+SELECT VEC_INDEX_UPSERT('idx_item_api_mem', 2, VEC_FROMTEXT('[2,2]'));
+VEC_INDEX_UPSERT('idx_item_api_mem', 2, VEC_FROMTEXT('[2,2]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[1,2]'), 0);
+VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[1,2]'), 0)
+[]
+SELECT VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[1,2]'), 5);
+VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[1,2]'), 5)
+[1,2]
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_api_mem',
+CONCAT(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[2,2]')), 2, 5);
+VEC_INDEX_SEARCH_BATCH('idx_item_api_mem',
+CONCAT(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[2,2]')), 2, 5)
+[[1,2],[2,1]]
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_api_mem',
+CONCAT(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[2,2]')), 2, 0);
+VEC_INDEX_SEARCH_BATCH('idx_item_api_mem',
+CONCAT(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[2,2]')), 2, 0)
+[[],[]]
+SELECT VEC_INDEX_UPSERT('idx_item_api_ext', 1, '[1,0]');
+VEC_INDEX_UPSERT('idx_item_api_ext', 1, '[1,0]')
+1
+SELECT VEC_INDEX_UPSERT('idx_item_api_ext', 2, '[0,1]');
+VEC_INDEX_UPSERT('idx_item_api_ext', 2, '[0,1]')
+1
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_api_ext',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 2);
+VEC_INDEX_SEARCH_BATCH('idx_item_api_ext',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 2)
+[[1,2],[2,1]]
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_api_mem', VEC_FROMTEXT('[1,2]'), 0, 5);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SELECT VEC_INDEX_SEARCH_BATCH('idx_item_api_mem',
+CONCAT(VEC_FROMTEXT('[1,2]'), X'00'), 1, 5);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET @batch_index_name = 'idx_item_api_mem';
+SET @batch_payload = CONCAT(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[2,2]'));
+SET @batch_query_count = 1;
+SET @batch_top_k = -1;
+SELECT VEC_INDEX_SEARCH_BATCH(@batch_index_name, @batch_payload, @batch_query_count,
+@batch_top_k);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET @batch_index_name = NULL;
+SET @batch_top_k = 5;
+SELECT VEC_INDEX_SEARCH_BATCH(@batch_index_name, @batch_payload, @batch_query_count,
+@batch_top_k);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET @batch_index_name = 'idx_item_api_mem';
+SET @batch_query_count = NULL;
+SELECT VEC_INDEX_SEARCH_BATCH(@batch_index_name, @batch_payload, @batch_query_count,
+@batch_top_k);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET @batch_query_count = 1;
+SET @batch_top_k = NULL;
+SELECT VEC_INDEX_SEARCH_BATCH(@batch_index_name, @batch_payload, @batch_query_count,
+@batch_top_k);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET @batch_top_k = 5;
+SET @batch_payload = X'';
+SELECT VEC_INDEX_SEARCH_BATCH(@batch_index_name, @batch_payload, @batch_query_count,
+@batch_top_k);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET @batch_payload = VEC_FROMTEXT('[1,2]');
+SET @batch_query_count = 3;
+SELECT VEC_INDEX_SEARCH_BATCH(@batch_index_name, @batch_payload, @batch_query_count,
+@batch_top_k);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET @batch_index_name = 'idx_item_api_missing';
+SET @batch_payload = CONCAT(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[2,2]'));
+SET @batch_query_count = 2;
+SELECT VEC_INDEX_SEARCH_BATCH(@batch_index_name, @batch_payload, @batch_query_count,
+@batch_top_k);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET @batch_index_name = NULL;
+SET @batch_payload = NULL;
+SET @batch_query_count = NULL;
+SET @batch_top_k = NULL;
+SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_item_api_mem', VEC_FROMTEXT('[1,2]'), 5);
+VEC_INDEX_SEARCH_WITH_DISTANCE('idx_item_api_mem', VEC_FROMTEXT('[1,2]'), 5)
+[{"doc_id":1,"distance":0},{"doc_id":2,"distance":1}]
+SELECT VEC_INDEX_ERASE('idx_item_api_mem', 2);
+VEC_INDEX_ERASE('idx_item_api_mem', 2)
+1
+SELECT VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[1,2]'), 5);
+VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[1,2]'), 5)
+[1]
+SET @txn_item_api = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_TXN_PENDING(@txn_item_api);
+VEC_INDEX_TXN_PENDING(@txn_item_api)
+0
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api, 3, '[3,3]');
+VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api, 3, '[3,3]')
+1
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_api_mem', @txn_item_api, 1);
+VEC_INDEX_STAGE_ERASE('idx_item_api_mem', @txn_item_api, 1)
+1
+SELECT VEC_INDEX_TXN_PENDING(@txn_item_api);
+VEC_INDEX_TXN_PENDING(@txn_item_api)
+2
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_item_api, 'sp_item_api');
+VEC_INDEX_TXN_SAVEPOINT(@txn_item_api, 'sp_item_api')
+1
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api, 4, VEC_FROMTEXT('[4,4]'));
+VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api, 4, VEC_FROMTEXT('[4,4]'))
+1
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_item_api, 'sp_item_api');
+VEC_INDEX_TXN_ROLLBACK_TO(@txn_item_api, 'sp_item_api')
+1
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_item_api, 'sp_item_api');
+VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_item_api, 'sp_item_api')
+1
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_item_api, 'sp_item_api');
+ERROR HY000: Incorrect arguments to vec_index_txn_release_savepoint
+SELECT VEC_INDEX_TXN_COMMIT(@txn_item_api);
+VEC_INDEX_TXN_COMMIT(@txn_item_api)
+1
+SELECT VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[3,3]'), 5);
+VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[3,3]'), 5)
+[3]
+SET @txn_item_api2 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api2, 9, '[9,9]');
+VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api2, 9, '[9,9]')
+1
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_item_api2);
+VEC_INDEX_TXN_ROLLBACK(@txn_item_api2)
+1
+SELECT VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[9,9]'), 5);
+VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[9,9]'), 5)
+[3]
+SELECT VEC_INDEX_REBUILD('idx_item_api_mem');
+VEC_INDEX_REBUILD('idx_item_api_mem')
+1
+SELECT VEC_INDEX_RECOVER('idx_item_api_mem');
+VEC_INDEX_RECOVER('idx_item_api_mem')
+1
+SELECT VEC_INDEX_REBUILD_ALL();
+VEC_INDEX_REBUILD_ALL()
+2
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+2
+SELECT VEC_INDEX_CREATE('idx_item_api_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_item_api_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SET @txn_item_api_fail = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_fail', @txn_item_api_fail, 11, '[11,11]');
+VEC_INDEX_STAGE_UPSERT('idx_item_api_fail', @txn_item_api_fail, 11, '[11,11]')
+1
+SELECT VEC_INDEX_REBUILD('idx_item_api_fail');
+ERROR HY000: Incorrect arguments to vec_index_rebuild
+SELECT VEC_INDEX_INFO('idx_item_api_fail');
+VEC_INDEX_INFO('idx_item_api_fail')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_item_api_fail);
+VEC_INDEX_TXN_ROLLBACK(@txn_item_api_fail)
+1
+SELECT VEC_INDEX_RECOVER('idx_item_api_fail');
+VEC_INDEX_RECOVER('idx_item_api_fail')
+1
+SELECT VEC_INDEX_INFO('idx_item_api_fail');
+VEC_INDEX_INFO('idx_item_api_fail')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+SELECT VEC_INDEX_DROP('idx_item_api_fail');
+VEC_INDEX_DROP('idx_item_api_fail')
+1
+SELECT VEC_INDEX_DROP('idx_item_api_mem');
+VEC_INDEX_DROP('idx_item_api_mem')
+1
+SELECT VEC_INDEX_DROP('idx_item_api_ext');
+VEC_INDEX_DROP('idx_item_api_ext')
+1
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]

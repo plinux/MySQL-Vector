@@ -26,6 +26,11 @@
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef HAVE_VECTOR_INDEX
+#include <string>
+#include <utility>
+#include <vector>
+#endif
 
 #include "m_ctype.h"
 #include "m_string.h"
@@ -51,9 +56,114 @@
 #include "sql/sql_servers.h"
 #include "sql/sql_table.h"  // mysql_alter_table,
 #include "sql/table.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_registry.h"
+#endif
 #include "template_utils.h"  // delete_container_pointers
 
 bool has_external_data_or_index_dir(partition_info &pi);
+
+#ifdef HAVE_VECTOR_INDEX
+namespace {
+
+using Vector_column_rename_list = std::vector<std::pair<std::string, std::string>>;
+using Vector_column_drop_list = std::vector<std::string>;
+
+void collect_vector_column_sync_actions(const Alter_info &alter_info,
+                                        Vector_column_rename_list *renames,
+                                        Vector_column_drop_list *drops) {
+  if (renames == nullptr || drops == nullptr) return;
+
+  if (alter_info.flags & Alter_info::ALTER_CHANGE_COLUMN) {
+    for (const Alter_column *alter_column : alter_info.alter_list) {
+      if (alter_column == nullptr ||
+          alter_column->change_type() != Alter_column::Type::RENAME_COLUMN ||
+          alter_column->name == nullptr || alter_column->m_new_name == nullptr) {
+        continue;
+      }
+      renames->emplace_back(alter_column->name, alter_column->m_new_name);
+    }
+
+    for (const Create_field &create_field : alter_info.create_list) {
+      if (create_field.change == nullptr || create_field.field_name == nullptr ||
+          strcmp(create_field.change, create_field.field_name) == 0) {
+        continue;
+      }
+      renames->emplace_back(create_field.change, create_field.field_name);
+    }
+  }
+
+  if (alter_info.flags & Alter_info::ALTER_DROP_COLUMN) {
+    for (const Alter_drop *alter_drop : alter_info.drop_list) {
+      if (alter_drop == nullptr || alter_drop->type != Alter_drop::COLUMN ||
+          alter_drop->name == nullptr) {
+        continue;
+      }
+      drops->emplace_back(alter_drop->name);
+    }
+  }
+}
+
+bool sync_vector_indexes_for_alter_columns(
+    const char *db_name, const char *table_name,
+    const Vector_column_rename_list &renames, const Vector_column_drop_list &drops) {
+  if (db_name == nullptr || table_name == nullptr) return false;
+
+  for (const auto &rename : renames) {
+    if (!vector_index_registry::rename_index_for_column(db_name, table_name,
+                                                     rename.first, rename.second)) {
+      return false;
+    }
+  }
+
+  for (const std::string &column_name : drops) {
+    if (!vector_index_registry::drop_index_for_column(db_name, table_name,
+                                                   column_name)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool reject_unsupported_vector_column_change(THD *thd, const char *db_name,
+                                             const char *table_name,
+                                             const Alter_info &alter_info) {
+  if (thd == nullptr || db_name == nullptr || table_name == nullptr) return false;
+  if ((alter_info.flags & Alter_info::ALTER_CHANGE_COLUMN) == 0) return false;
+
+  for (const Create_field &create_field : alter_info.create_list) {
+    if (create_field.change == nullptr || create_field.field_name == nullptr) {
+      continue;
+    }
+    std::string index_name(db_name);
+    index_name += ".";
+    index_name += table_name;
+    index_name += ".";
+    index_name += create_field.change;
+
+    vector_index_registry::index_info info;
+    if (!vector_index_registry::get_index_info(index_name, &info)) continue;
+
+    const bool keep_vector_type =
+        ((create_field.flags & FIELD_IS_VECTOR) != 0) &&
+        (create_field.vector_dim > 0) &&
+        (static_cast<size_t>(create_field.vector_dim) == info.dimension);
+
+    if (keep_vector_type) continue;
+
+    my_error(ER_NOT_SUPPORTED_YET, MYF(0),
+             "ALTER CHANGE/MODIFY on VECTOR indexed column requires "
+             "unchanged VECTOR(dim); "
+             "DROP VECTOR INDEX first");
+    return true;
+  }
+
+  return false;
+}
+
+}  // namespace
+#endif
 
 Alter_info::Alter_info(const Alter_info &rhs, MEM_ROOT *mem_root)
     : drop_list(mem_root, rhs.drop_list.begin(), rhs.drop_list.end()),
@@ -235,6 +345,12 @@ bool Sql_cmd_alter_table::execute(THD *thd) {
   */
   HA_CREATE_INFO create_info(*lex->create_info);
   Alter_info alter_info(*m_alter_info, thd->mem_root);
+#ifdef HAVE_VECTOR_INDEX
+  const char *old_db_name = first_table->db;
+  const char *old_table_name = first_table->table_name;
+  Vector_column_rename_list vector_column_renames;
+  Vector_column_drop_list vector_column_drops;
+#endif
   Access_bitmask priv = 0;
   Access_bitmask priv_needed = ALTER_ACL;
   bool result;
@@ -243,6 +359,16 @@ bool Sql_cmd_alter_table::execute(THD *thd) {
 
   if (thd->is_fatal_error()) /* out of memory creating a copy of alter_info */
     return true;
+
+#ifdef HAVE_VECTOR_INDEX
+  collect_vector_column_sync_actions(alter_info, &vector_column_renames,
+                                     &vector_column_drops);
+
+  if (reject_unsupported_vector_column_change(thd, old_db_name, old_table_name,
+                                              alter_info)) {
+    return true;
+  }
+#endif
 
   {
     partition_info *part_info = thd->lex->part_info;
@@ -350,6 +476,37 @@ bool Sql_cmd_alter_table::execute(THD *thd) {
   result = mysql_alter_table(thd, alter_info.new_db_name.str,
                              alter_info.new_table_name.str, &create_info,
                              first_table, &alter_info);
+
+#ifdef HAVE_VECTOR_INDEX
+  if (!result &&
+      (!vector_column_renames.empty() || !vector_column_drops.empty()) &&
+      !sync_vector_indexes_for_alter_columns(
+          old_db_name, old_table_name, vector_column_renames,
+          vector_column_drops)) {
+    if (!thd->is_error()) {
+      my_error(ER_INTERNAL_ERROR, MYF(0),
+               "Failed to sync vector indexes for altered columns");
+    }
+    result = true;
+  }
+
+  if (!result && (alter_info.flags & Alter_info::ALTER_RENAME) &&
+      old_db_name != nullptr && old_table_name != nullptr &&
+      alter_info.new_db_name.str != nullptr &&
+      alter_info.new_table_name.str != nullptr &&
+      (strcmp(old_db_name, alter_info.new_db_name.str) != 0 ||
+       strcmp(old_table_name, alter_info.new_table_name.str) != 0)) {
+    if (!vector_index_registry::rename_indexes_for_table(
+            old_db_name, old_table_name, alter_info.new_db_name.str,
+            alter_info.new_table_name.str)) {
+      if (!thd->is_error()) {
+        my_error(ER_INTERNAL_ERROR, MYF(0),
+                 "Failed to rename vector indexes for altered table");
+      }
+      result = true;
+    }
+  }
+#endif
 
   if (!thd->lex->is_ignore() && thd->is_strict_mode())
     thd->pop_internal_handler();

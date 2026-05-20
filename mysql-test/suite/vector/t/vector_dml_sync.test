@@ -1,0 +1,241 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: SQL DML to vector index transaction synchronization
+--echo #
+
+DROP TABLE IF EXISTS t_dml_sync;
+CREATE TABLE t_dml_sync (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+SELECT VEC_INDEX_CREATE('test.t_dml_sync.v', 2);
+
+INSERT INTO t_dml_sync VALUES (1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[1,1]', 1);
+
+--echo # INSERT with NULL vector should stage erase/no-op in vector index path
+INSERT INTO t_dml_sync VALUES (10, NULL);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[0,0]', 5);
+
+START TRANSACTION;
+INSERT INTO t_dml_sync VALUES (2, VEC_FROMTEXT('[2,2]'));
+ROLLBACK;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[2,2]', 1);
+
+START TRANSACTION;
+INSERT INTO t_dml_sync VALUES (3, VEC_FROMTEXT('[3,3]'));
+SAVEPOINT sp_vec;
+UPDATE t_dml_sync SET v=VEC_FROMTEXT('[9,9]') WHERE id=3;
+ROLLBACK TO SAVEPOINT sp_vec;
+COMMIT;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[3,3]', 1);
+
+UPDATE t_dml_sync SET v=VEC_FROMTEXT('[4,4]') WHERE id=1;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[4,4]', 1);
+
+--echo # UPDATE primary key should erase old doc_id and upsert new doc_id
+UPDATE t_dml_sync SET id=11, v=VEC_FROMTEXT('[11,11]') WHERE id=10;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[11,11]', 1);
+
+--echo # UPDATE vector to NULL should erase from vector index
+UPDATE t_dml_sync SET v=NULL WHERE id=11;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[11,11]', 1);
+
+DELETE FROM t_dml_sync WHERE id=1;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[4,4]', 1);
+
+SELECT VEC_INDEX_DROP('test.t_dml_sync.v');
+DROP TABLE t_dml_sync;
+
+--echo # REPLACE on secondary UNIQUE should erase old doc_id and stage new doc_id
+DROP TABLE IF EXISTS t_dml_sync_replace;
+CREATE TABLE t_dml_sync_replace (
+  id INT PRIMARY KEY,
+  u INT UNIQUE,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_dml_sync_replace(v) WITH (2);
+INSERT INTO t_dml_sync_replace VALUES
+  (1, 10, VEC_FROMTEXT('[1,1]')),
+  (2, 20, VEC_FROMTEXT('[2,2]'));
+REPLACE INTO t_dml_sync_replace VALUES (3, 10, VEC_FROMTEXT('[3,3]'));
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_replace.v', '[3,3]', 2);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_replace.v', '[1,1]', 2);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_replace.v', '[2,2]', 2);
+DROP TABLE t_dml_sync_replace;
+
+--echo # DUP_UPDATE with secondary UNIQUE conflict should erase old doc_id
+DROP TABLE IF EXISTS t_dml_sync_dup_update;
+CREATE TABLE t_dml_sync_dup_update (
+  id INT PRIMARY KEY,
+  u INT UNIQUE,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_dml_sync_dup_update(v) WITH (2);
+INSERT INTO t_dml_sync_dup_update VALUES
+  (1, 10, VEC_FROMTEXT('[1,1]')),
+  (2, 20, VEC_FROMTEXT('[2,2]'));
+INSERT INTO t_dml_sync_dup_update VALUES (3, 10, VEC_FROMTEXT('[3,3]')) AS new_row
+ON DUPLICATE KEY UPDATE
+  id=new_row.id,
+  v=new_row.v;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_dup_update.v', '[3,3]', 2);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_dup_update.v', '[1,1]', 2);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_dup_update.v', '[2,2]', 2);
+DROP TABLE t_dml_sync_dup_update;
+
+--echo # Composite PK table should bypass doc_id extraction for DML sync
+DROP TABLE IF EXISTS t_dml_sync_composite;
+CREATE TABLE t_dml_sync_composite (
+  id1 INT,
+  id2 INT,
+  v VECTOR(2),
+  PRIMARY KEY(id1, id2)
+) ENGINE=InnoDB;
+SELECT VEC_INDEX_CREATE('test.t_dml_sync_composite.v', 2);
+INSERT INTO t_dml_sync_composite VALUES (1, 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_composite.v', '[1,1]', 1);
+SELECT VEC_INDEX_DROP('test.t_dml_sync_composite.v');
+DROP TABLE t_dml_sync_composite;
+
+--echo # Negative PK should not stage vector doc_id into index
+DROP TABLE IF EXISTS t_dml_sync_negative;
+CREATE TABLE t_dml_sync_negative (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+SELECT VEC_INDEX_CREATE('test.t_dml_sync_negative.v', 2);
+INSERT INTO t_dml_sync_negative VALUES (-1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_negative.v', '[1,1]', 1);
+SELECT VEC_INDEX_DROP('test.t_dml_sync_negative.v');
+DROP TABLE t_dml_sync_negative;
+
+--echo # Table without vector index mapping should keep DML path successful
+DROP TABLE IF EXISTS t_dml_sync_noindex;
+CREATE TABLE t_dml_sync_noindex (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_dml_sync_noindex VALUES (1, VEC_FROMTEXT('[1,1]'));
+DROP TABLE t_dml_sync_noindex;
+
+--echo # UNSIGNED BIGINT PK should be accepted by doc_id extraction
+DROP TABLE IF EXISTS t_dml_sync_unsigned;
+CREATE TABLE t_dml_sync_unsigned (
+  id BIGINT UNSIGNED PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+SELECT VEC_INDEX_CREATE('test.t_dml_sync_unsigned.v', 2);
+INSERT INTO t_dml_sync_unsigned VALUES (18446744073709551615, VEC_FROMTEXT('[8,8]'));
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_unsigned.v', '[8,8]', 1);
+SELECT VEC_INDEX_DROP('test.t_dml_sync_unsigned.v');
+DROP TABLE t_dml_sync_unsigned;
+
+--echo # Non-integer PK should bypass vector DML sync doc_id extraction
+DROP TABLE IF EXISTS t_dml_sync_charpk;
+CREATE TABLE t_dml_sync_charpk (
+  id VARCHAR(32) PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+SELECT VEC_INDEX_CREATE('test.t_dml_sync_charpk.v', 2);
+INSERT INTO t_dml_sync_charpk VALUES ('doc-a', VEC_FROMTEXT('[2,2]'));
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_charpk.v', '[2,2]', 1);
+SELECT VEC_INDEX_DROP('test.t_dml_sync_charpk.v');
+DROP TABLE t_dml_sync_charpk;
+
+--echo # Table without PRIMARY KEY should bypass vector DML sync doc_id extraction
+DROP TABLE IF EXISTS t_dml_sync_nopk;
+CREATE TABLE t_dml_sync_nopk (
+  id INT,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+SELECT VEC_INDEX_CREATE('test.t_dml_sync_nopk.v', 2);
+INSERT INTO t_dml_sync_nopk VALUES (1, VEC_FROMTEXT('[3,3]'));
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_nopk.v', '[3,3]', 1);
+SELECT VEC_INDEX_DROP('test.t_dml_sync_nopk.v');
+DROP TABLE t_dml_sync_nopk;
+
+--echo # Multiple VECTOR columns should each stage their own mapped changes
+DROP TABLE IF EXISTS t_dml_sync_multi;
+CREATE TABLE t_dml_sync_multi (
+  id INT PRIMARY KEY,
+  v1 VECTOR(2),
+  v2 VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_dml_sync_multi(v1) WITH (2);
+CREATE VECTOR INDEX ON t_dml_sync_multi(v2) WITH (2);
+INSERT INTO t_dml_sync_multi VALUES (1, VEC_FROMTEXT('[1,1]'), VEC_FROMTEXT('[2,2]'));
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_multi.v1', '[1,1]', 1);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_multi.v2', '[2,2]', 1);
+UPDATE t_dml_sync_multi
+  SET v1=NULL, v2=VEC_FROMTEXT('[9,9]')
+  WHERE id=1;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_multi.v1', '[1,1]', 1);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_multi.v2', '[9,9]', 1);
+DELETE FROM t_dml_sync_multi WHERE id=1;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_multi.v2', '[9,9]', 1);
+DROP TABLE t_dml_sync_multi;
+
+--echo # Negative source doc_id keeps PK rewrite path bypassed
+DROP TABLE IF EXISTS t_dml_sync_pk_update_negative;
+CREATE TABLE t_dml_sync_pk_update_negative (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_dml_sync_pk_update_negative(v) WITH (2);
+INSERT INTO t_dml_sync_pk_update_negative VALUES (-1, VEC_FROMTEXT('[1,1]'));
+UPDATE t_dml_sync_pk_update_negative
+  SET id=5, v=VEC_FROMTEXT('[5,5]')
+  WHERE id=-1;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_pk_update_negative.v', '[1,1]', 1);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_pk_update_negative.v', '[5,5]', 1);
+DROP TABLE t_dml_sync_pk_update_negative;
+
+--echo # Composite PK update/delete paths should keep vector DML sync bypassed
+DROP TABLE IF EXISTS t_dml_sync_composite_ud;
+CREATE TABLE t_dml_sync_composite_ud (
+  id1 INT,
+  id2 INT,
+  v VECTOR(2),
+  PRIMARY KEY(id1, id2)
+) ENGINE=InnoDB;
+SELECT VEC_INDEX_CREATE('test.t_dml_sync_composite_ud.v', 2);
+INSERT INTO t_dml_sync_composite_ud VALUES (1, 1, VEC_FROMTEXT('[4,4]'));
+UPDATE t_dml_sync_composite_ud SET v=VEC_FROMTEXT('[8,8]') WHERE id1=1 AND id2=1;
+DELETE FROM t_dml_sync_composite_ud WHERE id1=1 AND id2=1;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_composite_ud.v', '[4,4]', 1);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_composite_ud.v', '[8,8]', 1);
+SELECT VEC_INDEX_DROP('test.t_dml_sync_composite_ud.v');
+DROP TABLE t_dml_sync_composite_ud;
+
+--echo # Non-integer PK update/delete paths should keep vector DML sync bypassed
+DROP TABLE IF EXISTS t_dml_sync_charpk_ud;
+CREATE TABLE t_dml_sync_charpk_ud (
+  id VARCHAR(32) PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+SELECT VEC_INDEX_CREATE('test.t_dml_sync_charpk_ud.v', 2);
+INSERT INTO t_dml_sync_charpk_ud VALUES ('doc-a', VEC_FROMTEXT('[6,6]'));
+UPDATE t_dml_sync_charpk_ud SET v=VEC_FROMTEXT('[7,7]') WHERE id='doc-a';
+DELETE FROM t_dml_sync_charpk_ud WHERE id='doc-a';
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_charpk_ud.v', '[6,6]', 1);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_charpk_ud.v', '[7,7]', 1);
+SELECT VEC_INDEX_DROP('test.t_dml_sync_charpk_ud.v');
+DROP TABLE t_dml_sync_charpk_ud;
+
+--echo # Table without PRIMARY KEY should bypass insert/update/delete vector sync
+DROP TABLE IF EXISTS t_dml_sync_nopk_ud;
+CREATE TABLE t_dml_sync_nopk_ud (
+  id INT,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+SELECT VEC_INDEX_CREATE('test.t_dml_sync_nopk_ud.v', 2);
+INSERT INTO t_dml_sync_nopk_ud VALUES (1, VEC_FROMTEXT('[3,3]'));
+UPDATE t_dml_sync_nopk_ud SET v=VEC_FROMTEXT('[4,4]') WHERE id=1;
+DELETE FROM t_dml_sync_nopk_ud WHERE id=1;
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_nopk_ud.v', '[3,3]', 1);
+SELECT VEC_INDEX_SEARCH('test.t_dml_sync_nopk_ud.v', '[4,4]', 1);
+SELECT VEC_INDEX_DROP('test.t_dml_sync_nopk_ud.v');
+DROP TABLE t_dml_sync_nopk_ud;
