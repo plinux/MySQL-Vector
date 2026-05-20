@@ -1,0 +1,1272 @@
+/* Copyright (c) 2026, Oracle and/or its affiliates.
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
+
+   This program is designed to work with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License, version 2.0, for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+
+#include "sql/vector/vector_index_registry.h"
+
+#include <algorithm>
+#include <mutex>
+#include <shared_mutex>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include "sql/vector/vector_index_identity.h"
+#include "sql/vector/vector_index_registry_internal.h"
+#include "sql/vector/vector_index_service_internal.h"
+#include "sql/vector/vector_status.h"
+
+namespace vector_index_registry {
+
+using namespace detail;
+
+namespace {
+
+using vector_index::detail::build_backend_from_config;
+
+bool snapshot_index_config_locked(
+    const std::string &index_name,
+    vector_index::index_service::index_config *config) {
+  return g_index_service.describe_index(index_name, config, nullptr, nullptr,
+                                        nullptr);
+}
+
+bool index_config_matches(
+    const vector_index::index_service::index_config &lhs,
+    const vector_index::index_service::index_config &rhs) {
+  return lhs.dimension == rhs.dimension && lhs.metric == rhs.metric &&
+         lhs.mode == rhs.mode && lhs.provider == rhs.provider &&
+         lhs.search_ef == rhs.search_ef && lhs.hnsw_m == rhs.hnsw_m &&
+         lhs.hnsw_ef_construction == rhs.hnsw_ef_construction &&
+         lhs.hnsw_build_threads == rhs.hnsw_build_threads &&
+         lhs.faiss_nlist == rhs.faiss_nlist &&
+         lhs.faiss_nprobe == rhs.faiss_nprobe &&
+         lhs.faiss_pq_m == rhs.faiss_pq_m &&
+         lhs.faiss_pq_bits == rhs.faiss_pq_bits &&
+         lhs.faiss_build_threads == rhs.faiss_build_threads &&
+         lhs.diskann_max_degree == rhs.diskann_max_degree &&
+         lhs.diskann_build_complexity == rhs.diskann_build_complexity &&
+         lhs.diskann_build_threads == rhs.diskann_build_threads &&
+         lhs.diskann_search_complexity == rhs.diskann_search_complexity;
+}
+
+struct lifecycle_backend_plan {
+  std::string index_name;
+  vector_index::index_service::index_config config;
+  vector_index::index_service::committed_entries entries;
+  uint64_t lifecycle_version{0};
+};
+
+struct prepared_lifecycle_backend {
+  lifecycle_backend_plan plan;
+  std::unique_ptr<vector_index::backend> backend;
+  bool used_recover_fallback{false};
+};
+
+struct drop_artifact_plan {
+  std::string index_name;
+  vector_index::backend_mode mode{vector_index::backend_mode::kMemory};
+  vector_index::backend_provider provider{
+      vector_index::backend_provider::kNative};
+};
+
+bool snapshot_backend_plan_from_state_locked(
+    const std::string &index_name,
+    const vector_index::index_service::committed_state &committed_state,
+    lifecycle_backend_plan *plan) {
+  if (plan == nullptr) return false;
+
+  lifecycle_backend_plan candidate;
+  candidate.index_name = index_name;
+  if (!g_index_service.describe_index(
+          index_name, &candidate.config, nullptr, nullptr, nullptr, nullptr,
+          &candidate.lifecycle_version)) {
+    return false;
+  }
+  if (candidate.lifecycle_version == 0 ||
+      g_index_service.has_pending_changes_for_index(index_name)) {
+    return false;
+  }
+
+  auto state_it = committed_state.find(index_name);
+  if (state_it == committed_state.end()) return false;
+  candidate.entries = state_it->second;
+  *plan = std::move(candidate);
+  return true;
+}
+
+bool snapshot_backend_plan_locked(const std::string &index_name,
+                                  lifecycle_backend_plan *plan) {
+  vector_index::index_service::committed_state committed_state;
+  if (!g_index_service.snapshot_committed_state(&committed_state)) return false;
+  return snapshot_backend_plan_from_state_locked(index_name, committed_state,
+                                                plan);
+}
+
+bool snapshot_all_backend_plans_locked(
+    std::vector<lifecycle_backend_plan> *plans) {
+  if (plans == nullptr) return false;
+
+  std::vector<std::string> index_names;
+  if (!g_index_service.list_indexes(&index_names)) return false;
+  std::sort(index_names.begin(), index_names.end());
+
+  vector_index::index_service::committed_state committed_state;
+  if (!g_index_service.snapshot_committed_state(&committed_state)) return false;
+
+  plans->clear();
+  plans->reserve(index_names.size());
+  for (const std::string &index_name : index_names) {
+    lifecycle_backend_plan plan;
+    if (!snapshot_backend_plan_from_state_locked(index_name, committed_state,
+                                                &plan)) {
+      return false;
+    }
+    plans->push_back(std::move(plan));
+  }
+  return true;
+}
+
+bool validate_backend_plan_against_state_locked(
+    const lifecycle_backend_plan &plan,
+    const vector_index::index_service::committed_state &current_state) {
+  vector_index::index_service::index_config current_config;
+  uint64_t current_lifecycle_version = 0;
+  if (!g_index_service.describe_index(
+          plan.index_name, &current_config, nullptr, nullptr, nullptr, nullptr,
+          &current_lifecycle_version)) {
+    return false;
+  }
+  if (!index_config_matches(plan.config, current_config) ||
+      current_lifecycle_version != plan.lifecycle_version ||
+      g_index_service.has_pending_changes_for_index(plan.index_name)) {
+    return false;
+  }
+
+  auto current_entries_it = current_state.find(plan.index_name);
+  return current_entries_it != current_state.end() &&
+         current_entries_it->second == plan.entries;
+}
+
+bool validate_backend_plan_locked(const lifecycle_backend_plan &plan) {
+  vector_index::index_service::committed_state current_state;
+  if (!g_index_service.snapshot_committed_state(&current_state)) return false;
+  return validate_backend_plan_against_state_locked(plan, current_state);
+}
+
+std::unique_ptr<vector_index::backend> build_rebuilt_backend(
+    const lifecycle_backend_plan &plan) {
+  std::unique_ptr<vector_index::backend> rebuilt =
+      build_backend_from_config(plan.index_name, plan.config);
+  if (rebuilt == nullptr ||
+      !rebuilt->rebuild_from_committed_entries(plan.entries)) {
+    return nullptr;
+  }
+  return rebuilt;
+}
+
+std::unique_ptr<vector_index::backend> build_recovered_backend(
+    const lifecycle_backend_plan &plan, bool *used_recover_fallback) {
+  if (used_recover_fallback == nullptr) return nullptr;
+  *used_recover_fallback = false;
+
+  std::unique_ptr<vector_index::backend> recovered =
+      build_backend_from_config(plan.index_name, plan.config);
+  if (recovered == nullptr ||
+      !recovered->recover_committed_entries(plan.entries)) {
+    return nullptr;
+  }
+  *used_recover_fallback = recovered->last_recover_used_fallback();
+  return recovered;
+}
+
+bool snapshot_drop_artifact_plan_locked(const std::string &index_name,
+                                        drop_artifact_plan *plan) {
+  if (plan == nullptr) return false;
+
+  vector_index::index_service::index_config config;
+  if (!g_index_service.describe_index(index_name, &config, nullptr, nullptr,
+                                      nullptr)) {
+    return false;
+  }
+  plan->index_name = index_name;
+  plan->mode = config.mode;
+  plan->provider = config.provider;
+  return true;
+}
+
+void cleanup_drop_artifacts(const std::vector<drop_artifact_plan> &plans) {
+  for (const drop_artifact_plan &plan : plans) {
+    (void)vector_index::remove_backend_artifacts(plan.index_name, plan.mode,
+                                                 plan.provider);
+  }
+}
+
+template <typename Prepare, typename Apply>
+bool apply_persisted_index_config_change_locked(const std::string &index_name,
+                                                Prepare prepare,
+                                                Apply apply) {
+  vector_index::index_service::index_config before;
+  if (!snapshot_index_config_locked(index_name, &before)) return false;
+
+  vector_index::index_service::index_config candidate = before;
+  if (!prepare(&candidate)) return false;
+  if (!persist_index_config_manifest_locked(index_name, candidate)) return false;
+  if (apply()) return true;
+
+  vector_status::record_runtime_state_rollback();
+  if (!g_index_service.restore_index_config(index_name, before)) {
+    vector_status::record_runtime_state_rollback_failure();
+    return false;
+  }
+  if (!persist_index_config_manifest_locked(index_name, before)) {
+    vector_status::record_truth_store_persist_failure();
+  }
+  return false;
+}
+
+}  // namespace
+
+bool create_index(const std::string &index_name, size_t dimension,
+                  const std::string &metric, const std::string &mode,
+                  const std::string &provider) {
+  return create_index(index_name, dimension, metric, mode, provider,
+                      create_index_options{});
+}
+
+bool create_index(const std::string &index_name, size_t dimension,
+                  const std::string &metric, const std::string &mode,
+                  const std::string &provider,
+                  const create_index_options &options) {
+  vector_status::record_index_create_request();
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return create_index_locked(index_name, dimension, metric, mode, provider,
+                             nullptr, options);
+}
+
+bool create_mapped_index(const std::string &index_name, size_t dimension,
+                         const std::string &metric, const std::string &mode,
+                         const std::string &provider,
+                         const std::string &schema_name,
+                         const std::string &table_name,
+                         const std::string &column_name,
+                         const std::string &doc_id_column_name) {
+  return create_mapped_index(index_name, dimension, metric, mode, provider,
+                             schema_name, table_name, column_name,
+                             doc_id_column_name, create_index_options{});
+}
+
+bool create_mapped_index(const std::string &index_name, size_t dimension,
+                         const std::string &metric, const std::string &mode,
+                         const std::string &provider,
+                         const std::string &schema_name,
+                         const std::string &table_name,
+                         const std::string &column_name,
+                         const std::string &doc_id_column_name,
+                         const create_index_options &options) {
+  vector_status::record_index_create_request();
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  const index_binding binding{schema_name, table_name, column_name,
+                              doc_id_column_name};
+  return create_index_locked(index_name, dimension, metric, mode, provider,
+                             &binding, options);
+}
+
+bool drop_index_impl(const std::string &index_name,
+                     dropped_index_artifacts *artifacts,
+                     bool cleanup_artifacts) {
+  vector_status::record_index_drop_request();
+  if (artifacts != nullptr) *artifacts = dropped_index_artifacts{};
+  std::vector<drop_artifact_plan> drop_artifacts;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    std::vector<vector_index_metadata_store::metadata_row> metadata_before;
+    vector_index::index_service::committed_state committed_before;
+    std::vector<vector_index_metadata_store::change_log_row> change_log_before;
+    std::vector<std::string> lagging_indexes_before;
+    if (!snapshot_runtime_state_locked(&metadata_before, &committed_before,
+                                       &change_log_before,
+                                       &lagging_indexes_before)) {
+      return false;
+    }
+    drop_artifact_plan artifact_plan;
+    if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan))
+      return false;
+    if (!g_index_service.unregister_index(index_name)) return false;
+    erase_index_binding_locked(index_name);
+    prune_change_log_for_index_locked(index_name);
+    if (!persist_registry_state_locked()) {
+      vector_status::record_truth_store_persist_failure();
+      if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                         change_log_before,
+                                         lagging_indexes_before)) {
+        return false;
+      }
+      return false;
+    }
+    if (artifacts != nullptr) {
+      artifacts->index_name = artifact_plan.index_name;
+      artifacts->mode = artifact_plan.mode;
+      artifacts->provider = artifact_plan.provider;
+      artifacts->valid = true;
+    }
+    drop_artifacts.push_back(std::move(artifact_plan));
+    if (cleanup_artifacts) vector_status::record_index_drop_success();
+  }
+  if (cleanup_artifacts) cleanup_drop_artifacts(drop_artifacts);
+  return true;
+}
+
+bool drop_index(const std::string &index_name) {
+  return drop_index_impl(index_name, nullptr, true);
+}
+
+bool drop_index(const std::string &index_name,
+                dropped_index_artifacts *artifacts) {
+  return drop_index_impl(index_name, artifacts, false);
+}
+
+void cleanup_dropped_index_artifacts(
+    const dropped_index_artifacts &artifacts) {
+  if (!artifacts.valid) return;
+  (void)vector_index::remove_backend_artifacts(artifacts.index_name,
+                                               artifacts.mode,
+                                               artifacts.provider);
+  vector_status::record_index_drop_success();
+}
+
+bool drop_indexes_for_table(const std::string &db_name,
+                            const std::string &table_name) {
+  std::vector<drop_artifact_plan> drop_artifacts;
+  size_t dropped_count = 0;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!g_metadata_loaded) return true;
+    if (!ensure_metadata_loaded_locked()) return false;
+    std::vector<vector_index_metadata_store::metadata_row> metadata_before;
+    vector_index::index_service::committed_state committed_before;
+    std::vector<vector_index_metadata_store::change_log_row> change_log_before;
+    std::vector<std::string> lagging_indexes_before;
+    if (!snapshot_runtime_state_locked(&metadata_before, &committed_before,
+                                       &change_log_before,
+                                       &lagging_indexes_before)) {
+      return false;
+    }
+
+    std::vector<std::string> index_names;
+    if (!g_index_service.list_indexes(&index_names)) return false;
+
+    for (const std::string &index_name : index_names) {
+      if (!vector_index_identity::matches_table(index_name, db_name,
+                                                table_name)) {
+        continue;
+      }
+
+      drop_artifact_plan artifact_plan;
+      if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan))
+        return false;
+      vector_status::record_index_drop_request();
+      if (!g_index_service.unregister_index(index_name)) return false;
+      erase_index_binding_locked(index_name);
+      prune_change_log_for_index_locked(index_name);
+      drop_artifacts.push_back(std::move(artifact_plan));
+      ++dropped_count;
+    }
+
+    if (dropped_count == 0) return true;
+    if (!persist_registry_state_locked()) {
+      vector_status::record_truth_store_persist_failure();
+      if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                         change_log_before,
+                                         lagging_indexes_before)) {
+        return false;
+      }
+      return false;
+    }
+    for (size_t i = 0; i < dropped_count; ++i) {
+      vector_status::record_index_drop_success();
+    }
+  }
+  cleanup_drop_artifacts(drop_artifacts);
+  return true;
+}
+
+bool drop_indexes_for_database(const std::string &db_name) {
+  std::vector<drop_artifact_plan> drop_artifacts;
+  size_t dropped_count = 0;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!g_metadata_loaded) return true;
+    if (!ensure_metadata_loaded_locked()) return false;
+    std::vector<vector_index_metadata_store::metadata_row> metadata_before;
+    vector_index::index_service::committed_state committed_before;
+    std::vector<vector_index_metadata_store::change_log_row> change_log_before;
+    std::vector<std::string> lagging_indexes_before;
+    if (!snapshot_runtime_state_locked(&metadata_before, &committed_before,
+                                       &change_log_before,
+                                       &lagging_indexes_before)) {
+      return false;
+    }
+
+    std::vector<std::string> index_names;
+    if (!g_index_service.list_indexes(&index_names)) return false;
+
+    for (const std::string &index_name : index_names) {
+      if (!vector_index_identity::matches_schema(index_name, db_name))
+        continue;
+
+      drop_artifact_plan artifact_plan;
+      if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan))
+        return false;
+      vector_status::record_index_drop_request();
+      if (!g_index_service.unregister_index(index_name)) return false;
+      erase_index_binding_locked(index_name);
+      prune_change_log_for_index_locked(index_name);
+      drop_artifacts.push_back(std::move(artifact_plan));
+      ++dropped_count;
+    }
+
+    if (dropped_count == 0) return true;
+    if (!persist_registry_state_locked()) {
+      vector_status::record_truth_store_persist_failure();
+      if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                         change_log_before,
+                                         lagging_indexes_before)) {
+        return false;
+      }
+      return false;
+    }
+    for (size_t i = 0; i < dropped_count; ++i) {
+      vector_status::record_index_drop_success();
+    }
+  }
+  cleanup_drop_artifacts(drop_artifacts);
+  return true;
+}
+
+bool reset_mapped_indexes_for_table(const std::string &db_name,
+                                    const std::string &table_name) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!g_metadata_loaded) return true;
+  if (!ensure_metadata_loaded_locked()) return false;
+
+  std::vector<std::string> index_names;
+  if (!g_index_service.list_indexes(&index_names)) return false;
+
+  std::vector<mapped_index_reset_spec> reset_specs;
+  reset_specs.reserve(index_names.size());
+  for (const std::string &index_name : index_names) {
+    if (!vector_index_identity::matches_table(index_name, db_name,
+                                              table_name)) {
+      continue;
+    }
+
+    mapped_index_reset_spec spec;
+    spec.index_name = index_name;
+    spec.binding = binding_for_index_locked(index_name);
+    vector_index::index_service::index_config config;
+    bool supports_mutations = false;
+    size_t entry_count = 0;
+    size_t committed_entry_count = 0;
+    if (!g_index_service.describe_index(index_name, &config,
+                                        &supports_mutations, &entry_count,
+                                        &committed_entry_count)) {
+      return false;
+    }
+    spec.info.dimension = config.dimension;
+    spec.info.metric = vector_index::metric_to_string(config.metric);
+    spec.info.mode = vector_index::backend_mode_to_string(config.mode);
+    spec.info.provider =
+        vector_index::backend_provider_to_string(config.provider);
+    spec.info.search_ef = config.search_ef;
+    spec.info.hnsw_m = config.hnsw_m;
+    spec.info.hnsw_ef_construction = config.hnsw_ef_construction;
+    spec.info.hnsw_build_threads = config.hnsw_build_threads;
+    spec.info.faiss_nlist = config.faiss_nlist;
+    spec.info.faiss_nprobe = config.faiss_nprobe;
+    spec.info.faiss_pq_m = config.faiss_pq_m;
+    spec.info.faiss_pq_bits = config.faiss_pq_bits;
+    spec.info.faiss_build_threads = config.faiss_build_threads;
+    spec.info.diskann_max_degree = config.diskann_max_degree;
+    spec.info.diskann_build_complexity = config.diskann_build_complexity;
+    spec.info.diskann_build_threads = config.diskann_build_threads;
+    spec.info.diskann_search_complexity = config.diskann_search_complexity;
+    reset_specs.push_back(std::move(spec));
+  }
+
+  if (reset_specs.empty()) return true;
+
+  std::vector<vector_index_metadata_store::metadata_row> metadata_before;
+  vector_index::index_service::committed_state committed_before;
+  std::vector<vector_index_metadata_store::change_log_row> change_log_before;
+  std::vector<std::string> lagging_indexes_before;
+  if (!snapshot_runtime_state_locked(&metadata_before, &committed_before,
+                                     &change_log_before,
+                                     &lagging_indexes_before)) {
+    return false;
+  }
+
+  for (const mapped_index_reset_spec &spec : reset_specs) {
+    if (!g_index_service.drop_index(spec.index_name)) return false;
+    erase_index_binding_locked(spec.index_name);
+    if (!g_index_service.register_index_from_strings(
+            spec.index_name, spec.info.dimension, spec.info.metric,
+            spec.info.mode, spec.info.provider)) {
+      return false;
+    }
+    set_index_binding_locked(spec.index_name, spec.binding.schema_name,
+                             spec.binding.table_name, spec.binding.column_name,
+                             spec.binding.doc_id_column_name);
+    if (!apply_index_tuning_locked(spec.index_name, spec.info)) return false;
+  }
+
+  refresh_committed_snapshot_rows_locked();
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    return rollback_runtime_state_locked(metadata_before, committed_before,
+                                         change_log_before,
+                                         lagging_indexes_before);
+  }
+  return true;
+}
+
+bool rename_indexes_for_table(const std::string &old_db_name,
+                              const std::string &old_table_name,
+                              const std::string &new_db_name,
+                              const std::string &new_table_name) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!g_metadata_loaded) return true;
+  if (!ensure_metadata_loaded_locked()) return false;
+
+  std::vector<std::string> index_names;
+  if (!g_index_service.list_indexes(&index_names)) return false;
+
+  std::unordered_map<std::string, std::string> rename_map;
+  rename_map.reserve(index_names.size());
+  std::unordered_set<std::string> new_index_names;
+  new_index_names.reserve(index_names.size());
+  bool has_renamed_index = false;
+
+  for (const std::string &index_name : index_names) {
+    std::string renamed_index_name;
+    if (!vector_index_identity::replace_table_name(
+            index_name, old_db_name, old_table_name, new_db_name,
+            new_table_name, &renamed_index_name)) {
+      return false;
+    }
+    if (renamed_index_name != index_name) {
+      has_renamed_index = true;
+      rename_map.emplace(index_name, renamed_index_name);
+    }
+    if (!new_index_names.insert(renamed_index_name).second) return false;
+  }
+
+  if (!has_renamed_index) return true;
+
+  std::vector<vector_index_metadata_store::metadata_row> metadata_before;
+  if (!snapshot_metadata_locked(&metadata_before)) return false;
+
+  std::vector<std::pair<std::string, std::string>> rename_pairs(
+      rename_map.begin(), rename_map.end());
+  std::sort(
+      rename_pairs.begin(), rename_pairs.end(),
+      [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+
+  std::vector<std::pair<std::string, std::string>> applied_pairs;
+  applied_pairs.reserve(rename_pairs.size());
+  auto rollback_applied_pairs = [&applied_pairs]() {
+    for (auto it = applied_pairs.rbegin(); it != applied_pairs.rend(); ++it) {
+      if (!g_index_service.rename_index(it->second, it->first)) {
+        vector_status::record_runtime_state_rollback_failure();
+        return false;
+      }
+    }
+    vector_status::record_runtime_state_rollback();
+    return true;
+  };
+
+  for (const auto &pair : rename_pairs) {
+    if (!g_index_service.rename_index(pair.first, pair.second)) {
+      if (!rollback_applied_pairs()) return false;
+      return false;
+    }
+    rename_index_binding_locked(pair.first, pair.second);
+    applied_pairs.push_back(pair);
+  }
+
+  const std::vector<vector_index_metadata_store::change_log_row>
+      change_log_before = g_change_log_rows;
+  for (auto &row : g_change_log_rows) {
+    const auto it = rename_map.find(row.index_name);
+    if (it != rename_map.end()) row.index_name = it->second;
+  }
+  g_manifest_change_log_checkpoint = g_change_log_rows.size();
+  refresh_committed_snapshot_rows_locked();
+
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    g_change_log_rows = change_log_before;
+    g_manifest_change_log_checkpoint = g_change_log_rows.size();
+    if (!rollback_applied_pairs()) return false;
+    refresh_committed_snapshot_rows_locked();
+    refresh_manifest_status_locked();
+    return false;
+  }
+
+  for (const auto &row : metadata_before) {
+    const auto it = rename_map.find(row.index_name);
+    if (it == rename_map.end()) continue;
+    (void)vector_index::remove_backend_artifacts(row.index_name, row.mode,
+                                                 row.provider);
+  }
+
+  return true;
+}
+
+bool drop_index_for_column(const std::string &db_name,
+                           const std::string &table_name,
+                           const std::string &column_name) {
+  const std::string index_name =
+      make_mapped_index_name(db_name, table_name, column_name);
+
+  std::vector<drop_artifact_plan> drop_artifacts;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!g_metadata_loaded) return true;
+    if (!ensure_metadata_loaded_locked()) return false;
+
+    drop_artifact_plan artifact_plan;
+    if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan)) {
+      return true;
+    }
+
+    std::vector<vector_index_metadata_store::metadata_row> metadata_before;
+    vector_index::index_service::committed_state committed_before;
+    std::vector<vector_index_metadata_store::change_log_row> change_log_before;
+    std::vector<std::string> lagging_indexes_before;
+    if (!snapshot_runtime_state_locked(&metadata_before, &committed_before,
+                                       &change_log_before,
+                                       &lagging_indexes_before)) {
+      return false;
+    }
+
+    vector_status::record_index_drop_request();
+    if (!g_index_service.unregister_index(index_name)) return false;
+    erase_index_binding_locked(index_name);
+    prune_change_log_for_index_locked(index_name);
+
+    if (!persist_registry_state_locked()) {
+      vector_status::record_truth_store_persist_failure();
+      if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                         change_log_before,
+                                         lagging_indexes_before)) {
+        return false;
+      }
+      return false;
+    }
+
+    vector_status::record_index_drop_success();
+    drop_artifacts.push_back(std::move(artifact_plan));
+  }
+
+  cleanup_drop_artifacts(drop_artifacts);
+  return true;
+}
+
+bool rename_index_for_column(const std::string &db_name,
+                             const std::string &table_name,
+                             const std::string &old_column_name,
+                             const std::string &new_column_name) {
+  const std::string old_index_name =
+      make_mapped_index_name(db_name, table_name, old_column_name);
+  const std::string new_index_name =
+      make_mapped_index_name(db_name, table_name, new_column_name);
+  if (old_index_name == new_index_name) return true;
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!g_metadata_loaded) return true;
+  if (!ensure_metadata_loaded_locked()) return false;
+
+  vector_index::index_service::index_config old_config;
+  bool supports_mutations = false;
+  size_t entry_count = 0;
+  size_t committed_entry_count = 0;
+  std::string lifecycle_state;
+  uint64_t lifecycle_version = 0;
+  uint32_t last_error_code = 0;
+  uint64_t last_error_ts = 0;
+  uint64_t recover_fallback_count = 0;
+  uint64_t last_recover_fallback_ts = 0;
+  if (!g_index_service.describe_index(
+          old_index_name, &old_config, &supports_mutations, &entry_count,
+          &committed_entry_count, &lifecycle_state, &lifecycle_version,
+          &last_error_code, &last_error_ts, nullptr, &recover_fallback_count,
+          &last_recover_fallback_ts)) {
+    return true;
+  }
+
+  vector_index::index_service::index_config new_config;
+  if (g_index_service.describe_index(
+          new_index_name, &new_config, &supports_mutations, &entry_count,
+          &committed_entry_count, &lifecycle_state, &lifecycle_version,
+          &last_error_code, &last_error_ts, nullptr, &recover_fallback_count,
+          &last_recover_fallback_ts)) {
+    return false;
+  }
+
+  std::vector<vector_index_metadata_store::metadata_row> metadata_before;
+  vector_index::index_service::committed_state committed_before;
+  std::vector<vector_index_metadata_store::change_log_row> change_log_before;
+  std::vector<std::string> lagging_indexes_before;
+  if (!snapshot_runtime_state_locked(&metadata_before, &committed_before,
+                                     &change_log_before,
+                                     &lagging_indexes_before)) {
+    return false;
+  }
+
+  if (!g_index_service.rename_index(old_index_name, new_index_name)) {
+    return false;
+  }
+  rename_index_binding_locked(old_index_name, new_index_name);
+  for (auto &row : g_change_log_rows) {
+    if (row.index_name == old_index_name) row.index_name = new_index_name;
+  }
+  g_manifest_change_log_checkpoint = g_change_log_rows.size();
+  refresh_committed_snapshot_rows_locked();
+
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
+
+  (void)vector_index::remove_backend_artifacts(old_index_name, old_config.mode,
+                                               old_config.provider);
+  return true;
+}
+
+bool begin_bulk_load(const std::string &index_name) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  runtime_state_snapshot snapshot;
+  if (!capture_runtime_state_locked(&snapshot)) return false;
+
+  if (!g_index_service.begin_bulk_load(index_name)) {
+    if (!rollback_runtime_state_locked(snapshot)) return false;
+    return false;
+  }
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    if (!rollback_runtime_state_locked(snapshot)) return false;
+    return false;
+  }
+  return true;
+}
+
+bool bulk_build_index(const std::string &index_name) {
+  return rebuild_index(index_name);
+}
+
+bool rebuild_index(const std::string &index_name) {
+  vector_status::record_rebuild_request();
+  lifecycle_backend_plan plan;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    if (!snapshot_backend_plan_locked(index_name, &plan)) return false;
+  }
+
+  std::unique_ptr<vector_index::backend> rebuilt = build_rebuilt_backend(plan);
+  if (rebuilt == nullptr) return false;
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  if (!validate_backend_plan_locked(plan)) return false;
+
+  runtime_state_snapshot snapshot;
+  if (!capture_runtime_state_locked(&snapshot)) return false;
+  const bool ok = g_index_service.install_rebuilt_index(
+      index_name, plan.entries, std::move(rebuilt));
+  if (!ok) {
+    if (!rollback_runtime_state_locked(snapshot)) return false;
+    return false;
+  }
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    if (!rollback_runtime_state_locked(snapshot)) return false;
+    return false;
+  }
+  return true;
+}
+
+bool replace_committed_entries(
+    const std::string &index_name,
+    const vector_index::index_service::committed_entries &entries) {
+  vector_index::index_service::index_config config;
+  vector_index::index_service::committed_entries before_entries;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    if (!g_index_service.describe_index(index_name, &config, nullptr, nullptr,
+                                        nullptr)) {
+      return false;
+    }
+    vector_index::index_service::committed_state snapshot_state;
+    if (!g_index_service.snapshot_committed_state(&snapshot_state))
+      return false;
+    auto state_it = snapshot_state.find(index_name);
+    if (state_it == snapshot_state.end()) {
+      before_entries.clear();
+    } else {
+      before_entries = state_it->second;
+    }
+  }
+
+  std::unique_ptr<vector_index::backend> rebuilt =
+      build_backend_from_config(index_name, config);
+  if (rebuilt == nullptr || !rebuilt->rebuild_from_committed_entries(entries)) {
+    return false;
+  }
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  const bool ok = g_index_service.install_rebuilt_index(index_name, entries,
+                                                        std::move(rebuilt));
+  if (!ok) return false;
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    std::unique_ptr<vector_index::backend> rollback_backend =
+        build_backend_from_config(index_name, config);
+    if (rollback_backend == nullptr ||
+        !rollback_backend->rebuild_from_committed_entries(before_entries) ||
+        !g_index_service.install_rebuilt_index(index_name, before_entries,
+                                               std::move(rollback_backend))) {
+      return false;
+    }
+    return false;
+  }
+  return true;
+}
+
+bool replace_committed_entries_preserve_lifecycle(
+    const std::string &index_name,
+    const vector_index::index_service::committed_entries &entries) {
+  vector_index::index_service::committed_entries before_entries;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    vector_index::index_service::committed_state snapshot_state;
+    if (!g_index_service.snapshot_committed_state(&snapshot_state))
+      return false;
+    auto state_it = snapshot_state.find(index_name);
+    if (state_it == snapshot_state.end()) {
+      before_entries.clear();
+    } else {
+      before_entries = state_it->second;
+    }
+  }
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  const bool ok = g_index_service.replace_committed_entries_preserve_lifecycle(
+      index_name, entries);
+  if (!ok) return false;
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    if (!g_index_service.replace_committed_entries_preserve_lifecycle(
+            index_name, before_entries)) {
+      return false;
+    }
+    return false;
+  }
+  return true;
+}
+
+bool set_lifecycle_state(const std::string &index_name,
+                         const std::string &lifecycle_state) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  runtime_state_snapshot snapshot;
+  if (!capture_runtime_state_locked(&snapshot)) return false;
+  if (!g_index_service.set_lifecycle_state(index_name, lifecycle_state)) {
+    return false;
+  }
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    if (!rollback_runtime_state_locked(snapshot)) return false;
+    return false;
+  }
+  return true;
+}
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool build_backend_from_config_for_testing(
+    const std::string &index_name,
+    const vector_index::index_service::index_config &config) {
+  return build_backend_from_config(index_name, config) != nullptr;
+}
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+
+bool recover_index(const std::string &index_name) {
+  vector_status::record_recover_request();
+  lifecycle_backend_plan plan;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    if (!snapshot_backend_plan_locked(index_name, &plan)) return false;
+  }
+
+  bool used_recover_fallback = false;
+  std::unique_ptr<vector_index::backend> recovered =
+      build_recovered_backend(plan, &used_recover_fallback);
+  if (recovered == nullptr) return false;
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  if (!validate_backend_plan_locked(plan)) return false;
+
+  runtime_state_snapshot snapshot;
+  if (!capture_runtime_state_locked(&snapshot)) return false;
+  if (!g_index_service.install_recovered_index(
+          index_name, plan.entries, std::move(recovered),
+          used_recover_fallback)) {
+    if (!rollback_runtime_state_locked(snapshot)) return false;
+    return false;
+  }
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    if (!rollback_runtime_state_locked(snapshot)) return false;
+    return false;
+  }
+  return true;
+}
+
+bool set_search_ef(const std::string &index_name, uint32_t search_ef) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->search_ef = search_ef;
+        return true;
+      },
+      [&] { return g_index_service.set_search_ef(index_name, search_ef); });
+}
+
+bool set_hnsw_build_params(const std::string &index_name, uint32_t hnsw_m,
+                           uint32_t hnsw_ef_construction) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->hnsw_m = hnsw_m;
+        candidate->hnsw_ef_construction = hnsw_ef_construction;
+        return true;
+      },
+      [&] {
+        return g_index_service.set_hnsw_build_params(index_name, hnsw_m,
+                                                     hnsw_ef_construction);
+      });
+}
+
+bool set_faiss_ivf_params(const std::string &index_name, uint32_t faiss_nlist,
+                          uint32_t faiss_nprobe) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->faiss_nlist = faiss_nlist;
+        candidate->faiss_nprobe = faiss_nprobe;
+        return true;
+      },
+      [&] {
+        return g_index_service.set_faiss_ivf_params(index_name, faiss_nlist,
+                                                    faiss_nprobe);
+      });
+}
+
+bool set_faiss_ivf_pq_params(const std::string &index_name,
+                             uint32_t faiss_nlist, uint32_t faiss_nprobe,
+                             uint32_t faiss_pq_m, uint32_t faiss_pq_bits) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->faiss_nlist = faiss_nlist;
+        candidate->faiss_nprobe = faiss_nprobe;
+        candidate->faiss_pq_m = faiss_pq_m;
+        candidate->faiss_pq_bits = faiss_pq_bits;
+        return true;
+      },
+      [&] {
+        return g_index_service.set_faiss_ivf_pq_params(
+            index_name, faiss_nlist, faiss_nprobe, faiss_pq_m, faiss_pq_bits);
+      });
+}
+
+bool set_diskann_build_params(const std::string &index_name,
+                              uint32_t diskann_max_degree,
+                              uint32_t diskann_build_complexity,
+                              uint32_t diskann_build_threads) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->diskann_max_degree = diskann_max_degree;
+        candidate->diskann_build_complexity = diskann_build_complexity;
+        candidate->diskann_build_threads = diskann_build_threads;
+        return true;
+      },
+      [&] {
+        return g_index_service.set_diskann_build_params(
+            index_name, diskann_max_degree, diskann_build_complexity,
+            diskann_build_threads);
+      });
+}
+
+bool set_diskann_build_threads(const std::string &index_name,
+                               uint32_t diskann_build_threads) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->diskann_build_threads = diskann_build_threads;
+        return true;
+      },
+      [&] {
+        return g_index_service.set_diskann_build_threads(
+            index_name, diskann_build_threads);
+      });
+}
+
+bool set_diskann_search_complexity(const std::string &index_name,
+                                   uint32_t diskann_search_complexity) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->diskann_search_complexity = diskann_search_complexity;
+        return true;
+      },
+      [&] {
+        return g_index_service.set_diskann_search_complexity(
+            index_name, diskann_search_complexity);
+      });
+}
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool detail::index_config_matches_for_testing(
+    const vector_index::index_service::index_config &lhs,
+    const vector_index::index_service::index_config &rhs) {
+  return index_config_matches(lhs, rhs);
+}
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+
+bool rebuild_all_indexes(size_t *rebuilt_count) {
+  vector_status::record_rebuild_all_request();
+  if (rebuilt_count == nullptr) return false;
+
+  std::vector<lifecycle_backend_plan> plans;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    *rebuilt_count = 0;
+    if (!snapshot_all_backend_plans_locked(&plans)) return false;
+  }
+
+  std::vector<prepared_lifecycle_backend> prepared_backends;
+  prepared_backends.reserve(plans.size());
+  for (const lifecycle_backend_plan &plan : plans) {
+    prepared_lifecycle_backend prepared;
+    prepared.plan = plan;
+    prepared.backend = build_rebuilt_backend(plan);
+    if (prepared.backend == nullptr) {
+      return false;
+    }
+    prepared_backends.push_back(std::move(prepared));
+  }
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  vector_index::index_service::committed_state current_state;
+  if (!g_index_service.snapshot_committed_state(&current_state)) return false;
+  for (const prepared_lifecycle_backend &prepared : prepared_backends) {
+    if (!validate_backend_plan_against_state_locked(prepared.plan,
+                                                   current_state)) {
+      return false;
+    }
+  }
+  runtime_state_snapshot snapshot;
+  if (!capture_runtime_state_locked(&snapshot)) return false;
+  for (prepared_lifecycle_backend &prepared : prepared_backends) {
+    if (!g_index_service.install_rebuilt_index(
+            prepared.plan.index_name, prepared.plan.entries,
+            std::move(prepared.backend))) {
+      if (!rollback_runtime_state_locked(snapshot)) return false;
+      return false;
+    }
+  }
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    if (!rollback_runtime_state_locked(snapshot)) return false;
+    return false;
+  }
+  *rebuilt_count = prepared_backends.size();
+  return true;
+}
+
+bool recover_all_indexes(size_t *recovered_count) {
+  vector_status::record_recover_all_request();
+  if (recovered_count == nullptr) return false;
+
+  std::vector<lifecycle_backend_plan> plans;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    *recovered_count = 0;
+    if (!snapshot_all_backend_plans_locked(&plans)) return false;
+  }
+
+  std::vector<prepared_lifecycle_backend> prepared_backends;
+  prepared_backends.reserve(plans.size());
+  for (const lifecycle_backend_plan &plan : plans) {
+    prepared_lifecycle_backend prepared;
+    prepared.plan = plan;
+    prepared.backend =
+        build_recovered_backend(plan, &prepared.used_recover_fallback);
+    if (prepared.backend == nullptr) {
+      return false;
+    }
+    prepared_backends.push_back(std::move(prepared));
+  }
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  vector_index::index_service::committed_state current_state;
+  if (!g_index_service.snapshot_committed_state(&current_state)) return false;
+  for (const prepared_lifecycle_backend &prepared : prepared_backends) {
+    if (!validate_backend_plan_against_state_locked(prepared.plan,
+                                                   current_state)) {
+      return false;
+    }
+  }
+  runtime_state_snapshot snapshot;
+  if (!capture_runtime_state_locked(&snapshot)) return false;
+  for (prepared_lifecycle_backend &prepared : prepared_backends) {
+    if (!g_index_service.install_recovered_index(
+            prepared.plan.index_name, prepared.plan.entries,
+            std::move(prepared.backend), prepared.used_recover_fallback)) {
+      if (!rollback_runtime_state_locked(snapshot)) return false;
+      return false;
+    }
+  }
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    if (!rollback_runtime_state_locked(snapshot)) return false;
+    return false;
+  }
+  *recovered_count = prepared_backends.size();
+  return true;
+}
+
+bool get_index_info(const std::string &index_name, index_info *info) {
+  if (info == nullptr) return false;
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  vector_index::index_service::index_config config;
+  bool supports_mutations = false;
+  size_t entry_count = 0;
+  size_t committed_entry_count = 0;
+  std::string lifecycle_state;
+  uint64_t lifecycle_version = 0;
+  uint32_t last_error_code = 0;
+  uint64_t last_error_ts = 0;
+  if (!g_index_service.describe_index(
+          index_name, &config, &supports_mutations, &entry_count,
+          &committed_entry_count, &lifecycle_state, &lifecycle_version,
+          &last_error_code, &last_error_ts, &info->last_apply_latency_ms,
+          &info->recover_fallback_count, &info->last_recover_fallback_ts,
+          &info->external_manifest_present,
+          &info->external_manifest_generation)) {
+    return false;
+  }
+
+  info->dimension = config.dimension;
+  info->metric = vector_index::metric_to_string(config.metric);
+  info->mode = vector_index::backend_mode_to_string(config.mode);
+  info->provider = vector_index::backend_provider_to_string(config.provider);
+  info->backend_variant = config.backend_variant;
+  info->search_ef = config.search_ef;
+  info->hnsw_m = config.hnsw_m;
+  info->hnsw_ef_construction = config.hnsw_ef_construction;
+  info->hnsw_build_threads = config.hnsw_build_threads;
+  info->faiss_nlist = config.faiss_nlist;
+  info->faiss_nprobe = config.faiss_nprobe;
+  info->faiss_pq_m = config.faiss_pq_m;
+  info->faiss_pq_bits = config.faiss_pq_bits;
+  info->faiss_build_threads = config.faiss_build_threads;
+  info->diskann_max_degree = config.diskann_max_degree;
+  info->diskann_build_complexity = config.diskann_build_complexity;
+  info->diskann_build_threads = config.diskann_build_threads;
+  info->diskann_search_complexity = config.diskann_search_complexity;
+  const index_binding binding = binding_for_index_locked(index_name);
+  info->schema_name = binding.schema_name;
+  info->table_name = binding.table_name;
+  info->column_name = binding.column_name;
+  info->lifecycle_state = lifecycle_state;
+  info->lifecycle_version = lifecycle_version;
+  info->last_error_code = last_error_code;
+  info->last_error_ts = last_error_ts;
+  info->supports_mutations = supports_mutations;
+  info->entry_count = entry_count;
+  info->committed_entry_count = committed_entry_count;
+  return true;
+}
+
+bool list_indexes(std::vector<std::string> *index_names) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return g_index_service.list_indexes(index_names);
+}
+
+bool metadata_loaded() {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  return g_metadata_loaded;
+}
+
+}  // namespace vector_index_registry

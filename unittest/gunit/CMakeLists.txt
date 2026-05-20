@@ -313,6 +313,7 @@ IF(HAVE_VECTOR_INDEX)
     vector_index_backend
     vector_index_diagnostics
     vector_index_metadata_store
+    vector_index_registry
     vector_index_service
     vector_mapped_search
     vector_status
