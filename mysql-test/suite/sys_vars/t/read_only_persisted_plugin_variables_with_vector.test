@@ -13,7 +13,7 @@
 # This test is also meant to check read-only persisted value of log-replica-updates,
 # thus, it makes sense to run this test when log-bin and log-replica-updates are enabled.
 -- source include/have_log_bin.inc
---source include/have_no_vector_index.inc
+--source include/have_vector_index.inc
 
 --echo # Check there are no existing persistent variables
 --echo # Must return 0 rows.
@@ -35,7 +35,7 @@ CALL mtr.add_suppression("Could not increase number of max_open_files to more th
 
 let $MYSQLD_DATADIR= `select @@datadir`;
 
---echo # Must return 100 rows.
+--echo # Must return 94 rows.
 SELECT count(*) from performance_schema.persisted_variables;
 
 --echo # Restart server
@@ -48,7 +48,7 @@ SELECT count(*) from performance_schema.persisted_variables;
 
 CALL mtr.add_suppression("Plugin audit_log reported *");
 
---echo # Both queries must return 101 rows.
+--echo # Both queries must return 94 rows.
 SELECT * FROM performance_schema.persisted_variables ORDER BY VARIABLE_NAME;
 SELECT VARIABLE_NAME FROM performance_schema.variables_info WHERE VARIABLE_SOURCE = 'PERSISTED' ORDER BY VARIABLE_NAME;
 
