@@ -637,6 +637,8 @@ SET(SQL_SHARED_SOURCES
 
 IF(HAVE_VECTOR_INDEX)
   LIST(APPEND SQL_SHARED_SOURCES
+    vector/vector_index_backend.cc
+    vector/vector_index_build_options.cc
     vector/vector_index_diagnostics.cc
     vector/vector_index_identity.cc
     vector/vector_status.cc
@@ -646,6 +648,7 @@ ENDIF()
 
 IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
   MY_ADD_COMPILE_DEFINITIONS(
+    vector/vector_index_backend.cc
     vector/vector_index_diagnostics.cc
     COMPILE_DEFINITIONS EXTRA_CODE_FOR_UNIT_TESTING)
 ENDIF()

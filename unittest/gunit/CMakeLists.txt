@@ -310,6 +310,7 @@ SET(SERVER_TESTS
 
 IF(HAVE_VECTOR_INDEX)
   LIST(APPEND SERVER_TESTS
+    vector_index_backend
     vector_index_diagnostics
     vector_status
     vector_utils
