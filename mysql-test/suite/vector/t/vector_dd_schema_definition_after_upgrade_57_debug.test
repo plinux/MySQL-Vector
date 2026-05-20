@@ -13,7 +13,7 @@
 --echo #
 --echo ########################################################################
 
---source include/have_no_vector_index.inc
+--source include/have_vector_index.inc
 --source include/have_debug.inc
 --source include/not_valgrind.inc
 --source include/mysql_upgrade_preparation.inc
@@ -26,7 +26,7 @@
 --echo ########################################################################
 --echo # Assert target schema table names.
 --echo ########################################################################
---source include/dd_schema_assert_and_fill_table_names.inc
+--source include/dd_schema_assert_and_fill_table_names_with_vector.inc
 
 --echo ########################################################################
 --echo # Dump DD table definitions to file.
@@ -55,7 +55,7 @@
 --let  $VERSION = 57022
 --echo # Test upgrade from $VERSION.
 --echo ########################################################################
---source include/dd_schema_definition_after_upgrade_debug.inc
+--source include/dd_schema_definition_after_upgrade_debug_with_vector.inc
 
 --echo ########################################################################
 --echo # Cleanup: Remove definition files and restart with default options.

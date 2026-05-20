@@ -1,0 +1,7 @@
+--source include/not_windows.inc
+--source include/have_vector_index.inc
+
+#
+# mysqld --help with vector variables
+#
+--source include/mysqld--help.inc

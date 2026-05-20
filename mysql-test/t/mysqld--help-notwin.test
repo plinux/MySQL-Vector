@@ -3,6 +3,6 @@
 # mysqld --help
 #
 --source include/not_windows.inc
+--source include/have_no_vector_index.inc
 
 --source include/mysqld--help.inc
-

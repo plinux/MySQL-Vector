@@ -103,7 +103,7 @@
 --echo #
 --echo ########################################################################
 
---source include/have_no_vector_index.inc
+--source include/have_vector_index.inc
 --source include/have_debug.inc
 
 --echo # PART 1
@@ -115,7 +115,7 @@ let $ddse_table_names = test.ddse_table_names;
 let $dd_table_names = test.dd_table_names;
 eval CREATE TABLE $ddse_table_names (name VARCHAR(64) PRIMARY KEY);
 eval CREATE TABLE $dd_table_names (name VARCHAR(64) PRIMARY KEY);
---source include/dd_schema_assert_and_fill_table_names.inc
+--source include/dd_schema_assert_and_fill_table_names_with_vector.inc
 
 --echo # PART 3
 --source include/dd_schema_dump_table_defs_debug.inc
@@ -153,7 +153,7 @@ INSERT INTO dd_check_table(t)
 INSERT INTO dd_check_table(t)
   SELECT CONCAT(id, '-', name, '-',
     IFNULL(options, 'NULL'), '-',
-    IFNULL(INSERT(se_private_data, 
+    IFNULL(INSERT(se_private_data,
              INSTR(se_private_data, 'server_version'),
              20, 'server_version=x'),
       'NULL'),
@@ -362,6 +362,12 @@ INSERT INTO dd_published_schema
 INSERT INTO dd_published_schema
   VALUES('80023', 1,
     '6e3311099b985c198bb3acbc88495825847dac79588dea4f0be2e4219ad7c52b');
+INSERT INTO dd_published_schema
+  VALUES('80024', 0,
+    'a95e3b5d5d0fae19000b5e9dfc343e93288270aae16c3c38637627204087c17f');
+INSERT INTO dd_published_schema
+  VALUES('80024', 1,
+    'c30a7717edf830a5c7b295a5df0e79a13e42178278d8914be3ddd5d35e824552');
 --sorted_result
 SELECT IFNULL(CONCAT('The schema checksum corresponds to DD version ',
                      version, '.'),

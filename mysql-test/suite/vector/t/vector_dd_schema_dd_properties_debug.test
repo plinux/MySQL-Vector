@@ -6,8 +6,8 @@
 --echo # of some of the collations.
 --echo #
 
+--source include/have_vector_index.inc
 --source include/have_case_sensitive_file_system.inc
---source include/have_no_vector_index.inc
 
 --let $file = $MYSQL_TMP_DIR/dd_properties.txt
 --let $filter = MYSQLD_VERSION|DD_VERSION|NDBINFO_VERSION|LCTN|IS_VERSION|PS_VERSION|SDI_VERSION|MINOR_DOWNGRADE_THRESHOLD|MYSQL_VERSION_STABILITY|SERVER_DOWNGRADE_THRESHOLD|SERVER_UPGRADE_THRESHOLD

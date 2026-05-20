@@ -1,6 +1,6 @@
 
 --echo ########################################################################
---echo # 
+--echo #
 --echo # This test will first verify the DD schema of the currently running
 --echo # server, and dump the SHOW CREATE statements for the DD tables to
 --echo # a file. Then, it will unzip a data dirctory from each of the
@@ -8,15 +8,15 @@
 --echo # server to make it do upgrade, and verify that the DD tables after
 --echo # upgrade are similar to those that are created when initializing the
 --echo # target server.
---echo # 
+--echo #
 --echo # The zipped data directories were created on case sensitive file
 --echo # systems with lower_case_table_names == 0. There is a corresponding
 --echo # test for upgrade from 5.7.
---echo # 
+--echo #
 --echo ########################################################################
 
 --source include/have_case_sensitive_file_system.inc
---source include/have_no_vector_index.inc
+--source include/have_vector_index.inc
 --source include/have_debug.inc
 --source include/not_valgrind.inc
 --source include/big_test.inc
@@ -30,7 +30,7 @@
 --echo ########################################################################
 --echo # Assert target schema table names.
 --echo ########################################################################
---source include/dd_schema_assert_and_fill_table_names.inc
+--source include/dd_schema_assert_and_fill_table_names_with_vector.inc
 
 --echo ########################################################################
 --echo # Dump DD table definitions to file.
@@ -59,49 +59,49 @@
 --let  $VERSION = 80011
 --echo # Test upgrade from $VERSION.
 --echo ########################################################################
---source include/dd_schema_definition_after_upgrade_debug.inc
+--source include/dd_schema_definition_after_upgrade_debug_with_vector.inc
 
 --echo ########################################################################
 --let  $VERSION = 80012
 --echo # Test upgrade from $VERSION.
 --echo ########################################################################
---source include/dd_schema_definition_after_upgrade_debug.inc
+--source include/dd_schema_definition_after_upgrade_debug_with_vector.inc
 
 --echo ########################################################################
 --let  $VERSION = 80013
 --echo # Test upgrade from $VERSION.
 --echo ########################################################################
---source include/dd_schema_definition_after_upgrade_debug.inc
+--source include/dd_schema_definition_after_upgrade_debug_with_vector.inc
 
 --echo ########################################################################
 --let  $VERSION = 80014
 --echo # Test upgrade from $VERSION.
 --echo ########################################################################
---source include/dd_schema_definition_after_upgrade_debug.inc
+--source include/dd_schema_definition_after_upgrade_debug_with_vector.inc
 
 --echo ########################################################################
 --let  $VERSION = 80015
 --echo # Test upgrade from $VERSION.
 --echo ########################################################################
---source include/dd_schema_definition_after_upgrade_debug.inc
+--source include/dd_schema_definition_after_upgrade_debug_with_vector.inc
 
 --echo ########################################################################
 --let  $VERSION = 80016
 --echo # Test upgrade from $VERSION.
 --echo ########################################################################
---source include/dd_schema_definition_after_upgrade_debug.inc
+--source include/dd_schema_definition_after_upgrade_debug_with_vector.inc
 
 --echo ########################################################################
 --let  $VERSION = 80017
 --echo # Test upgrade from $VERSION.
 --echo ########################################################################
---source include/dd_schema_definition_after_upgrade_debug.inc
+--source include/dd_schema_definition_after_upgrade_debug_with_vector.inc
 
 --echo ########################################################################
 --let  $VERSION = 80018
 --echo # Test upgrade from $VERSION.
 --echo ########################################################################
---source include/dd_schema_definition_after_upgrade_debug.inc
+--source include/dd_schema_definition_after_upgrade_debug_with_vector.inc
 
 --echo ########################################################################
 --echo # Cleanup: Remove definition files and restart with default options.
