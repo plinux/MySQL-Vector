@@ -257,6 +257,12 @@ SET(INNOBASE_SOURCES
   ut/ut0vec.cc
   ut/ut0wqueue.cc)
 
+IF(HAVE_VECTOR_INDEX)
+  LIST(APPEND INNOBASE_SOURCES
+    dict/dict0vectruth.cc
+  )
+ENDIF()
+
 # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=98753
 IF(MY_COMPILER_IS_GNU AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11)
   ADD_COMPILE_FLAGS(

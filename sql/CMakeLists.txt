@@ -289,6 +289,12 @@ SET(DD_SOURCES
   dd/upgrade_57/upgrade.cc
 )
 
+IF(HAVE_VECTOR_INDEX)
+  LIST(APPEND DD_SOURCES
+    dd/impl/tables/vector_index_truth_tables.cc
+  )
+ENDIF()
+
 SET(SQL_GIS_SOURCES
   gis/area.cc
   gis/buffer.cc
@@ -644,6 +650,8 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_metadata_store.cc
     vector/vector_index_metadata_store_codec.cc
     vector/vector_status.cc
+    vector/vector_index_truth_store.cc
+    vector/vector_index_truth_store_api.cc
     vector/vector_utils.cc
   )
 ENDIF()
@@ -653,6 +661,8 @@ IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
     vector/vector_index_backend.cc
     vector/vector_index_diagnostics.cc
     vector/vector_index_metadata_store.cc
+    vector/vector_index_truth_store.cc
+    vector/vector_index_truth_store_api.cc
     COMPILE_DEFINITIONS EXTRA_CODE_FOR_UNIT_TESTING)
 ENDIF()
 

@@ -4667,6 +4667,26 @@ void dict_close(void) {
   if (dict_sys->ddl_log) {
     dict_table_close(dict_sys->ddl_log, true, false);
   }
+#ifdef HAVE_VECTOR_INDEX
+  if (dict_sys->vector_truth_metadata != nullptr) {
+    dict_table_close(dict_sys->vector_truth_metadata, true, false);
+  }
+  if (dict_sys->vector_truth_committed != nullptr) {
+    dict_table_close(dict_sys->vector_truth_committed, true, false);
+  }
+  if (dict_sys->vector_truth_manifest != nullptr) {
+    dict_table_close(dict_sys->vector_truth_manifest, true, false);
+  }
+  if (dict_sys->vector_truth_changelog != nullptr) {
+    dict_table_close(dict_sys->vector_truth_changelog, true, false);
+  }
+  if (dict_sys->vector_truth_prepared != nullptr) {
+    dict_table_close(dict_sys->vector_truth_prepared, true, false);
+  }
+  if (dict_sys->vector_truth_store_quarantine != nullptr) {
+    dict_table_close(dict_sys->vector_truth_store_quarantine, true, false);
+  }
+#endif
 
 #ifndef UNIV_HOTBACKUP
   /* Free the hash elements. We don't remove them from the table

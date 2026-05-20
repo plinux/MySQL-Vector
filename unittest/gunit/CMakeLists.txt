@@ -314,6 +314,7 @@ IF(HAVE_VECTOR_INDEX)
     vector_index_diagnostics
     vector_index_metadata_store
     vector_status
+    vector_index_truth_store
     vector_utils
   )
 ENDIF()

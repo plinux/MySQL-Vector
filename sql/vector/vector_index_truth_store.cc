@@ -1,0 +1,1598 @@
+/* Copyright (c) 2026, Oracle and/or its affiliates.
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
+
+   This program is designed to work with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License, version 2.0, for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+
+#include "sql/vector/vector_index_truth_store.h"
+
+#include <cstdlib>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "m_ctype.h"
+#include "lex_string.h"
+#include "my_dbug.h"
+#include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
+#include "sql/log.h"
+#include "sql/mysqld.h"
+#include "sql/sql_class.h"
+#include "sql/sql_lex.h"
+#include "sql/sql_list.h"
+#include "sql/sql_parse.h"
+#include "sql/sql_prepare.h"
+#include "sql/thd_raii.h"
+#include "sql/vector/vector_index_diagnostics.h"
+#include "sql/vector/vector_index_truth_store_internal.h"
+#include "storage/innobase/include/dict0vectruth.h"
+
+namespace {
+
+constexpr const char *kTruthStoreBackendEnv = "MYSQL_VECTOR_TRUTH_STORE";
+constexpr const char *kMetadataArtifactName = "metadata";
+constexpr const char *kCommittedArtifactName = "committed";
+constexpr const char *kManifestArtifactName = "manifest";
+constexpr const char *kChangeLogArtifactName = "changelog";
+constexpr const char *kPreparedArtifactName = "prepared";
+constexpr const char *kQuarantineStoreArtifactName = "quarantine_store";
+constexpr const char *kQuarantinePayloadHeaderV1 =
+    "mysql-vector-quarantine-v1";
+thread_local bool g_internal_sql_active = false;
+
+enum class row_artifact_kind { kNone, kCommitted, kChangeLog, kPrepared };
+
+char hex_digit(unsigned value) {
+  return static_cast<char>((value < 10U) ? ('0' + value)
+                                         : ('a' + (value - 10U)));
+}
+
+std::string encode_hex_bytes(const std::string &input) {
+  std::string out;
+  out.resize(input.size() * 2);
+  for (size_t i = 0; i < input.size(); ++i) {
+    const unsigned value =
+        static_cast<unsigned>(static_cast<unsigned char>(input[i]));
+    out[i * 2] = hex_digit((value >> 4) & 0x0FU);
+    out[i * 2 + 1] = hex_digit(value & 0x0FU);
+  }
+  return out;
+}
+
+std::string sql_string_literal(const char *text) {
+  std::string escaped("'");
+  if (text != nullptr) {
+    for (const char *ptr = text; *ptr != '\0'; ++ptr) {
+      if (*ptr == '\'' || *ptr == '\\') escaped.push_back('\\');
+      escaped.push_back(*ptr);
+    }
+  }
+  escaped.push_back('\'');
+  return escaped;
+}
+
+bool hex_value(char ch, unsigned *value) {
+  if (ch >= '0' && ch <= '9') {
+    *value = static_cast<unsigned>(ch - '0');
+    return true;
+  }
+  const char lower =
+      static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  if (lower >= 'a' && lower <= 'f') {
+    *value = static_cast<unsigned>(lower - 'a' + 10);
+    return true;
+  }
+  return false;
+}
+
+bool decode_hex_bytes(const std::string &encoded, std::string *decoded) {
+  if (decoded == nullptr) return false;
+  decoded->clear();
+  if ((encoded.size() % 2) != 0) return false;
+  decoded->reserve(encoded.size() / 2);
+  for (size_t i = 0; i < encoded.size(); i += 2) {
+    unsigned high = 0;
+    unsigned low = 0;
+    if (!hex_value(encoded[i], &high) || !hex_value(encoded[i + 1], &low))
+      return false;
+    decoded->push_back(static_cast<char>((high << 4) | low));
+  }
+  return true;
+}
+
+bool split_tab_fields(const std::string &line, std::vector<std::string> *fields) {
+  if (fields == nullptr) return false;
+  fields->clear();
+  size_t pos = 0;
+  while (pos <= line.size()) {
+    const size_t tab = line.find('\t', pos);
+    if (tab == std::string::npos) {
+      fields->push_back(line.substr(pos));
+      return true;
+    }
+    fields->push_back(line.substr(pos, tab - pos));
+    pos = tab + 1;
+  }
+  return true;
+}
+
+using quarantine_entries = std::vector<std::pair<std::string, std::string>>;
+
+void record_artifact_persist_event(const char *backend_name,
+                                   const char *artifact_name, size_t row_count,
+                                   size_t payload_bytes,
+                                   uint64_t serialize_ms, uint64_t save_ms,
+                                   bool ok) {
+  if (!vector_index_diagnostics::enabled()) return;
+  vector_index_diagnostics::record_event(
+      "vector_truth_store_artifact",
+      {{"backend", backend_name == nullptr ? "" : backend_name},
+       {"artifact", artifact_name == nullptr ? "" : artifact_name}},
+      {{"rows", static_cast<uint64_t>(row_count)},
+       {"payload_bytes", static_cast<uint64_t>(payload_bytes)},
+       {"serialize_ms", serialize_ms},
+       {"save_ms", save_ms},
+       {"ok", ok ? 1U : 0U}});
+}
+
+constexpr uint8_t kTruthRowOpUpsert = 1;
+constexpr uint8_t kTruthRowOpErase = 2;
+
+bool vector_to_truth_payload(const vector_index::vector_data &vector,
+                             uint32_t *dimension, std::string *payload) {
+  if (dimension == nullptr || payload == nullptr ||
+      vector.size() > std::numeric_limits<uint32_t>::max()) {
+    return false;
+  }
+  *dimension = static_cast<uint32_t>(vector.size());
+  const size_t bytes = vector.size() * sizeof(float);
+  payload->clear();
+  if (bytes > 0) {
+    payload->assign(reinterpret_cast<const char *>(vector.data()), bytes);
+  }
+  return true;
+}
+
+bool truth_payload_to_vector(uint32_t dimension, const std::string &payload,
+                             vector_index::vector_data *vector) {
+  if (vector == nullptr ||
+      payload.size() != static_cast<size_t>(dimension) * sizeof(float)) {
+    return false;
+  }
+  vector->resize(dimension);
+  if (!payload.empty()) {
+    std::memcpy(vector->data(), payload.data(), payload.size());
+  }
+  return true;
+}
+
+bool encode_truth_op(vector_index_metadata_store::change_op op, uint8_t *value) {
+  if (value == nullptr) return false;
+  switch (op) {
+    case vector_index_metadata_store::change_op::kUpsert:
+      *value = kTruthRowOpUpsert;
+      return true;
+    case vector_index_metadata_store::change_op::kErase:
+      *value = kTruthRowOpErase;
+      return true;
+  }
+  return false;
+}
+
+bool decode_truth_op(uint8_t value, vector_index_metadata_store::change_op *op) {
+  if (op == nullptr) return false;
+  if (value == kTruthRowOpUpsert) {
+    *op = vector_index_metadata_store::change_op::kUpsert;
+    return true;
+  }
+  if (value == kTruthRowOpErase) {
+    *op = vector_index_metadata_store::change_op::kErase;
+    return true;
+  }
+  return false;
+}
+
+bool to_innodb_committed_rows(
+    const std::vector<vector_index_metadata_store::committed_row> &rows,
+    std::vector<innodb_vector_truth_store::committed_row> *out) {
+  if (out == nullptr) return false;
+  out->clear();
+  out->reserve(rows.size());
+  for (const auto &row : rows) {
+    innodb_vector_truth_store::committed_row stored;
+    stored.index_name = row.index_name;
+    stored.doc_id = row.doc_id;
+    if (stored.index_name.empty() ||
+        !vector_to_truth_payload(row.vector, &stored.dimension,
+                                 &stored.vector_payload)) {
+      return false;
+    }
+    out->push_back(std::move(stored));
+  }
+  return true;
+}
+
+bool from_innodb_committed_rows(
+    const std::vector<innodb_vector_truth_store::committed_row> &rows,
+    std::vector<vector_index_metadata_store::committed_row> *out) {
+  if (out == nullptr) return false;
+  out->clear();
+  out->reserve(rows.size());
+  for (const auto &row : rows) {
+    vector_index_metadata_store::committed_row loaded;
+    loaded.index_name = row.index_name;
+    loaded.doc_id = row.doc_id;
+    if (loaded.index_name.empty() ||
+        !truth_payload_to_vector(row.dimension, row.vector_payload,
+                                 &loaded.vector)) {
+      return false;
+    }
+    out->push_back(std::move(loaded));
+  }
+  return true;
+}
+
+bool to_innodb_change_log_rows(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows,
+    std::vector<innodb_vector_truth_store::change_log_row> *out) {
+  if (out == nullptr) return false;
+  out->clear();
+  out->reserve(rows.size());
+  for (const auto &row : rows) {
+    innodb_vector_truth_store::change_log_row stored;
+    stored.sequence = row.sequence;
+    stored.txn_id = row.txn_id;
+    stored.index_name = row.index_name;
+    stored.doc_id = row.doc_id;
+    if (stored.sequence == 0 || stored.index_name.empty() ||
+        !encode_truth_op(row.op, &stored.op) ||
+        !vector_to_truth_payload(row.vector, &stored.dimension,
+                                 &stored.vector_payload)) {
+      return false;
+    }
+    if (row.op == vector_index_metadata_store::change_op::kErase &&
+        stored.dimension != 0) {
+      return false;
+    }
+    out->push_back(std::move(stored));
+  }
+  return true;
+}
+
+bool from_innodb_change_log_rows(
+    const std::vector<innodb_vector_truth_store::change_log_row> &rows,
+    std::vector<vector_index_metadata_store::change_log_row> *out) {
+  if (out == nullptr) return false;
+  out->clear();
+  out->reserve(rows.size());
+  for (const auto &row : rows) {
+    vector_index_metadata_store::change_log_row loaded;
+    loaded.sequence = row.sequence;
+    loaded.txn_id = row.txn_id;
+    loaded.index_name = row.index_name;
+    loaded.doc_id = row.doc_id;
+    if (loaded.sequence == 0 || loaded.index_name.empty() ||
+        !decode_truth_op(row.op, &loaded.op) ||
+        !truth_payload_to_vector(row.dimension, row.vector_payload,
+                                 &loaded.vector)) {
+      return false;
+    }
+    if (loaded.op == vector_index_metadata_store::change_op::kErase &&
+        !loaded.vector.empty()) {
+      return false;
+    }
+    out->push_back(std::move(loaded));
+  }
+  return true;
+}
+
+bool to_innodb_prepared_rows(
+    const std::vector<vector_index_metadata_store::prepared_change_row> &rows,
+    std::vector<innodb_vector_truth_store::prepared_change_row> *out) {
+  if (out == nullptr) return false;
+  out->clear();
+  out->reserve(rows.size());
+  uint64_t row_no = 1;
+  for (const auto &row : rows) {
+    if (row.format_id < 0 || row.gtrid_length < 0 || row.bqual_length < 0) {
+      return false;
+    }
+    innodb_vector_truth_store::prepared_change_row stored;
+    stored.txn_id = row.txn_id;
+    stored.row_no = row_no++;
+    stored.format_id = static_cast<uint64_t>(row.format_id);
+    stored.gtrid_length = static_cast<uint64_t>(row.gtrid_length);
+    stored.bqual_length = static_cast<uint64_t>(row.bqual_length);
+    stored.xid_data = row.xid_data;
+    stored.prepared_in_tc = row.prepared_in_tc ? 1 : 0;
+    stored.index_name = row.index_name;
+    stored.doc_id = row.doc_id;
+    if (stored.index_name.empty() ||
+        stored.xid_data.size() != stored.gtrid_length + stored.bqual_length ||
+        !encode_truth_op(row.op, &stored.op) ||
+        !vector_to_truth_payload(row.vector, &stored.dimension,
+                                 &stored.vector_payload)) {
+      return false;
+    }
+    if (row.op == vector_index_metadata_store::change_op::kErase &&
+        stored.dimension != 0) {
+      return false;
+    }
+    out->push_back(std::move(stored));
+  }
+  return true;
+}
+
+bool from_innodb_prepared_rows(
+    const std::vector<innodb_vector_truth_store::prepared_change_row> &rows,
+    std::vector<vector_index_metadata_store::prepared_change_row> *out) {
+  if (out == nullptr) return false;
+  out->clear();
+  out->reserve(rows.size());
+  for (const auto &row : rows) {
+    if (row.format_id >
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        row.gtrid_length >
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        row.bqual_length >
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      return false;
+    }
+    vector_index_metadata_store::prepared_change_row loaded;
+    loaded.txn_id = row.txn_id;
+    loaded.format_id = static_cast<int64_t>(row.format_id);
+    loaded.gtrid_length = static_cast<int64_t>(row.gtrid_length);
+    loaded.bqual_length = static_cast<int64_t>(row.bqual_length);
+    loaded.xid_data = row.xid_data;
+    loaded.prepared_in_tc = row.prepared_in_tc != 0;
+    loaded.index_name = row.index_name;
+    loaded.doc_id = row.doc_id;
+    if (loaded.index_name.empty() ||
+        loaded.xid_data.size() !=
+            static_cast<size_t>(loaded.gtrid_length + loaded.bqual_length) ||
+        !decode_truth_op(row.op, &loaded.op) ||
+        !truth_payload_to_vector(row.dimension, row.vector_payload,
+                                 &loaded.vector)) {
+      return false;
+    }
+    if (loaded.op == vector_index_metadata_store::change_op::kErase &&
+        !loaded.vector.empty()) {
+      return false;
+    }
+    out->push_back(std::move(loaded));
+  }
+  return true;
+}
+
+row_artifact_kind row_artifact_kind_from_name(const char *artifact_name) {
+  if (artifact_name == nullptr) return row_artifact_kind::kNone;
+  if (std::strcmp(artifact_name, kCommittedArtifactName) == 0)
+    return row_artifact_kind::kCommitted;
+  if (std::strcmp(artifact_name, kChangeLogArtifactName) == 0)
+    return row_artifact_kind::kChangeLog;
+  if (std::strcmp(artifact_name, kPreparedArtifactName) == 0)
+    return row_artifact_kind::kPrepared;
+  return row_artifact_kind::kNone;
+}
+
+bool is_row_artifact_name(const char *artifact_name) {
+  return row_artifact_kind_from_name(artifact_name) != row_artifact_kind::kNone;
+}
+
+bool extract_debug_payload(
+    const std::vector<innodb_vector_truth_store::committed_row> &rows,
+    std::string *payload) {
+  if (rows.size() != 1 || payload == nullptr) return false;
+  const auto &row = rows.front();
+  if (!row.index_name.empty() || row.doc_id != 0 || row.dimension != 0)
+    return false;
+  *payload = row.vector_payload;
+  return true;
+}
+
+bool extract_debug_payload(
+    const std::vector<innodb_vector_truth_store::change_log_row> &rows,
+    std::string *payload) {
+  if (rows.size() != 1 || payload == nullptr) return false;
+  const auto &row = rows.front();
+  if (row.sequence != 1 || row.txn_id != 0 || row.op != kTruthRowOpUpsert ||
+      !row.index_name.empty() || row.doc_id != 0 || row.dimension != 0) {
+    return false;
+  }
+  *payload = row.vector_payload;
+  return true;
+}
+
+bool extract_debug_payload(
+    const std::vector<innodb_vector_truth_store::prepared_change_row> &rows,
+    std::string *payload) {
+  if (rows.size() != 1 || payload == nullptr) return false;
+  const auto &row = rows.front();
+  if (row.txn_id != 0 || row.row_no != 1 || row.format_id != 0 ||
+      row.gtrid_length != 0 || row.bqual_length != 0 ||
+      !row.xid_data.empty() || row.prepared_in_tc != 0 ||
+      row.op != kTruthRowOpUpsert || !row.index_name.empty() ||
+      row.doc_id != 0 || row.dimension != 0) {
+    return false;
+  }
+  *payload = row.vector_payload;
+  return true;
+}
+
+innodb_vector_truth_store::committed_row make_debug_committed_row(
+    const std::string &payload) {
+  innodb_vector_truth_store::committed_row row;
+  row.doc_id = 0;
+  row.dimension = 0;
+  row.vector_payload = payload;
+  return row;
+}
+
+innodb_vector_truth_store::change_log_row make_debug_change_log_row(
+    const std::string &payload) {
+  innodb_vector_truth_store::change_log_row row;
+  row.sequence = 1;
+  row.txn_id = 0;
+  row.op = kTruthRowOpUpsert;
+  row.doc_id = 0;
+  row.dimension = 0;
+  row.vector_payload = payload;
+  return row;
+}
+
+innodb_vector_truth_store::prepared_change_row make_debug_prepared_row(
+    const std::string &payload) {
+  innodb_vector_truth_store::prepared_change_row row;
+  row.txn_id = 0;
+  row.row_no = 1;
+  row.format_id = 0;
+  row.gtrid_length = 0;
+  row.bqual_length = 0;
+  row.prepared_in_tc = 0;
+  row.op = kTruthRowOpUpsert;
+  row.doc_id = 0;
+  row.dimension = 0;
+  row.vector_payload = payload;
+  return row;
+}
+
+bool deserialize_quarantine_entries(const std::string &payload,
+                                  quarantine_entries *entries) {
+  if (entries == nullptr) return false;
+  entries->clear();
+  if (payload.empty()) return true;
+
+  std::istringstream stream(payload);
+  std::string line;
+  if (!std::getline(stream, line) || line != kQuarantinePayloadHeaderV1)
+    return false;
+
+  while (std::getline(stream, line)) {
+    if (line.empty()) continue;
+    std::vector<std::string> fields;
+    if (!split_tab_fields(line, &fields) || fields.size() != 2) return false;
+    std::string artifact_name;
+    std::string artifact_payload;
+    if (!decode_hex_bytes(fields[0], &artifact_name) ||
+        !decode_hex_bytes(fields[1], &artifact_payload) ||
+        artifact_name.empty()) {
+      return false;
+    }
+    entries->push_back({std::move(artifact_name), std::move(artifact_payload)});
+  }
+  return true;
+}
+
+bool serialize_quarantine_entries(const quarantine_entries &entries,
+                                std::string *payload) {
+  if (payload == nullptr) return false;
+  std::ostringstream stream;
+  stream << kQuarantinePayloadHeaderV1 << "\n";
+  for (const auto &entry : entries) {
+    stream << encode_hex_bytes(entry.first) << "\t"
+           << encode_hex_bytes(entry.second) << "\n";
+  }
+  *payload = stream.str();
+  return true;
+}
+
+void upsert_quarantine_entry(quarantine_entries *entries,
+                           const std::string &artifact_name,
+                           const std::string &payload) {
+  for (auto &entry : *entries) {
+    if (entry.first == artifact_name) {
+      entry.second = payload;
+      return;
+    }
+  }
+  entries->push_back({artifact_name, payload});
+}
+
+bool is_valid_artifact_name(const char *artifact_name) {
+  return artifact_name != nullptr &&
+         (std::strcmp(artifact_name, kMetadataArtifactName) == 0 ||
+         std::strcmp(artifact_name, kCommittedArtifactName) == 0 ||
+         std::strcmp(artifact_name, kManifestArtifactName) == 0 ||
+         std::strcmp(artifact_name, kChangeLogArtifactName) == 0 ||
+         std::strcmp(artifact_name, kPreparedArtifactName) == 0);
+}
+
+bool use_file_truth_store_backend() {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  const char *backend = std::getenv(kTruthStoreBackendEnv);
+  if (backend == nullptr) return false;
+  return std::strcmp(backend, "file") == 0;
+#else
+  return false;
+#endif
+}
+
+bool is_truth_store_table_name(const char *schema_name, const char *table_name) {
+  if (schema_name == nullptr || table_name == nullptr) return false;
+  if (my_strcasecmp(system_charset_info, schema_name, "mysql") != 0) return false;
+  return my_strcasecmp(system_charset_info, table_name,
+                       "vector_index_truth_metadata") == 0 ||
+         my_strcasecmp(system_charset_info, table_name,
+                       "vector_index_truth_committed") == 0 ||
+         my_strcasecmp(system_charset_info, table_name,
+                       "vector_index_truth_manifest") == 0 ||
+         my_strcasecmp(system_charset_info, table_name,
+                       "vector_index_truth_changelog") == 0 ||
+         my_strcasecmp(system_charset_info, table_name,
+                       "vector_index_truth_prepared") == 0 ||
+         my_strcasecmp(system_charset_info, table_name,
+                       "vector_index_truth_store_quarantine") == 0;
+}
+
+class internal_sql_session {
+ public:
+  ~internal_sql_session() {
+    if (m_thd != nullptr) {
+      const bool previous_internal_sql = g_internal_sql_active;
+      THD *previous_thd = current_thd;
+      g_internal_sql_active = true;
+      if (previous_thd != nullptr && previous_thd != m_thd) {
+        previous_thd->restore_globals();
+      }
+      m_thd->thread_stack = reinterpret_cast<char *>(&previous_thd);
+      m_thd->store_globals();
+      m_thd->release_resources();
+      m_thd->restore_globals();
+      g_internal_sql_active = previous_internal_sql;
+      if (previous_thd != nullptr && previous_thd != m_thd) {
+        previous_thd->store_globals();
+      }
+      delete m_thd;
+      m_thd = nullptr;
+    }
+  }
+
+  bool open() {
+    if (m_thd != nullptr) return true;
+    THD *saved_thd = current_thd;
+    if ((m_thd = new THD) == nullptr) return false;
+    m_thd->thread_stack = reinterpret_cast<char *>(&saved_thd);
+    m_thd->set_new_thread_id();
+    if (saved_thd != nullptr) saved_thd->restore_globals();
+    m_thd->store_globals();
+    m_thd->security_context()->skip_grants();
+    m_thd->system_thread = SYSTEM_THREAD_BACKGROUND;
+    m_thd->variables.option_bits &= ~OPTION_BIN_LOG;
+    m_thd->variables.sql_log_bin = false;
+    m_thd->set_skip_readonly_check();
+    lex_start(m_thd);
+    mysql_reset_thd_for_next_command(m_thd);
+    m_thd->restore_globals();
+    if (saved_thd != nullptr) saved_thd->store_globals();
+    return true;
+  }
+
+  bool execute(const std::string &sql, unsigned int *last_errno = nullptr,
+               std::string *last_error = nullptr) {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_internal_execute", return false;);
+    DBUG_EXECUTE_IF("vector_truth_store_force_internal_execute_success",
+                    return true;);
+    DBUG_EXECUTE_IF("vector_truth_store_force_internal_execute_error", {
+      if (last_errno != nullptr) *last_errno = ER_UNKNOWN_ERROR;
+      if (last_error != nullptr) *last_error = "synthetic execute error";
+      return false;
+    };);
+    if (!open()) return false;
+    scoped_thd_switch switch_thd(m_thd);
+    Disable_binlog_guard disable_binlog(m_thd);
+    Disable_sql_log_bin_guard disable_sql_log_bin(m_thd);
+#ifndef NDEBUG
+    m_thd->debug_binlog_xid_last.reset();
+#endif
+    Ed_connection connection(m_thd);
+    LEX_STRING query{const_cast<char *>(sql.c_str()), sql.length()};
+    if (!connection.execute_direct(query)) return true;
+    if (last_errno != nullptr) *last_errno = connection.get_last_errno();
+    if (last_error != nullptr && connection.get_last_error() != nullptr) {
+      *last_error = connection.get_last_error();
+    }
+    return false;
+  }
+
+  bool query_scalar_string(const std::string &sql, std::string *value,
+                         bool *found = nullptr) {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_internal_query_scalar",
+                    return false;);
+    DBUG_EXECUTE_IF("vector_truth_store_force_query_scalar_query_error",
+                    return false;);
+    DBUG_EXECUTE_IF("vector_truth_store_force_query_scalar_empty_result", {
+      value->clear();
+      if (found != nullptr) *found = false;
+      return true;
+    };);
+    DBUG_EXECUTE_IF("vector_truth_store_force_query_scalar_found_one", {
+      value->assign("1");
+      if (found != nullptr) *found = true;
+      return true;
+    };);
+    DBUG_EXECUTE_IF("vector_truth_store_force_query_scalar_found_payload", {
+      value->assign("mock-payload");
+      if (found != nullptr) *found = true;
+      return true;
+    };);
+    if (value == nullptr) return false;
+    if (!open()) return false;
+    scoped_thd_switch switch_thd(m_thd);
+    Disable_binlog_guard disable_binlog(m_thd);
+    Disable_sql_log_bin_guard disable_sql_log_bin(m_thd);
+#ifndef NDEBUG
+    m_thd->debug_binlog_xid_last.reset();
+#endif
+    Ed_connection connection(m_thd);
+    LEX_STRING query{const_cast<char *>(sql.c_str()), sql.length()};
+    if (connection.execute_direct(query)) return false;
+    if (found != nullptr) *found = false;
+    value->clear();
+    Ed_result_set *result_set = connection.get_result_sets();
+    if (result_set == nullptr || result_set->size() == 0 ||
+        result_set->get_field_count() == 0) {
+      return true;
+    }
+    List_iterator<Ed_row> row_it(static_cast<List<Ed_row> &>(*result_set));
+    Ed_row *row = row_it++;
+    if (row == nullptr) return true;
+    const Ed_column *column = row->get_column(0);
+    if (column != nullptr && column->str != nullptr) {
+      value->assign(column->str, column->length);
+      if (found != nullptr) *found = true;
+    }
+    return true;
+  }
+
+ private:
+  class scoped_thd_switch {
+   public:
+    explicit scoped_thd_switch(THD *thd)
+        : m_previous(current_thd),
+          m_thd(thd),
+          m_previous_internal_sql(g_internal_sql_active) {
+      if (m_thd == nullptr) return;
+      if (m_previous != nullptr) m_previous->restore_globals();
+      m_thd->thread_stack = reinterpret_cast<char *>(&thd);
+      m_thd->store_globals();
+      g_internal_sql_active = true;
+    }
+
+    ~scoped_thd_switch() {
+      if (m_thd != nullptr) m_thd->restore_globals();
+      g_internal_sql_active = m_previous_internal_sql;
+      if (m_previous != nullptr) m_previous->store_globals();
+    }
+
+   private:
+    THD *m_previous;
+    THD *m_thd;
+    bool m_previous_internal_sql;
+  };
+
+  THD *m_thd{nullptr};
+};
+
+class mysql_truth_store final : public vector_index_truth_store::truth_store {
+ public:
+  const char *backend_name() const override { return "mysql"; }
+
+  bool is_transactional() const override { return true; }
+  bool supports_delta_persist() const override { return true; }
+
+  bool bootstrap_initialize(THD *thd) {
+    std::lock_guard<std::mutex> guard(m_mutex);
+    if (m_tables_initialized) return true;
+    if (thd == nullptr) return false;
+    m_tables_initialized = true;
+    return true;
+  }
+
+  bool begin_persist() override {
+    std::lock_guard<std::mutex> guard(m_mutex);
+    if (m_persist_session != nullptr) return false;
+    m_persist_session = innodb_vector_truth_store::begin_session(true);
+    return m_persist_session != nullptr;
+  }
+
+  bool commit_persist() override {
+    std::lock_guard<std::mutex> guard(m_mutex);
+    if (m_persist_session == nullptr) return false;
+    const bool ok = innodb_vector_truth_store::commit_session(m_persist_session);
+    innodb_vector_truth_store::close_session(m_persist_session);
+    m_persist_session = nullptr;
+    return ok;
+  }
+
+  void rollback_persist() override {
+    std::lock_guard<std::mutex> guard(m_mutex);
+    if (m_persist_session != nullptr) {
+      innodb_vector_truth_store::rollback_session(m_persist_session);
+      innodb_vector_truth_store::close_session(m_persist_session);
+      m_persist_session = nullptr;
+    }
+  }
+
+  bool load_metadata(
+      std::vector<vector_index_metadata_store::metadata_row> *rows) override {
+    std::string payload;
+    if (!load_artifact(kMetadataArtifactName, &payload)) return false;
+    return vector_index_metadata_store::deserialize_metadata_rows(payload, rows);
+  }
+
+  bool save_metadata(
+      const std::vector<vector_index_metadata_store::metadata_row> &rows) override {
+    std::string payload;
+    if (!vector_index_metadata_store::serialize_metadata_rows(rows, &payload))
+      return false;
+    return save_artifact(kMetadataArtifactName, payload);
+  }
+
+  bool quarantine_metadata() override {
+    return quarantine_artifact(kMetadataArtifactName);
+  }
+
+  bool load_committed(
+      std::vector<vector_index_metadata_store::committed_row> *rows) override {
+    std::vector<innodb_vector_truth_store::committed_row> stored_rows;
+    bool found = false;
+    if (!innodb_vector_truth_store::load_committed_rows(&stored_rows, &found,
+                                                        m_persist_session)) {
+      return false;
+    }
+    if (!found) {
+      if (rows != nullptr) rows->clear();
+      return true;
+    }
+    return from_innodb_committed_rows(stored_rows, rows);
+  }
+
+  bool save_committed(
+      const std::vector<vector_index_metadata_store::committed_row> &rows) override {
+    const bool diagnostics_enabled = vector_index_diagnostics::enabled();
+    const auto serialize_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    std::vector<innodb_vector_truth_store::committed_row> stored_rows;
+    if (!to_innodb_committed_rows(rows, &stored_rows))
+      return false;
+    const uint64_t serialize_ms =
+        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                serialize_start);
+    const auto save_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    const bool ok = innodb_vector_truth_store::save_committed_rows(
+        stored_rows, m_persist_session);
+    if (diagnostics_enabled) {
+      size_t payload_bytes = 0;
+      for (const auto &row : stored_rows) payload_bytes += row.vector_payload.size();
+      record_artifact_persist_event(
+          backend_name(), kCommittedArtifactName, rows.size(), payload_bytes,
+          serialize_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  save_start),
+          ok);
+    }
+    return ok;
+  }
+
+  bool apply_committed_delta(
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
+    const bool diagnostics_enabled = vector_index_diagnostics::enabled();
+    const auto serialize_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+    if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
+    const uint64_t serialize_ms =
+        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                serialize_start);
+    const auto save_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    const bool ok = innodb_vector_truth_store::apply_committed_delta(
+        stored_rows, m_persist_session);
+    if (diagnostics_enabled) {
+      size_t payload_bytes = 0;
+      for (const auto &row : stored_rows) payload_bytes += row.vector_payload.size();
+      record_artifact_persist_event(
+          backend_name(), "committed_delta", rows.size(), payload_bytes,
+          serialize_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  save_start),
+          ok);
+    }
+    return ok;
+  }
+
+  bool quarantine_committed() override {
+    return quarantine_row_artifact(kCommittedArtifactName);
+  }
+
+  bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
+    std::string payload;
+    if (!load_artifact(kManifestArtifactName, &payload)) return false;
+    return vector_index_metadata_store::deserialize_manifest_row(payload, row);
+  }
+
+  bool save_manifest(
+      const vector_index_metadata_store::manifest_row &row) override {
+    std::string payload;
+    if (!vector_index_metadata_store::serialize_manifest_row(row, &payload))
+      return false;
+    return save_artifact(kManifestArtifactName, payload);
+  }
+
+  bool quarantine_manifest() override {
+    return quarantine_artifact(kManifestArtifactName);
+  }
+
+  bool load_change_log(
+      std::vector<vector_index_metadata_store::change_log_row> *rows) override {
+    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+    bool found = false;
+    if (!innodb_vector_truth_store::load_change_log_rows(&stored_rows, &found,
+                                                         m_persist_session)) {
+      return false;
+    }
+    if (!found) {
+      if (rows != nullptr) rows->clear();
+      return true;
+    }
+    return from_innodb_change_log_rows(stored_rows, rows);
+  }
+
+  bool save_change_log(
+      const std::vector<vector_index_metadata_store::change_log_row> &rows) override {
+    const bool diagnostics_enabled = vector_index_diagnostics::enabled();
+    const auto serialize_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+    if (!to_innodb_change_log_rows(rows, &stored_rows))
+      return false;
+    const uint64_t serialize_ms =
+        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                serialize_start);
+    const auto save_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    const bool ok = innodb_vector_truth_store::save_change_log_rows(
+        stored_rows, m_persist_session);
+    if (diagnostics_enabled) {
+      size_t payload_bytes = 0;
+      for (const auto &row : stored_rows) payload_bytes += row.vector_payload.size();
+      record_artifact_persist_event(
+          backend_name(), kChangeLogArtifactName, rows.size(), payload_bytes,
+          serialize_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  save_start),
+          ok);
+    }
+    return ok;
+  }
+
+  bool append_change_log_delta(
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
+    const bool diagnostics_enabled = vector_index_diagnostics::enabled();
+    const auto serialize_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+    if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
+    const uint64_t serialize_ms =
+        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                serialize_start);
+    const auto save_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    const bool ok = innodb_vector_truth_store::append_change_log_delta(
+        stored_rows, m_persist_session);
+    if (diagnostics_enabled) {
+      size_t payload_bytes = 0;
+      for (const auto &row : stored_rows) payload_bytes += row.vector_payload.size();
+      record_artifact_persist_event(
+          backend_name(), "changelog_delta", rows.size(), payload_bytes,
+          serialize_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  save_start),
+          ok);
+    }
+    return ok;
+  }
+
+  bool quarantine_change_log() override {
+    return quarantine_row_artifact(kChangeLogArtifactName);
+  }
+
+  bool load_prepared(
+      std::vector<vector_index_metadata_store::prepared_change_row> *rows)
+      override {
+    std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
+    bool structured_found = false;
+    if (!innodb_vector_truth_store::load_prepared_rows(
+            &stored_rows, &structured_found, m_persist_session)) {
+      return false;
+    }
+    if (!structured_found) {
+      if (rows != nullptr) rows->clear();
+      return true;
+    }
+    return from_innodb_prepared_rows(stored_rows, rows);
+  }
+
+  bool save_prepared(
+      const std::vector<vector_index_metadata_store::prepared_change_row> &rows)
+      override {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
+    if (!to_innodb_prepared_rows(rows, &stored_rows))
+      return false;
+    return innodb_vector_truth_store::save_prepared_rows(stored_rows,
+                                                         m_persist_session);
+  }
+
+  bool quarantine_prepared() override {
+    bool found = false;
+    if (!row_artifact_exists(kPreparedArtifactName, &found)) return false;
+    if (found) return quarantine_row_artifact(kPreparedArtifactName);
+    return vector_index_metadata_store::quarantine_prepared_store();
+  }
+
+  void shutdown() {
+    std::lock_guard<std::mutex> guard(m_mutex);
+    if (m_persist_session != nullptr) {
+      innodb_vector_truth_store::rollback_session(m_persist_session);
+      innodb_vector_truth_store::close_session(m_persist_session);
+      m_persist_session = nullptr;
+    }
+    m_tables_initialized = false;
+  }
+
+  bool debug_get_artifact(const char *artifact_name, std::string *payload) {
+    if (payload == nullptr || !is_valid_artifact_name(artifact_name)) return false;
+    if (is_row_artifact_name(artifact_name)) {
+      bool found = false;
+      return load_row_artifact_payload(artifact_name, payload, &found);
+    }
+    return load_artifact(artifact_name, payload);
+  }
+
+  bool debug_set_artifact(const char *artifact_name, const std::string &payload) {
+    if (!is_valid_artifact_name(artifact_name)) return false;
+    if (is_row_artifact_name(artifact_name)) {
+      return save_row_artifact_payload(artifact_name, payload);
+    }
+    return save_artifact(artifact_name, payload);
+  }
+
+  bool debug_delete_artifact(const char *artifact_name) {
+    if (!is_valid_artifact_name(artifact_name)) return false;
+    if (is_row_artifact_name(artifact_name) && !clear_row_artifact(artifact_name)) {
+      return false;
+    }
+    const bool structured_deleted =
+        is_row_artifact_name(artifact_name) ||
+        delete_structured_artifact(artifact_name);
+    return structured_deleted;
+  }
+
+ private:
+  bool row_artifact_exists(const char *artifact_name, bool *found) {
+    if (found == nullptr || !is_row_artifact_name(artifact_name)) return false;
+    std::string payload;
+    return load_row_artifact_payload(artifact_name, &payload, found);
+  }
+
+  bool load_row_artifact_payload(const char *artifact_name, std::string *payload,
+                                 bool *found) {
+    if (payload == nullptr || found == nullptr ||
+        !is_row_artifact_name(artifact_name)) {
+      return false;
+    }
+
+    switch (row_artifact_kind_from_name(artifact_name)) {
+      case row_artifact_kind::kCommitted: {
+        std::vector<innodb_vector_truth_store::committed_row> stored_rows;
+        if (!innodb_vector_truth_store::load_committed_rows(
+                &stored_rows, found, m_persist_session)) {
+          return false;
+        }
+        if (!*found) {
+          payload->clear();
+          return true;
+        }
+        if (extract_debug_payload(stored_rows, payload)) return true;
+        std::vector<vector_index_metadata_store::committed_row> rows;
+        return from_innodb_committed_rows(stored_rows, &rows) &&
+               vector_index_metadata_store::serialize_committed_rows(rows,
+                                                                     payload);
+      }
+      case row_artifact_kind::kChangeLog: {
+        std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+        if (!innodb_vector_truth_store::load_change_log_rows(
+                &stored_rows, found, m_persist_session)) {
+          return false;
+        }
+        if (!*found) {
+          payload->clear();
+          return true;
+        }
+        if (extract_debug_payload(stored_rows, payload)) return true;
+        std::vector<vector_index_metadata_store::change_log_row> rows;
+        return from_innodb_change_log_rows(stored_rows, &rows) &&
+               vector_index_metadata_store::serialize_change_log_rows(rows,
+                                                                      payload);
+      }
+      case row_artifact_kind::kPrepared:
+        break;
+      case row_artifact_kind::kNone:
+        return false;
+    }
+
+    std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
+    if (!innodb_vector_truth_store::load_prepared_rows(
+            &stored_rows, found, m_persist_session)) {
+      return false;
+    }
+    if (!*found) {
+      payload->clear();
+      return true;
+    }
+    if (extract_debug_payload(stored_rows, payload)) return true;
+    std::vector<vector_index_metadata_store::prepared_change_row> rows;
+    return from_innodb_prepared_rows(stored_rows, &rows) &&
+           vector_index_metadata_store::serialize_prepared_rows(rows, payload);
+  }
+
+  bool save_row_artifact_payload(const char *artifact_name,
+                                 const std::string &payload) {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    if (!is_row_artifact_name(artifact_name)) return false;
+
+    switch (row_artifact_kind_from_name(artifact_name)) {
+      case row_artifact_kind::kCommitted: {
+        std::vector<vector_index_metadata_store::committed_row> rows;
+        std::vector<innodb_vector_truth_store::committed_row> stored_rows;
+        if (payload.empty() ||
+            (!vector_index_metadata_store::deserialize_committed_rows(payload,
+                                                                      &rows) ||
+             !to_innodb_committed_rows(rows, &stored_rows))) {
+          stored_rows.clear();
+          if (!payload.empty())
+            stored_rows.push_back(make_debug_committed_row(payload));
+        }
+        return innodb_vector_truth_store::save_committed_rows(
+            stored_rows, m_persist_session);
+      }
+      case row_artifact_kind::kChangeLog: {
+        std::vector<vector_index_metadata_store::change_log_row> rows;
+        std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+        if (payload.empty() ||
+            (!vector_index_metadata_store::deserialize_change_log_rows(payload,
+                                                                       &rows) ||
+             !to_innodb_change_log_rows(rows, &stored_rows))) {
+          stored_rows.clear();
+          if (!payload.empty())
+            stored_rows.push_back(make_debug_change_log_row(payload));
+        }
+        return innodb_vector_truth_store::save_change_log_rows(
+            stored_rows, m_persist_session);
+      }
+      case row_artifact_kind::kPrepared:
+        break;
+      case row_artifact_kind::kNone:
+        return false;
+    }
+
+    std::vector<vector_index_metadata_store::prepared_change_row> rows;
+    std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
+    if (payload.empty() ||
+        (!vector_index_metadata_store::deserialize_prepared_rows(payload, &rows) ||
+         !to_innodb_prepared_rows(rows, &stored_rows))) {
+      stored_rows.clear();
+      if (!payload.empty()) stored_rows.push_back(make_debug_prepared_row(payload));
+    }
+    return innodb_vector_truth_store::save_prepared_rows(stored_rows,
+                                                         m_persist_session);
+  }
+
+  bool clear_row_artifact(const char *artifact_name) {
+    return save_row_artifact_payload(artifact_name, std::string());
+  }
+
+  bool save_quarantine_payload(const char *artifact_name,
+                               const std::string &payload) {
+    std::string quarantine_payload;
+    quarantine_entries entries;
+    bool quarantine_found = false;
+    if (!load_structured_artifact(kQuarantineStoreArtifactName,
+                                  &quarantine_payload, &quarantine_found)) {
+      return false;
+    }
+    if (quarantine_found &&
+        !deserialize_quarantine_entries(quarantine_payload, &entries)) {
+      return false;
+    }
+    upsert_quarantine_entry(&entries, artifact_name, payload);
+    if (!serialize_quarantine_entries(entries, &quarantine_payload)) return false;
+    return save_structured_artifact(kQuarantineStoreArtifactName,
+                                    quarantine_payload);
+  }
+
+  bool quarantine_row_artifact(const char *artifact_name) {
+    if (!ensure_tables()) return false;
+
+    std::string payload;
+    bool found = false;
+    if (!load_row_artifact_payload(artifact_name, &payload, &found)) return false;
+    if (!found) return true;
+    return save_quarantine_payload(artifact_name, payload) &&
+           clear_row_artifact(artifact_name);
+  }
+
+  bool ensure_tables() {
+    return true;
+  }
+
+  bool load_structured_artifact(const char *artifact_name,
+                              std::string *payload, bool *found) {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_load_structured_artifact",
+                    return false;);
+    DBUG_EXECUTE_IF("vector_truth_store_force_structured_artifact_missing", {
+      if (payload != nullptr) payload->clear();
+      if (found != nullptr) *found = false;
+      return true;
+    };);
+    if (payload == nullptr || found == nullptr) return false;
+    return innodb_vector_truth_store::load_artifact(artifact_name, payload, found,
+                                                    m_persist_session);
+  }
+
+  bool save_structured_artifact(const char *artifact_name,
+                              const std::string &payload) {
+    return innodb_vector_truth_store::save_artifact(artifact_name, payload,
+                                                    m_persist_session);
+  }
+
+  bool delete_structured_artifact(const char *artifact_name) {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_delete_structured_artifact",
+                    return false;);
+    return innodb_vector_truth_store::delete_artifact(artifact_name,
+                                                      m_persist_session);
+  }
+
+  bool load_artifact(const char *artifact_name, std::string *payload) {
+    if (payload == nullptr) return false;
+    if (!ensure_tables()) return false;
+
+    bool found = false;
+    if (!load_structured_artifact(artifact_name, payload, &found))
+      return false;
+    if (found) return true;
+    payload->clear();
+    return true;
+  }
+
+  bool save_artifact(const char *artifact_name, const std::string &payload) {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    if (!ensure_tables()) return false;
+    return save_structured_artifact(artifact_name, payload);
+  }
+
+  bool quarantine_artifact(const char *artifact_name) {
+    if (!ensure_tables()) return false;
+
+    std::string payload;
+    bool found = false;
+    if (!load_structured_artifact(artifact_name, &payload, &found)) return false;
+    if (!found) return true;
+
+    return save_quarantine_payload(artifact_name, payload) &&
+           delete_structured_artifact(artifact_name);
+  }
+
+  mutable std::mutex m_mutex;
+  innodb_vector_truth_store::Session *m_persist_session{nullptr};
+  bool m_tables_initialized{false};
+};
+
+class file_truth_store final : public vector_index_truth_store::truth_store {
+ public:
+  const char *backend_name() const override { return "file"; }
+
+  bool is_transactional() const override { return false; }
+
+  bool load_metadata(
+      std::vector<vector_index_metadata_store::metadata_row> *rows) override {
+    return vector_index_metadata_store::load_all(rows);
+  }
+
+  bool save_metadata(
+      const std::vector<vector_index_metadata_store::metadata_row> &rows) override {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    return vector_index_metadata_store::save_all(rows);
+  }
+
+  bool quarantine_metadata() override {
+    return vector_index_metadata_store::quarantine_current_store();
+  }
+
+  bool load_committed(
+      std::vector<vector_index_metadata_store::committed_row> *rows) override {
+    return vector_index_metadata_store::load_committed_all(rows);
+  }
+
+  bool save_committed(
+      const std::vector<vector_index_metadata_store::committed_row> &rows) override {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    const bool diagnostics_enabled = vector_index_diagnostics::enabled();
+    std::string payload;
+    uint64_t serialize_ms = 0;
+    if (diagnostics_enabled) {
+      const auto serialize_start =
+          vector_index_diagnostics::now_if(diagnostics_enabled);
+      if (!vector_index_metadata_store::serialize_committed_rows(rows, &payload))
+        return false;
+      serialize_ms = vector_index_diagnostics::elapsed_ms_if(
+          diagnostics_enabled, serialize_start);
+    }
+    const auto save_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    const bool ok = vector_index_metadata_store::save_committed_all(rows);
+    if (diagnostics_enabled) {
+      record_artifact_persist_event(
+          backend_name(), kCommittedArtifactName, rows.size(), payload.size(),
+          serialize_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  save_start),
+          ok);
+    }
+    return ok;
+  }
+
+  bool quarantine_committed() override {
+    return vector_index_metadata_store::quarantine_committed_store();
+  }
+
+  bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
+    return vector_index_metadata_store::load_manifest(row);
+  }
+
+  bool save_manifest(
+      const vector_index_metadata_store::manifest_row &row) override {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    return vector_index_metadata_store::save_manifest(row);
+  }
+
+  bool quarantine_manifest() override {
+    return vector_index_metadata_store::quarantine_manifest_store();
+  }
+
+  bool load_change_log(
+      std::vector<vector_index_metadata_store::change_log_row> *rows) override {
+    return vector_index_metadata_store::load_change_log(rows);
+  }
+
+  bool save_change_log(
+      const std::vector<vector_index_metadata_store::change_log_row> &rows) override {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    const bool diagnostics_enabled = vector_index_diagnostics::enabled();
+    std::string payload;
+    uint64_t serialize_ms = 0;
+    if (diagnostics_enabled) {
+      const auto serialize_start =
+          vector_index_diagnostics::now_if(diagnostics_enabled);
+      if (!vector_index_metadata_store::serialize_change_log_rows(rows, &payload))
+        return false;
+      serialize_ms = vector_index_diagnostics::elapsed_ms_if(
+          diagnostics_enabled, serialize_start);
+    }
+    const auto save_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    const bool ok = vector_index_metadata_store::save_change_log(rows);
+    if (diagnostics_enabled) {
+      record_artifact_persist_event(
+          backend_name(), kChangeLogArtifactName, rows.size(), payload.size(),
+          serialize_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  save_start),
+          ok);
+    }
+    return ok;
+  }
+
+  bool quarantine_change_log() override {
+    return vector_index_metadata_store::quarantine_change_log_store();
+  }
+
+  bool load_prepared(
+      std::vector<vector_index_metadata_store::prepared_change_row> *rows)
+      override {
+    return vector_index_metadata_store::load_prepared(rows);
+  }
+
+  bool save_prepared(
+      const std::vector<vector_index_metadata_store::prepared_change_row> &rows)
+      override {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    return vector_index_metadata_store::save_prepared(rows);
+  }
+
+  bool quarantine_prepared() override {
+    return vector_index_metadata_store::quarantine_prepared_store();
+  }
+};
+
+file_truth_store g_file_store;
+mysql_truth_store g_mysql_store;
+vector_index_truth_store::truth_store *g_override_store = nullptr;
+
+}  // namespace
+
+namespace vector_index_truth_store::detail {
+
+truth_store *selected_backend() {
+  if (g_override_store != nullptr) return g_override_store;
+  if (current_thd != nullptr &&
+      current_thd->system_thread == SYSTEM_THREAD_SERVER_INITIALIZE) {
+    return &g_file_store;
+  }
+  if (current_thd != nullptr &&
+      dd::bootstrap::DD_bootstrap_ctx::instance().get_stage() <
+          dd::bootstrap::Stage::FINISHED) {
+    return &g_file_store;
+  }
+  if (use_file_truth_store_backend()) return &g_file_store;
+  return &g_mysql_store;
+}
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+void set_override_store_for_testing(truth_store *store) {
+  g_override_store = store;
+}
+
+void reset_override_store_for_testing() { g_override_store = nullptr; }
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+
+bool bootstrap_initialize_mysql_store(THD *thd) {
+  if (g_override_store != nullptr) return true;
+  if (use_file_truth_store_backend()) return true;
+  return g_mysql_store.bootstrap_initialize(thd);
+}
+
+void shutdown_mysql_store() {
+  if (g_override_store != nullptr) return;
+  if (use_file_truth_store_backend()) return;
+  g_mysql_store.shutdown();
+}
+
+bool internal_sql_active() { return g_internal_sql_active; }
+
+bool internal_truth_store_access_allowed(const THD *thd) {
+  return thd != nullptr && thd->is_system_thread() && g_internal_sql_active;
+}
+
+bool is_truth_store_table_name_impl(const char *schema_name,
+                                    const char *table_name) {
+  return is_truth_store_table_name(schema_name, table_name);
+}
+
+bool mysql_debug_get_artifact(const std::string &artifact_name,
+                              std::string *payload) {
+  if (payload == nullptr || !is_valid_artifact_name(artifact_name.c_str()))
+    return false;
+  if (use_file_truth_store_backend()) return false;
+  return g_mysql_store.debug_get_artifact(artifact_name.c_str(), payload);
+}
+
+bool mysql_debug_set_artifact(const std::string &artifact_name,
+                              const std::string &payload) {
+  if (!is_valid_artifact_name(artifact_name.c_str())) return false;
+  if (use_file_truth_store_backend()) return false;
+  return g_mysql_store.debug_set_artifact(artifact_name.c_str(), payload);
+}
+
+bool mysql_debug_delete_artifact(const std::string &artifact_name) {
+  if (!is_valid_artifact_name(artifact_name.c_str())) return false;
+  if (use_file_truth_store_backend()) return false;
+  return g_mysql_store.debug_delete_artifact(artifact_name.c_str());
+}
+
+std::string sql_string_literal_impl(const char *text) {
+  return sql_string_literal(text);
+}
+
+bool decode_hex_bytes_impl(const std::string &encoded, std::string *decoded) {
+  return decode_hex_bytes(encoded, decoded);
+}
+
+bool internal_execute_impl(const std::string &sql, unsigned int *last_errno,
+                           std::string *last_error) {
+  internal_sql_session session;
+  return session.execute(sql, last_errno, last_error);
+}
+
+bool internal_query_scalar_string_impl(const std::string &sql,
+                                       std::string *value, bool *found) {
+  internal_sql_session session;
+  return session.query_scalar_string(sql, value, found);
+}
+
+bool deserialize_quarantine_entries_impl(
+    const std::string &payload,
+    std::vector<std::pair<std::string, std::string>> *entries) {
+  return deserialize_quarantine_entries(payload, entries);
+}
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool split_tab_fields_impl(const std::string &line,
+                           std::vector<std::string> *fields) {
+  return split_tab_fields(line, fields);
+}
+
+bool serialize_quarantine_entries_impl(
+    const std::vector<std::pair<std::string, std::string>> &entries,
+    std::string *payload) {
+  return serialize_quarantine_entries(entries, payload);
+}
+
+void upsert_quarantine_entry_impl(
+    std::vector<std::pair<std::string, std::string>> *entries,
+    const std::string &artifact_name, const std::string &payload) {
+  upsert_quarantine_entry(entries, artifact_name, payload);
+}
+
+void record_artifact_persist_event_impl(const char *backend_name,
+                                        const char *artifact_name,
+                                        size_t row_count, size_t payload_bytes,
+                                        uint64_t serialize_ms, uint64_t save_ms,
+                                        bool ok) {
+  record_artifact_persist_event(backend_name, artifact_name, row_count,
+                                payload_bytes, serialize_ms, save_ms, ok);
+}
+
+bool use_file_truth_store_backend_impl() { return use_file_truth_store_backend(); }
+
+bool vector_to_truth_payload_impl(const vector_index::vector_data &vector,
+                                  uint32_t *dimension, std::string *payload) {
+  return vector_to_truth_payload(vector, dimension, payload);
+}
+
+bool truth_payload_to_vector_impl(uint32_t dimension,
+                                  const std::string &payload,
+                                  vector_index::vector_data *vector) {
+  return truth_payload_to_vector(dimension, payload, vector);
+}
+
+bool encode_truth_op_impl(vector_index_metadata_store::change_op op,
+                          uint8_t *value) {
+  return encode_truth_op(op, value);
+}
+
+bool decode_truth_op_impl(uint8_t value,
+                          vector_index_metadata_store::change_op *op) {
+  return decode_truth_op(value, op);
+}
+
+bool is_row_artifact_name_impl(const char *artifact_name) {
+  return is_row_artifact_name(artifact_name);
+}
+
+bool is_valid_artifact_name_impl(const char *artifact_name) {
+  return is_valid_artifact_name(artifact_name);
+}
+
+innodb_vector_truth_store::committed_row make_debug_committed_row_impl(
+    const std::string &payload) {
+  return make_debug_committed_row(payload);
+}
+
+innodb_vector_truth_store::change_log_row make_debug_change_log_row_impl(
+    const std::string &payload) {
+  return make_debug_change_log_row(payload);
+}
+
+innodb_vector_truth_store::prepared_change_row make_debug_prepared_row_impl(
+    const std::string &payload) {
+  return make_debug_prepared_row(payload);
+}
+
+bool extract_debug_payload_impl(
+    const std::vector<innodb_vector_truth_store::committed_row> &rows,
+    std::string *payload) {
+  return extract_debug_payload(rows, payload);
+}
+
+bool extract_debug_payload_impl(
+    const std::vector<innodb_vector_truth_store::change_log_row> &rows,
+    std::string *payload) {
+  return extract_debug_payload(rows, payload);
+}
+
+bool extract_debug_payload_impl(
+    const std::vector<innodb_vector_truth_store::prepared_change_row> &rows,
+    std::string *payload) {
+  return extract_debug_payload(rows, payload);
+}
+
+bool to_innodb_committed_rows_impl(
+    const std::vector<vector_index_metadata_store::committed_row> &rows,
+    std::vector<innodb_vector_truth_store::committed_row> *out) {
+  return to_innodb_committed_rows(rows, out);
+}
+
+bool from_innodb_committed_rows_impl(
+    const std::vector<innodb_vector_truth_store::committed_row> &rows,
+    std::vector<vector_index_metadata_store::committed_row> *out) {
+  return from_innodb_committed_rows(rows, out);
+}
+
+bool to_innodb_change_log_rows_impl(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows,
+    std::vector<innodb_vector_truth_store::change_log_row> *out) {
+  return to_innodb_change_log_rows(rows, out);
+}
+
+bool from_innodb_change_log_rows_impl(
+    const std::vector<innodb_vector_truth_store::change_log_row> &rows,
+    std::vector<vector_index_metadata_store::change_log_row> *out) {
+  return from_innodb_change_log_rows(rows, out);
+}
+
+bool to_innodb_prepared_rows_impl(
+    const std::vector<vector_index_metadata_store::prepared_change_row> &rows,
+    std::vector<innodb_vector_truth_store::prepared_change_row> *out) {
+  return to_innodb_prepared_rows(rows, out);
+}
+
+bool from_innodb_prepared_rows_impl(
+    const std::vector<innodb_vector_truth_store::prepared_change_row> &rows,
+    std::vector<vector_index_metadata_store::prepared_change_row> *out) {
+  return from_innodb_prepared_rows(rows, out);
+}
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+
+}  // namespace vector_index_truth_store::detail
+
+namespace vector_index_truth_store {
+
+}  // namespace vector_index_truth_store

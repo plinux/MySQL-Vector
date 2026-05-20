@@ -1044,6 +1044,20 @@ struct dict_sys_t {
   dict_table_t *ddl_log;
   /** Permanent handle to mysql.innodb_dynamic_metadata */
   dict_table_t *dynamic_metadata;
+#ifdef HAVE_VECTOR_INDEX
+  /** Permanent handle to mysql.vector_index_truth_metadata */
+  dict_table_t *vector_truth_metadata;
+  /** Permanent handle to mysql.vector_index_truth_committed */
+  dict_table_t *vector_truth_committed;
+  /** Permanent handle to mysql.vector_index_truth_manifest */
+  dict_table_t *vector_truth_manifest;
+  /** Permanent handle to mysql.vector_index_truth_changelog */
+  dict_table_t *vector_truth_changelog;
+  /** Permanent handle to mysql.vector_index_truth_prepared */
+  dict_table_t *vector_truth_prepared;
+  /** Permanent handle to mysql.vector_index_truth_store_quarantine */
+  dict_table_t *vector_truth_store_quarantine;
+#endif
   using Table_LRU_list_base = UT_LIST_BASE_NODE_T(dict_table_t, table_LRU);
 
   /** List of tables that can be evicted from the cache */
