@@ -1,0 +1,62 @@
+--echo #
+--echo # Variable name : vector_hnsw_build_threads
+--echo # Persistence   : SET PERSIST / RESET PERSIST
+--echo #
+
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+--source include/not_windows.inc
+--source include/have_binlog_format_row.inc
+
+--let $MYSQLD_DATADIR= `select @@datadir;`
+--let $assert_escape= 1
+
+--echo # HNSW build-thread variable is registered.
+SELECT VARIABLE_NAME
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vector_hnsw_build_threads';
+
+--let $assert_text= Expect vector_hnsw_build_threads to be registered.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.global_variables WHERE VARIABLE_NAME = 'vector_hnsw_build_threads', count, 1] = 1
+--source include/assert.inc
+
+--let $assert_text= Expect vector_hnsw_build_threads not to be persisted before SET PERSIST.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_hnsw_build_threads', count, 1] = 0
+--source include/assert.inc
+
+--echo # Persist vector_hnsw_build_threads.
+SET PERSIST vector_hnsw_build_threads=1;
+
+--let $assert_text= Expect vector_hnsw_build_threads to be persisted before restart.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_hnsw_build_threads', count, 1] = 1
+--source include/assert.inc
+
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME = 'vector_hnsw_build_threads';
+
+--echo # Restart and verify vector_hnsw_build_threads survives.
+--source include/restart_mysqld.inc
+--source include/wait_until_connected_again.inc
+
+--let $assert_text= Expect vector_hnsw_build_threads to be persisted after restart.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_hnsw_build_threads', count, 1] = 1
+--source include/assert.inc
+
+SELECT vi.VARIABLE_NAME, vi.VARIABLE_SOURCE, pv.VARIABLE_VALUE, gv.VARIABLE_VALUE
+FROM performance_schema.variables_info vi
+JOIN performance_schema.persisted_variables pv
+  ON vi.VARIABLE_NAME=pv.VARIABLE_NAME
+JOIN performance_schema.global_variables gv
+  ON vi.VARIABLE_NAME=gv.VARIABLE_NAME
+WHERE vi.VARIABLE_NAME = 'vector_hnsw_build_threads';
+
+--echo # Reset persisted vector_hnsw_build_threads.
+RESET PERSIST IF EXISTS vector_hnsw_build_threads;
+
+--let $assert_text= Expect vector_hnsw_build_threads persistence to be reset.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_hnsw_build_threads', count, 1] = 0
+--source include/assert.inc
+
+--remove_file $MYSQLD_DATADIR/mysqld-auto.cnf
+--source include/restart_mysqld.inc

@@ -136,6 +136,10 @@
 #include "sql/table_cache.h"  // Table_cache_manager
 #include "sql/transaction.h"  // trans_commit_stmt
 #include "sql/transaction_info.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_build_options.h"
+#include "sql/vector/vector_index_limits.h"
+#endif
 #include "sql/xa.h"
 #include "template_utils.h"  // pointer_cast
 #include "thr_lock.h"
@@ -6834,6 +6838,43 @@ static Sys_var_bool Sys_validate_user_plugins(
     "to user accounts. ",
     READ_ONLY NOT_VISIBLE GLOBAL_VAR(validate_user_plugins), CMD_LINE(OPT_ARG),
     DEFAULT(true), NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+#ifdef HAVE_VECTOR_INDEX
+static bool check_vector_build_threads(sys_var *self, THD *, set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const longlong signed_value = var->value->val_int();
+  if (!var->value->unsigned_flag && signed_value < 0) {
+    const std::string value = std::to_string(signed_value);
+    my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value.c_str());
+    return true;
+  }
+
+  const ulonglong value = var->value->val_uint();
+  if (value <= vector_index::k_max_build_threads) return false;
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static bool check_vector_hnsw_build_threads(sys_var *self, THD *thd,
+                                            set_var *var) {
+  if (!check_vector_build_threads(self, thd, var))
+    return false;
+  return true;
+}
+
+static Sys_var_ulong Sys_vector_hnsw_build_threads(
+    "vector_hnsw_build_threads",
+    "Default worker count for hnswlib vector index bulk build and rebuild. "
+    "Use 0 for automatic hardware-thread based sizing.",
+    GLOBAL_VAR(opt_vector_hnsw_build_threads), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, vector_index::k_max_build_threads), DEFAULT(0),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_hnsw_build_threads));
+#endif
 
 static Sys_var_enum Sys_block_encryption_mode(
     "block_encryption_mode", "mode for AES_ENCRYPT/AES_DECRYPT",

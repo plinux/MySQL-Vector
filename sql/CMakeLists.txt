@@ -644,6 +644,7 @@ SET(SQL_SHARED_SOURCES
 IF(HAVE_VECTOR_INDEX)
   LIST(APPEND SQL_SHARED_SOURCES
     vector/vector_index_backend.cc
+    vector/vector_index_backend_hnswlib.cc
     vector/vector_index_build_options.cc
     vector/vector_index_diagnostics.cc
     vector/vector_index_identity.cc
@@ -969,6 +970,7 @@ ADD_DEPENDENCIES(sql_main GenDigestServerSource)
 ADD_DEPENDENCIES(sql_main GenBootstrapPriv)
 ADD_DEPENDENCIES(sql_main GenSysSchema)
 TARGET_LINK_LIBRARIES(sql_main extra::unordered_dense)
+MYSQL_VECTOR_LINK_BACKENDS(sql_main)
 
 TARGET_LINK_LIBRARIES(sql_main ${MYSQLD_STATIC_PLUGIN_LIBS}
   mysql_server_component_services mysys strings vio

@@ -1,0 +1,36 @@
+#
+# Variable name : vector_hnsw_build_threads
+# Persistence   : SET PERSIST / RESET PERSIST
+#
+# HNSW build-thread variable is registered.
+SELECT VARIABLE_NAME
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vector_hnsw_build_threads';
+VARIABLE_NAME
+vector_hnsw_build_threads
+include/assert.inc [Expect vector_hnsw_build_threads to be registered.]
+include/assert.inc [Expect vector_hnsw_build_threads not to be persisted before SET PERSIST.]
+# Persist vector_hnsw_build_threads.
+SET PERSIST vector_hnsw_build_threads=1;
+include/assert.inc [Expect vector_hnsw_build_threads to be persisted before restart.]
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME = 'vector_hnsw_build_threads';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_hnsw_build_threads	1
+# Restart and verify vector_hnsw_build_threads survives.
+# restart
+include/assert.inc [Expect vector_hnsw_build_threads to be persisted after restart.]
+SELECT vi.VARIABLE_NAME, vi.VARIABLE_SOURCE, pv.VARIABLE_VALUE, gv.VARIABLE_VALUE
+FROM performance_schema.variables_info vi
+JOIN performance_schema.persisted_variables pv
+ON vi.VARIABLE_NAME=pv.VARIABLE_NAME
+JOIN performance_schema.global_variables gv
+ON vi.VARIABLE_NAME=gv.VARIABLE_NAME
+WHERE vi.VARIABLE_NAME = 'vector_hnsw_build_threads';
+VARIABLE_NAME	VARIABLE_SOURCE	VARIABLE_VALUE	VARIABLE_VALUE
+vector_hnsw_build_threads	PERSISTED	1	1
+# Reset persisted vector_hnsw_build_threads.
+RESET PERSIST IF EXISTS vector_hnsw_build_threads;
+include/assert.inc [Expect vector_hnsw_build_threads persistence to be reset.]
+# restart
