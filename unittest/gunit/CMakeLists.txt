@@ -312,6 +312,7 @@ IF(HAVE_VECTOR_INDEX)
   LIST(APPEND SERVER_TESTS
     vector_index_backend
     vector_index_diagnostics
+    vector_index_metadata_store
     vector_status
     vector_utils
   )
