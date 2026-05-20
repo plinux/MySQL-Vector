@@ -1257,9 +1257,39 @@ class Xa_state_list {
                         Xa_state_list::allocator>;
   using iterator = std::map<XID, enum_ha_recover_xa_state, std::less<XID>,
                             Xa_state_list::allocator>::iterator;
+#ifdef HAVE_VECTOR_INDEX
+  struct instantiation_tuple {
+    instantiation_tuple();
+    instantiation_tuple(std::unique_ptr<MEM_ROOT> mem_root_arg,
+                        std::unique_ptr<Xa_state_list::allocator> allocator_arg,
+                        std::unique_ptr<Xa_state_list::list> list_arg,
+                        std::unique_ptr<Xa_state_list> xa_list_arg);
+    instantiation_tuple(instantiation_tuple &&) noexcept;
+    instantiation_tuple &operator=(instantiation_tuple &&) noexcept;
+    ~instantiation_tuple();
+
+    instantiation_tuple(const instantiation_tuple &) = delete;
+    instantiation_tuple &operator=(const instantiation_tuple &) = delete;
+
+    Xa_state_list *get() const { return xa_list.get(); }
+
+    /*
+      Lifetime is intentional: members are destroyed in reverse declaration
+      order, so Xa_state_list and its MEM_ROOT-backed map die before the
+      MEM_ROOT allocator storage. Do not replace this with std::tuple; tuple
+      element destruction order differs between standard libraries and can
+      free MEM_ROOT before the map on libstdc++.
+    */
+    std::unique_ptr<MEM_ROOT> mem_root;
+    std::unique_ptr<Xa_state_list::allocator> allocator;
+    std::unique_ptr<Xa_state_list::list> list;
+    std::unique_ptr<Xa_state_list> xa_list;
+  };
+#else
   using instantiation_tuple = std::tuple<
       std::unique_ptr<MEM_ROOT>, std::unique_ptr<Xa_state_list::allocator>,
       std::unique_ptr<Xa_state_list::list>, std::unique_ptr<Xa_state_list>>;
+#endif
 
   /**
     Class constructor.

@@ -307,6 +307,15 @@ SET(SERVER_TESTS
   xid_extract
   log_event_status_size
 )
+
+IF(HAVE_VECTOR_INDEX)
+  LIST(APPEND SERVER_TESTS
+    vector_index_diagnostics
+    vector_status
+    vector_utils
+  )
+ENDIF()
+
 # Endless loop in FatalSignalDeathTest
 IF(LINUX_ALPINE)
   LIST(REMOVE_ITEM SERVER_TESTS segfault)
@@ -373,6 +382,9 @@ MYSQL_ADD_EXECUTABLE(merge_large_tests-t ${ALL_LARGE_TESTS}
   EXCLUDE_FROM_GCOV
   LINK_LIBRARIES gunit_large server_unittest_library
 )
+IF(HAVE_VECTOR_INDEX)
+  MYSQL_VECTOR_LINK_BACKEND_TESTS(merge_large_tests-t)
+ENDIF()
 
 FOREACH(test ${TESTS})
   MYSQL_ADD_EXECUTABLE(${test}-t ${test}-t.cc
@@ -419,6 +431,9 @@ FOREACH(test ${SERVER_TESTS})
     SKIP_INSTALL
     ADD_GCOV_TEST ${test}
   )
+  IF(test MATCHES "^vector_index_backend$")
+    MYSQL_VECTOR_LINK_BACKEND_TESTS(${test}-t)
+  ENDIF()
 ENDFOREACH()
 
 ADD_LIBRARY(rpl_channel_credentials_lib STATIC

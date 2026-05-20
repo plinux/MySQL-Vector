@@ -635,6 +635,21 @@ SET(SQL_SHARED_SOURCES
   daemon_proxy_keyring/daemon_proxy_keyring.cc
   )
 
+IF(HAVE_VECTOR_INDEX)
+  LIST(APPEND SQL_SHARED_SOURCES
+    vector/vector_index_diagnostics.cc
+    vector/vector_index_identity.cc
+    vector/vector_status.cc
+    vector/vector_utils.cc
+  )
+ENDIF()
+
+IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
+  MY_ADD_COMPILE_DEFINITIONS(
+    vector/vector_index_diagnostics.cc
+    COMPILE_DEFINITIONS EXTRA_CODE_FOR_UNIT_TESTING)
+ENDIF()
+
 IF(BUILD_IS_SINGLE_CONFIG)
   GET_PROPERTY(CWD_DEFINITIONS DIRECTORY PROPERTY COMPILE_DEFINITIONS)
   IF(NOT CMAKE_CXX_FLAGS MATCHES "DENABLED_DEBUG_SYNC" AND

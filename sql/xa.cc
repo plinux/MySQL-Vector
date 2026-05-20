@@ -274,14 +274,23 @@ int ha_recover(Xid_commit_list *commit_list, Xa_state_list *xa_list) {
                   tc_heuristic_recover == TC_HEURISTIC_NOT_USED);
   info.list = nullptr;
 
+#ifdef HAVE_VECTOR_INDEX
+  Xa_state_list::instantiation_tuple external_xids;
+#else
   std::unique_ptr<MEM_ROOT> mem_root{nullptr};
   std::unique_ptr<Xa_state_list::allocator> map_alloc{nullptr};
   std::unique_ptr<Xa_state_list::list> xid_map{nullptr};
   std::unique_ptr<Xa_state_list> external_xids{nullptr};
+#endif
   if (xa_list == nullptr) {
+#ifdef HAVE_VECTOR_INDEX
+    external_xids = Xa_state_list::new_instance();
+    xa_list = external_xids.get();
+#else
     std::tie(mem_root, map_alloc, xid_map, external_xids) =
         Xa_state_list::new_instance();
     xa_list = external_xids.get();
+#endif
   }
   info.xa_list = xa_list;
 

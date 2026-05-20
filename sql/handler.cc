@@ -8862,6 +8862,29 @@ bool is_index_access_error(int error) {
 Xa_state_list::Xa_state_list(Xa_state_list::list &populated_by_tc)
     : m_underlying{populated_by_tc} {}
 
+#ifdef HAVE_VECTOR_INDEX
+Xa_state_list::instantiation_tuple::instantiation_tuple() = default;
+
+Xa_state_list::instantiation_tuple::instantiation_tuple(
+    std::unique_ptr<MEM_ROOT> mem_root_arg,
+    std::unique_ptr<Xa_state_list::allocator> allocator_arg,
+    std::unique_ptr<Xa_state_list::list> list_arg,
+    std::unique_ptr<Xa_state_list> xa_list_arg)
+    : mem_root(std::move(mem_root_arg)),
+      allocator(std::move(allocator_arg)),
+      list(std::move(list_arg)),
+      xa_list(std::move(xa_list_arg)) {}
+
+Xa_state_list::instantiation_tuple::instantiation_tuple(
+    instantiation_tuple &&) noexcept = default;
+
+Xa_state_list::instantiation_tuple &
+Xa_state_list::instantiation_tuple::operator=(instantiation_tuple &&) noexcept =
+    default;
+
+Xa_state_list::instantiation_tuple::~instantiation_tuple() = default;
+#endif
+
 enum_ha_recover_xa_state Xa_state_list::find(XID const &to_find) {
   auto found = this->m_underlying.find(to_find);
   if (found != this->m_underlying.end()) return found->second;
@@ -8906,9 +8929,12 @@ Xa_state_list::instantiation_tuple Xa_state_list::new_instance() {
   auto map_alloc = std::make_unique<Xa_state_list::allocator>(mem_root.get());
   auto xid_map = std::make_unique<Xa_state_list::list>(*map_alloc.get());
   auto xa_list = std::make_unique<Xa_state_list>(*xid_map.get());
-  return std::make_tuple<
-      std::unique_ptr<MEM_ROOT>, std::unique_ptr<Xa_state_list::allocator>,
-      std::unique_ptr<Xa_state_list::list>, std::unique_ptr<Xa_state_list>>(
+#ifdef HAVE_VECTOR_INDEX
+  return Xa_state_list::instantiation_tuple(
       std::move(mem_root), std::move(map_alloc), std::move(xid_map),
       std::move(xa_list));
+#else
+  return std::make_tuple(std::move(mem_root), std::move(map_alloc),
+                         std::move(xid_map), std::move(xa_list));
+#endif
 }
