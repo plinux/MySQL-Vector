@@ -313,6 +313,8 @@ IF(HAVE_VECTOR_INDEX)
     vector_index_backend
     vector_index_diagnostics
     vector_index_metadata_store
+    vector_index_service
+    vector_mapped_search
     vector_status
     vector_index_truth_store
     vector_utils
@@ -434,7 +436,7 @@ FOREACH(test ${SERVER_TESTS})
     SKIP_INSTALL
     ADD_GCOV_TEST ${test}
   )
-  IF(test MATCHES "^vector_index_backend$")
+  IF(test MATCHES "^vector_index_backend$|^vector_index_service$")
     MYSQL_VECTOR_LINK_BACKEND_TESTS(${test}-t)
   ENDIF()
 ENDFOREACH()
