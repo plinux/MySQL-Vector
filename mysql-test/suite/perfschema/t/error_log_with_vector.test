@@ -1,8 +1,8 @@
 --echo # WL#13681: Make error-log available for queries from a connection
 --echo
 
+--source include/have_vector_index.inc
 --source include/not_parallel.inc
---source include/have_no_vector_index.inc
 
 let $LOG_VERBOSE= `select @@global.log_error_verbosity`;
 SET @@global.log_error_verbosity=3;
@@ -261,6 +261,7 @@ SELECT prio,error_code,subsystem,JSON_EXTRACT(data,'$.err_symbol')
 SELECT logged, prio, error_code, subsystem, data
   FROM performance_schema.error_log
  WHERE logged<@startup
+   AND LEFT(data,1)='{'
    AND JSON_EXTRACT(data,'$.Azundris')="was here"
  ORDER BY logged;
 
@@ -269,6 +270,7 @@ SELECT logged, prio, error_code, subsystem, data
 SELECT logged>"2020-02-24 12:34:56.123456", prio, error_code, subsystem, data
   FROM performance_schema.error_log
  WHERE logged<@startup
+   AND LEFT(data,1)='{'
    AND JSON_EXTRACT(data,'$.Azundris')="auto-generate timestamp"
  ORDER BY logged;
 
@@ -289,7 +291,7 @@ DELETE FROM mysql.component
 --echo # but not --log-error=... (so when running from mtr,
 --echo # errors will be logged to stderr).
 --echo
- 
+
 --echo
 --echo # Restarting server with --log-error-verbosity=1
 --let restart_parameters="restart: --log-error-verbosity=1"
@@ -333,7 +335,7 @@ SELECT COUNT(*)=0
 --echo # log-sink is used, previous logs can be read).
 --echo
 
---echo 
+--echo
 --echo # verbosity=1
 --let LOG_FILE_V1=$LOG_FILE_JSON
 --let restart_parameters="restart: --log-error=$LOG_FILE_V1 --log-error-verbosity=1"
@@ -410,7 +412,7 @@ SELECT error_code
 
 
 
---echo 
+--echo
 --echo # Likewise, show that log_filter_dragnet affects the table.
 INSTALL COMPONENT "file://component_log_filter_dragnet";
 # previously MY-011300 - ER_XPLUGIN_LISTENER_SETUP_FAILED
@@ -447,7 +449,7 @@ SELECT *
 RESET PERSIST `dragnet.log_error_filter_rules`;
 SET @@global.log_error_services=DEFAULT;
 
---echo 
+--echo
 --echo # PERSIST + JSON
 
 SET PERSIST log_error_verbosity=1;
@@ -487,7 +489,7 @@ RESET PERSIST log_error_suppression_list;
 RESET PERSIST log_error_services;
 SET @@global.log_error_services=DEFAULT;
 
---echo 
+--echo
 --echo # RENAME & DROP Error Expected
 
 --error ER_DBACCESS_DENIED_ERROR

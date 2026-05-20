@@ -1,0 +1,51 @@
+#
+# WL#vector-v1: runtime parameter updates persist index metadata
+#
+SELECT VEC_INDEX_CREATE('idx_runtime_param', 2, 'COSINE', 'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_runtime_param', 2, 'COSINE', 'MEMORY', 'HNSWLIB')
+1
+SELECT VEC_INDEX_UPSERT('idx_runtime_param', 1, VEC_FROMTEXT('[1,0]'));
+VEC_INDEX_UPSERT('idx_runtime_param', 1, VEC_FROMTEXT('[1,0]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_runtime_param', 2, VEC_FROMTEXT('[0,1]'));
+VEC_INDEX_UPSERT('idx_runtime_param', 2, VEC_FROMTEXT('[0,1]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_runtime_param', VEC_FROMTEXT('[1,0]'), 1);
+VEC_INDEX_SEARCH('idx_runtime_param', VEC_FROMTEXT('[1,0]'), 1)
+[1]
+SET @persist_before = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_persist_requests');
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_runtime_param', 96);
+VEC_INDEX_SET_SEARCH_EF('idx_runtime_param', 96)
+1
+SET @persist_after = (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_truth_store_persist_requests');
+SELECT @persist_after > @persist_before;
+@persist_after > @persist_before
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_runtime_param'), '$.search_ef');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_runtime_param'), '$.search_ef')
+96
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_runtime_param'), '$.committed_entry_count');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_runtime_param'), '$.committed_entry_count')
+2
+SELECT VEC_INDEX_SEARCH('idx_runtime_param', VEC_FROMTEXT('[1,0]'), 1);
+VEC_INDEX_SEARCH('idx_runtime_param', VEC_FROMTEXT('[1,0]'), 1)
+[1]
+# restart
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_runtime_param'), '$.search_ef');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_runtime_param'), '$.search_ef')
+96
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_runtime_param'), '$.committed_entry_count');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_runtime_param'), '$.committed_entry_count')
+2
+SELECT VEC_INDEX_SEARCH('idx_runtime_param', VEC_FROMTEXT('[1,0]'), 1);
+VEC_INDEX_SEARCH('idx_runtime_param', VEC_FROMTEXT('[1,0]'), 1)
+[1]
+SELECT VEC_INDEX_DROP('idx_runtime_param');
+VEC_INDEX_DROP('idx_runtime_param')
+1

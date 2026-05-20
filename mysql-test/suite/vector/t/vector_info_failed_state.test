@@ -1,0 +1,19 @@
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: VEC_INDEX_INFO failed lifecycle state
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_info_failed', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_info_failed', 1, VEC_FROMTEXT('[1,2]'));
+
+SET @meta_hex = VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+SET @meta_failed =
+  HEX(REPLACE(UNHEX(@meta_hex), 'ready', 'failed'));
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @meta_failed);
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_INFO('idx_info_failed');
+SELECT VEC_INDEX_DROP('idx_info_failed');

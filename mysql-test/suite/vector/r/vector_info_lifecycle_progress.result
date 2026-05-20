@@ -1,0 +1,32 @@
+#
+# WL#vector-v1: VEC_INDEX_INFO lifecycle progress states
+#
+SELECT VEC_INDEX_CREATE('idx_info_progress', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_info_progress', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_info_progress', 1, VEC_FROMTEXT('[1,2]'));
+VEC_INDEX_UPSERT('idx_info_progress', 1, VEC_FROMTEXT('[1,2]'))
+1
+SET @meta_hex = VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+SET @meta_rebuilding =
+HEX(REPLACE(UNHEX(@meta_hex), 'ready', 'rebuilding'));
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @meta_rebuilding);
+VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @meta_rebuilding)
+1
+# restart
+SELECT VEC_INDEX_INFO('idx_info_progress');
+VEC_INDEX_INFO('idx_info_progress')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"rebuilding","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":0,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":50,"recover_progress":0,"entry_count":1,"committed_entry_count":1}
+SET @meta_hex = VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+SET @meta_recovering =
+HEX(REPLACE(UNHEX(@meta_hex), 'rebuilding', 'recovering'));
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @meta_recovering);
+VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @meta_recovering)
+1
+# restart
+SELECT VEC_INDEX_INFO('idx_info_progress');
+VEC_INDEX_INFO('idx_info_progress')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"recovering","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":0,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":0,"recover_progress":50,"entry_count":1,"committed_entry_count":1}
+SELECT VEC_INDEX_DROP('idx_info_progress');
+VEC_INDEX_DROP('idx_info_progress')
+1

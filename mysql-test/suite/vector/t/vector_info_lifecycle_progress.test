@@ -1,0 +1,28 @@
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: VEC_INDEX_INFO lifecycle progress states
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_info_progress', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_info_progress', 1, VEC_FROMTEXT('[1,2]'));
+
+SET @meta_hex = VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+SET @meta_rebuilding =
+  HEX(REPLACE(UNHEX(@meta_hex), 'ready', 'rebuilding'));
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @meta_rebuilding);
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_INFO('idx_info_progress');
+
+SET @meta_hex = VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+SET @meta_recovering =
+  HEX(REPLACE(UNHEX(@meta_hex), 'rebuilding', 'recovering'));
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @meta_recovering);
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_INFO('idx_info_progress');
+SELECT VEC_INDEX_DROP('idx_info_progress');
