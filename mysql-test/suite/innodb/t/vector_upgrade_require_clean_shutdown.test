@@ -1,0 +1,74 @@
+--source include/not_crashrep.inc
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+--source include/have_innodb_16k.inc
+
+--let $lctn= query_get_value(SHOW VARIABLES LIKE 'lower_case_table_names', Value, 1)
+
+--let $MYSQLD_DATADIR1= $MYSQL_TMP_DIR/data_80011
+--let $ZIP_FILE= $MYSQLTEST_VARDIR/std_data/upgrade/data_80011.zip
+if ($lctn == 1)
+{
+  --let $MYSQLD_DATADIR1= $MYSQL_TMP_DIR/data_80011_ci
+  --let $ZIP_FILE= $MYSQLTEST_VARDIR/std_data/upgrade/data_80011_ci_win.zip
+}
+if ($lctn == 2)
+{
+  --let $MYSQLD_DATADIR1= $MYSQL_TMP_DIR/data_80011_ci
+  --let $ZIP_FILE= $MYSQLTEST_VARDIR/std_data/upgrade/data_80011_ci_mac.zip
+}
+
+--let $MYSQLD_ERR_LOG= $MYSQLTEST_VARDIR/log/vector_upgrade_require_clean_shutdown.err
+--let SEARCH_FILE= $MYSQLD_ERR_LOG
+
+--echo ############################################################################################
+--echo # Verify vector DD upgrade clean-shutdown safeguard.
+--echo ############################################################################################
+
+--echo # Stop DB server created by MTR.
+--let $shutdown_server_timeout = 300
+--source include/shutdown_mysqld.inc
+
+--echo # Unzip an 8.0.11 data directory.
+--copy_file $ZIP_FILE $MYSQL_TMP_DIR/data_80011.zip
+--file_exists $MYSQL_TMP_DIR/data_80011.zip
+--exec unzip -qo $MYSQL_TMP_DIR/data_80011.zip -d $MYSQL_TMP_DIR
+
+--echo # Crash the old DD startup after redo recovery and before DD upgrade.
+--error 137,3
+--exec $MYSQLD --no-defaults --secure-file-priv="" --datadir=$MYSQLD_DATADIR1 --innodb-force-recovery-crash=3 --log-error=$MYSQLD_ERR_LOG --log-error-verbosity=3 > $MYSQLD_ERR_LOG 2>&1
+
+let SEARCH_PATTERN = innodb_force_recovery_crash=3;
+--source include/search_pattern.inc
+
+--remove_file $MYSQLD_ERR_LOG
+
+--echo # Restart with vector upgrade clean-shutdown guard enabled.
+--error 1
+--exec $MYSQLD --no-defaults --secure-file-priv="" --datadir=$MYSQLD_DATADIR1 --innodb-vector-upgrade-require-clean-shutdown=ON --log-error=$MYSQLD_ERR_LOG --log-error-verbosity=3 > $MYSQLD_ERR_LOG 2>&1
+
+--echo # Verify...
+
+let SEARCH_PATTERN = Database was not shutdown normally;
+--source include/search_pattern.inc
+
+let SEARCH_PATTERN = Starting crash recovery;
+--source include/search_pattern.inc
+
+let SEARCH_PATTERN = Applying a batch of.*redo log records;
+--source include/search_pattern.inc
+
+let SEARCH_PATTERN = Cannot upgrade to the vector-enabled data dictionary after InnoDB redo recovery;
+--source include/search_pattern.inc
+
+let SEARCH_PATTERN = Data Dictionary initialization failed;
+--source include/search_pattern.inc
+
+--echo ############################################################################################
+--echo # Cleanup...
+--force-rmdir $MYSQLD_DATADIR1
+--remove_file $MYSQL_TMP_DIR/data_80011.zip
+--remove_file $MYSQLD_ERR_LOG
+
+--let $restart_parameters = restart:
+--source include/start_mysqld.inc

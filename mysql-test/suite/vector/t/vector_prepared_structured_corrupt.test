@@ -1,0 +1,23 @@
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: quarantine corrupt structured prepared artifact
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_prepared_structured_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_prepared_structured_corrupt', 1, VEC_FROMTEXT('[1,2]'));
+SELECT VEC_INDEX_SEARCH('idx_prepared_structured_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('prepared', '6261640a726f770a');
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared');
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('idx_prepared_structured_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+--replace_column 2 <num>
+SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared');
+
+SELECT VEC_INDEX_DROP('idx_prepared_structured_corrupt');

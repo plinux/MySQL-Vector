@@ -1,0 +1,64 @@
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: direct SQL access to truth-store tables is blocked
+--echo #
+
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SELECT * FROM mysql.vector_index_truth_metadata;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SELECT * FROM mysql.vector_index_truth_committed;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SELECT * FROM mysql.vector_index_truth_manifest;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SELECT * FROM mysql.vector_index_truth_changelog;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SELECT * FROM mysql.vector_index_truth_prepared;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SELECT * FROM mysql.vector_index_truth_store_quarantine;
+
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SHOW CREATE TABLE mysql.vector_index_truth_metadata;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SHOW CREATE TABLE mysql.vector_index_truth_committed;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SHOW CREATE TABLE mysql.vector_index_truth_manifest;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SHOW CREATE TABLE mysql.vector_index_truth_changelog;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SHOW CREATE TABLE mysql.vector_index_truth_prepared;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SHOW CREATE TABLE mysql.vector_index_truth_store_quarantine;
+
+--error ER_NO_SYSTEM_TABLE_ACCESS
+CREATE TABLE test.vector_truth_copy LIKE mysql.vector_index_truth_metadata;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+CREATE TABLE test.vector_truth_copy_committed LIKE mysql.vector_index_truth_committed;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+CREATE TABLE test.vector_truth_copy_manifest LIKE mysql.vector_index_truth_manifest;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+CREATE TABLE test.vector_truth_copy_changelog LIKE mysql.vector_index_truth_changelog;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+CREATE TABLE test.vector_truth_copy_prepared LIKE mysql.vector_index_truth_prepared;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+CREATE TABLE test.vector_truth_copy_quarantine LIKE mysql.vector_index_truth_store_quarantine;
+
+--error ER_NO_SYSTEM_TABLE_ACCESS
+TRUNCATE TABLE mysql.vector_index_truth_metadata;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+TRUNCATE TABLE mysql.vector_index_truth_committed;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+TRUNCATE TABLE mysql.vector_index_truth_manifest;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+TRUNCATE TABLE mysql.vector_index_truth_changelog;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+TRUNCATE TABLE mysql.vector_index_truth_prepared;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+TRUNCATE TABLE mysql.vector_index_truth_store_quarantine;
+
+SELECT VEC_INDEX_CREATE('idx_truth_block', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_truth_block', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX(
+  'metadata', VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata'));
+SELECT VEC_INDEX_DROP('idx_truth_block');

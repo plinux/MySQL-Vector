@@ -1,0 +1,31 @@
+#
+# WL#vector-v1: quarantine corrupt manifest artifact during startup load
+#
+SELECT VEC_INDEX_CREATE('idx_manifest_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_manifest_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_manifest_corrupt', 1, VEC_FROMTEXT('[1,2]'));
+VEC_INDEX_UPSERT('idx_manifest_corrupt', 1, VEC_FROMTEXT('[1,2]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+# restart
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_manifest_corrupt"]
+SELECT VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest');
+VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest')
+
+SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';
+Variable_name	Value
+Vector_metadata_load_failures	<num>
+SHOW GLOBAL STATUS LIKE 'Vector_manifest_load_failures';
+Variable_name	Value
+Vector_manifest_load_failures	<num>
+SELECT VEC_INDEX_DROP('idx_manifest_corrupt');
+VEC_INDEX_DROP('idx_manifest_corrupt')
+1

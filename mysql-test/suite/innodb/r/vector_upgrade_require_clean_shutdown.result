@@ -1,0 +1,17 @@
+############################################################################################
+# Verify vector DD upgrade clean-shutdown safeguard.
+############################################################################################
+# Stop DB server created by MTR.
+# Unzip an 8.0.11 data directory.
+# Crash the old DD startup after redo recovery and before DD upgrade.
+Pattern "innodb_force_recovery_crash=3" found
+# Restart with vector upgrade clean-shutdown guard enabled.
+# Verify...
+Pattern "Database was not shutdown normally" found
+Pattern "Starting crash recovery" found
+Pattern "Applying a batch of.*redo log records" found
+Pattern "Cannot upgrade to the vector-enabled data dictionary after InnoDB redo recovery" found
+Pattern "Data Dictionary initialization failed" found
+############################################################################################
+# Cleanup...
+# restart:

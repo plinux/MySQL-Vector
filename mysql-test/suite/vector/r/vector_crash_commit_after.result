@@ -1,0 +1,26 @@
+#
+# WL#vector-v1: crash after engine commit must not lose vector truth
+#
+DROP TABLE IF EXISTS t_vec_crash_commit_after;
+Warnings:
+Note	1051	Unknown table 'test.t_vec_crash_commit_after'
+CREATE TABLE t_vec_crash_commit_after (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_crash_commit_after(v) WITH (2);
+SET SESSION debug = '+d,crash_commit_after';
+INSERT INTO t_vec_crash_commit_after VALUES (1, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Lost connection to MySQL server during query
+SELECT id, VEC_TOTEXT(v) FROM t_vec_crash_commit_after ORDER BY id;
+id	VEC_TOTEXT(v)
+1	[1,1]
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_crash_commit_after.v', '[1,1]', 8),
+CAST(1 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('test.t_vec_crash_commit_after.v', '[1,1]', 8),
+CAST(1 AS JSON))
+1
+DROP VECTOR INDEX ON t_vec_crash_commit_after(v);
+DROP TABLE t_vec_crash_commit_after;

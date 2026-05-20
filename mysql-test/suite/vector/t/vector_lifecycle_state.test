@@ -1,0 +1,89 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: rebuild precondition failures do not poison lifecycle state
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_lifecycle', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_lifecycle', @txn, 1, '[1,1]');
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_REBUILD('idx_lifecycle');
+
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_state';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_version';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.last_error_code';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.loaded';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.writable';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.rebuild_progress';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.recover_progress';
+
+--source include/restart_mysqld.inc
+
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_state';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_version';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.last_error_code';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.loaded';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.writable';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.rebuild_progress';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.recover_progress';
+
+SELECT VEC_INDEX_RECOVER('idx_lifecycle');
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_state';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_version';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.last_error_code';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.loaded';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.writable';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.rebuild_progress';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.recover_progress';
+
+SELECT VEC_INDEX_CREATE('idx_lifecycle_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+SET @txn_ext = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_lifecycle_ext', @txn_ext, 9, '[9,9]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_REBUILD('idx_lifecycle_ext');
+
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle_ext.lifecycle_state';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.last_error_code';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.loaded';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.writable';
+
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_ext);
+SELECT VEC_INDEX_RECOVER('idx_lifecycle_ext');
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle_ext.lifecycle_state';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.last_error_code';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.loaded';
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.writable';
+
+SELECT VEC_INDEX_DROP('idx_lifecycle_ext');
+SELECT VEC_INDEX_DROP('idx_lifecycle');

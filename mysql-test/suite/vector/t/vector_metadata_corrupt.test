@@ -1,0 +1,48 @@
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: quarantine corrupt metadata artifact during startup load
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_metadata_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_metadata_corrupt', 1, VEC_FROMTEXT('[1,2]'));
+SELECT VEC_INDEX_SEARCH('idx_metadata_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+
+--disable_query_log
+--disable_result_log
+--let $truth_store_backend= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_backend'", Value, 1)
+--let $is_mysql_truth_store= `SELECT '$truth_store_backend' = 'mysql'`
+--enable_result_log
+--enable_query_log
+
+--let $datadir=`SELECT @@datadir`
+if ($is_mysql_truth_store)
+{
+  --disable_query_log
+  --disable_result_log
+  SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', '6261640a726f770a');
+  --enable_result_log
+  --enable_query_log
+}
+if (!$is_mysql_truth_store)
+{
+  --exec printf 'bad\nrow\n' > $datadir/mysql_vector_index/metadata.v1
+}
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_LIST();
+--echo SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+--disable_query_log
+if ($is_mysql_truth_store)
+{
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+}
+if (!$is_mysql_truth_store)
+{
+SELECT '' AS `VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata')`;
+}
+--enable_query_log
+--replace_column 2 <num>
+SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';

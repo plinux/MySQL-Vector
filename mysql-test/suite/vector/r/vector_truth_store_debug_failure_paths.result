@@ -1,0 +1,20 @@
+#
+# WL#vector-v1: truth-store debug helper failure branches
+#
+SELECT VEC_INDEX_CREATE('idx_truth_debug_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_truth_debug_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SET @metadata_backup = VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+ERROR HY000: Incorrect arguments to vec_debug_truth_store_get_hex
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL);
+ERROR HY000: Incorrect arguments to vec_debug_truth_store_set_hex
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL);
+VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL)
+1
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', '');;
+VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', '')
+1
+SELECT VEC_INDEX_DROP('idx_truth_debug_fail');
+VEC_INDEX_DROP('idx_truth_debug_fail')
+1

@@ -1,0 +1,19 @@
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: debug truth-store functions require PROCESS
+--echo #
+
+CREATE USER IF NOT EXISTS vec_dbg@localhost;
+GRANT USAGE ON *.* TO vec_dbg@localhost;
+
+--connect (vec_dbg_conn,localhost,vec_dbg,,)
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL);
+--disconnect vec_dbg_conn
+
+--connection default
+DROP USER vec_dbg@localhost;

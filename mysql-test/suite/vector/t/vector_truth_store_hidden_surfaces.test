@@ -1,0 +1,46 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: hide truth-store tables from metadata surfaces
+--echo #
+
+SHOW TABLES FROM mysql LIKE 'vector_index_truth_%';
+SELECT COUNT(*)
+FROM information_schema.tables
+WHERE table_schema = 'mysql'
+  AND table_name LIKE 'vector_index_truth_%';
+
+SELECT COUNT(*)
+FROM information_schema.columns
+WHERE table_schema = 'mysql'
+  AND table_name LIKE 'vector_index_truth_%';
+
+SELECT COUNT(*)
+FROM information_schema.statistics
+WHERE table_schema = 'mysql'
+  AND table_name LIKE 'vector_index_truth_%';
+
+SELECT COUNT(*)
+FROM information_schema.key_column_usage
+WHERE table_schema = 'mysql'
+  AND table_name LIKE 'vector_index_truth_%';
+
+SELECT COUNT(*)
+FROM information_schema.table_constraints
+WHERE table_schema = 'mysql'
+  AND table_name LIKE 'vector_index_truth_%';
+
+SELECT COUNT(*)
+FROM information_schema.columns_extensions
+WHERE table_schema = 'mysql'
+  AND table_name LIKE 'vector_index_truth_%';
+
+SELECT COUNT(*)
+FROM information_schema.table_constraints_extensions
+WHERE constraint_schema = 'mysql'
+  AND table_name LIKE 'vector_index_truth_%';
+
+SELECT VEC_INDEX_CREATE('idx_hidden_surface', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_hidden_surface', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_SEARCH('idx_hidden_surface', VEC_FROMTEXT('[1,1]'), 1);
+SELECT VEC_INDEX_DROP('idx_hidden_surface');

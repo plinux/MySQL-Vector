@@ -1,0 +1,62 @@
+#
+# WL#vector-v1: backend failure paths keep serving state consistent
+#
+SELECT VEC_INDEX_CREATE('idx_hnsw_replace_regress', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB');
+VEC_INDEX_CREATE('idx_hnsw_replace_regress', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB')
+1
+SELECT VEC_INDEX_UPSERT('idx_hnsw_replace_regress', 1, VEC_FROMTEXT('[0,0]'));
+VEC_INDEX_UPSERT('idx_hnsw_replace_regress', 1, VEC_FROMTEXT('[0,0]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_hnsw_replace_regress', 2, VEC_FROMTEXT('[10,10]'));
+VEC_INDEX_UPSERT('idx_hnsw_replace_regress', 2, VEC_FROMTEXT('[10,10]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_hnsw_replace_regress', 1, VEC_FROMTEXT('[100,100]'));
+VEC_INDEX_UPSERT('idx_hnsw_replace_regress', 1, VEC_FROMTEXT('[100,100]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_hnsw_replace_regress', VEC_FROMTEXT('[0,0]'), 1);
+VEC_INDEX_SEARCH('idx_hnsw_replace_regress', VEC_FROMTEXT('[0,0]'), 1)
+[2]
+SELECT VEC_INDEX_DROP('idx_hnsw_replace_regress');
+VEC_INDEX_DROP('idx_hnsw_replace_regress')
+1
+SELECT VEC_INDEX_CREATE('idx_faiss_rebuild_regress', 2, 'EUCLIDEAN',
+'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_faiss_rebuild_regress', 2, 'EUCLIDEAN',
+'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_UPSERT('idx_faiss_rebuild_regress', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_faiss_rebuild_regress', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_faiss_rebuild_regress', 2, VEC_FROMTEXT('[2,2]'));
+ERROR HY000: Incorrect arguments to vec_index_upsert
+SELECT VEC_INDEX_SEARCH('idx_faiss_rebuild_regress', VEC_FROMTEXT('[2,2]'), 2);
+VEC_INDEX_SEARCH('idx_faiss_rebuild_regress', VEC_FROMTEXT('[2,2]'), 2)
+[1]
+SELECT VEC_INDEX_DROP('idx_faiss_rebuild_regress');
+VEC_INDEX_DROP('idx_faiss_rebuild_regress')
+1
+SELECT VEC_INDEX_CREATE('idx_diskann_truth_regress', 2, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_diskann_truth_regress', 2, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN')
+1
+SELECT VEC_INDEX_UPSERT('idx_diskann_truth_regress', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_diskann_truth_regress', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_diskann_truth_regress', 9, VEC_FROMTEXT('[9,9]'));
+VEC_INDEX_UPSERT('idx_diskann_truth_regress', 9, VEC_FROMTEXT('[9,9]'))
+1
+SELECT VEC_INDEX_RECOVER('idx_diskann_truth_regress');
+VEC_INDEX_RECOVER('idx_diskann_truth_regress')
+1
+SELECT VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[1,1]'), 1)
+[1]
+SELECT VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[9,9]'), 1);
+VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[9,9]'), 1)
+[9]
+SELECT VEC_INDEX_DROP('idx_diskann_truth_regress');
+VEC_INDEX_DROP('idx_diskann_truth_regress')
+1

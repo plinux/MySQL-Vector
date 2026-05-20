@@ -1,0 +1,11 @@
+--source include/have_vector_index.inc
+--source include/have_nodebug.inc
+
+--echo #
+--echo # WL#vector-v1: debug truth-store functions are not registered in release builds
+--echo #
+
+--error ER_SP_DOES_NOT_EXIST
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+--error ER_SP_DOES_NOT_EXIST
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL);

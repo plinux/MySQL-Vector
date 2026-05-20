@@ -1,0 +1,43 @@
+--source include/have_vector_index.inc
+
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: lifecycle persist failure rolls back runtime serving state
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_lifecycle_pf', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_lifecycle_pf', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_SEARCH('idx_lifecycle_pf', VEC_FROMTEXT('[1,1]'), 1);
+
+--echo # persist failure during REBUILD should keep pre-rebuild serving state
+--disable_query_log
+SET GLOBAL debug = '+d,vector_truth_store_fail_save';
+--enable_query_log
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_REBUILD('idx_lifecycle_pf');
+--disable_query_log
+SET GLOBAL debug = '-d,vector_truth_store_fail_save';
+--enable_query_log
+SELECT VEC_INDEX_SEARCH('idx_lifecycle_pf', VEC_FROMTEXT('[1,1]'), 1);
+
+--echo # successful REBUILD preserves committed serving state
+SELECT VEC_INDEX_REBUILD('idx_lifecycle_pf');
+SELECT VEC_INDEX_SEARCH('idx_lifecycle_pf', VEC_FROMTEXT('[1,1]'), 1);
+
+--echo # persist failure during RECOVER should keep rebuilt serving state
+--disable_query_log
+SET GLOBAL debug = '+d,vector_truth_store_fail_save';
+--enable_query_log
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_RECOVER('idx_lifecycle_pf');
+--disable_query_log
+SET GLOBAL debug = '-d,vector_truth_store_fail_save';
+--enable_query_log
+SELECT VEC_INDEX_SEARCH('idx_lifecycle_pf', VEC_FROMTEXT('[1,1]'), 1);
+
+--echo # successful RECOVER restores committed serving state
+SELECT VEC_INDEX_RECOVER('idx_lifecycle_pf');
+SELECT VEC_INDEX_SEARCH('idx_lifecycle_pf', VEC_FROMTEXT('[1,1]'), 1);
+
+SELECT VEC_INDEX_DROP('idx_lifecycle_pf');

@@ -1,0 +1,86 @@
+--source include/have_vector_index.inc
+
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: rollback serving state when truth-store persist fails
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_persist_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_persist_fail', 1, VEC_FROMTEXT('[1,1]'));
+
+SET @persist_before = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_truth_store_persist_failures');
+SET @commit_fail_before = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_txn_commit_failures');
+SET @runtime_rollback_before = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_runtime_state_rollbacks');
+SET @runtime_rollback_fail_before = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_runtime_state_rollback_failures');
+SET @artifact_rollback_before = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollbacks');
+SET @artifact_rollback_fail_before = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollback_failures');
+--disable_query_log
+SET GLOBAL debug = '+d,vector_truth_store_fail_save';
+--enable_query_log
+
+SET @txn_fail = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_persist_fail', @txn_fail, 2, VEC_FROMTEXT('[2,2]'));
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_COMMIT(@txn_fail);
+--disable_query_log
+SET GLOBAL debug = '-d,vector_truth_store_fail_save';
+--enable_query_log
+
+SELECT VEC_INDEX_TXN_PENDING(@txn_fail);
+SELECT VEC_INDEX_SEARCH('idx_persist_fail', VEC_FROMTEXT('[2,2]'), 10);
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_fail);
+SELECT VEC_INDEX_TXN_PENDING(@txn_fail);
+--replace_regex /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":N/
+SELECT VEC_INDEX_INFO('idx_persist_fail');
+
+SET @persist_after = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_truth_store_persist_failures');
+SET @commit_fail_after = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_txn_commit_failures');
+SET @runtime_rollback_after = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_runtime_state_rollbacks');
+SET @runtime_rollback_fail_after = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_runtime_state_rollback_failures');
+SET @artifact_rollback_after = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollbacks');
+SET @artifact_rollback_fail_after = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_persist_artifact_rollback_failures');
+SELECT @persist_after > @persist_before;
+SELECT @commit_fail_after > @commit_fail_before;
+SELECT @runtime_rollback_after > @runtime_rollback_before;
+SELECT @runtime_rollback_fail_after >= @runtime_rollback_fail_before;
+SELECT @artifact_rollback_after > @artifact_rollback_before;
+SELECT @artifact_rollback_fail_after >= @artifact_rollback_fail_before;
+
+SELECT VEC_INDEX_DROP('idx_persist_fail');

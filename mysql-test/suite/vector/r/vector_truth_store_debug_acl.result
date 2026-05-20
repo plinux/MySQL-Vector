@@ -1,0 +1,10 @@
+#
+# WL#vector-v1: debug truth-store functions require PROCESS
+#
+CREATE USER IF NOT EXISTS vec_dbg@localhost;
+GRANT USAGE ON *.* TO vec_dbg@localhost;
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+ERROR 42000: Access denied; you need (at least one of) the PROCESS privilege(s) for this operation
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL);
+ERROR 42000: Access denied; you need (at least one of) the PROCESS privilege(s) for this operation
+DROP USER vec_dbg@localhost;

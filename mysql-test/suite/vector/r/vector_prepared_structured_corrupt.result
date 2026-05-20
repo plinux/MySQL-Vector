@@ -1,0 +1,34 @@
+#
+# WL#vector-v1: quarantine corrupt structured prepared artifact
+#
+SELECT VEC_INDEX_CREATE('idx_prepared_structured_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_prepared_structured_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_prepared_structured_corrupt', 1, VEC_FROMTEXT('[1,2]'));
+VEC_INDEX_UPSERT('idx_prepared_structured_corrupt', 1, VEC_FROMTEXT('[1,2]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_prepared_structured_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_prepared_structured_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('prepared', '6261640a726f770a');
+VEC_DEBUG_TRUTH_STORE_SET_HEX('prepared', '6261640a726f770a')
+1
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared');
+VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared')
+6261640a726f770a
+# restart
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_prepared_structured_corrupt"]
+SELECT VEC_INDEX_SEARCH('idx_prepared_structured_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_prepared_structured_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';
+Variable_name	Value
+Vector_metadata_load_failures	<num>
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared');
+VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared')
+
+SELECT VEC_INDEX_DROP('idx_prepared_structured_corrupt');
+VEC_INDEX_DROP('idx_prepared_structured_corrupt')
+1

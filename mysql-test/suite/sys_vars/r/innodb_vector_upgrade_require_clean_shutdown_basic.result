@@ -1,0 +1,33 @@
+#
+# Variable name : innodb_vector_upgrade_require_clean_shutdown
+# Scope         : Global read only, non-persistent
+#
+# Global - default
+SELECT @@global.innodb_vector_upgrade_require_clean_shutdown;
+@@global.innodb_vector_upgrade_require_clean_shutdown
+0
+# Visible through SHOW VARIABLES and performance_schema.
+SHOW GLOBAL VARIABLES LIKE 'innodb_vector_upgrade_require_clean_shutdown';
+Variable_name	Value
+innodb_vector_upgrade_require_clean_shutdown	OFF
+SHOW SESSION VARIABLES LIKE 'innodb_vector_upgrade_require_clean_shutdown';
+Variable_name	Value
+innodb_vector_upgrade_require_clean_shutdown	OFF
+SELECT * FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='innodb_vector_upgrade_require_clean_shutdown';
+VARIABLE_NAME	VARIABLE_VALUE
+innodb_vector_upgrade_require_clean_shutdown	OFF
+SELECT * FROM performance_schema.session_variables
+WHERE VARIABLE_NAME='innodb_vector_upgrade_require_clean_shutdown';
+VARIABLE_NAME	VARIABLE_VALUE
+innodb_vector_upgrade_require_clean_shutdown	OFF
+SELECT @@session.innodb_vector_upgrade_require_clean_shutdown;
+ERROR HY000: Variable 'innodb_vector_upgrade_require_clean_shutdown' is a GLOBAL variable
+SELECT innodb_vector_upgrade_require_clean_shutdown;
+ERROR 42S22: Unknown column 'innodb_vector_upgrade_require_clean_shutdown' in 'field list'
+# Runtime and persisted changes are not allowed.
+SET GLOBAL innodb_vector_upgrade_require_clean_shutdown=ON;
+ERROR HY000: Variable 'innodb_vector_upgrade_require_clean_shutdown' is a read only variable
+SET PERSIST innodb_vector_upgrade_require_clean_shutdown=ON;
+ERROR HY000: Variable 'innodb_vector_upgrade_require_clean_shutdown' is a read only variable
+# End of tests.

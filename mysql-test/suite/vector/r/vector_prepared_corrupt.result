@@ -1,0 +1,25 @@
+#
+# WL#vector-v1: quarantine corrupt prepared artifact during startup load
+#
+SELECT VEC_INDEX_CREATE('idx_prepared_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_prepared_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_prepared_corrupt', 1, VEC_FROMTEXT('[1,2]'));
+VEC_INDEX_UPSERT('idx_prepared_corrupt', 1, VEC_FROMTEXT('[1,2]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_prepared_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_prepared_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+# restart
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_prepared_corrupt"]
+SELECT VEC_INDEX_SEARCH('idx_prepared_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_prepared_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';
+Variable_name	Value
+Vector_metadata_load_failures	<num>
+SELECT VEC_INDEX_DROP('idx_prepared_corrupt');
+VEC_INDEX_DROP('idx_prepared_corrupt')
+1

@@ -1,0 +1,100 @@
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: backup and restore vector truth snapshot files
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_backup_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_backup_mem', 11, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1);
+
+--disable_query_log
+--disable_result_log
+--let $truth_store_backend= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_backend'", Value, 1)
+--let $is_mysql_truth_store= `SELECT '$truth_store_backend' = 'mysql'`
+--enable_result_log
+--enable_query_log
+
+--let $datadir=`SELECT @@datadir`
+--let $backup_dir=$MYSQLTEST_VARDIR/tmp/vector_backup
+--exec rm -rf $backup_dir
+--exec mkdir -p $backup_dir
+--let $vector_store_dir=$datadir/mysql_vector_index
+
+if ($is_mysql_truth_store)
+{
+  --disable_query_log
+  --disable_result_log
+  --let $metadata_backup= query_get_value("SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata') AS value", value, 1)
+  --let $committed_backup= query_get_value("SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('committed') AS value", value, 1)
+  --let $manifest_backup= query_get_value("SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest') AS value", value, 1)
+  --let $changelog_backup= query_get_value("SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('changelog') AS value", value, 1)
+  --enable_result_log
+  --enable_query_log
+}
+if (!$is_mysql_truth_store)
+{
+--exec cp $vector_store_dir/metadata.v1 $backup_dir/
+--exec cp $vector_store_dir/committed.v1 $backup_dir/
+--exec cp $vector_store_dir/manifest.v1 $backup_dir/
+--exec cp $vector_store_dir/changelog.v1 $backup_dir/
+}
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1);
+
+if ($is_mysql_truth_store)
+{
+  --disable_query_log
+  --disable_result_log
+  SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL);
+  SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('committed', NULL);
+  SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('manifest', NULL);
+  SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('changelog', NULL);
+  --enable_result_log
+  --enable_query_log
+}
+if (!$is_mysql_truth_store)
+{
+--exec rm -f $vector_store_dir/metadata.v1
+--exec rm -f $vector_store_dir/committed.v1
+--exec rm -f $vector_store_dir/manifest.v1
+--exec rm -f $vector_store_dir/changelog.v1
+}
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_LIST();
+
+if ($is_mysql_truth_store)
+{
+  --disable_query_log
+  --disable_result_log
+  --eval SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', '$metadata_backup');
+  --eval SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('committed', '$committed_backup');
+  --eval SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('manifest', '$manifest_backup');
+  --eval SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('changelog', '$changelog_backup');
+  --enable_result_log
+  --enable_query_log
+}
+if (!$is_mysql_truth_store)
+{
+--exec mkdir -p $vector_store_dir
+--exec cp $backup_dir/metadata.v1 $vector_store_dir/
+--exec cp $backup_dir/committed.v1 $vector_store_dir/
+--exec cp $backup_dir/manifest.v1 $vector_store_dir/
+--exec cp $backup_dir/changelog.v1 $vector_store_dir/
+}
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1);
+
+SELECT VEC_INDEX_DROP('idx_backup_mem');
+SELECT VEC_INDEX_LIST();
+
+--exec rm -rf $backup_dir

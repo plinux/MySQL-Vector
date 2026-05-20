@@ -1,0 +1,42 @@
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: fallback to committed snapshot when change-log replay fails
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_changelog_replay', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_changelog_replay', 1, VEC_FROMTEXT('[1,2]'));
+SELECT VEC_INDEX_SEARCH('idx_changelog_replay', VEC_FROMTEXT('[1,2]'), 1);
+
+--disable_query_log
+--disable_result_log
+--let $truth_store_backend= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_backend'", Value, 1)
+--let $is_mysql_truth_store= `SELECT '$truth_store_backend' = 'mysql'`
+--enable_result_log
+--enable_query_log
+
+--let $datadir=`SELECT @@datadir`
+if ($is_mysql_truth_store)
+{
+  --disable_query_log
+  --disable_result_log
+  SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('changelog',
+            '6d7973716c2d766563746f722d6368616e67656c6f672d76310a343209370975707365727409366436393733373336393665363732653639366536343635373809393909303030303130343130303030313034310a');
+  --enable_result_log
+  --enable_query_log
+}
+if (!$is_mysql_truth_store)
+{
+  --exec printf 'mysql-vector-changelog-v1\n42\t7\tupsert\t6d697373696e672e696e646578\t99\t0000104100001041\n' > $datadir/mysql_vector_index/changelog.v1
+}
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_INFO('idx_changelog_replay');
+SELECT VEC_INDEX_SEARCH('idx_changelog_replay', VEC_FROMTEXT('[1,2]'), 1);
+SHOW GLOBAL STATUS LIKE 'Vector_change_log_load_failures';
+SHOW GLOBAL STATUS LIKE 'Vector_change_log_replay_failures';
+
+SELECT VEC_INDEX_DROP('idx_changelog_replay');

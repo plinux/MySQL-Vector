@@ -1,0 +1,36 @@
+#
+# WL#vector-v1: backup and restore vector truth snapshot files
+#
+SELECT VEC_INDEX_CREATE('idx_backup_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_backup_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_backup_mem', 11, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_backup_mem', 11, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1)
+[11]
+# restart
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_backup_mem"]
+SELECT VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1)
+[11]
+# restart
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]
+# restart
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_backup_mem"]
+SELECT VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1);
+VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1)
+[11]
+SELECT VEC_INDEX_DROP('idx_backup_mem');
+VEC_INDEX_DROP('idx_backup_mem')
+1
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+[]

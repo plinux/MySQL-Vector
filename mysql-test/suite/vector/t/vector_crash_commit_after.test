@@ -1,0 +1,35 @@
+--source include/have_vector_index.inc
+
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: crash after engine commit must not lose vector truth
+--echo #
+
+DROP TABLE IF EXISTS t_vec_crash_commit_after;
+CREATE TABLE t_vec_crash_commit_after (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+CREATE VECTOR INDEX ON t_vec_crash_commit_after(v) WITH (2);
+
+--source include/not_valgrind.inc
+--source include/not_crashrep.inc
+SET SESSION debug = '+d,crash_commit_after';
+--exec echo "restart" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+--error CR_SERVER_LOST
+INSERT INTO t_vec_crash_commit_after VALUES (1, VEC_FROMTEXT('[1,1]'));
+
+--enable_reconnect
+--source include/wait_until_connected_again.inc
+
+SELECT id, VEC_TOTEXT(v) FROM t_vec_crash_commit_after ORDER BY id;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_crash_commit_after.v', '[1,1]', 8),
+  CAST(1 AS JSON));
+--let $datadir=`SELECT @@datadir`
+--exec test ! -f $datadir/mysql_vector_index/prepared.v1
+
+DROP VECTOR INDEX ON t_vec_crash_commit_after(v);
+DROP TABLE t_vec_crash_commit_after;

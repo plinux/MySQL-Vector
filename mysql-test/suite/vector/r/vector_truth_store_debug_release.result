@@ -1,0 +1,7 @@
+#
+# WL#vector-v1: debug truth-store functions are not registered in release builds
+#
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+ERROR 42000: FUNCTION test.VEC_DEBUG_TRUTH_STORE_GET_HEX does not exist
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL);
+ERROR 42000: FUNCTION test.VEC_DEBUG_TRUTH_STORE_SET_HEX does not exist

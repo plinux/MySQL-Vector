@@ -1,0 +1,45 @@
+--source include/have_vector_index.inc
+
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#vector-v1: truth-store debug helper failure branches
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_truth_debug_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SET @metadata_backup = VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+
+--disable_query_log
+SET SESSION debug = '+d,vector_truth_store_fail_load_structured_artifact';
+SET GLOBAL debug = '+d,vector_truth_store_fail_load_structured_artifact';
+--enable_query_log
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
+--disable_query_log
+SET SESSION debug = '-d,vector_truth_store_fail_load_structured_artifact';
+SET GLOBAL debug = '-d,vector_truth_store_fail_load_structured_artifact';
+--enable_query_log
+
+--disable_query_log
+SET SESSION debug = '+d,vector_truth_store_fail_delete_structured_artifact';
+SET GLOBAL debug = '+d,vector_truth_store_fail_delete_structured_artifact';
+--enable_query_log
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL);
+--disable_query_log
+SET SESSION debug = '-d,vector_truth_store_fail_delete_structured_artifact';
+SET GLOBAL debug = '-d,vector_truth_store_fail_delete_structured_artifact';
+--enable_query_log
+
+--disable_query_log
+SET SESSION debug = '+d,vector_truth_store_fail_internal_query_scalar';
+SET GLOBAL debug = '+d,vector_truth_store_fail_internal_query_scalar';
+--enable_query_log
+SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', NULL);
+--disable_query_log
+SET SESSION debug = '-d,vector_truth_store_fail_internal_query_scalar';
+SET GLOBAL debug = '-d,vector_truth_store_fail_internal_query_scalar';
+--enable_query_log
+
+--eval SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', '$metadata_backup');
+SELECT VEC_INDEX_DROP('idx_truth_debug_fail');

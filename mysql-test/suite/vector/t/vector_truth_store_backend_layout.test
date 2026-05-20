@@ -1,0 +1,17 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: mysql truth-store keeps structured artifacts out of file layout
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_truth_layout', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_truth_layout', 1, VEC_FROMTEXT('[1,2]'));
+SELECT VEC_INDEX_SEARCH('idx_truth_layout', VEC_FROMTEXT('[1,2]'), 1);
+
+--let $datadir=`SELECT @@datadir`
+--exec test ! -f $datadir/mysql_vector_index/metadata.v1
+--exec test ! -f $datadir/mysql_vector_index/committed.v1
+--exec test ! -f $datadir/mysql_vector_index/manifest.v1
+--exec test ! -f $datadir/mysql_vector_index/changelog.v1
+
+SELECT VEC_INDEX_DROP('idx_truth_layout');

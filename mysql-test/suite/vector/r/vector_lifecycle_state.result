@@ -1,0 +1,153 @@
+#
+# WL#vector-v1: rebuild precondition failures do not poison lifecycle state
+#
+SELECT VEC_INDEX_CREATE('idx_lifecycle', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_lifecycle', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_lifecycle', @txn, 1, '[1,1]');
+VEC_INDEX_STAGE_UPSERT('idx_lifecycle', @txn, 1, '[1,1]')
+1
+SELECT VEC_INDEX_REBUILD('idx_lifecycle');
+ERROR HY000: Incorrect arguments to vec_index_rebuild
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_state';
+Section	Variable_name	Value
+INDEX_STATE	idx_lifecycle.lifecycle_state	ready
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_version';
+Section	Variable_name	Value
+INDEX_STATE	idx_lifecycle.lifecycle_version	1
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.last_error_code';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle.last_error_code	0
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.loaded';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle.loaded	1
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.writable';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle.writable	1
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.rebuild_progress';
+Section	Variable_name	Value
+SYNC_PIPELINE	idx_lifecycle.rebuild_progress	100
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.recover_progress';
+Section	Variable_name	Value
+SYNC_PIPELINE	idx_lifecycle.recover_progress	100
+# restart
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_state';
+Section	Variable_name	Value
+INDEX_STATE	idx_lifecycle.lifecycle_state	ready
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_version';
+Section	Variable_name	Value
+INDEX_STATE	idx_lifecycle.lifecycle_version	1
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.last_error_code';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle.last_error_code	0
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.loaded';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle.loaded	1
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.writable';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle.writable	1
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.rebuild_progress';
+Section	Variable_name	Value
+SYNC_PIPELINE	idx_lifecycle.rebuild_progress	100
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.recover_progress';
+Section	Variable_name	Value
+SYNC_PIPELINE	idx_lifecycle.recover_progress	100
+SELECT VEC_INDEX_RECOVER('idx_lifecycle');
+VEC_INDEX_RECOVER('idx_lifecycle')
+1
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_state';
+Section	Variable_name	Value
+INDEX_STATE	idx_lifecycle.lifecycle_state	ready
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle.lifecycle_version';
+Section	Variable_name	Value
+INDEX_STATE	idx_lifecycle.lifecycle_version	2
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.last_error_code';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle.last_error_code	0
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.loaded';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle.loaded	1
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle.writable';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle.writable	1
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.rebuild_progress';
+Section	Variable_name	Value
+SYNC_PIPELINE	idx_lifecycle.rebuild_progress	100
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_lifecycle.recover_progress';
+Section	Variable_name	Value
+SYNC_PIPELINE	idx_lifecycle.recover_progress	100
+SELECT VEC_INDEX_CREATE('idx_lifecycle_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_lifecycle_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN')
+1
+SET @txn_ext = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_lifecycle_ext', @txn_ext, 9, '[9,9]');
+VEC_INDEX_STAGE_UPSERT('idx_lifecycle_ext', @txn_ext, 9, '[9,9]')
+1
+SELECT VEC_INDEX_REBUILD('idx_lifecycle_ext');
+ERROR HY000: Incorrect arguments to vec_index_rebuild
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle_ext.lifecycle_state';
+Section	Variable_name	Value
+INDEX_STATE	idx_lifecycle_ext.lifecycle_state	ready
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.last_error_code';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle_ext.last_error_code	0
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.loaded';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle_ext.loaded	1
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.writable';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle_ext.writable	1
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_ext);
+VEC_INDEX_TXN_ROLLBACK(@txn_ext)
+1
+SELECT VEC_INDEX_RECOVER('idx_lifecycle_ext');
+VEC_INDEX_RECOVER('idx_lifecycle_ext')
+1
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_lifecycle_ext.lifecycle_state';
+Section	Variable_name	Value
+INDEX_STATE	idx_lifecycle_ext.lifecycle_state	ready
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.last_error_code';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle_ext.last_error_code	0
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.loaded';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle_ext.loaded	1
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name = 'idx_lifecycle_ext.writable';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_lifecycle_ext.writable	1
+SELECT VEC_INDEX_DROP('idx_lifecycle_ext');
+VEC_INDEX_DROP('idx_lifecycle_ext')
+1
+SELECT VEC_INDEX_DROP('idx_lifecycle');
+VEC_INDEX_DROP('idx_lifecycle')
+1

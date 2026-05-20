@@ -1,0 +1,31 @@
+#
+# WL#vector-v1: fallback to committed snapshot when change-log is corrupt
+#
+SELECT VEC_INDEX_CREATE('idx_changelog_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_changelog_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_changelog_corrupt', 1, VEC_FROMTEXT('[1,2]'));
+VEC_INDEX_UPSERT('idx_changelog_corrupt', 1, VEC_FROMTEXT('[1,2]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_changelog_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_changelog_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+# restart
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_changelog_corrupt"]
+SELECT VEC_INDEX_INFO('idx_changelog_corrupt');
+VEC_INDEX_INFO('idx_changelog_corrupt')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":1,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":0,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SELECT VEC_INDEX_SEARCH('idx_changelog_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_changelog_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+[1]
+SHOW GLOBAL STATUS LIKE 'Vector_change_log_load_failures';
+Variable_name	Value
+Vector_change_log_load_failures	2
+SHOW GLOBAL STATUS LIKE 'Vector_change_log_replay_failures';
+Variable_name	Value
+Vector_change_log_replay_failures	0
+SELECT VEC_INDEX_DROP('idx_changelog_corrupt');
+VEC_INDEX_DROP('idx_changelog_corrupt')
+1
