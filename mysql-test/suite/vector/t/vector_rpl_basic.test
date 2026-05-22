@@ -1,0 +1,425 @@
+--source include/have_vector_index.inc
+
+--source include/not_group_replication_plugin.inc
+--source include/master-slave.inc
+
+--connection master
+DROP TABLE IF EXISTS t_vec_rpl;
+CREATE TABLE t_vec_rpl (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+CREATE VECTOR INDEX ON t_vec_rpl(v) WITH (2);
+INSERT INTO t_vec_rpl VALUES (1, VEC_FROMTEXT('[1,1]'));
+INSERT INTO t_vec_rpl VALUES (2, VEC_FROMTEXT('[2,2]'));
+UPDATE t_vec_rpl SET v=VEC_FROMTEXT('[3,3]') WHERE id=1;
+DELETE FROM t_vec_rpl WHERE id=2;
+
+save_master_pos;
+
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl.v', '[3,3]', 8), CAST(1 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl.v', '[2,2]', 8), CAST(2 AS JSON));
+
+DROP TABLE IF EXISTS t_vec_rpl_like;
+CREATE TABLE t_vec_rpl_like LIKE t_vec_rpl;
+INSERT INTO t_vec_rpl_like VALUES (9, VEC_FROMTEXT('[9,9]'));
+save_master_pos;
+
+SELECT VEC_INDEX_LIST();
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_like.v', '[9,9]', 8), CAST(9 AS JSON));
+
+--connection slave
+sync_with_master;
+
+SELECT VEC_INDEX_LIST();
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl.v', '[3,3]', 8), CAST(1 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl.v', '[2,2]', 8), CAST(2 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_like.v', '[9,9]', 8), CAST(9 AS JSON));
+
+--connection master
+DROP TABLE t_vec_rpl_like;
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
+DROP VECTOR INDEX ON t_vec_rpl(v);
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
+DROP TABLE IF EXISTS t_vec_rpl_ext_like;
+DROP TABLE IF EXISTS t_vec_rpl_ext;
+CREATE TABLE t_vec_rpl_ext (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_rpl_ext(v)
+  WITH (2, 'COSINE', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('test.t_vec_rpl_ext.v', 2, 1);
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('test.t_vec_rpl_ext.v', 2, 1, 1, 1);
+INSERT INTO t_vec_rpl_ext VALUES (21, VEC_FROMTEXT('[21,21]'));
+CREATE TABLE t_vec_rpl_ext_like LIKE t_vec_rpl_ext;
+INSERT INTO t_vec_rpl_ext_like VALUES (31, VEC_FROMTEXT('[31,31]'));
+save_master_pos;
+
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_ext.v'
+  WHERE Variable_name = 'test.t_vec_rpl_ext.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.backend_variant'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_nlist'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_nprobe'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_pq_m'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_pq_bits'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_build_threads';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_ext.v', '[21,21]', 8), CAST(21 AS JSON));
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_ext_like.v'
+  WHERE Variable_name = 'test.t_vec_rpl_ext_like.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.backend_variant'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_nlist'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_nprobe'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_pq_m'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_pq_bits'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_build_threads';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_ext_like.v', '[31,31]', 8), CAST(31 AS JSON));
+
+--connection slave
+sync_with_master;
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_ext.v'
+  WHERE Variable_name = 'test.t_vec_rpl_ext.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.backend_variant'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_nlist'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_nprobe'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_pq_m'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_pq_bits'
+     OR Variable_name = 'test.t_vec_rpl_ext.v.faiss_build_threads';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_ext.v', '[21,21]', 8), CAST(21 AS JSON));
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_ext_like.v'
+  WHERE Variable_name = 'test.t_vec_rpl_ext_like.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.backend_variant'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_nlist'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_nprobe'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_pq_m'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_pq_bits'
+     OR Variable_name = 'test.t_vec_rpl_ext_like.v.faiss_build_threads';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_ext_like.v', '[31,31]', 8), CAST(31 AS JSON));
+
+--connection master
+DROP TABLE t_vec_rpl_ext_like;
+DROP TABLE t_vec_rpl_ext;
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
+DROP TABLE IF EXISTS t_vec_rpl_hnsw;
+CREATE TABLE t_vec_rpl_hnsw (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_rpl_hnsw(v)
+  WITH (2, 'COSINE', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('test.t_vec_rpl_hnsw.v', 24, 320);
+SELECT VEC_INDEX_SET_SEARCH_EF('test.t_vec_rpl_hnsw.v', 96);
+CREATE TABLE t_vec_rpl_hnsw_like LIKE t_vec_rpl_hnsw;
+INSERT INTO t_vec_rpl_hnsw VALUES (81, VEC_FROMTEXT('[81,81]'));
+INSERT INTO t_vec_rpl_hnsw_like VALUES (82, VEC_FROMTEXT('[82,82]'));
+save_master_pos;
+
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_hnsw.v'
+  WHERE Variable_name = 'test.t_vec_rpl_hnsw.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_hnsw.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_hnsw.v.search_ef'
+     OR Variable_name = 'test.t_vec_rpl_hnsw.v.hnsw_m'
+     OR Variable_name = 'test.t_vec_rpl_hnsw.v.hnsw_ef_construction';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_hnsw.v', '[81,81]', 8), CAST(81 AS JSON));
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_hnsw_like.v'
+  WHERE Variable_name = 'test.t_vec_rpl_hnsw_like.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_hnsw_like.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_hnsw_like.v.search_ef'
+     OR Variable_name = 'test.t_vec_rpl_hnsw_like.v.hnsw_m'
+     OR Variable_name = 'test.t_vec_rpl_hnsw_like.v.hnsw_ef_construction';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_hnsw_like.v', '[82,82]', 8), CAST(82 AS JSON));
+
+--connection slave
+sync_with_master;
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_hnsw.v'
+  WHERE Variable_name = 'test.t_vec_rpl_hnsw.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_hnsw.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_hnsw.v.search_ef'
+     OR Variable_name = 'test.t_vec_rpl_hnsw.v.hnsw_m'
+     OR Variable_name = 'test.t_vec_rpl_hnsw.v.hnsw_ef_construction';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_hnsw.v', '[81,81]', 8), CAST(81 AS JSON));
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_hnsw_like.v'
+  WHERE Variable_name = 'test.t_vec_rpl_hnsw_like.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_hnsw_like.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_hnsw_like.v.search_ef'
+     OR Variable_name = 'test.t_vec_rpl_hnsw_like.v.hnsw_m'
+     OR Variable_name = 'test.t_vec_rpl_hnsw_like.v.hnsw_ef_construction';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_hnsw_like.v', '[82,82]', 8), CAST(82 AS JSON));
+
+--connection master
+DROP TABLE t_vec_rpl_hnsw_like;
+DROP TABLE t_vec_rpl_hnsw;
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
+DROP TABLE IF EXISTS t_vec_rpl_diskann;
+CREATE TABLE t_vec_rpl_diskann (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_rpl_diskann(v)
+  WITH (2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('test.t_vec_rpl_diskann.v', 48, 96);
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('test.t_vec_rpl_diskann.v', 80);
+CREATE TABLE t_vec_rpl_diskann_like LIKE t_vec_rpl_diskann;
+INSERT INTO t_vec_rpl_diskann VALUES (91, VEC_FROMTEXT('[91,91]'));
+INSERT INTO t_vec_rpl_diskann_like VALUES (92, VEC_FROMTEXT('[92,92]'));
+save_master_pos;
+
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_diskann.v'
+  WHERE Variable_name = 'test.t_vec_rpl_diskann.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_diskann.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_diskann.v.diskann_max_degree'
+     OR Variable_name = 'test.t_vec_rpl_diskann.v.diskann_build_complexity'
+     OR Variable_name = 'test.t_vec_rpl_diskann.v.diskann_search_complexity';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_diskann.v', '[91,91]', 8), CAST(91 AS JSON));
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_diskann_like.v'
+  WHERE Variable_name = 'test.t_vec_rpl_diskann_like.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_diskann_like.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_diskann_like.v.diskann_max_degree'
+     OR Variable_name = 'test.t_vec_rpl_diskann_like.v.diskann_build_complexity'
+     OR Variable_name = 'test.t_vec_rpl_diskann_like.v.diskann_search_complexity';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_diskann_like.v', '[92,92]', 8), CAST(92 AS JSON));
+
+--connection slave
+sync_with_master;
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_diskann.v'
+  WHERE Variable_name = 'test.t_vec_rpl_diskann.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_diskann.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_diskann.v.diskann_max_degree'
+     OR Variable_name = 'test.t_vec_rpl_diskann.v.diskann_build_complexity'
+     OR Variable_name = 'test.t_vec_rpl_diskann.v.diskann_search_complexity';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_diskann.v', '[91,91]', 8), CAST(91 AS JSON));
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_diskann_like.v'
+  WHERE Variable_name = 'test.t_vec_rpl_diskann_like.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_diskann_like.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_diskann_like.v.diskann_max_degree'
+     OR Variable_name = 'test.t_vec_rpl_diskann_like.v.diskann_build_complexity'
+     OR Variable_name = 'test.t_vec_rpl_diskann_like.v.diskann_search_complexity';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_diskann_like.v', '[92,92]', 8), CAST(92 AS JSON));
+
+--connection master
+DROP TABLE t_vec_rpl_diskann_like;
+DROP TABLE t_vec_rpl_diskann;
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
+DROP TABLE IF EXISTS t_vec_rpl_ddl;
+CREATE TABLE t_vec_rpl_ddl (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_rpl_ddl(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('test.t_vec_rpl_ddl.v', 24, 320);
+SELECT VEC_INDEX_SET_SEARCH_EF('test.t_vec_rpl_ddl.v', 96);
+INSERT INTO t_vec_rpl_ddl VALUES (41, VEC_FROMTEXT('[41,41]'));
+RENAME TABLE t_vec_rpl_ddl TO t_vec_rpl_ddl_renamed;
+TRUNCATE TABLE t_vec_rpl_ddl_renamed;
+INSERT INTO t_vec_rpl_ddl_renamed VALUES (42, VEC_FROMTEXT('[42,42]'));
+save_master_pos;
+
+SELECT VEC_INDEX_LIST();
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_ddl_renamed.v'
+  WHERE Variable_name = 'test.t_vec_rpl_ddl_renamed.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_ddl_renamed.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_ddl_renamed.v.search_ef'
+     OR Variable_name = 'test.t_vec_rpl_ddl_renamed.v.hnsw_m'
+     OR Variable_name = 'test.t_vec_rpl_ddl_renamed.v.hnsw_ef_construction';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_ddl_renamed.v', '[42,42]', 8), CAST(42 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_ddl_renamed.v', '[41,41]', 8), CAST(41 AS JSON));
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_ddl_renamed.v'
+  WHERE Variable_name = 'test.t_vec_rpl_ddl_renamed.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_ddl_renamed.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_ddl_renamed.v.search_ef'
+     OR Variable_name = 'test.t_vec_rpl_ddl_renamed.v.hnsw_m'
+     OR Variable_name = 'test.t_vec_rpl_ddl_renamed.v.hnsw_ef_construction';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_ddl_renamed.v', '[42,42]', 8), CAST(42 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_ddl_renamed.v', '[41,41]', 8), CAST(41 AS JSON));
+
+--connection master
+DROP TABLE t_vec_rpl_ddl_renamed;
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
+DROP TABLE IF EXISTS t_vec_rpl_colrename;
+CREATE TABLE t_vec_rpl_colrename (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_rpl_colrename(v)
+  WITH (2, 'COSINE', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(
+  'test.t_vec_rpl_colrename.v', 2, 1, 1, 1);
+ALTER TABLE t_vec_rpl_colrename RENAME COLUMN v TO w;
+INSERT INTO t_vec_rpl_colrename VALUES (51, VEC_FROMTEXT('[51,51]'));
+save_master_pos;
+
+SELECT VEC_INDEX_LIST();
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_colrename.w'
+  WHERE Variable_name = 'test.t_vec_rpl_colrename.w.backend_variant'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_nlist'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_nprobe'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_pq_m'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_pq_bits'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_build_threads';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_colrename.w', '[51,51]', 8), CAST(51 AS JSON));
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_colrename.w'
+  WHERE Variable_name = 'test.t_vec_rpl_colrename.w.backend_variant'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_nlist'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_nprobe'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_pq_m'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_pq_bits'
+     OR Variable_name = 'test.t_vec_rpl_colrename.w.faiss_build_threads';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_colrename.w', '[51,51]', 8), CAST(51 AS JSON));
+
+--connection master
+DROP TABLE t_vec_rpl_colrename;
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
+DROP TABLE IF EXISTS t_vec_rpl_modify;
+CREATE TABLE t_vec_rpl_modify (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_rpl_modify(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('test.t_vec_rpl_modify.v', 24, 320);
+SELECT VEC_INDEX_SET_SEARCH_EF('test.t_vec_rpl_modify.v', 96);
+ALTER TABLE t_vec_rpl_modify
+  MODIFY COLUMN v VECTOR(2) COMMENT 'replicated same-dim modify';
+INSERT INTO t_vec_rpl_modify VALUES (61, VEC_FROMTEXT('[61,61]'));
+save_master_pos;
+
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_modify.v'
+  WHERE Variable_name = 'test.t_vec_rpl_modify.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_modify.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_modify.v.search_ef'
+     OR Variable_name = 'test.t_vec_rpl_modify.v.hnsw_m'
+     OR Variable_name = 'test.t_vec_rpl_modify.v.hnsw_ef_construction';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_modify.v', '[61,61]', 8), CAST(61 AS JSON));
+
+--connection slave
+sync_with_master;
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_rpl_modify.v'
+  WHERE Variable_name = 'test.t_vec_rpl_modify.v.provider'
+     OR Variable_name = 'test.t_vec_rpl_modify.v.mode'
+     OR Variable_name = 'test.t_vec_rpl_modify.v.search_ef'
+     OR Variable_name = 'test.t_vec_rpl_modify.v.hnsw_m'
+     OR Variable_name = 'test.t_vec_rpl_modify.v.hnsw_ef_construction';
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_modify.v', '[61,61]', 8), CAST(61 AS JSON));
+
+--connection master
+DROP TABLE t_vec_rpl_modify;
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
+DROP DATABASE IF EXISTS vec_rpl_drop_db;
+CREATE DATABASE vec_rpl_drop_db;
+CREATE TABLE vec_rpl_drop_db.t_vec_drop_db (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON vec_rpl_drop_db.t_vec_drop_db(v) WITH (2);
+INSERT INTO vec_rpl_drop_db.t_vec_drop_db VALUES (71, VEC_FROMTEXT('[71,71]'));
+save_master_pos;
+
+SELECT VEC_INDEX_LIST();
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('vec_rpl_drop_db.t_vec_drop_db.v', '[71,71]', 8),
+  CAST(71 AS JSON));
+
+--connection master
+DROP DATABASE vec_rpl_drop_db;
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
+DROP TABLE t_vec_rpl;
+--source include/sync_slave_sql_with_master.inc
+--source include/rpl_end.inc

@@ -1,0 +1,55 @@
+--source include/have_vector_index.inc
+
+--source include/not_group_replication_plugin.inc
+--source include/master-slave.inc
+
+--connection master
+DROP TABLE IF EXISTS t_vec_rpl_txn;
+CREATE TABLE t_vec_rpl_txn (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_rpl_txn(v) WITH (2);
+
+START TRANSACTION;
+INSERT INTO t_vec_rpl_txn VALUES (1, VEC_FROMTEXT('[1,1]'));
+COMMIT;
+
+START TRANSACTION;
+INSERT INTO t_vec_rpl_txn VALUES (2, VEC_FROMTEXT('[2,2]'));
+ROLLBACK;
+
+START TRANSACTION;
+INSERT INTO t_vec_rpl_txn VALUES (3, VEC_FROMTEXT('[3,3]'));
+SAVEPOINT sv_vec;
+UPDATE t_vec_rpl_txn SET v=VEC_FROMTEXT('[9,9]') WHERE id=3;
+ROLLBACK TO SAVEPOINT sv_vec;
+COMMIT;
+
+save_master_pos;
+
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_txn.v', '[1,1]', 8), CAST(1 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_txn.v', '[2,2]', 8), CAST(2 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_txn.v', '[3,3]', 8), CAST(3 AS JSON));
+SELECT id, VEC_TOTEXT(v) FROM t_vec_rpl_txn WHERE id=3;
+
+--connection slave
+sync_with_master;
+
+SELECT VEC_INDEX_LIST();
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_txn.v', '[1,1]', 8), CAST(1 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_txn.v', '[2,2]', 8), CAST(2 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('test.t_vec_rpl_txn.v', '[3,3]', 8), CAST(3 AS JSON));
+SELECT id, VEC_TOTEXT(v) FROM t_vec_rpl_txn WHERE id=3;
+
+--connection master
+DROP VECTOR INDEX ON t_vec_rpl_txn(v);
+DROP TABLE t_vec_rpl_txn;
+--source include/sync_slave_sql_with_master.inc
+--source include/rpl_end.inc

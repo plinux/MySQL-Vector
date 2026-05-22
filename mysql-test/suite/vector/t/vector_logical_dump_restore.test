@@ -1,0 +1,30 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: logical dump and restore preserves mapped vector indexes
+--echo #
+
+--let $dump_file= $MYSQLTEST_VARDIR/tmp/vector_logical_dump_restore.sql
+
+DROP TABLE IF EXISTS t_vector_logical_dump_restore;
+CREATE TABLE t_vector_logical_dump_restore (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+INSERT INTO t_vector_logical_dump_restore VALUES
+  (1, VEC_FROMTEXT('[1,1]')),
+  (2, VEC_FROMTEXT('[2,2]'));
+CREATE VECTOR INDEX ON t_vector_logical_dump_restore(v) WITH (2);
+
+--exec $MYSQL_DUMP --skip-comments test t_vector_logical_dump_restore > $dump_file
+
+DROP TABLE t_vector_logical_dump_restore;
+--exec $MYSQL test < $dump_file
+
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('test.t_vector_logical_dump_restore.v',
+                        VEC_FROMTEXT('[2,2]'), 1);
+
+DROP TABLE t_vector_logical_dump_restore;
+--remove_file $dump_file

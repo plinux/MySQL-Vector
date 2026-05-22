@@ -1,0 +1,40 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: logical dump and restore preserves HNSW tuning
+--echo #
+
+--let $dump_file= $MYSQLTEST_VARDIR/tmp/vector_logical_dump_restore_hnsw_tuned.sql
+
+DROP TABLE IF EXISTS t_vector_logical_dump_restore_hnsw_tuned;
+CREATE TABLE t_vector_logical_dump_restore_hnsw_tuned (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+INSERT INTO t_vector_logical_dump_restore_hnsw_tuned VALUES
+  (1, VEC_FROMTEXT('[1,0]')),
+  (2, VEC_FROMTEXT('[0,1]'));
+CREATE VECTOR INDEX ON t_vector_logical_dump_restore_hnsw_tuned(v)
+  WITH (2, 'COSINE', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS(
+  'test.t_vector_logical_dump_restore_hnsw_tuned.v', 24, 320);
+SELECT VEC_INDEX_SET_SEARCH_EF(
+  'test.t_vector_logical_dump_restore_hnsw_tuned.v', 96);
+
+--exec $MYSQL_DUMP --skip-comments test t_vector_logical_dump_restore_hnsw_tuned > $dump_file
+
+DROP TABLE t_vector_logical_dump_restore_hnsw_tuned;
+--exec $MYSQL test < $dump_file
+
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_logical_dump_restore_hnsw_tuned.v'
+  WHERE Variable_name = 'test.t_vector_logical_dump_restore_hnsw_tuned.v.provider'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_hnsw_tuned.v.mode'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_hnsw_tuned.v.search_ef'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_hnsw_tuned.v.hnsw_m'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_hnsw_tuned.v.hnsw_ef_construction';
+SELECT VEC_INDEX_SEARCH('test.t_vector_logical_dump_restore_hnsw_tuned.v',
+                        VEC_FROMTEXT('[0,1]'), 1);
+
+DROP TABLE t_vector_logical_dump_restore_hnsw_tuned;
+--remove_file $dump_file

@@ -1,0 +1,43 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: logical dump and restore preserves FAISS IVF_PQ tuning
+--echo #
+
+--let $dump_file= $MYSQLTEST_VARDIR/tmp/vector_logical_dump_restore_faiss_ivfpq_tuned.sql
+
+DROP TABLE IF EXISTS t_vector_logical_dump_restore_faiss_ivfpq_tuned;
+CREATE TABLE t_vector_logical_dump_restore_faiss_ivfpq_tuned (
+  id INT PRIMARY KEY,
+  v VECTOR(4)
+) ENGINE=InnoDB;
+
+INSERT INTO t_vector_logical_dump_restore_faiss_ivfpq_tuned VALUES
+  (1, VEC_FROMTEXT('[1,0,0,0]')),
+  (2, VEC_FROMTEXT('[0,1,0,0]')),
+  (3, VEC_FROMTEXT('[0,0,1,0]')),
+  (4, VEC_FROMTEXT('[0,0,0,1]'));
+CREATE VECTOR INDEX ON t_vector_logical_dump_restore_faiss_ivfpq_tuned(v)
+  WITH (4, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(
+  'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v', 2, 1, 1, 1);
+
+--exec $MYSQL_DUMP --skip-comments test t_vector_logical_dump_restore_faiss_ivfpq_tuned > $dump_file
+
+DROP TABLE t_vector_logical_dump_restore_faiss_ivfpq_tuned;
+--exec $MYSQL test < $dump_file
+
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v'
+  WHERE Variable_name = 'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v.provider'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v.mode'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v.backend_variant'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v.faiss_nlist'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v.faiss_nprobe'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v.faiss_pq_m'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v.faiss_pq_bits'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v.faiss_build_threads';
+SELECT VEC_INDEX_SEARCH('test.t_vector_logical_dump_restore_faiss_ivfpq_tuned.v',
+                        VEC_FROMTEXT('[0,0,0,1]'), 1);
+
+DROP TABLE t_vector_logical_dump_restore_faiss_ivfpq_tuned;
+--remove_file $dump_file
