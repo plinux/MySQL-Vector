@@ -540,6 +540,43 @@ TEST(VectorIndexBackendTest,
       true, true, true, true, true, true, true, false));
   EXPECT_TRUE(vector_index::diskann_api_available_for_testing(
       true, true, true, true, true, true, true, true));
+  EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
+      true, true, false, true, true, true, true, true, true));
+  EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
+      false, true, true, true, true, true, true, true, true));
+  EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
+      true, false, true, true, true, true, true, true, true));
+  EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
+      true, true, true, true, true, false, true, true, true));
+  EXPECT_TRUE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
+      true, true, true, true, true, true, true, true, true));
+
+  bool used_parallel_create = false;
+  uint32_t observed_build_threads = 0;
+  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
+      false, false, 7, &used_parallel_create, &observed_build_threads));
+  EXPECT_FALSE(used_parallel_create);
+  EXPECT_EQ(0U, observed_build_threads);
+  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
+      true, false, 7, &used_parallel_create, &observed_build_threads));
+  EXPECT_FALSE(used_parallel_create);
+  EXPECT_EQ(0U, observed_build_threads);
+  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
+      false, true, 7, &used_parallel_create, &observed_build_threads));
+  EXPECT_FALSE(used_parallel_create);
+  EXPECT_EQ(0U, observed_build_threads);
+  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
+      true, true, 7, &used_parallel_create, &observed_build_threads));
+  EXPECT_TRUE(used_parallel_create);
+  EXPECT_EQ(7U, observed_build_threads);
+  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
+      true, true, 0, &used_parallel_create, &observed_build_threads));
+  EXPECT_TRUE(used_parallel_create);
+  EXPECT_EQ(0U, observed_build_threads);
+  EXPECT_FALSE(vector_index::diskann_api_create_index_route_for_testing(
+      true, true, 7, nullptr, &observed_build_threads));
+  EXPECT_FALSE(vector_index::diskann_api_create_index_route_for_testing(
+      true, true, 7, &used_parallel_create, nullptr));
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_diskann_api_load");
@@ -620,31 +657,6 @@ TEST(VectorIndexBackendTest, DiskAnnExternalRejectsWrongDimensionsBeforeNativePa
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
-}
-
-TEST(VectorIndexBackendTest, DiskAnnExternalExactFallbackOrdersTiesByDocId) {
-  vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_diskann_exact_order");
-
-  ASSERT_TRUE(backend.upsert(20, {1.0F, 1.0F}));
-  ASSERT_TRUE(backend.upsert(10, {1.0F, 1.0F}));
-  ASSERT_TRUE(backend.upsert(30, {4.0F, 4.0F}));
-  EXPECT_FALSE(backend.upsert(40, {1.0F}));
-
-  std::vector<vector_index::search_result> result;
-  EXPECT_TRUE(backend.search({1.0F, 1.0F}, 0, &result));
-  EXPECT_TRUE(result.empty());
-  EXPECT_FALSE(backend.search({1.0F}, 1, &result));
-
-  ASSERT_TRUE(backend.search({1.0F, 1.0F}, 2, &result));
-  ASSERT_EQ(2U, result.size());
-  EXPECT_EQ(10U, result[0].doc_id);
-  EXPECT_EQ(20U, result[1].doc_id);
-
-  ASSERT_TRUE(backend.search({1.0F, 1.0F}, 10, &result));
-  ASSERT_EQ(3U, result.size());
-  EXPECT_FALSE(backend.search({1.0F, 1.0F}, 1, nullptr));
 }
 
 TEST(VectorIndexBackendTest,

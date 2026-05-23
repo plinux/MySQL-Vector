@@ -60,6 +60,7 @@ constexpr uint32_t kDiskAnnNoQuant = 1;
 constexpr uint32_t kDiskAnnVectorValueFp32 = 1;
 constexpr uint32_t kDiskAnnBuildComplexity = 64;
 constexpr uint32_t kDiskAnnMaxDegree = 32;
+constexpr size_t kDiskAnnBulkBuildBatchSize = 8192;
 
 using diskann_read_data_callback =
     void (*)(uint32_t, void *, const uint8_t *, size_t);
@@ -78,10 +79,18 @@ using diskann_create_index_fn =
                     uint32_t, diskann_read_callback, diskann_write_callback,
                     diskann_delete_callback,
                     diskann_read_modify_write_callback);
+using diskann_create_index_with_build_threads_fn =
+    const void *(*)(uint64_t, uint32_t, uint32_t, uint32_t, int32_t, uint32_t,
+                    uint32_t, uint32_t, diskann_read_callback,
+                    diskann_write_callback, diskann_delete_callback,
+                    diskann_read_modify_write_callback);
 using diskann_drop_index_fn = void (*)(uint64_t, const void *);
 using diskann_insert_fn = bool (*)(uint64_t, const void *, const uint8_t *, size_t,
                                  uint32_t, const uint8_t *, size_t,
                                  const uint8_t *, size_t);
+using diskann_bulk_insert_fn = bool (*)(uint64_t, const void *, const uint8_t *,
+                                       size_t, size_t, uint32_t, const uint8_t *,
+                                       size_t, size_t, size_t, size_t);
 using diskann_search_vector_fn =
     int32_t (*)(uint64_t, const void *, uint32_t, const uint8_t *, size_t, float,
                 uint32_t, const uint8_t *, size_t, size_t, uint8_t *, size_t,
@@ -92,8 +101,11 @@ using diskann_card_fn = uint64_t (*)(uint64_t, const void *);
 struct diskann_api {
   void *handle{nullptr};
   diskann_create_index_fn create_index{nullptr};
+  diskann_create_index_with_build_threads_fn create_index_with_build_threads{
+      nullptr};
   diskann_drop_index_fn drop_index{nullptr};
   diskann_insert_fn insert{nullptr};
+  diskann_bulk_insert_fn bulk_insert{nullptr};
   diskann_search_vector_fn search_vector{nullptr};
   diskann_remove_fn remove{nullptr};
   diskann_card_fn card{nullptr};
@@ -134,9 +146,14 @@ struct diskann_api {
       if (handle == nullptr) continue;
       create_index = reinterpret_cast<diskann_create_index_fn>(
           dlsym(handle, "create_index"));
+      create_index_with_build_threads =
+          reinterpret_cast<diskann_create_index_with_build_threads_fn>(
+              dlsym(handle, "create_index_with_build_threads"));
       drop_index =
           reinterpret_cast<diskann_drop_index_fn>(dlsym(handle, "drop_index"));
       insert = reinterpret_cast<diskann_insert_fn>(dlsym(handle, "insert"));
+      bulk_insert = reinterpret_cast<diskann_bulk_insert_fn>(
+          dlsym(handle, "bulk_insert"));
       search_vector = reinterpret_cast<diskann_search_vector_fn>(
           dlsym(handle, "search_vector"));
       remove = reinterpret_cast<diskann_remove_fn>(dlsym(handle, "remove"));
@@ -146,8 +163,10 @@ struct diskann_api {
       dlclose(handle);
       handle = nullptr;
       create_index = nullptr;
+      create_index_with_build_threads = nullptr;
       drop_index = nullptr;
       insert = nullptr;
+      bulk_insert = nullptr;
       search_vector = nullptr;
       remove = nullptr;
       card = nullptr;
@@ -158,8 +177,36 @@ struct diskann_api {
 
   bool available() const {
     return handle != nullptr && create_index != nullptr &&
-           drop_index != nullptr && insert != nullptr &&
-           search_vector != nullptr && remove != nullptr && card != nullptr;
+           drop_index != nullptr && insert != nullptr && search_vector != nullptr &&
+           remove != nullptr && card != nullptr;
+  }
+
+  bool parallel_bulk_build_available() const {
+    return available() && create_index_with_build_threads != nullptr &&
+           bulk_insert != nullptr;
+  }
+
+  const void *create_index_handle(uint64_t ctx, uint32_t dimension,
+                                  uint32_t reduce_dimension,
+                                  uint32_t quant_type, int32_t metric_type,
+                                  uint32_t build_complexity,
+                                  uint32_t max_degree,
+                                  uint32_t build_threads,
+                                  diskann_read_callback read_callback,
+                                  diskann_write_callback write_callback,
+                                  diskann_delete_callback delete_callback,
+                                  diskann_read_modify_write_callback
+                                      read_modify_write_callback) const {
+    if (parallel_bulk_build_available()) {
+      return create_index_with_build_threads(
+          ctx, dimension, reduce_dimension, quant_type, metric_type,
+          build_complexity, max_degree, build_threads, read_callback,
+          write_callback, delete_callback, read_modify_write_callback);
+    }
+    return create_index(ctx, dimension, reduce_dimension, quant_type, metric_type,
+                        build_complexity, max_degree, read_callback,
+                        write_callback, delete_callback,
+                        read_modify_write_callback);
   }
 };
 
@@ -293,10 +340,29 @@ class diskann_native_state {
     }
 
     bool rebuild_ok = true;
-    for (const auto &entry : ordered_entries) {
-      if (!insert_locked(entry.first, *entry.second)) {
-        rebuild_ok = false;
-        break;
+    if (!ordered_entries.empty() && m_api->parallel_bulk_build_available()) {
+      std::vector<uint64_t> doc_ids;
+      std::vector<float> vectors;
+      doc_ids.reserve(ordered_entries.size());
+      vectors.reserve(ordered_entries.size() * m_dimension);
+      for (const auto &entry : ordered_entries) {
+        doc_ids.push_back(entry.first);
+        vectors.insert(vectors.end(), entry.second->begin(), entry.second->end());
+      }
+      const size_t batch_size =
+          std::min(kDiskAnnBulkBuildBatchSize, ordered_entries.size());
+      rebuild_ok = m_api->bulk_insert(
+          callback_context(), m_index_handle,
+          reinterpret_cast<const uint8_t *>(doc_ids.data()), sizeof(uint64_t),
+          sizeof(uint64_t), kDiskAnnVectorValueFp32,
+          reinterpret_cast<const uint8_t *>(vectors.data()), m_dimension,
+          m_dimension * sizeof(float), ordered_entries.size(), batch_size);
+    } else {
+      for (const auto &entry : ordered_entries) {
+        if (!insert_locked(entry.first, *entry.second)) {
+          rebuild_ok = false;
+          break;
+        }
       }
     }
     if (rebuild_ok) rebuild_ok = flush_build_memory_store_locked();
@@ -535,10 +601,10 @@ class diskann_native_state {
       if (ec) return false;
     }
 
-    const void *index = m_api->create_index(
+    const void *index = m_api->create_index_handle(
         callback_context(), static_cast<uint32_t>(m_dimension), 0,
         kDiskAnnNoQuant, diskann_metric_code(m_metric), m_build_complexity,
-        m_max_degree, &diskann_native_state::read_callback,
+        m_max_degree, m_build_threads, &diskann_native_state::read_callback,
         &diskann_native_state::write_callback, &diskann_native_state::delete_callback,
         &diskann_native_state::read_modify_write_callback);
     if (index == nullptr) return false;
@@ -1338,7 +1404,7 @@ bool diskann_api_load_for_testing() {
 
 bool diskann_api_available_for_testing(bool has_handle, bool has_create_index,
                                    bool has_drop_index, bool has_insert,
-                                   bool has_bulk_insert [[maybe_unused]],
+                                   bool has_bulk_insert,
                                    bool has_search_vector, bool has_remove,
                                    bool has_card) {
   diskann_api api;
@@ -1349,12 +1415,103 @@ bool diskann_api_available_for_testing(bool has_handle, bool has_create_index,
   api.drop_index =
       has_drop_index ? reinterpret_cast<diskann_drop_index_fn>(1) : nullptr;
   api.insert = has_insert ? reinterpret_cast<diskann_insert_fn>(1) : nullptr;
+  api.bulk_insert =
+      has_bulk_insert ? reinterpret_cast<diskann_bulk_insert_fn>(1) : nullptr;
   api.search_vector = has_search_vector
                           ? reinterpret_cast<diskann_search_vector_fn>(1)
                           : nullptr;
   api.remove = has_remove ? reinterpret_cast<diskann_remove_fn>(1) : nullptr;
   api.card = has_card ? reinterpret_cast<diskann_card_fn>(1) : nullptr;
   return api.available();
+}
+
+bool diskann_api_parallel_bulk_build_available_for_testing(
+    bool has_handle, bool has_create_index,
+    bool has_create_index_with_build_threads, bool has_drop_index,
+    bool has_insert, bool has_bulk_insert, bool has_search_vector,
+    bool has_remove, bool has_card) {
+  diskann_api api;
+  api.handle = has_handle ? reinterpret_cast<void *>(1) : nullptr;
+  api.create_index = has_create_index
+                         ? reinterpret_cast<diskann_create_index_fn>(1)
+                         : nullptr;
+  api.create_index_with_build_threads =
+      has_create_index_with_build_threads
+          ? reinterpret_cast<diskann_create_index_with_build_threads_fn>(1)
+          : nullptr;
+  api.drop_index =
+      has_drop_index ? reinterpret_cast<diskann_drop_index_fn>(1) : nullptr;
+  api.insert = has_insert ? reinterpret_cast<diskann_insert_fn>(1) : nullptr;
+  api.bulk_insert =
+      has_bulk_insert ? reinterpret_cast<diskann_bulk_insert_fn>(1) : nullptr;
+  api.search_vector = has_search_vector
+                          ? reinterpret_cast<diskann_search_vector_fn>(1)
+                          : nullptr;
+  api.remove = has_remove ? reinterpret_cast<diskann_remove_fn>(1) : nullptr;
+  api.card = has_card ? reinterpret_cast<diskann_card_fn>(1) : nullptr;
+  return api.parallel_bulk_build_available();
+}
+
+namespace {
+
+bool g_diskann_serial_create_called_for_testing = false;
+bool g_diskann_parallel_create_called_for_testing = false;
+uint32_t g_diskann_parallel_build_threads_for_testing = 0;
+
+const void *diskann_serial_create_index_for_testing(
+    uint64_t, uint32_t, uint32_t, uint32_t, int32_t, uint32_t, uint32_t,
+    diskann_read_callback, diskann_write_callback, diskann_delete_callback,
+    diskann_read_modify_write_callback) {
+  g_diskann_serial_create_called_for_testing = true;
+  return reinterpret_cast<const void *>(1);
+}
+
+const void *diskann_parallel_create_index_for_testing(
+    uint64_t, uint32_t, uint32_t, uint32_t, int32_t, uint32_t, uint32_t,
+    uint32_t build_threads, diskann_read_callback, diskann_write_callback,
+    diskann_delete_callback, diskann_read_modify_write_callback) {
+  g_diskann_parallel_create_called_for_testing = true;
+  g_diskann_parallel_build_threads_for_testing = build_threads;
+  return reinterpret_cast<const void *>(2);
+}
+
+}  // namespace
+
+bool diskann_api_create_index_route_for_testing(
+    bool has_create_index_with_build_threads, bool has_bulk_insert,
+    uint32_t build_threads, bool *used_parallel_create,
+    uint32_t *observed_build_threads) {
+  if (used_parallel_create == nullptr || observed_build_threads == nullptr) {
+    return false;
+  }
+  g_diskann_serial_create_called_for_testing = false;
+  g_diskann_parallel_create_called_for_testing = false;
+  g_diskann_parallel_build_threads_for_testing = 0;
+
+  diskann_api api;
+  api.handle = reinterpret_cast<void *>(1);
+  api.create_index = diskann_serial_create_index_for_testing;
+  api.create_index_with_build_threads =
+      has_create_index_with_build_threads
+          ? diskann_parallel_create_index_for_testing
+          : nullptr;
+  api.drop_index = reinterpret_cast<diskann_drop_index_fn>(1);
+  api.insert = reinterpret_cast<diskann_insert_fn>(1);
+  api.bulk_insert =
+      has_bulk_insert ? reinterpret_cast<diskann_bulk_insert_fn>(1) : nullptr;
+  api.search_vector = reinterpret_cast<diskann_search_vector_fn>(1);
+  api.remove = reinterpret_cast<diskann_remove_fn>(1);
+  api.card = reinterpret_cast<diskann_card_fn>(1);
+
+  const void *handle = api.create_index_handle(
+      1, 2, 0, kDiskAnnNoQuant, diskann_metric_code(metric_type::kEuclidean),
+      kDiskAnnBuildComplexity, kDiskAnnMaxDegree, build_threads, nullptr,
+      nullptr, nullptr, nullptr);
+  *used_parallel_create = g_diskann_parallel_create_called_for_testing;
+  *observed_build_threads = g_diskann_parallel_build_threads_for_testing;
+  return handle != nullptr &&
+         (g_diskann_serial_create_called_for_testing !=
+          g_diskann_parallel_create_called_for_testing);
 }
 
 int32_t diskann_metric_code_for_testing(metric_type metric) {
