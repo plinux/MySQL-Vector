@@ -645,6 +645,7 @@ IF(HAVE_VECTOR_INDEX)
   LIST(APPEND SQL_SHARED_SOURCES
     vector/vector_index_backend.cc
     vector/vector_index_backend_hnswlib.cc
+    vector/vector_index_backend_diskann.cc
     vector/vector_index_backend_faiss.cc
     vector/vector_index_build_options.cc
     vector/vector_index_diagnostics.cc
@@ -661,6 +662,7 @@ ENDIF()
 IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
   MY_ADD_COMPILE_DEFINITIONS(
     vector/vector_index_backend.cc
+    vector/vector_index_backend_diskann.cc
     vector/vector_index_diagnostics.cc
     vector/vector_index_metadata_store.cc
     vector/vector_index_truth_store.cc

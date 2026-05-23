@@ -6890,6 +6890,22 @@ static Sys_var_ulong Sys_vector_faiss_build_threads(
     VALID_RANGE(0, vector_index::k_max_build_threads), DEFAULT(0),
     BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
     ON_CHECK(check_vector_faiss_build_threads));
+
+static bool check_vector_diskann_build_threads(sys_var *self, THD *thd,
+                                               set_var *var) {
+  if (!check_vector_build_threads(self, thd, var))
+    return false;
+  return true;
+}
+
+static Sys_var_ulong Sys_vector_diskann_build_threads(
+    "vector_diskann_build_threads",
+    "Default worker count for DiskANN vector index bulk build and rebuild. "
+    "Use 0 for automatic hardware-thread based sizing.",
+    GLOBAL_VAR(opt_vector_diskann_build_threads), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, vector_index::k_max_build_threads), DEFAULT(0),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_diskann_build_threads));
 #endif
 
 static Sys_var_enum Sys_block_encryption_mode(
