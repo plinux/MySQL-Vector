@@ -23,6 +23,9 @@
 
 INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
 
+INCLUDE(${CMAKE_SOURCE_DIR}/cmake/vector.cmake)
+MYSQL_VECTOR_CONFIGURE_BACKENDS()
+
 ADD_WSHADOW_WARNING()
 
 # Lots of warnings about -Walloc-size-larger-than= from my_malloc.cc
@@ -648,10 +651,15 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_backend_diskann.cc
     vector/vector_index_backend_faiss.cc
     vector/vector_index_build_options.cc
+    vector/vector_index_ddl_formatter.cc
     vector/vector_index_diagnostics.cc
     vector/vector_index_identity.cc
+    vector/vector_index_status_fields.cc
+    vector/vector_status.cc
     vector/vector_index_metadata_store.cc
     vector/vector_index_metadata_store_codec.cc
+    vector/vector_index_truth_store.cc
+    vector/vector_index_truth_store_api.cc
     vector/vector_index_registry.cc
     vector/vector_index_registry_lifecycle.cc
     vector/vector_index_registry_txn.cc
@@ -659,11 +667,14 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_service_txn.cc
     vector/vector_dml_sync.cc
     vector/vector_trx_participant.cc
-    vector/vector_status.cc
-    vector/vector_index_truth_store.cc
-    vector/vector_index_truth_store_api.cc
     vector/vector_mapped_search.cc
     vector/vector_utils.cc
+    vector/item_vectorfunc.cc
+    vector/item_vectorfunc_scalar.cc
+    vector/item_vectorfunc_query.cc
+    vector/item_vectorfunc_admin.cc
+    vector/item_vectorfunc_txn.cc
+    vector/item_vectorfunc_formatter.cc
   )
 ENDIF()
 
@@ -986,7 +997,6 @@ ADD_DEPENDENCIES(sql_main GenDigestServerSource)
 ADD_DEPENDENCIES(sql_main GenBootstrapPriv)
 ADD_DEPENDENCIES(sql_main GenSysSchema)
 TARGET_LINK_LIBRARIES(sql_main extra::unordered_dense)
-MYSQL_VECTOR_LINK_BACKENDS(sql_main)
 
 TARGET_LINK_LIBRARIES(sql_main ${MYSQLD_STATIC_PLUGIN_LIBS}
   mysql_server_component_services mysys strings vio

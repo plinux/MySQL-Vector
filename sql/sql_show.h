@@ -558,6 +558,27 @@ class Sql_cmd_show_status_proc : public Sql_cmd_show {
   Sql_cmd_show_status_proc() : Sql_cmd_show(SQLCOM_SHOW_STATUS_PROC) {}
 };
 
+/// Represents SHOW VECTOR STATUS statement.
+
+class Sql_cmd_show_vector_status : public Sql_cmd_show_noplan {
+ public:
+  Sql_cmd_show_vector_status() : Sql_cmd_show_noplan(SQLCOM_SHOW_STATUS) {}
+  bool check_privileges(THD *thd) override;
+  bool execute_inner(THD *thd) override;
+  void set_has_where_clause(bool has_where_clause) {
+    m_has_where_clause = has_where_clause;
+  }
+  bool has_where_clause() const { return m_has_where_clause; }
+  void set_for_index_name(const std::string &index_name) {
+    m_for_index_name = index_name;
+  }
+  const std::string &for_index_name() const { return m_for_index_name; }
+
+ private:
+  bool m_has_where_clause{false};
+  std::string m_for_index_name;
+};
+
 /// Represents SHOW TABLE STATUS statement.
 
 class Sql_cmd_show_table_status : public Sql_cmd_show_schema_base {

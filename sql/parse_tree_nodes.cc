@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -33,6 +34,9 @@
 #include "m_ctype.h"
 #include "m_string.h"
 #include "mem_root_deque.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "my_base.h"
+#endif
 #include "my_alloc.h"
 #include "my_dbug.h"
 #include "mysql/mysql_lex_string.h"
@@ -40,11 +44,23 @@
 #include "mysql_com.h"
 #include "scope_guard.h"
 #include "sql/auth/auth_acls.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/auth/auth_common.h"
+#endif
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/create_field.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/dd/cache/dictionary_client.h"
+#endif
 #include "sql/dd/info_schema/show.h"      // build_show_...
 #include "sql/dd/types/abstract_table.h"  // dd::enum_table_type::BASE_TABLE
 #include "sql/dd/types/column.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/dd/types/index.h"
+#include "sql/dd/types/index_element.h"
+#include "sql/dd/types/table.h"
+#include "sql/dd/properties.h"
+#endif
 #include "sql/derror.h"  // ER_THD
 #include "sql/field.h"
 #include "sql/gis/srid.h"
@@ -88,11 +104,19 @@
 #include "sql/sql_show.h"    // Sql_cmd_show...
 #include "sql/sql_show_processlist.h"
 #include "sql/sql_show_status.h"  // build_show_session_status, ...
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/sql_table.h"        // write_bin_log
+#endif
 #include "sql/sql_update.h"       // Sql_cmd_update...
 #include "sql/system_variables.h"
 #include "sql/table_function.h"
 #include "sql/thr_malloc.h"
 #include "sql/trigger_def.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_dml_sync.h"
+#include "sql/vector/vector_index_registry.h"
+#include "sql/vector/vector_index_truth_store.h"
+#endif
 #include "sql/window.h"  // Window
 #include "sql_string.h"
 #include "template_utils.h"
@@ -133,6 +157,450 @@ bool itemize_safe(Parse_context *pc, Item **item) {
   if (*item == nullptr) return false;
   return (*item)->itemize(pc, item);
 }
+
+#ifdef HAVE_VECTOR_INDEX
+bool ensure_table_mdl(THD *thd, const char *db_name, const char *table_name,
+                      enum_mdl_type lock_type) {
+  if (thd->mdl_context.owns_equal_or_stronger_lock(
+          MDL_key::TABLE, db_name, table_name, lock_type)) {
+    return true;
+  }
+
+  MDL_request mdl_request;
+  MDL_REQUEST_INIT(&mdl_request, MDL_key::TABLE, db_name, table_name,
+                   lock_type, MDL_STATEMENT);
+  return !thd->mdl_context.acquire_lock(&mdl_request,
+                                        thd->variables.lock_wait_timeout);
+}
+
+struct Vector_column_metadata {
+  bool found{false};
+  bool is_vector{false};
+  size_t dim{0};
+};
+
+bool load_vector_column_metadata(THD *thd, const char *db_name,
+                                 const char *table_name,
+                                 const std::string &column_name,
+                                 Vector_column_metadata *metadata) {
+  if (metadata == nullptr) return false;
+  *metadata = Vector_column_metadata{};
+
+  dd::cache::Dictionary_client *dd_client = thd->dd_client();
+  dd::cache::Dictionary_client::Auto_releaser releaser(dd_client);
+  const dd::Table *table_def = nullptr;
+  if (dd_client->acquire(db_name, table_name, &table_def)) return false;
+
+  if (table_def == nullptr ||
+      table_def->hidden() == dd::Abstract_table::HT_HIDDEN_SE ||
+      (!vector_index_truth_store::internal_sql_active() &&
+       vector_index_truth_store::is_truth_store_table(db_name, table_name))) {
+    my_error(ER_NO_SUCH_TABLE, MYF(0), db_name, table_name);
+    return false;
+  }
+  if (my_strcasecmp(system_charset_info, table_def->engine().c_str(),
+                    "InnoDB") != 0) {
+    my_error(ER_NOT_SUPPORTED_YET, MYF(0),
+             "CREATE VECTOR INDEX on non-InnoDB tables");
+    return false;
+  }
+
+  for (const dd::Column *column : table_def->columns()) {
+    if (my_strcasecmp(system_charset_info, column->name().c_str(),
+                      column_name.c_str()) != 0) {
+      continue;
+    }
+
+    metadata->found = true;
+    const dd::Properties &column_options = column->options();
+    bool is_vector = false;
+    uint32 vector_dim = 0;
+    if (column_options.exists("is_vector"))
+      column_options.get("is_vector", &is_vector);
+    if (column_options.exists("vector_dim"))
+      column_options.get("vector_dim", &vector_dim);
+    metadata->is_vector = is_vector;
+    metadata->dim = vector_dim;
+    return true;
+  }
+
+  return true;
+}
+
+bool is_supported_vector_doc_id_column_type(dd::enum_column_types type) {
+  switch (type) {
+    case dd::enum_column_types::TINY:
+    case dd::enum_column_types::SHORT:
+    case dd::enum_column_types::LONG:
+    case dd::enum_column_types::LONGLONG:
+    case dd::enum_column_types::INT24:
+    case dd::enum_column_types::YEAR:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool validate_vector_index_doc_id_support(THD *thd, const char *db_name,
+                                          const char *table_name,
+                                          std::string *doc_id_column_name) {
+  if (thd == nullptr || db_name == nullptr || table_name == nullptr) {
+    my_error(ER_INTERNAL_ERROR, MYF(0),
+             "Failed to validate vector index primary key");
+    return false;
+  }
+
+  dd::cache::Dictionary_client *dd_client = thd->dd_client();
+  dd::cache::Dictionary_client::Auto_releaser releaser(dd_client);
+  const dd::Table *table_def = nullptr;
+  if (dd_client->acquire(db_name, table_name, &table_def)) return false;
+  if (table_def == nullptr ||
+      table_def->hidden() == dd::Abstract_table::HT_HIDDEN_SE ||
+      (!vector_index_truth_store::internal_sql_active() &&
+       vector_index_truth_store::is_truth_store_table(db_name, table_name))) {
+    my_error(ER_NO_SUCH_TABLE, MYF(0), db_name, table_name);
+    return false;
+  }
+
+  const dd::Index *primary_index = nullptr;
+  for (const dd::Index *index : table_def->indexes()) {
+    if (index->type() != dd::Index::IT_PRIMARY || index->is_hidden()) continue;
+    primary_index = index;
+    break;
+  }
+
+  if (primary_index != nullptr) {
+    size_t visible_part_count = 0;
+    const dd::Column *doc_id_column = nullptr;
+    for (const dd::Index_element *element : primary_index->elements()) {
+      if (element->is_hidden()) continue;
+      ++visible_part_count;
+      doc_id_column = &element->column();
+    }
+    if (visible_part_count == 1 && doc_id_column != nullptr &&
+        !doc_id_column->is_nullable() &&
+        is_supported_vector_doc_id_column_type(doc_id_column->type())) {
+      if (doc_id_column_name != nullptr) {
+        *doc_id_column_name = doc_id_column->name();
+      }
+      return true;
+    }
+  }
+
+  my_error(ER_NOT_SUPPORTED_YET, MYF(0),
+           "CREATE VECTOR INDEX on tables without a single non-null integer "
+           "PRIMARY KEY");
+  return false;
+}
+
+bool log_vector_ddl(THD *thd) {
+  DBUG_EXECUTE_IF("vector_ddl_fail_binlog_write", return false;);
+  return write_bin_log(thd, true, thd->query().str, thd->query().length,
+                       false) == 0;
+}
+
+constexpr const char *kVectorIndexLifecycleCreating = "creating";
+constexpr const char *kVectorIndexLifecycleBackfilling = "backfilling";
+constexpr const char *kVectorIndexLifecycleReady = "ready";
+
+bool reject_vector_index_on_temporary_table(THD *thd, Table_ref *table_ref,
+                                            const char *stmt_name) {
+  if (thd == nullptr || table_ref == nullptr || stmt_name == nullptr) {
+    return false;
+  }
+  if (find_temporary_table(thd, table_ref) == nullptr) return false;
+
+  my_error(ER_NOT_SUPPORTED_YET, MYF(0), stmt_name);
+  return true;
+}
+
+std::string make_vector_index_name(const char *db_name, const char *table_name,
+                                   const std::string &field_name) {
+  std::string index_name(db_name);
+  index_name += ".";
+  index_name += table_name;
+  index_name += ".";
+  index_name += field_name;
+  return index_name;
+}
+
+bool backfill_vector_index(THD *thd, Table_ref *table_ref,
+                           const std::string &index_name,
+                           const std::string &column_name) {
+  if (thd == nullptr || table_ref == nullptr) {
+    my_error(ER_INTERNAL_ERROR, MYF(0),
+             "Failed to open table for vector index backfill");
+    return false;
+  }
+
+  TABLE *table = open_n_lock_single_table(thd, table_ref, TL_READ_NO_INSERT, 0);
+  if (table == nullptr || table->file == nullptr) {
+    my_error(ER_INTERNAL_ERROR, MYF(0),
+             "Failed to open table for vector index backfill");
+    return false;
+  }
+
+  MY_BITMAP *saved_read_set = table->read_set;
+  MY_BITMAP *saved_write_set = table->write_set;
+  table->use_all_columns();
+
+  const int init_error = table->file->ha_rnd_init(true);
+  if (init_error != 0) {
+    table->column_bitmaps_set(saved_read_set, saved_write_set);
+    table->file->print_error(init_error, MYF(0));
+    return false;
+  }
+
+  bool failed = false;
+  vector_index::index_service::committed_state backfill_entries;
+  // Empty tables still need a committed snapshot before the DDL is made ready.
+  backfill_entries[index_name];
+
+  while (true) {
+    const int scan_error = table->file->ha_rnd_next(table->record[0]);
+    if (scan_error == HA_ERR_END_OF_FILE) break;
+    if (scan_error == HA_ERR_RECORD_DELETED) continue;
+    if (scan_error != 0) {
+      table->file->print_error(scan_error, MYF(0));
+      failed = true;
+      break;
+    }
+    vector_dml_sync::prepared_changes vector_changes;
+    if (vector_dml_sync::prepare_insert_row_for_index(
+            table, index_name, column_name, table->record[0], &vector_changes)) {
+      failed = true;
+      break;
+    }
+    for (const vector_dml_sync::prepared_change &change : vector_changes) {
+      auto &entries = backfill_entries[change.index_name];
+      if (change.erase) {
+        entries.erase(change.doc_id);
+      } else {
+        entries[change.doc_id] = change.vector;
+      }
+    }
+
+    if (failed) break;
+  }
+
+  if (!failed) {
+    for (const auto &entry : backfill_entries) {
+      if (!vector_index_registry::replace_committed_entries_preserve_lifecycle(
+              entry.first, entry.second)) {
+        my_error(ER_INTERNAL_ERROR, MYF(0), "vector index backfill failed");
+        failed = true;
+        break;
+      }
+    }
+  }
+  const int end_error = table->file->ha_rnd_end();
+  table->column_bitmaps_set(saved_read_set, saved_write_set);
+  if (end_error != 0 && !failed) {
+    table->file->print_error(end_error, MYF(0));
+    return false;
+  }
+
+  return !failed;
+}
+
+class Sql_cmd_create_vector_index final : public Sql_cmd {
+ public:
+  Sql_cmd_create_vector_index(bool if_not_exists, std::string column_name,
+                              size_t dimension,
+                              std::string metric, std::string mode,
+                              std::string provider,
+                              bool build_threads_specified,
+                              uint32_t build_threads)
+      : m_if_not_exists(if_not_exists),
+        m_column_name(std::move(column_name)),
+        m_dimension(dimension),
+        m_metric(std::move(metric)),
+        m_mode(std::move(mode)),
+        m_provider(std::move(provider)),
+        m_build_threads_specified(build_threads_specified),
+        m_build_threads(build_threads) {}
+
+  enum_sql_command sql_command_code() const override {
+    return SQLCOM_CREATE_INDEX;
+  }
+
+  bool execute(THD *thd) override {
+    Table_ref *const first_table = thd->lex->query_block->get_table_list();
+    if (first_table == nullptr || first_table->db == nullptr ||
+        first_table->table_name == nullptr || m_dimension == 0) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), "CREATE VECTOR INDEX");
+      return true;
+    }
+
+    if (check_one_table_access(thd, INDEX_ACL, first_table)) return true;
+    if (reject_vector_index_on_temporary_table(thd, first_table,
+                                               "CREATE VECTOR INDEX on temporary table"))
+      return true;
+    if (!ensure_table_mdl(thd, first_table->db, first_table->table_name,
+                          MDL_SHARED_NO_WRITE))
+      return true;
+
+    const std::string index_name = make_vector_index_name(
+        first_table->db, first_table->table_name, m_column_name);
+    if (m_if_not_exists) {
+      vector_index_registry::index_info info;
+      if (vector_index_registry::get_index_info(index_name, &info)) {
+        my_ok(thd);
+        return false;
+      }
+    }
+
+    Vector_column_metadata metadata;
+    if (!load_vector_column_metadata(thd, first_table->db,
+                                     first_table->table_name, m_column_name,
+                                     &metadata)) {
+      return true;
+    }
+    if (!metadata.found || !metadata.is_vector || metadata.dim != m_dimension) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), "CREATE VECTOR INDEX");
+      return true;
+    }
+
+    std::string doc_id_column_name;
+    if (!validate_vector_index_doc_id_support(thd, first_table->db,
+                                              first_table->table_name,
+                                              &doc_id_column_name)) {
+      return true;
+    }
+
+    vector_index_registry::create_index_options options;
+    options.build_threads_specified = m_build_threads_specified;
+    options.build_threads = m_build_threads;
+    options.initial_lifecycle_state = kVectorIndexLifecycleCreating;
+
+    if (!vector_index_registry::create_mapped_index(
+            index_name, m_dimension, m_metric, m_mode, m_provider,
+            first_table->db, first_table->table_name, m_column_name,
+            doc_id_column_name, options)) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), "CREATE VECTOR INDEX");
+      return true;
+    }
+
+    if (!vector_index_registry::set_lifecycle_state(
+            index_name, kVectorIndexLifecycleBackfilling)) {
+      (void)vector_index_registry::drop_index(index_name);
+      my_error(ER_INTERNAL_ERROR, MYF(0), "CREATE VECTOR INDEX");
+      return true;
+    }
+
+    if (!backfill_vector_index(thd, first_table, index_name, m_column_name)) {
+      (void)vector_index_registry::drop_index(index_name);
+      if (!thd->is_error()) {
+        my_error(ER_INTERNAL_ERROR, MYF(0), "CREATE VECTOR INDEX");
+      }
+      return true;
+    }
+
+    if (!vector_index_registry::set_lifecycle_state(
+            index_name, kVectorIndexLifecycleReady)) {
+      (void)vector_index_registry::drop_index(index_name);
+      my_error(ER_INTERNAL_ERROR, MYF(0), "CREATE VECTOR INDEX");
+      return true;
+    }
+
+    if (!log_vector_ddl(thd)) {
+      (void)vector_index_registry::drop_index(index_name);
+      if (!thd->is_error()) {
+        my_error(ER_INTERNAL_ERROR, MYF(0), "CREATE VECTOR INDEX");
+      }
+      return true;
+    }
+
+    my_ok(thd);
+    return false;
+  }
+
+ private:
+  bool m_if_not_exists;
+  std::string m_column_name;
+  size_t m_dimension;
+  std::string m_metric;
+  std::string m_mode;
+  std::string m_provider;
+  bool m_build_threads_specified;
+  uint32_t m_build_threads;
+};
+
+class Sql_cmd_drop_vector_index final : public Sql_cmd {
+ public:
+  Sql_cmd_drop_vector_index(bool if_exists, std::string column_name)
+      : m_if_exists(if_exists), m_column_name(std::move(column_name)) {}
+
+  enum_sql_command sql_command_code() const override { return SQLCOM_DROP_INDEX; }
+
+  bool execute(THD *thd) override {
+    Table_ref *const first_table = thd->lex->query_block->get_table_list();
+    if (first_table == nullptr || first_table->db == nullptr ||
+        first_table->table_name == nullptr) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), "DROP VECTOR INDEX");
+      return true;
+    }
+
+    if (check_one_table_access(thd, INDEX_ACL, first_table)) return true;
+    if (reject_vector_index_on_temporary_table(thd, first_table,
+                                               "DROP VECTOR INDEX on temporary table"))
+      return true;
+    if (!ensure_table_mdl(thd, first_table->db, first_table->table_name,
+                          MDL_SHARED_NO_WRITE))
+      return true;
+
+    Vector_column_metadata metadata;
+    if (!load_vector_column_metadata(thd, first_table->db,
+                                     first_table->table_name, m_column_name,
+                                     &metadata)) {
+      return true;
+    }
+    if (!metadata.found || !metadata.is_vector) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), "DROP VECTOR INDEX");
+      return true;
+    }
+
+    const std::string index_name = make_vector_index_name(
+        first_table->db, first_table->table_name, m_column_name);
+    if (m_if_exists) {
+      vector_index_registry::index_info info;
+      if (!vector_index_registry::get_index_info(index_name, &info)) {
+        my_ok(thd);
+        return false;
+      }
+    }
+    vector_index_registry::registry_state_snapshot before_drop;
+    if (!vector_index_registry::snapshot_runtime_state(&before_drop)) {
+      my_error(ER_INTERNAL_ERROR, MYF(0), "DROP VECTOR INDEX");
+      return true;
+    }
+
+    vector_index_registry::dropped_index_artifacts dropped_artifacts;
+    if (!vector_index_registry::drop_index(index_name, &dropped_artifacts)) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), "DROP VECTOR INDEX");
+      return true;
+    }
+    if (!log_vector_ddl(thd)) {
+      if (!vector_index_registry::restore_runtime_state(before_drop, true)) {
+        my_error(ER_INTERNAL_ERROR, MYF(0),
+                 "DROP VECTOR INDEX rollback failed");
+      } else if (!thd->is_error()) {
+        my_error(ER_INTERNAL_ERROR, MYF(0), "DROP VECTOR INDEX");
+      }
+      return true;
+    }
+
+    vector_index_registry::cleanup_dropped_index_artifacts(dropped_artifacts);
+
+    my_ok(thd);
+    return false;
+  }
+
+ private:
+  bool m_if_exists;
+  std::string m_column_name;
+};
+#endif
 
 }  // namespace
 
@@ -1801,6 +2269,35 @@ Sql_cmd *PT_create_index_stmt::make_cmd(THD *thd) {
   return new (thd->mem_root) Sql_cmd_create_index(&m_alter_info);
 }
 
+Sql_cmd *PT_create_vector_index_stmt::make_cmd([[maybe_unused]] THD *thd) {
+#ifndef HAVE_VECTOR_INDEX
+  my_error(ER_NOT_SUPPORTED_YET, MYF(0), "CREATE VECTOR INDEX");
+  return nullptr;
+#else
+  thd->lex->sql_command = SQLCOM_CREATE_INDEX;
+
+  LEX *const lex = thd->lex;
+  Query_block *const query_block = lex->current_query_block();
+  if (query_block->add_table_to_list(thd, m_table_ident, nullptr,
+                                     TL_OPTION_UPDATING, TL_READ_NO_INSERT,
+                                     MDL_SHARED_UPGRADABLE) == nullptr) {
+    return nullptr;
+  }
+
+  std::string metric = to_string(m_metric);
+  std::string mode = to_string(m_mode);
+  std::string provider = to_string(m_provider);
+  if (metric.empty()) metric = "euclidean";
+  if (mode.empty()) mode = "memory";
+  if (provider.empty()) provider = "native";
+
+  return new (thd->mem_root) Sql_cmd_create_vector_index(
+      m_if_not_exists, to_string(m_column_name), m_dimension, std::move(metric),
+      std::move(mode), std::move(provider), m_build_threads_specified,
+      m_build_threads);
+#endif
+}
+
 bool PT_inline_index_definition::contextualize(Table_ddl_parse_context *pc) {
   if (super::contextualize(pc)) return true;
 
@@ -2838,6 +3335,20 @@ Sql_cmd *PT_show_status::make_cmd(THD *thd) {
   return &m_sql_cmd;
 }
 
+Sql_cmd *PT_show_vector_status::make_cmd(THD *thd) {
+  LEX *lex = thd->lex;
+  lex->sql_command = m_sql_command;
+
+  if (m_wild.str && lex->set_wild(m_wild)) return nullptr;  // OOM
+  if (m_for_index_name.str != nullptr) {
+    m_sql_cmd.set_for_index_name(
+        std::string(m_for_index_name.str, m_for_index_name.length));
+  }
+  m_sql_cmd.set_has_where_clause(m_where != nullptr);
+
+  return &m_sql_cmd;
+}
+
 Sql_cmd *PT_show_status_func::make_cmd(THD *thd) {
   LEX *lex = thd->lex;
   lex->sql_command = m_sql_command;
@@ -3261,6 +3772,26 @@ Sql_cmd *PT_drop_index_stmt::make_cmd(THD *thd) {
 
   thd->lex->alter_info = &m_alter_info;
   return new (thd->mem_root) Sql_cmd_drop_index(&m_alter_info);
+}
+
+Sql_cmd *PT_drop_vector_index_stmt::make_cmd([[maybe_unused]] THD *thd) {
+#ifndef HAVE_VECTOR_INDEX
+  my_error(ER_NOT_SUPPORTED_YET, MYF(0), "DROP VECTOR INDEX");
+  return nullptr;
+#else
+  thd->lex->sql_command = SQLCOM_DROP_INDEX;
+
+  LEX *const lex = thd->lex;
+  Query_block *const query_block = lex->current_query_block();
+  if (!query_block->add_table_to_list(thd, m_table_ident, nullptr,
+                                      TL_OPTION_UPDATING, TL_READ_NO_INSERT,
+                                      MDL_SHARED_UPGRADABLE)) {
+    return nullptr;
+  }
+
+  return new (thd->mem_root)
+      Sql_cmd_drop_vector_index(m_if_exists, to_string(m_column_name));
+#endif
 }
 
 Sql_cmd *PT_truncate_table_stmt::make_cmd(THD *thd) {

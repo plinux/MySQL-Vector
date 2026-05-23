@@ -179,6 +179,10 @@ class Create_field {
 
   // Whether the field is actually an array of the field's type;
   bool is_array{false};
+#ifdef HAVE_VECTOR_INDEX
+  // VECTOR(dim) dimension for SQL-layer vector pseudo type. Zero for non-vector.
+  uint32 vector_dim{0};
+#endif
 
   LEX_CSTRING m_engine_attribute = EMPTY_CSTR;
   LEX_CSTRING m_secondary_engine_attribute = EMPTY_CSTR;

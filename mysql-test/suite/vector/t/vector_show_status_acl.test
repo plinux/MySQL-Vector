@@ -1,0 +1,26 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: SHOW VECTOR STATUS privilege checks
+--echo #
+
+DROP USER IF EXISTS 'vec_acl_user'@'localhost';
+CREATE USER 'vec_acl_user'@'localhost';
+
+--connect (con_acl,localhost,vec_acl_user,,)
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+SHOW VECTOR STATUS;
+--disconnect con_acl
+
+--connection default
+GRANT PROCESS ON *.* TO 'vec_acl_user'@'localhost';
+
+--connect (con_acl,localhost,vec_acl_user,,)
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS LIKE 'Vector_registered_indexes';
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_GAUGES'
+  AND Variable_name = 'Vector_registered_indexes';
+--disconnect con_acl
+
+--connection default
+DROP USER 'vec_acl_user'@'localhost';

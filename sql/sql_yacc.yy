@@ -1398,6 +1398,7 @@ void warn_on_deprecated_user_defined_collation(
 %token<lexer.keyword> BULK_SYM                   1201  /* MYSQL */
 %token<lexer.keyword> URL_SYM                    1202   /* MYSQL */
 %token<lexer.keyword> GENERATE_SYM               1203   /* MYSQL */
+%token<lexer.keyword> VECTOR_SYM                 1204   /* MYSQL */
 
 /*
   Precedence rules used to resolve the ambiguity when using keywords as idents
@@ -1880,6 +1881,7 @@ void warn_on_deprecated_user_defined_collation(
         call_stmt
         check_table_stmt
         create_index_stmt
+        create_vector_index_stmt
         create_resource_group_stmt
         create_role_stmt
         create_srs_stmt
@@ -1888,6 +1890,7 @@ void warn_on_deprecated_user_defined_collation(
         describe_stmt
         do_stmt
         drop_index_stmt
+        drop_vector_index_stmt
         drop_resource_group_stmt
         drop_role_stmt
         drop_srs_stmt
@@ -1945,6 +1948,7 @@ void warn_on_deprecated_user_defined_collation(
         show_replica_status_stmt
         show_replicas_stmt
         show_status_stmt
+        show_vector_status_stmt
         show_table_status_stmt
         show_tables_stmt
         show_triggers_stmt
@@ -2112,6 +2116,7 @@ void warn_on_deprecated_user_defined_collation(
         opt_create_partitioning_etc opt_duplicate_as_qe
 
 %type <wild_or_where> opt_wild_or_where
+%type <lexer.lex_str> opt_vector_status_for_index
 
 // used by JSON_TABLE
 %type <jtc_list> columns_clause columns_list
@@ -2349,6 +2354,7 @@ simple_statement:
         | commit                        { $$= nullptr; }
         | create                        { $$= nullptr; }
         | create_index_stmt
+        | create_vector_index_stmt
         | create_resource_group_stmt
         | create_role_stmt
         | create_srs_stmt
@@ -2361,6 +2367,7 @@ simple_statement:
         | drop_event_stmt               { $$= nullptr; }
         | drop_function_stmt            { $$= nullptr; }
         | drop_index_stmt
+        | drop_vector_index_stmt
         | drop_logfile_stmt             { $$= nullptr; }
         | drop_procedure_stmt           { $$= nullptr; }
         | drop_resource_group_stmt
@@ -2445,6 +2452,7 @@ simple_statement:
         | show_replica_status_stmt
         | show_replicas_stmt
         | show_status_stmt
+        | show_vector_status_stmt
         | show_table_status_stmt
         | show_tables_stmt
         | show_triggers_stmt
@@ -3659,6 +3667,34 @@ create_index_stmt:
                                              NULL, $6, $8, $10,
                                              $11.algo.get_or_default(),
                                              $11.lock.get_or_default());
+          }
+        ;
+
+create_vector_index_stmt:
+          CREATE VECTOR_SYM INDEX_SYM opt_if_not_exists
+          ON_SYM table_ident '(' ident ')'
+          WITH '(' ulong_num ')'
+          {
+            $$= NEW_PTN PT_create_vector_index_stmt(
+              YYMEM_ROOT, $4, $6, $8, $12, NULL_STR, NULL_STR, NULL_STR,
+              false, 0);
+          }
+        | CREATE VECTOR_SYM INDEX_SYM opt_if_not_exists
+          ON_SYM table_ident '(' ident ')'
+          WITH '(' ulong_num ',' TEXT_STRING_sys ','
+                   TEXT_STRING_sys ',' TEXT_STRING_sys ')'
+          {
+            $$= NEW_PTN PT_create_vector_index_stmt(
+              YYMEM_ROOT, $4, $6, $8, $12, $14, $16, $18, false, 0);
+          }
+        | CREATE VECTOR_SYM INDEX_SYM opt_if_not_exists
+          ON_SYM table_ident '(' ident ')'
+          WITH '(' ulong_num ',' TEXT_STRING_sys ','
+                   TEXT_STRING_sys ',' TEXT_STRING_sys ',' ulong_num ')'
+          {
+            $$= NEW_PTN PT_create_vector_index_stmt(
+              YYMEM_ROOT, $4, $6, $8, $12, $14, $16, $18,
+              true, static_cast<uint32_t>($20));
           }
         ;
 
@@ -7150,6 +7186,10 @@ type:
         | VARBINARY_SYM field_length
           {
             $$= NEW_PTN PT_char_type(Char_type::VARCHAR, $2, &my_charset_bin);
+          }
+        | VECTOR_SYM field_length
+          {
+            $$= NEW_PTN PT_vector_type($2);
           }
         | YEAR_SYM opt_field_length field_options
           {
@@ -12806,6 +12846,14 @@ drop_index_stmt:
           }
         ;
 
+drop_vector_index_stmt:
+          DROP VECTOR_SYM INDEX_SYM if_exists
+          ON_SYM table_ident '(' ident ')'
+          {
+            $$= NEW_PTN PT_drop_vector_index_stmt(YYMEM_ROOT, $4, $6, $8);
+          }
+        ;
+
 drop_database_stmt:
           DROP DATABASE if_exists ident
           {
@@ -13773,6 +13821,25 @@ show_status_stmt:
           SHOW opt_var_type STATUS_SYM opt_wild_or_where
           {
              $$ = NEW_PTN PT_show_status(@$, $2, $4.wild, $4.where);
+          }
+        ;
+
+show_vector_status_stmt:
+          SHOW VECTOR_SYM STATUS_SYM opt_vector_status_for_index opt_wild_or_where
+          {
+             $$ = NEW_PTN PT_show_vector_status(@$, $4, $5.wild, $5.where);
+          }
+        ;
+
+opt_vector_status_for_index:
+          %empty
+          {
+            $$.str = nullptr;
+            $$.length = 0;
+          }
+        | FOR_SYM INDEX_SYM ident_or_text
+          {
+            $$ = $3;
           }
         ;
 

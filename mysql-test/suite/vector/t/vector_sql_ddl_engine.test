@@ -1,0 +1,16 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: SQL DDL rejects non-InnoDB mapped vector indexes
+--echo #
+
+DROP TABLE IF EXISTS t_vector_ddl_myisam;
+CREATE TABLE t_vector_ddl_myisam (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=MyISAM;
+
+--error ER_NOT_SUPPORTED_YET
+CREATE VECTOR INDEX ON t_vector_ddl_myisam(v) WITH (2);
+
+DROP TABLE t_vector_ddl_myisam;

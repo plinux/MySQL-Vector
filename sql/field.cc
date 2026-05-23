@@ -38,6 +38,9 @@
 #include <cmath>   // isnan
 #include <memory>  // unique_ptr
 #include <optional>
+#ifdef HAVE_VECTOR_INDEX
+#include <vector>
+#endif
 
 #include "decimal.h"
 #include "m_string.h"
@@ -87,6 +90,9 @@
 #include "sql/time_zone_common.h"
 #include "sql/transaction_info.h"
 #include "sql/tztime.h"      // Time_zone
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_utils.h"
+#endif
 #include "template_utils.h"  // pointer_cast
 #include "typelib.h"
 
@@ -7089,6 +7095,61 @@ type_conversion_status Field_blob::store(const char *from, size_t length,
                                          const CHARSET_INFO *cs) {
   ASSERT_COLUMN_MARKED_FOR_WRITE;
 
+#ifdef HAVE_VECTOR_INDEX
+  if (is_flag_set(FIELD_IS_VECTOR)) {
+    auto report_vector_error = [this]() {
+      THD *thd = current_thd;
+      push_warning_printf(
+          thd, Sql_condition::SL_WARNING, ER_TRUNCATED_WRONG_VALUE_FOR_FIELD,
+          ER_THD(thd, ER_TRUNCATED_WRONG_VALUE_FOR_FIELD), "vector", "<binary>",
+          field_name, thd->get_stmt_da()->current_row_for_condition());
+      return TYPE_ERR_BAD_VALUE;
+    };
+
+    std::vector<char> payload;
+    const char *payload_ptr = nullptr;
+    size_t payload_len = 0;
+
+    if (cs == &my_charset_bin && length == field_length) {
+      payload_ptr = from;
+      payload_len = length;
+    } else {
+      String input(const_cast<char *>(from), length, cs);
+      std::vector<float> elements;
+      if (!vector_utils::parse_text_vector(&input, &elements)) {
+        return report_vector_error();
+      }
+
+      const size_t expected_dim = field_length / vector_utils::kVectorElemSize;
+      if (elements.size() != expected_dim) {
+        return report_vector_error();
+      }
+
+      payload.resize(field_length);
+      for (size_t i = 0; i < elements.size(); ++i) {
+        float4store(pointer_cast<uchar *>(payload.data()) +
+                        i * vector_utils::kVectorElemSize,
+                    elements[i]);
+      }
+      payload_ptr = payload.data();
+      payload_len = payload.size();
+    }
+
+    if (table->blob_storage)  // GROUP_CONCAT with ORDER BY | DISTINCT
+      return store_to_mem(payload_ptr, payload_len, &my_charset_bin,
+                          current_thd->variables.group_concat_max_len,
+                          table->blob_storage);
+
+    if (value.alloc(payload_len)) {
+      reset();
+      return TYPE_ERR_OOM;
+    }
+    memcpy(value.ptr(), payload_ptr, payload_len);
+    store_ptr_and_length(value.ptr(), payload_len);
+    return TYPE_OK;
+  }
+#endif
+
   if (table->blob_storage)  // GROUP_CONCAT with ORDER BY | DISTINCT
     return store_to_mem(from, length, cs,
                         current_thd->variables.group_concat_max_len,
@@ -7311,6 +7372,21 @@ size_t Field_blob::make_sort_key(uchar *to, size_t length,
 }
 
 void Field_blob::sql_type(String &res) const {
+#ifdef HAVE_VECTOR_INDEX
+  if (is_flag_set(FIELD_IS_VECTOR)) {
+    static constexpr uint32 kVectorElementSize = sizeof(float);
+    const uint32 payload_bytes = static_cast<uint32>(field_length);
+    const uint32 dim =
+        (payload_bytes > 0 && payload_bytes % kVectorElementSize == 0)
+            ? (payload_bytes / kVectorElementSize)
+            : 0;
+    res.set_ascii(STRING_WITH_LEN("vector("));
+    res.append_ulonglong(static_cast<ulonglong>(dim));
+    res.append(STRING_WITH_LEN(")"));
+    return;
+  }
+#endif
+
   const char *str;
   uint length;
   switch (packlength) {
@@ -9531,6 +9607,7 @@ Field *make_field(MEM_ROOT *mem_root, TABLE_SHARE *share, uchar *ptr,
 Field *make_field(const Create_field &create_field, TABLE_SHARE *share,
                   const char *field_name, size_t field_length, uchar *ptr,
                   uchar *null_pos, size_t null_bit) {
+#ifndef HAVE_VECTOR_INDEX
   return make_field(*THR_MALLOC, share, ptr, field_length, null_pos, null_bit,
                     create_field.sql_type, create_field.charset,
                     create_field.geom_type, create_field.auto_flags,
@@ -9539,6 +9616,23 @@ Field *make_field(const Create_field &create_field, TABLE_SHARE *share,
                     create_field.decimals, create_field.treat_bit_as_char,
                     create_field.pack_length_override, create_field.m_srid,
                     create_field.is_array);
+#else
+  Field *field = make_field(
+      *THR_MALLOC, share, ptr, field_length, null_pos, null_bit,
+      create_field.sql_type, create_field.charset, create_field.geom_type,
+      create_field.auto_flags, create_field.interval, field_name,
+      create_field.is_nullable, create_field.is_zerofill,
+      create_field.is_unsigned, create_field.decimals,
+      create_field.treat_bit_as_char, create_field.pack_length_override,
+      create_field.m_srid, create_field.is_array);
+  if (field != nullptr && (create_field.flags & FIELD_IS_VECTOR)) {
+    static constexpr uint32 kVectorElementSize = sizeof(float);
+    field->set_flag(FIELD_IS_VECTOR);
+    if (create_field.vector_dim > 0)
+      field->set_field_length(create_field.vector_dim * kVectorElementSize);
+  }
+  return field;
+#endif
 }
 
 Field *make_field(const Create_field &create_field, TABLE_SHARE *share,

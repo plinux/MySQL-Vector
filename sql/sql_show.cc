@@ -32,6 +32,11 @@
 #include <time.h>
 #include <algorithm>
 #include <atomic>
+#ifdef HAVE_VECTOR_INDEX
+#include <cerrno>
+#include <cctype>
+#include <cstdlib>
+#endif
 #include <functional>
 #include <memory>
 #include <new>
@@ -137,6 +142,13 @@
 #include "sql/thd_raii.h"                  // Prepared_stmt_arena_holder
 #include "sql/trigger.h"                   // Trigger
 #include "sql/tztime.h"                    // my_tz_SYSTEM
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_ddl_formatter.h"
+#include "sql/vector/vector_index_registry.h"
+#include "sql/vector/vector_index_status_fields.h"
+#include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_status.h"
+#endif
 #include "sql_string.h"
 #include "template_utils.h"
 #include "thr_lock.h"
@@ -478,6 +490,940 @@ bool Sql_cmd_show_engine_status::check_privileges(THD *thd) {
 bool Sql_cmd_show_engine_status::execute_inner(THD *thd) {
   return ha_show_status(thd, lex->create_info->db_type, HA_ENGINE_STATUS);
 }
+
+#ifdef HAVE_VECTOR_INDEX
+namespace {
+
+enum class Vector_status_section {
+  kGlobalCounters,
+  kGlobalGauges,
+  kIndexState,
+  kBackendHealth,
+  kSyncPipeline
+};
+
+const char *vector_status_section_name(Vector_status_section section) {
+  switch (section) {
+    case Vector_status_section::kGlobalCounters:
+      return "GLOBAL_COUNTERS";
+    case Vector_status_section::kGlobalGauges:
+      return "GLOBAL_GAUGES";
+    case Vector_status_section::kIndexState:
+      return "INDEX_STATE";
+    case Vector_status_section::kBackendHealth:
+      return "BACKEND_HEALTH";
+    case Vector_status_section::kSyncPipeline:
+      return "SYNC_PIPELINE";
+  }
+  assert(false);
+  return "";
+}
+
+struct Vector_status_row {
+  const char *name;
+  Vector_status_section section;
+  uint64_t value;
+};
+
+enum class Vector_status_where_field {
+  kSection,
+  kVariableName,
+  kValue,
+};
+
+enum class Vector_status_where_op {
+  kEq,
+  kNe,
+  kLike,
+  kNotLike,
+  kGt,
+  kGe,
+  kLt,
+  kLe,
+};
+
+enum class Vector_status_where_logical {
+  kAnd,
+  kOr,
+};
+
+struct Vector_status_where_predicate {
+  Vector_status_where_field field;
+  Vector_status_where_op op;
+  Vector_status_where_logical logical;
+  std::string value;
+};
+
+bool vector_status_matches_wild(const char *wild, const char *variable_name) {
+  if (wild == nullptr || wild[0] == '\0') return true;
+  return wild_case_compare(system_charset_info, variable_name, wild) == 0;
+}
+
+char lower_ascii_char(char ch) {
+  return static_cast<char>(
+      std::tolower(static_cast<unsigned char>(static_cast<unsigned char>(ch))));
+}
+
+bool is_identifier_char(char ch) {
+  return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_';
+}
+
+bool is_ascii_space(char ch) {
+  return std::isspace(static_cast<unsigned char>(ch)) != 0;
+}
+
+std::string trim_ascii(const std::string &value) {
+  size_t begin = 0;
+  while (begin < value.size() && is_ascii_space(value[begin])) ++begin;
+
+  size_t end = value.size();
+  while (end > begin && is_ascii_space(value[end - 1])) --end;
+
+  return value.substr(begin, end - begin);
+}
+
+bool equals_case_insensitive(const std::string &left, const char *right) {
+  const size_t right_len = std::strlen(right);
+  if (left.size() != right_len) return false;
+
+  for (size_t i = 0; i < right_len; ++i) {
+    if (lower_ascii_char(left[i]) != lower_ascii_char(right[i])) return false;
+  }
+  return true;
+}
+
+size_t find_keyword_outside_quotes(const std::string &query,
+                                   const char *keyword) {
+  const size_t keyword_len = std::strlen(keyword);
+  if (keyword_len == 0 || query.size() < keyword_len) return std::string::npos;
+
+  bool in_quote = false;
+  for (size_t i = 0; i + keyword_len <= query.size(); ++i) {
+    const char ch = query[i];
+    if (ch == '\'') {
+      if (in_quote && i + 1 < query.size() && query[i + 1] == '\'') {
+        ++i;
+      } else {
+        in_quote = !in_quote;
+      }
+      continue;
+    }
+    if (in_quote) continue;
+
+    bool match = true;
+    for (size_t j = 0; j < keyword_len; ++j) {
+      if (lower_ascii_char(query[i + j]) != lower_ascii_char(keyword[j])) {
+        match = false;
+        break;
+      }
+    }
+    if (!match) continue;
+
+    const bool left_boundary =
+        (i == 0) || !is_identifier_char(query[i - 1]);
+    const bool right_boundary =
+        (i + keyword_len >= query.size()) ||
+        !is_identifier_char(query[i + keyword_len]);
+    if (left_boundary && right_boundary) return i;
+  }
+
+  return std::string::npos;
+}
+
+bool unquote_sql_string(const std::string &value, std::string *unquoted) {
+  if (unquoted == nullptr) return false;
+  if (value.size() < 2 || value.front() != '\'' || value.back() != '\'') {
+    return false;
+  }
+
+  unquoted->clear();
+  unquoted->reserve(value.size() - 2);
+  for (size_t i = 1; i + 1 < value.size(); ++i) {
+    const char ch = value[i];
+    if (ch == '\'' && i + 1 < value.size() - 1 && value[i + 1] == '\'') {
+      unquoted->push_back('\'');
+      ++i;
+      continue;
+    }
+    unquoted->push_back(ch);
+  }
+  return true;
+}
+
+bool split_where_terms(const std::string &where_clause,
+                       std::vector<std::string> *terms,
+                       std::vector<Vector_status_where_logical> *logical_ops) {
+  if (terms == nullptr || logical_ops == nullptr) return false;
+  terms->clear();
+  logical_ops->clear();
+
+  bool in_quote = false;
+  size_t term_start = 0;
+  for (size_t i = 0; i < where_clause.size(); ++i) {
+    const char ch = where_clause[i];
+    if (ch == '\'') {
+      if (in_quote && i + 1 < where_clause.size() &&
+          where_clause[i + 1] == '\'') {
+        ++i;
+      } else {
+        in_quote = !in_quote;
+      }
+      continue;
+    }
+
+    if (in_quote || i + 2 > where_clause.size()) continue;
+
+    size_t keyword_len = 0;
+    Vector_status_where_logical logical = Vector_status_where_logical::kAnd;
+    if (i + 3 <= where_clause.size() && lower_ascii_char(where_clause[i]) == 'a' &&
+        lower_ascii_char(where_clause[i + 1]) == 'n' &&
+        lower_ascii_char(where_clause[i + 2]) == 'd') {
+      keyword_len = 3;
+      logical = Vector_status_where_logical::kAnd;
+    } else if (lower_ascii_char(where_clause[i]) == 'o' &&
+               lower_ascii_char(where_clause[i + 1]) == 'r') {
+      keyword_len = 2;
+      logical = Vector_status_where_logical::kOr;
+    } else {
+      continue;
+    }
+
+    const bool left_space = (i > 0) && is_ascii_space(where_clause[i - 1]);
+    const bool right_space = (i + keyword_len < where_clause.size()) &&
+                             is_ascii_space(where_clause[i + keyword_len]);
+    if (!left_space || !right_space) continue;
+
+    terms->push_back(trim_ascii(where_clause.substr(term_start, i - term_start)));
+    logical_ops->push_back(logical);
+    i += keyword_len - 1;
+    term_start = i + 1;
+  }
+
+  terms->push_back(trim_ascii(where_clause.substr(term_start)));
+  return !terms->empty() && logical_ops->size() + 1 == terms->size();
+}
+
+bool parse_where_field(const std::string &name,
+                       Vector_status_where_field *field) {
+  if (field == nullptr) return false;
+  if (equals_case_insensitive(name, "section")) {
+    *field = Vector_status_where_field::kSection;
+    return true;
+  }
+  if (equals_case_insensitive(name, "variable_name")) {
+    *field = Vector_status_where_field::kVariableName;
+    return true;
+  }
+  if (equals_case_insensitive(name, "value")) {
+    *field = Vector_status_where_field::kValue;
+    return true;
+  }
+  return false;
+}
+
+bool parse_where_term(const std::string &term,
+                      Vector_status_where_predicate *predicate) {
+  if (predicate == nullptr) return false;
+
+  bool in_quote = false;
+  size_t op_pos = std::string::npos;
+  size_t op_len = 0;
+  Vector_status_where_op op = Vector_status_where_op::kEq;
+
+  for (size_t i = 0; i < term.size(); ++i) {
+    const char ch = term[i];
+    if (ch == '\'') {
+      if (in_quote && i + 1 < term.size() && term[i + 1] == '\'') {
+        ++i;
+      } else {
+        in_quote = !in_quote;
+      }
+      continue;
+    }
+    if (in_quote) continue;
+
+    if (i + 4 <= term.size() &&
+        lower_ascii_char(term[i]) == 'l' &&
+        lower_ascii_char(term[i + 1]) == 'i' &&
+        lower_ascii_char(term[i + 2]) == 'k' &&
+        lower_ascii_char(term[i + 3]) == 'e') {
+      const bool left_space = (i > 0) && is_ascii_space(term[i - 1]);
+      const bool right_space =
+          (i + 4 < term.size()) && is_ascii_space(term[i + 4]);
+      if (left_space && right_space) {
+        op_pos = i;
+        op_len = 4;
+        op = Vector_status_where_op::kLike;
+        break;
+      }
+    }
+    if (i + 8 <= term.size() &&
+        lower_ascii_char(term[i]) == 'n' &&
+        lower_ascii_char(term[i + 1]) == 'o' &&
+        lower_ascii_char(term[i + 2]) == 't' &&
+        term[i + 3] == ' ' &&
+        lower_ascii_char(term[i + 4]) == 'l' &&
+        lower_ascii_char(term[i + 5]) == 'i' &&
+        lower_ascii_char(term[i + 6]) == 'k' &&
+        lower_ascii_char(term[i + 7]) == 'e') {
+      const bool left_space = (i > 0) && is_ascii_space(term[i - 1]);
+      const bool right_space =
+          (i + 8 < term.size()) && is_ascii_space(term[i + 8]);
+      if (left_space && right_space) {
+        op_pos = i;
+        op_len = 8;
+        op = Vector_status_where_op::kNotLike;
+        break;
+      }
+    }
+    if (i + 2 <= term.size() && term[i] == '!' && term[i + 1] == '=') {
+      op_pos = i;
+      op_len = 2;
+      op = Vector_status_where_op::kNe;
+      break;
+    }
+    if (i + 2 <= term.size() && term[i] == '<' && term[i + 1] == '>') {
+      op_pos = i;
+      op_len = 2;
+      op = Vector_status_where_op::kNe;
+      break;
+    }
+    if (i + 2 <= term.size() && term[i] == '>' && term[i + 1] == '=') {
+      op_pos = i;
+      op_len = 2;
+      op = Vector_status_where_op::kGe;
+      break;
+    }
+    if (i + 2 <= term.size() && term[i] == '<' && term[i + 1] == '=') {
+      op_pos = i;
+      op_len = 2;
+      op = Vector_status_where_op::kLe;
+      break;
+    }
+    if (ch == '>') {
+      op_pos = i;
+      op_len = 1;
+      op = Vector_status_where_op::kGt;
+      break;
+    }
+    if (ch == '<') {
+      op_pos = i;
+      op_len = 1;
+      op = Vector_status_where_op::kLt;
+      break;
+    }
+    if (ch == '=') {
+      op_pos = i;
+      op_len = 1;
+      op = Vector_status_where_op::kEq;
+      break;
+    }
+  }
+
+  if (op_pos == std::string::npos) return false;
+
+  const std::string lhs = trim_ascii(term.substr(0, op_pos));
+  const std::string rhs = trim_ascii(term.substr(op_pos + op_len));
+  if (lhs.empty() || rhs.empty()) return false;
+
+  Vector_status_where_field field;
+  if (!parse_where_field(lhs, &field)) return false;
+
+  if ((op == Vector_status_where_op::kGt || op == Vector_status_where_op::kGe ||
+       op == Vector_status_where_op::kLt || op == Vector_status_where_op::kLe) &&
+      field != Vector_status_where_field::kValue) {
+    return false;
+  }
+
+  std::string value;
+  if (!unquote_sql_string(rhs, &value)) {
+    if (op == Vector_status_where_op::kLike ||
+        op == Vector_status_where_op::kNotLike) {
+      return false;
+    }
+    value = rhs;
+  }
+
+  predicate->field = field;
+  predicate->op = op;
+  predicate->logical = Vector_status_where_logical::kAnd;
+  predicate->value = value;
+  return true;
+}
+
+bool parse_vector_status_where_clause(
+    THD *thd, std::vector<Vector_status_where_predicate> *predicates) {
+  if (predicates == nullptr) return false;
+  predicates->clear();
+
+  const char *query_str = thd->query().str;
+  const size_t query_len = thd->query().length;
+  if (query_str == nullptr || query_len == 0) return false;
+
+  std::string query(query_str, query_len);
+  const size_t where_pos = find_keyword_outside_quotes(query, "where");
+  if (where_pos == std::string::npos) return false;
+
+  std::string where_clause = trim_ascii(query.substr(where_pos + 5));
+  if (!where_clause.empty() && where_clause.back() == ';') {
+    where_clause.pop_back();
+    where_clause = trim_ascii(where_clause);
+  }
+  if (where_clause.empty()) return false;
+
+  std::vector<std::string> terms;
+  std::vector<Vector_status_where_logical> logical_ops;
+  if (!split_where_terms(where_clause, &terms, &logical_ops)) return false;
+
+  predicates->reserve(terms.size());
+  for (size_t i = 0; i < terms.size(); ++i) {
+    Vector_status_where_predicate predicate;
+    if (!parse_where_term(terms[i], &predicate)) return false;
+    predicate.logical =
+        (i == 0) ? Vector_status_where_logical::kAnd : logical_ops[i - 1];
+    predicates->push_back(std::move(predicate));
+  }
+  return !predicates->empty();
+}
+
+bool vector_status_matches_where(
+    const std::vector<Vector_status_where_predicate> &predicates,
+    const char *section, const char *variable_name, const std::string &value) {
+  auto parse_integer_strict = [](const std::string &text,
+                                 long long *number) -> bool {
+    if (number == nullptr || text.empty()) return false;
+    errno = 0;
+    char *end = nullptr;
+    const long long parsed = std::strtoll(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str() || *end != '\0') return false;
+    *number = parsed;
+    return true;
+  };
+
+  bool have_term = false;
+  bool and_value = true;
+  bool or_value = false;
+
+  for (const Vector_status_where_predicate &predicate : predicates) {
+    const char *candidate_cstr = nullptr;
+    std::string candidate_value;
+
+    switch (predicate.field) {
+      case Vector_status_where_field::kSection:
+        candidate_cstr = section;
+        break;
+      case Vector_status_where_field::kVariableName:
+        candidate_cstr = variable_name;
+        break;
+      case Vector_status_where_field::kValue:
+        candidate_value = value;
+        candidate_cstr = candidate_value.c_str();
+        break;
+    }
+
+    bool matched = false;
+    switch (predicate.op) {
+      case Vector_status_where_op::kLike:
+        matched = (wild_case_compare(system_charset_info, candidate_cstr,
+                                     predicate.value.c_str()) == 0);
+        break;
+      case Vector_status_where_op::kNotLike:
+        matched = (wild_case_compare(system_charset_info, candidate_cstr,
+                                     predicate.value.c_str()) != 0);
+        break;
+      case Vector_status_where_op::kEq:
+        if (predicate.field == Vector_status_where_field::kValue) {
+          matched = (candidate_value == predicate.value);
+        } else {
+          matched = (my_strcasecmp(system_charset_info, candidate_cstr,
+                                   predicate.value.c_str()) == 0);
+        }
+        break;
+      case Vector_status_where_op::kNe:
+        if (predicate.field == Vector_status_where_field::kValue) {
+          matched = (candidate_value != predicate.value);
+        } else {
+          matched = (my_strcasecmp(system_charset_info, candidate_cstr,
+                                   predicate.value.c_str()) != 0);
+        }
+        break;
+      case Vector_status_where_op::kGt:
+      case Vector_status_where_op::kGe:
+      case Vector_status_where_op::kLt:
+      case Vector_status_where_op::kLe: {
+        long long lhs_num = 0;
+        long long rhs_num = 0;
+        if (!parse_integer_strict(candidate_value, &lhs_num) ||
+            !parse_integer_strict(predicate.value, &rhs_num)) {
+          matched = false;
+          break;
+        }
+        if (predicate.op == Vector_status_where_op::kGt) {
+          matched = lhs_num > rhs_num;
+        } else if (predicate.op == Vector_status_where_op::kGe) {
+          matched = lhs_num >= rhs_num;
+        } else if (predicate.op == Vector_status_where_op::kLt) {
+          matched = lhs_num < rhs_num;
+        } else {
+          matched = lhs_num <= rhs_num;
+        }
+        break;
+      }
+    }
+
+    if (!have_term) {
+      and_value = matched;
+      have_term = true;
+      continue;
+    }
+
+    if (predicate.logical == Vector_status_where_logical::kAnd) {
+      and_value = and_value && matched;
+    } else {
+      or_value = or_value || and_value;
+      and_value = matched;
+    }
+  }
+
+  return have_term && (or_value || and_value);
+}
+
+bool send_vector_status_row(Protocol *protocol, Vector_status_section section,
+                            const char *variable_name,
+                            const std::string &value) {
+  protocol->start_row();
+  protocol->store(vector_status_section_name(section), system_charset_info);
+  protocol->store(variable_name, system_charset_info);
+  protocol->store(value.c_str(), system_charset_info);
+  return protocol->end_row();
+}
+
+bool send_vector_index_status_fields(
+    Protocol *protocol, Vector_status_section section,
+    const std::string &index_name,
+    const vector_index_status_fields::field_values &fields, const char *wild,
+    const std::vector<Vector_status_where_predicate> *where_predicates) {
+  for (const vector_index_status_fields::field_value &field : fields) {
+    std::string variable_name = index_name;
+    variable_name += ".";
+    variable_name += field.name;
+    const std::string value = vector_index_status_fields::status_value(field);
+
+    if (!vector_status_matches_wild(wild, variable_name.c_str())) continue;
+    if (where_predicates != nullptr &&
+        !vector_status_matches_where(*where_predicates,
+                                     vector_status_section_name(section),
+                                     variable_name.c_str(), value)) {
+      continue;
+    }
+
+    if (send_vector_status_row(protocol, section, variable_name.c_str(),
+                               value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool vector_status_matches_for_index(const std::string &for_index_name,
+                                     const char *index_name) {
+  if (for_index_name.empty()) return true;
+  return my_strcasecmp(system_charset_info, index_name, for_index_name.c_str()) ==
+         0;
+}
+
+bool send_show_vector_status(
+    THD *thd,
+    const std::vector<Vector_status_where_predicate> *where_predicates,
+    const std::string &for_index_name) {
+  Protocol *protocol = thd->get_protocol();
+  const char *wild = thd->lex->wild ? thd->lex->wild->ptr() : nullptr;
+
+  vector_status::snapshot snapshot;
+  vector_status::read_snapshot(&snapshot);
+
+  const Vector_status_row rows[] = {
+      {"Vector_index_create_requests", Vector_status_section::kGlobalCounters,
+       snapshot.index_create_requests},
+      {"Vector_index_drop_requests", Vector_status_section::kGlobalCounters,
+       snapshot.index_drop_requests},
+      {"Vector_metadata_load_failures", Vector_status_section::kGlobalCounters,
+       snapshot.metadata_load_failures},
+      {"Vector_metadata_persist_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.metadata_persist_failures},
+      {"Vector_committed_load_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.committed_load_failures},
+      {"Vector_committed_persist_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.committed_persist_failures},
+      {"Vector_manifest_load_failures", Vector_status_section::kGlobalCounters,
+       snapshot.manifest_load_failures},
+      {"Vector_manifest_persist_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.manifest_persist_failures},
+      {"Vector_change_log_load_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.change_log_load_failures},
+      {"Vector_change_log_replay_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.change_log_replay_failures},
+      {"Vector_change_log_persist_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.change_log_persist_failures},
+      {"Vector_backend_recover_fallbacks",
+       Vector_status_section::kGlobalCounters,
+       snapshot.backend_recover_fallbacks},
+      {"Vector_rebuild_requests", Vector_status_section::kGlobalCounters,
+       snapshot.rebuild_requests},
+      {"Vector_recover_requests", Vector_status_section::kGlobalCounters,
+       snapshot.recover_requests},
+      {"Vector_rebuild_all_requests", Vector_status_section::kGlobalCounters,
+       snapshot.rebuild_all_requests},
+      {"Vector_recover_all_requests", Vector_status_section::kGlobalCounters,
+       snapshot.recover_all_requests},
+      {"Vector_search_requests", Vector_status_section::kGlobalCounters,
+       snapshot.search_requests},
+      {"Vector_search_failures", Vector_status_section::kGlobalCounters,
+       snapshot.search_failures},
+      {"Vector_search_results_returned", Vector_status_section::kGlobalCounters,
+       snapshot.search_results_returned},
+      {"Vector_search_mvcc_candidate_rows",
+       Vector_status_section::kGlobalCounters,
+       snapshot.search_mvcc_candidate_rows},
+      {"Vector_search_mvcc_expansions",
+       Vector_status_section::kGlobalCounters,
+       snapshot.search_mvcc_expansions},
+      {"Vector_search_mvcc_limit_hits",
+       Vector_status_section::kGlobalCounters,
+       snapshot.search_mvcc_limit_hits},
+      {"Vector_stage_upsert_requests", Vector_status_section::kGlobalCounters,
+       snapshot.stage_upsert_requests},
+      {"Vector_stage_erase_requests", Vector_status_section::kGlobalCounters,
+       snapshot.stage_erase_requests},
+      {"Vector_txn_commit_requests", Vector_status_section::kGlobalCounters,
+       snapshot.txn_commit_requests},
+      {"Vector_txn_commit_failures", Vector_status_section::kGlobalCounters,
+       snapshot.txn_commit_failures},
+      {"Vector_txn_rollback_requests", Vector_status_section::kGlobalCounters,
+       snapshot.txn_rollback_requests},
+      {"Vector_runtime_state_rollbacks",
+       Vector_status_section::kGlobalCounters,
+       snapshot.runtime_state_rollbacks},
+      {"Vector_runtime_state_rollback_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.runtime_state_rollback_failures},
+      {"Vector_persist_artifact_rollbacks",
+       Vector_status_section::kGlobalCounters,
+       snapshot.persist_artifact_rollbacks},
+      {"Vector_persist_artifact_rollback_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.persist_artifact_rollback_failures},
+      {"Vector_truth_store_persist_requests",
+       Vector_status_section::kGlobalCounters,
+       snapshot.truth_store_persist_requests},
+      {"Vector_truth_store_persist_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.truth_store_persist_failures},
+      {"Vector_truth_store_delta_persist_requests",
+       Vector_status_section::kGlobalCounters,
+       snapshot.truth_store_delta_persist_requests},
+      {"Vector_truth_store_delta_persist_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.truth_store_delta_persist_failures},
+      {"Vector_truth_store_compact_requests",
+       Vector_status_section::kGlobalCounters,
+       snapshot.truth_store_compact_requests},
+      {"Vector_truth_store_compact_failures",
+       Vector_status_section::kGlobalCounters,
+       snapshot.truth_store_compact_failures},
+      {"Vector_registered_indexes", Vector_status_section::kGlobalGauges,
+       snapshot.registered_indexes},
+      {"Vector_committed_snapshot_rows", Vector_status_section::kGlobalGauges,
+       snapshot.committed_snapshot_rows},
+      {"Vector_manifest_version", Vector_status_section::kGlobalGauges,
+       snapshot.manifest_version},
+      {"Vector_manifest_metadata_checkpoint",
+       Vector_status_section::kGlobalGauges,
+       snapshot.manifest_metadata_checkpoint},
+      {"Vector_manifest_committed_checkpoint",
+       Vector_status_section::kGlobalGauges,
+       snapshot.manifest_committed_checkpoint},
+      {"Vector_manifest_change_log_checkpoint",
+       Vector_status_section::kGlobalGauges,
+       snapshot.manifest_change_log_checkpoint},
+      {"Vector_pending_txn_changes", Vector_status_section::kGlobalGauges,
+       snapshot.pending_txn_changes},
+      {"Vector_pending_apply_count", Vector_status_section::kSyncPipeline,
+       snapshot.pending_txn_changes},
+      {"Vector_apply_latency_ms", Vector_status_section::kSyncPipeline,
+       snapshot.apply_latency_ms},
+  };
+
+  mem_root_deque<Item *> field_list(thd->mem_root);
+  field_list.push_back(new Item_empty_string("Section", 32));
+  field_list.push_back(new Item_empty_string("Variable_name", 64));
+  field_list.push_back(new Item_empty_string("Value", 64));
+
+  if (thd->send_result_metadata(field_list,
+                                Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
+    return true;
+
+  for (const Vector_status_row &row : rows) {
+    if (!for_index_name.empty()) continue;
+    if (!vector_status_matches_wild(wild, row.name)) continue;
+    const std::string value = std::to_string(row.value);
+    if (where_predicates != nullptr &&
+        !vector_status_matches_where(*where_predicates,
+                                     vector_status_section_name(row.section),
+                                     row.name, value)) {
+      continue;
+    }
+
+    if (send_vector_status_row(protocol, row.section, row.name, value)) {
+      return true;
+    }
+  }
+
+  if (for_index_name.empty()) {
+    const std::pair<const char *, std::string> truth_store_rows[] = {
+        {"Vector_truth_store_backend",
+         vector_index_truth_store::active_backend_name()},
+        {"Vector_truth_store_transactional",
+         vector_index_truth_store::active_backend_transactional() ? "1" : "0"},
+    };
+
+    for (const auto &row : truth_store_rows) {
+      if (!vector_status_matches_wild(wild, row.first)) continue;
+      if (where_predicates != nullptr &&
+          !vector_status_matches_where(
+              *where_predicates,
+              vector_status_section_name(Vector_status_section::kGlobalGauges),
+              row.first, row.second)) {
+        continue;
+      }
+
+      if (send_vector_status_row(protocol, Vector_status_section::kGlobalGauges,
+                                 row.first, row.second)) {
+        return true;
+      }
+    }
+  }
+
+  std::vector<std::string> index_names;
+  if (vector_index_registry::list_indexes(&index_names)) {
+    std::sort(index_names.begin(), index_names.end());
+    uint64_t lifecycle_ready = 0;
+    uint64_t lifecycle_rebuilding = 0;
+    uint64_t lifecycle_recovering = 0;
+    uint64_t lifecycle_failed = 0;
+    uint64_t mode_memory = 0;
+    uint64_t mode_external = 0;
+    uint64_t provider_native = 0;
+    uint64_t provider_faiss = 0;
+    uint64_t provider_diskann = 0;
+    uint64_t provider_hnswlib = 0;
+    uint64_t backend_loaded = 0;
+    uint64_t backend_writable = 0;
+    uint64_t backend_readonly = 0;
+    uint64_t backend_error = 0;
+    uint64_t backend_manifest_present = 0;
+    uint64_t backend_manifest_generation_max = 0;
+    uint64_t pending_apply_total = 0;
+    uint64_t backlog_indexes = 0;
+    uint64_t rebuild_progress_total = 0;
+    uint64_t recover_progress_total = 0;
+    uint64_t progress_index_count = 0;
+
+    for (const std::string &index_name : index_names) {
+      if (!vector_status_matches_for_index(for_index_name, index_name.c_str()))
+        continue;
+      vector_index_registry::index_info info;
+      if (!vector_index_registry::get_index_info(index_name, &info)) continue;
+
+      if (info.lifecycle_state == "ready") {
+        ++lifecycle_ready;
+      } else if (info.lifecycle_state == "rebuilding") {
+        ++lifecycle_rebuilding;
+      } else if (info.lifecycle_state == "recovering") {
+        ++lifecycle_recovering;
+      } else if (info.lifecycle_state == "failed") {
+        ++lifecycle_failed;
+      }
+
+      if (info.mode == "memory") {
+        ++mode_memory;
+      } else if (info.mode == "external") {
+        ++mode_external;
+      }
+
+      if (info.provider == "native") {
+        ++provider_native;
+      } else if (info.provider == "faiss") {
+        ++provider_faiss;
+      } else if (info.provider == "diskann") {
+        ++provider_diskann;
+      } else if (info.provider == "hnswlib") {
+        ++provider_hnswlib;
+      }
+
+      const bool loaded = vector_index_status_fields::is_loaded(info);
+      const bool writable = vector_index_status_fields::is_writable(info);
+      if (loaded) ++backend_loaded;
+      if (writable) {
+        ++backend_writable;
+      } else {
+        ++backend_readonly;
+      }
+      if (info.last_error_code != 0) ++backend_error;
+      if (info.external_manifest_present) ++backend_manifest_present;
+      if (info.external_manifest_generation > backend_manifest_generation_max) {
+        backend_manifest_generation_max = info.external_manifest_generation;
+      }
+
+      vector_index_status_fields::field_values fields;
+      vector_index_status_fields::collect_index_state_fields(info, &fields);
+      if (send_vector_index_status_fields(protocol,
+                                          Vector_status_section::kIndexState,
+                                          index_name, fields, wild,
+                                          where_predicates)) {
+        return true;
+      }
+
+      vector_index_status_fields::collect_backend_health_fields(info, &fields);
+      if (send_vector_index_status_fields(protocol,
+                                          Vector_status_section::kBackendHealth,
+                                          index_name, fields, wild,
+                                          where_predicates)) {
+        return true;
+      }
+
+      const uint64_t pending_apply_count =
+          vector_index_status_fields::pending_apply_count(info);
+      if (pending_apply_count > 0) {
+        pending_apply_total += pending_apply_count;
+        ++backlog_indexes;
+      }
+      const uint64_t rebuild_progress =
+          vector_index_status_fields::rebuild_progress(info);
+      const uint64_t recover_progress =
+          vector_index_status_fields::recover_progress(info);
+      rebuild_progress_total += rebuild_progress;
+      recover_progress_total += recover_progress;
+      ++progress_index_count;
+      vector_index_status_fields::collect_sync_pipeline_fields(info, &fields);
+      if (send_vector_index_status_fields(protocol,
+                                          Vector_status_section::kSyncPipeline,
+                                          index_name, fields, wild,
+                                          where_predicates)) {
+        return true;
+      }
+    }
+
+    if (for_index_name.empty()) {
+      const uint64_t rebuild_progress =
+          progress_index_count == 0 ? 0 : rebuild_progress_total / progress_index_count;
+      const uint64_t recover_progress =
+          progress_index_count == 0 ? 0 : recover_progress_total / progress_index_count;
+      const Vector_status_row backend_rows[] = {
+          {"Vector_backend_loaded_indexes",
+           Vector_status_section::kBackendHealth, backend_loaded},
+          {"Vector_backend_writable_indexes",
+           Vector_status_section::kBackendHealth, backend_writable},
+          {"Vector_backend_readonly_indexes",
+           Vector_status_section::kBackendHealth, backend_readonly},
+          {"Vector_backend_error_indexes",
+           Vector_status_section::kBackendHealth, backend_error},
+          {"Vector_backend_manifest_present_indexes",
+           Vector_status_section::kBackendHealth, backend_manifest_present},
+          {"Vector_backend_manifest_generation_max",
+           Vector_status_section::kBackendHealth,
+           backend_manifest_generation_max},
+          {"Vector_backend_mode_memory_indexes",
+           Vector_status_section::kBackendHealth, mode_memory},
+          {"Vector_backend_mode_external_indexes",
+           Vector_status_section::kBackendHealth, mode_external},
+          {"Vector_backend_provider_native_indexes",
+           Vector_status_section::kBackendHealth, provider_native},
+          {"Vector_backend_provider_faiss_indexes",
+           Vector_status_section::kBackendHealth, provider_faiss},
+          {"Vector_backend_provider_diskann_indexes",
+           Vector_status_section::kBackendHealth, provider_diskann},
+          {"Vector_backend_provider_hnswlib_indexes",
+           Vector_status_section::kBackendHealth, provider_hnswlib},
+          {"Vector_backend_lifecycle_ready_indexes",
+           Vector_status_section::kBackendHealth, lifecycle_ready},
+          {"Vector_backend_lifecycle_rebuilding_indexes",
+           Vector_status_section::kBackendHealth, lifecycle_rebuilding},
+          {"Vector_backend_lifecycle_recovering_indexes",
+           Vector_status_section::kBackendHealth, lifecycle_recovering},
+          {"Vector_backend_lifecycle_failed_indexes",
+           Vector_status_section::kBackendHealth, lifecycle_failed},
+          {"Vector_rebuild_progress", Vector_status_section::kSyncPipeline,
+           rebuild_progress},
+          {"Vector_recover_progress", Vector_status_section::kSyncPipeline,
+           recover_progress},
+          {"Vector_pending_apply_total", Vector_status_section::kSyncPipeline,
+           pending_apply_total},
+          {"Vector_backlog_indexes", Vector_status_section::kSyncPipeline,
+           backlog_indexes},
+      };
+
+      for (const Vector_status_row &row : backend_rows) {
+        if (!vector_status_matches_wild(wild, row.name)) continue;
+        const std::string value = std::to_string(row.value);
+        if (where_predicates != nullptr &&
+            !vector_status_matches_where(*where_predicates,
+                                         vector_status_section_name(row.section),
+                                         row.name, value)) {
+          continue;
+        }
+
+        if (send_vector_status_row(protocol, row.section, row.name, value)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  my_eof(thd);
+  return false;
+}
+
+}  // namespace
+
+bool Sql_cmd_show_vector_status::check_privileges(THD *thd) {
+  return check_global_access(thd, PROCESS_ACL);
+}
+
+bool Sql_cmd_show_vector_status::execute_inner(THD *thd) {
+  std::vector<Vector_status_where_predicate> where_predicates;
+  if (has_where_clause() &&
+      !parse_vector_status_where_clause(thd, &where_predicates)) {
+    my_error(ER_NOT_SUPPORTED_YET, MYF(0),
+             "SHOW VECTOR STATUS WHERE only supports "
+             "Section|Variable_name|Value with =, !=, <>, LIKE, NOT LIKE, "
+             "Value > >= < <= and "
+             "optional AND/OR");
+    return true;
+  }
+
+  return send_show_vector_status(thd,
+                                 where_predicates.empty() ? nullptr
+                                                          : &where_predicates,
+                                 for_index_name());
+}
+#else
+bool Sql_cmd_show_vector_status::check_privileges(THD *thd) {
+  return check_global_access(thd, PROCESS_ACL);
+}
+
+bool Sql_cmd_show_vector_status::execute_inner(THD *) {
+  my_error(ER_NOT_SUPPORTED_YET, MYF(0), "SHOW VECTOR STATUS");
+  return true;
+}
+#endif
 
 bool Sql_cmd_show_events::check_privileges(THD *thd) {
   const char *db = thd->lex->query_block->db;
@@ -1922,6 +2868,14 @@ static void print_foreign_key_info(THD *thd, const LEX_CSTRING *db,
   }
 }
 
+#ifdef HAVE_VECTOR_INDEX
+static void append_vector_index_create_info(THD *thd, TABLE *table,
+                                            const char *alias,
+                                            const LEX_CSTRING *db,
+                                            bool show_database,
+                                            String *packet);
+#endif
+
 /**
   Build a CREATE TABLE statement for a table.
 
@@ -2613,6 +3567,12 @@ bool store_create_info(THD *thd, Table_ref *table_list, String *packet,
       }
     }
   }
+#ifdef HAVE_VECTOR_INDEX
+  if (for_show_create_stmt) {
+    append_vector_index_create_info(thd, table, alias, db, show_database,
+                                    packet);
+  }
+#endif
   return error;
 }
 
@@ -2673,6 +3633,45 @@ static void store_key_options(THD *thd, String *packet, TABLE *table,
     }
   }
 }
+
+#ifdef HAVE_VECTOR_INDEX
+static void append_vector_index_create_info(THD *thd, TABLE *table,
+                                            const char *alias,
+                                            const LEX_CSTRING *db,
+                                            bool show_database,
+                                            String *packet) {
+  if (thd == nullptr || table == nullptr || alias == nullptr || db == nullptr ||
+      packet == nullptr) {
+    return;
+  }
+
+  std::vector<std::string> index_names;
+  if (!vector_index_registry::list_indexes(&index_names)) return;
+
+  const std::string prefix =
+      std::string(table->s->db.str) + "." + table->s->table_name.str + ".";
+  std::sort(index_names.begin(), index_names.end());
+
+  for (const std::string &index_name : index_names) {
+    if (index_name.rfind(prefix, 0) != 0) continue;
+
+    vector_index_registry::index_info info;
+    if (!vector_index_registry::get_index_info(index_name, &info)) continue;
+
+    const std::string column_name = index_name.substr(prefix.size());
+    if (column_name.empty()) continue;
+    const bool qualify_table =
+        show_database && (!thd->db().str || strcmp(db->str, thd->db().str));
+    vector_index_ddl_formatter::append_create_statement(
+        thd, packet, db->str, db->length, alias, strlen(alias), qualify_table,
+        column_name, info,
+        vector_index_ddl_formatter::provider_build_threads(info));
+    vector_index_ddl_formatter::append_tuning_statements(
+        thd, packet, index_name, info,
+        vector_index_ddl_formatter::tuning_emit_policy::k_skip_defaults);
+  }
+}
+#endif
 
 void view_store_options(const THD *thd, Table_ref *table, String *buff) {
   append_algorithm(table, buff);

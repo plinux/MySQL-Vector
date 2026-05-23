@@ -79,6 +79,9 @@ Create_field::Create_field(Field *old_field, Field *orig_field)
       stored_in_db(old_field->stored_in_db),
       m_default_val_expr(old_field->m_default_val_expr),
       is_array(old_field->is_array()),
+#ifdef HAVE_VECTOR_INDEX
+      vector_dim(0),
+#endif
       m_engine_attribute(old_field->m_engine_attribute),
       m_secondary_engine_attribute(old_field->m_secondary_engine_attribute),
       m_max_display_width_in_codepoints(old_field->char_length()) {
@@ -115,6 +118,23 @@ Create_field::Create_field(Field *old_field, Field *orig_field)
     interval = down_cast<Field_enum *>(old_field)->typelib;
   else
     interval = nullptr;
+
+#ifdef HAVE_VECTOR_INDEX
+  if (old_field->is_flag_set(FIELD_IS_VECTOR)) {
+    static constexpr uint32 kVectorElementSize = sizeof(float);
+    /*
+      Vector dimension must follow the exact persisted payload width.
+      For BLOB-backed vector columns, max_display_length() may reflect
+      generic BLOB display metadata instead of vector payload bytes.
+    */
+    const uint32 field_bytes = static_cast<uint32>(old_field->field_length);
+    if (field_bytes > 0 && field_bytes % kVectorElementSize == 0) {
+      vector_dim = field_bytes / kVectorElementSize;
+    } else {
+      vector_dim = old_field->max_display_length() / kVectorElementSize;
+    }
+  }
+#endif
   constant_default = nullptr;
 
   /*
@@ -210,6 +230,9 @@ bool Create_field::init(
   field = nullptr;
   field_name = fld_name;
   flags = fld_type_modifier;
+#ifdef HAVE_VECTOR_INDEX
+  vector_dim = 0;
+#endif
   is_explicit_collation = (fld_charset != nullptr);
 
   if (!has_explicit_collation && fld_charset == &my_charset_utf8mb4_0900_ai_ci)
@@ -586,6 +609,9 @@ void Create_field::init_for_tmp_table(enum_field_types sql_type_arg,
 
   field_name = fld_name;
   sql_type = sql_type_arg;
+#ifdef HAVE_VECTOR_INDEX
+  vector_dim = 0;
+#endif
   m_max_display_width_in_codepoints = length_arg;
   auto_flags = Field::NONE;
   interval = nullptr;

@@ -2263,6 +2263,41 @@ class PT_create_index_stmt final : public PT_table_ddl_stmt_base {
   const Alter_info::enum_alter_table_lock m_lock;
 };
 
+class PT_create_vector_index_stmt final : public PT_table_ddl_stmt_base {
+ public:
+  PT_create_vector_index_stmt(MEM_ROOT *mem_root, bool if_not_exists,
+                              Table_ident *table_ident,
+                              const LEX_STRING &column_name, size_t dimension,
+                              const LEX_STRING &metric,
+                              const LEX_STRING &mode,
+                              const LEX_STRING &provider,
+                              bool build_threads_specified,
+                              uint32_t build_threads)
+      : PT_table_ddl_stmt_base(mem_root),
+        m_if_not_exists(if_not_exists),
+        m_table_ident(table_ident),
+        m_column_name(column_name),
+        m_dimension(dimension),
+        m_metric(metric),
+        m_mode(mode),
+        m_provider(provider),
+        m_build_threads_specified(build_threads_specified),
+        m_build_threads(build_threads) {}
+
+  Sql_cmd *make_cmd(THD *thd) override;
+
+ private:
+  bool m_if_not_exists;
+  Table_ident *m_table_ident;
+  LEX_STRING m_column_name;
+  size_t m_dimension;
+  LEX_STRING m_metric;
+  LEX_STRING m_mode;
+  LEX_STRING m_provider;
+  bool m_build_threads_specified;
+  uint32_t m_build_threads;
+};
+
 /**
   Base class for column/constraint definitions in CREATE %TABLE
 
@@ -3678,6 +3713,22 @@ class PT_show_status final : public PT_show_filter_base {
   enum_var_type m_var_type;
 };
 
+/// Parse tree node for SHOW VECTOR STATUS statement
+
+class PT_show_vector_status final : public PT_show_filter_base {
+ public:
+  PT_show_vector_status(const POS &pos, const LEX_STRING &for_index_name,
+                        const LEX_STRING &wild, Item *where)
+      : PT_show_filter_base(pos, SQLCOM_SHOW_STATUS, wild, where),
+        m_for_index_name(for_index_name) {}
+
+  Sql_cmd *make_cmd(THD *thd) override;
+
+ private:
+  LEX_STRING m_for_index_name;
+  Sql_cmd_show_vector_status m_sql_cmd;
+};
+
 /// Parse tree node for SHOW STATUS FUNCTION statement
 
 class PT_show_status_func final : public PT_show_filter_base {
@@ -4742,6 +4793,24 @@ class PT_drop_index_stmt final : public PT_table_ddl_stmt_base {
   Alter_info::enum_alter_table_lock m_lock;
 
   Alter_drop m_alter_drop;
+};
+
+class PT_drop_vector_index_stmt final : public PT_table_ddl_stmt_base {
+ public:
+  PT_drop_vector_index_stmt(MEM_ROOT *mem_root, bool if_exists,
+                            Table_ident *table_ident,
+                            const LEX_STRING &column_name)
+      : PT_table_ddl_stmt_base(mem_root),
+        m_if_exists(if_exists),
+        m_table_ident(table_ident),
+        m_column_name(column_name) {}
+
+  Sql_cmd *make_cmd(THD *thd) override;
+
+ private:
+  bool m_if_exists;
+  Table_ident *m_table_ident;
+  LEX_STRING m_column_name;
 };
 
 class PT_truncate_table_stmt final : public Parse_tree_root {

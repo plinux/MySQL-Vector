@@ -1,0 +1,18 @@
+#
+# WL#vector-v1: SHOW VECTOR STATUS privilege checks
+#
+DROP USER IF EXISTS 'vec_acl_user'@'localhost';
+Warnings:
+Note	3162	Authorization ID 'vec_acl_user'@'localhost' does not exist.
+CREATE USER 'vec_acl_user'@'localhost';
+SHOW VECTOR STATUS;
+ERROR 42000: Access denied; you need (at least one of) the PROCESS privilege(s) for this operation
+GRANT PROCESS ON *.* TO 'vec_acl_user'@'localhost';
+SHOW VECTOR STATUS LIKE 'Vector_registered_indexes';
+Section	Variable_name	Value
+GLOBAL_GAUGES	Vector_registered_indexes	<num>
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_GAUGES'
+  AND Variable_name = 'Vector_registered_indexes';
+Section	Variable_name	Value
+GLOBAL_GAUGES	Vector_registered_indexes	0
+DROP USER 'vec_acl_user'@'localhost';

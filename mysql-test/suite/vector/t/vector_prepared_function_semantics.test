@@ -1,0 +1,55 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # WL#vector-v1: prepared statement coverage for scalar vector functions
+--echo #
+
+PREPARE stmt_fromtext FROM
+  'SELECT HEX(VEC_FROMTEXT(?))';
+SET @txt = '[1,2]';
+EXECUTE stmt_fromtext USING @txt;
+DEALLOCATE PREPARE stmt_fromtext;
+
+PREPARE stmt_totext FROM
+  'SELECT VEC_TOTEXT(?)';
+SET @vec = VEC_FROMTEXT('[1,2]');
+EXECUTE stmt_totext USING @vec;
+DEALLOCATE PREPARE stmt_totext;
+
+PREPARE stmt_dim FROM
+  'SELECT VECTOR_DIM(?)';
+EXECUTE stmt_dim USING @vec;
+DEALLOCATE PREPARE stmt_dim;
+
+PREPARE stmt_normalize FROM
+  'SELECT HEX(VEC_NORMALIZE(?))';
+SET @norm_vec = VEC_FROMTEXT('[3,4]');
+EXECUTE stmt_normalize USING @norm_vec;
+DEALLOCATE PREPARE stmt_normalize;
+
+PREPARE stmt_dot FROM
+  'SELECT VEC_DOT_PRODUCT(?, ?)';
+SET @lhs = VEC_FROMTEXT('[1,2]');
+SET @rhs = VEC_FROMTEXT('[4,6]');
+EXECUTE stmt_dot USING @lhs, @rhs;
+DEALLOCATE PREPARE stmt_dot;
+
+PREPARE stmt_distance FROM
+  'SELECT VEC_DISTANCE(?, ?, ?)';
+SET @metric = 'EUCLIDEAN';
+EXECUTE stmt_distance USING @lhs, @rhs, @metric;
+DEALLOCATE PREPARE stmt_distance;
+
+PREPARE stmt_distance_bad FROM
+  'SELECT VEC_DISTANCE(?, ?, ?)';
+SET @bad_rhs = VEC_FROMTEXT('[4]');
+--error ER_WRONG_ARGUMENTS
+EXECUTE stmt_distance_bad USING @lhs, @bad_rhs, @metric;
+DEALLOCATE PREPARE stmt_distance_bad;
+
+PREPARE stmt_totext_bad FROM
+  'SELECT VEC_TOTEXT(?)';
+SET @bad_text = 'bad';
+--error ER_WRONG_ARGUMENTS
+EXECUTE stmt_totext_bad USING @bad_text;
+DEALLOCATE PREPARE stmt_totext_bad;

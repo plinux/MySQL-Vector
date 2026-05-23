@@ -882,11 +882,32 @@ static Field *make_field(const dd::Column &col_obj, const CHARSET_INFO *charset,
     column_options.get("treat_bit_as_char", &treat_bit_as_char);
   }
 
+#ifndef HAVE_VECTOR_INDEX
   return make_field(*THR_MALLOC, share, ptr, field_length, null_pos, null_bit,
                     field_type, charset, geom_type, auto_flags, interval, name,
                     col_obj.is_nullable(), col_obj.is_zerofill(),
                     col_obj.is_unsigned(), decimals, treat_bit_as_char, 0,
                     col_obj.srs_id(), col_obj.is_array());
+#else
+  Field *field = make_field(*THR_MALLOC, share, ptr, field_length, null_pos,
+                            null_bit, field_type, charset, geom_type,
+                            auto_flags, interval, name, col_obj.is_nullable(),
+                            col_obj.is_zerofill(), col_obj.is_unsigned(),
+                            decimals, treat_bit_as_char, 0, col_obj.srs_id(),
+                            col_obj.is_array());
+  bool is_vector = false;
+  if (column_options.exists("is_vector"))
+    column_options.get("is_vector", &is_vector);
+  uint32 vector_dim = 0;
+  if (column_options.exists("vector_dim"))
+    column_options.get("vector_dim", &vector_dim);
+  if (field != nullptr && is_vector) {
+    static constexpr uint32 kVectorElementSize = sizeof(float);
+    field->set_flag(FIELD_IS_VECTOR);
+    if (vector_dim > 0) field->set_field_length(vector_dim * kVectorElementSize);
+  }
+  return field;
+#endif
 }
 
 /**

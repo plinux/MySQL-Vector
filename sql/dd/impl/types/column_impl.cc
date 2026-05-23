@@ -64,10 +64,18 @@ class Abstract_table;
 class Sdi_rcontext;
 class Sdi_wcontext;
 
+#ifdef HAVE_VECTOR_INDEX
+static const std::set<String_type> default_valid_option_keys = {
+    "column_format", "geom_type", "interval_count",
+    "not_secondary", "storage",   "treat_bit_as_char",
+    "is_array",      "is_vector", "vector_dim",
+    "gipk" /* generated implicit primary key column */};
+#else
 static const std::set<String_type> default_valid_option_keys = {
     "column_format", "geom_type", "interval_count",
     "not_secondary", "storage",   "treat_bit_as_char",
     "is_array",      "gipk" /* generated implicit primary key column */};
+#endif
 
 ///////////////////////////////////////////////////////////////////////////
 // Column_impl implementation.

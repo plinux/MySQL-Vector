@@ -1,0 +1,320 @@
+/* Copyright (c) 2026, Oracle and/or its affiliates.
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
+
+   This program is designed to work with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License, version 2.0, for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+
+#include "sql/vector/item_vectorfunc.h"
+
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "mysqld_error.h"
+#include "sql/vector/item_vectorfunc_internal.h"
+#include "sql/vector/vector_index_limits.h"
+#include "sql/vector/vector_index_registry.h"
+
+namespace {
+
+bool decode_vector_batch_arg(Item *arg, String *buf, size_t query_count,
+                             std::vector<vector_index::vector_data> *queries) {
+  if (queries == nullptr || query_count == 0) return false;
+
+  const String *value = nullptr;
+  if (!eval_vector_arg(arg, buf, &value)) return false;
+
+  const size_t byte_length = value->length();
+  if (byte_length == 0 || byte_length % query_count != 0) return false;
+
+  const size_t bytes_per_query = byte_length / query_count;
+  if (bytes_per_query == 0 ||
+      bytes_per_query % vector_utils::kVectorElemSize != 0) {
+    return false;
+  }
+
+  const size_t dim = bytes_per_query / vector_utils::kVectorElemSize;
+  const uchar *ptr = reinterpret_cast<const uchar *>(value->ptr());
+  queries->clear();
+  queries->reserve(query_count);
+  for (size_t query_idx = 0; query_idx < query_count; ++query_idx) {
+    vector_index::vector_data query;
+    query.reserve(dim);
+    const uchar *query_ptr = ptr + query_idx * bytes_per_query;
+    for (size_t dim_idx = 0; dim_idx < dim; ++dim_idx) {
+      query.push_back(
+          float4get(query_ptr + dim_idx * vector_utils::kVectorElemSize));
+    }
+    queries->push_back(std::move(query));
+  }
+  return true;
+}
+
+bool parse_search_top_k(longlong top_k_ll, size_t *top_k) {
+  if (top_k == nullptr || top_k_ll < 0 ||
+      static_cast<uint64_t>(top_k_ll) > vector_index::k_max_search_top_k) {
+    return false;
+  }
+
+  *top_k = static_cast<size_t>(top_k_ll);
+  return true;
+}
+
+bool parse_search_batch_bounds(longlong query_count_ll, longlong top_k_ll,
+                               size_t *query_count, size_t *top_k) {
+  if (query_count == nullptr || query_count_ll <= 0 ||
+      static_cast<uint64_t>(query_count_ll) >
+          vector_index::k_max_search_batch_count) {
+    return false;
+  }
+  if (!parse_search_top_k(top_k_ll, top_k)) return false;
+
+  const size_t parsed_query_count = static_cast<size_t>(query_count_ll);
+  if (*top_k != 0 &&
+      parsed_query_count >
+          vector_index::k_max_search_batch_results / *top_k) {
+    return false;
+  }
+
+  *query_count = parsed_query_count;
+  return true;
+}
+
+}  // namespace
+
+bool Item_func_vec_index_info::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 1)) return true;
+  const uint32 max_chars =
+      static_cast<uint32>(MAX_BLOB_WIDTH / default_charset()->mbmaxlen);
+  set_data_type_string(max_chars, default_charset());
+  set_nullable(true);
+  return false;
+}
+
+String *Item_func_vec_index_info::val_str(String *str [[maybe_unused]]) {
+  assert(fixed && arg_count == 1);
+  null_value = true;
+
+  String name_buf;
+  const String *name = args[0]->val_str(&name_buf);
+  if (name == nullptr || args[0]->null_value) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  std::string index_name;
+  to_std_string(name, &index_name);
+  vector_index_registry::index_info info;
+  if (!vector_index_registry::get_index_info(index_name, &info)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  m_value.set_charset(default_charset());
+  if (!format_vector_index_info_json(info, &m_value, &m_number_buf)) {
+    return error_str();
+  }
+
+  null_value = false;
+  return &m_value;
+}
+
+bool Item_func_vec_index_list::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 0)) return true;
+  const uint32 max_chars =
+      static_cast<uint32>(MAX_BLOB_WIDTH / default_charset()->mbmaxlen);
+  set_data_type_string(max_chars, default_charset());
+  set_nullable(false);
+  return false;
+}
+
+String *Item_func_vec_index_list::val_str(String *str [[maybe_unused]]) {
+  assert(fixed && arg_count == 0);
+  null_value = true;
+
+  std::vector<std::string> index_names;
+  if (!vector_index_registry::list_indexes(&index_names)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  m_value.set_charset(default_charset());
+  if (!format_vector_index_list_json(index_names, &m_value)) {
+    return error_str();
+  }
+  null_value = false;
+  return &m_value;
+}
+
+bool Item_func_vec_index_search::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 3)) return true;
+  const uint32 max_chars =
+      static_cast<uint32>(MAX_BLOB_WIDTH / default_charset()->mbmaxlen);
+  set_data_type_string(max_chars, default_charset());
+  set_nullable(true);
+  return false;
+}
+
+String *Item_func_vec_index_search::val_str(String *str [[maybe_unused]]) {
+  assert(fixed && arg_count == 3);
+  null_value = true;
+
+  String name_buf;
+  const String *name = args[0]->val_str(&name_buf);
+  const longlong top_k_ll = args[2]->val_int();
+  size_t top_k = 0;
+  if (name == nullptr || args[0]->null_value || args[2]->null_value ||
+      !parse_search_top_k(top_k_ll, &top_k)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  vector_index::vector_data query;
+  String query_buf;
+  if (!decode_vector_arg(args[1], &query_buf, &query)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  std::string index_name;
+  to_std_string(name, &index_name);
+
+  std::vector<vector_index::search_result> results;
+  if (!vector_index_registry::search_for_thd_txn(
+          current_thd, static_cast<uint64_t>(current_thd->thread_id()),
+          index_name, query, top_k, &results)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  m_value.set_charset(default_charset());
+  if (!format_vector_search_result_doc_ids(results, &m_value,
+                                                &m_number_buf)) {
+    return error_str();
+  }
+  null_value = false;
+  return &m_value;
+}
+
+bool Item_func_vec_index_search_batch::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 4)) return true;
+  const uint32 max_chars =
+      static_cast<uint32>(MAX_BLOB_WIDTH / default_charset()->mbmaxlen);
+  set_data_type_string(max_chars, default_charset());
+  set_nullable(true);
+  return false;
+}
+
+String *Item_func_vec_index_search_batch::val_str(
+    String *str [[maybe_unused]]) {
+  assert(fixed && arg_count == 4);
+  null_value = true;
+
+  String name_buf;
+  const String *name = args[0]->val_str(&name_buf);
+  const longlong query_count_ll = args[2]->val_int();
+  const longlong top_k_ll = args[3]->val_int();
+  size_t query_count = 0;
+  size_t top_k = 0;
+  if (name == nullptr || args[0]->null_value || args[2]->null_value ||
+      args[3]->null_value ||
+      !parse_search_batch_bounds(query_count_ll, top_k_ll, &query_count,
+                                 &top_k)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  std::vector<vector_index::vector_data> queries;
+  String query_buf;
+  if (!decode_vector_batch_arg(args[1], &query_buf, query_count, &queries)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  std::string index_name;
+  to_std_string(name, &index_name);
+
+  std::vector<std::vector<vector_index::search_result>> batches;
+  if (!vector_index_registry::search_batch_for_thd_txn(
+          current_thd, static_cast<uint64_t>(current_thd->thread_id()),
+          index_name, queries, top_k, &batches)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  m_value.set_charset(default_charset());
+  if (!format_vector_search_result_batches(batches, &m_value, &m_number_buf)) {
+    return error_str();
+  }
+  null_value = false;
+  return &m_value;
+}
+
+bool Item_func_vec_index_search_with_distance::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 3)) return true;
+  const uint32 max_chars =
+      static_cast<uint32>(MAX_BLOB_WIDTH / default_charset()->mbmaxlen);
+  set_data_type_string(max_chars, default_charset());
+  set_nullable(true);
+  return false;
+}
+
+String *Item_func_vec_index_search_with_distance::val_str(
+    String *str [[maybe_unused]]) {
+  assert(fixed && arg_count == 3);
+  null_value = true;
+
+  String name_buf;
+  const String *name = args[0]->val_str(&name_buf);
+  const longlong top_k_ll = args[2]->val_int();
+  size_t top_k = 0;
+  if (name == nullptr || args[0]->null_value || args[2]->null_value ||
+      !parse_search_top_k(top_k_ll, &top_k)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  vector_index::vector_data query;
+  String query_buf;
+  if (!decode_vector_arg(args[1], &query_buf, &query)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  std::string index_name;
+  to_std_string(name, &index_name);
+
+  std::vector<vector_index::search_result> results;
+  if (!vector_index_registry::search_for_thd_txn(
+          current_thd, static_cast<uint64_t>(current_thd->thread_id()),
+          index_name, query, top_k, &results)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
+
+  m_value.set_charset(default_charset());
+  if (!format_vector_search_results_with_distance(results, &m_value,
+                                                       &m_number_buf)) {
+    return error_str();
+  }
+  null_value = false;
+  return &m_value;
+}

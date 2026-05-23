@@ -707,6 +707,19 @@ bool fill_dd_columns_from_create_fields(THD *thd, dd::Abstract_table *tab_obj,
     if (field.flags & NOT_SECONDARY_FLAG)
       col_options->set("not_secondary", true);
 
+#ifdef HAVE_VECTOR_INDEX
+    if (field.flags & FIELD_IS_VECTOR) {
+      static constexpr uint32 kVectorElementSize = sizeof(float);
+      const uint32 vector_dim =
+          field.vector_dim > 0
+              ? field.vector_dim
+              : static_cast<uint32>(field.max_display_width_in_bytes() /
+                                    kVectorElementSize);
+      col_options->set("is_vector", true);
+      col_options->set("vector_dim", vector_dim);
+    }
+#endif
+
     if (field.is_array) {
       col_options->set("is_array", true);
     }

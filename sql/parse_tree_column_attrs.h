@@ -27,6 +27,11 @@
 #include <assert.h>
 #include <sys/types.h>  // ulong, uint. TODO: replace with cstdint
 
+#ifdef HAVE_VECTOR_INDEX
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#endif
 #include <optional>
 #include <type_traits>
 #include <vector>
@@ -941,6 +946,68 @@ class PT_json_type : public PT_type {
  public:
   PT_json_type() : PT_type(MYSQL_TYPE_JSON) {}
   const CHARSET_INFO *get_charset() const override { return &my_charset_bin; }
+};
+
+/**
+  Node for VECTOR(dim) pseudo type.
+
+  It is currently mapped to a binary BLOB storage layout with max byte length
+  computed as dim * sizeof(float), so that the SQL layer can expose VECTOR(dim)
+  syntax while storage stays on existing LOB paths.
+
+  @ingroup ptn_column_types
+*/
+class PT_vector_type : public PT_type {
+  const char *dim;
+  char length_buf[32];
+  const char *length{nullptr};
+
+ public:
+  explicit PT_vector_type(const char *dim)
+      : PT_type(MYSQL_TYPE_BLOB), dim(dim), length_buf{} {}
+
+  bool contextualize(Parse_context *pc) override {
+#ifndef HAVE_VECTOR_INDEX
+    (void)pc;
+    my_error(ER_NOT_SUPPORTED_YET, MYF(0), "VECTOR type");
+    return true;
+#else
+    if (PT_type::contextualize(pc)) return true;
+    if (dim == nullptr || *dim == '\0') {
+      my_error(ER_INVALID_FIELD_SIZE, MYF(0), "VECTOR");
+      return true;
+    }
+
+    char *end = nullptr;
+    errno = 0;
+    const ulonglong vector_dim = strtoull(dim, &end, 10);
+    if (errno != 0 || end == dim || *end != '\0' || vector_dim == 0) {
+      my_error(ER_INVALID_FIELD_SIZE, MYF(0), "VECTOR");
+      return true;
+    }
+
+    constexpr ulonglong kElemSize = sizeof(float);
+    constexpr ulonglong kMaxVectorDim = Field::MAX_LONG_BLOB_WIDTH / kElemSize;
+    if (vector_dim > kMaxVectorDim) {
+      my_error(ER_TOO_BIG_DISPLAYWIDTH, MYF(0), "VECTOR", kMaxVectorDim);
+      return true;
+    }
+
+    const ulonglong byte_length = vector_dim * kElemSize;
+    std::snprintf(length_buf, sizeof(length_buf), "%llu", byte_length);
+    length = length_buf;
+    return false;
+#endif
+  }
+
+#ifdef HAVE_VECTOR_INDEX
+  ulong get_type_flags() const override { return FIELD_IS_VECTOR; }
+  const CHARSET_INFO *get_charset() const override { return &my_charset_bin; }
+#else
+  ulong get_type_flags() const override { return 0; }
+  const CHARSET_INFO *get_charset() const override { return nullptr; }
+#endif
+  const char *get_length() const override { return length; }
 };
 
 /**
