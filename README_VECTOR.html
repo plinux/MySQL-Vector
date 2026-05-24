@@ -1,0 +1,3135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MySQL Vector Guide</title>
+  <style>
+    :root {
+      --bg: #f7f3ec;
+      --paper: #fffdf8;
+      --ink: #1e2528;
+      --muted: #687276;
+      --line: #d9d0c2;
+      --accent: #0f766e;
+      --accent-2: #b45309;
+      --code: #10202a;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: radial-gradient(circle at top left, #e0f2f1, transparent 28rem), var(--bg); color: var(--ink); font: 16px/1.65 ui-serif, Georgia, Cambria, "Times New Roman", serif; }
+    main { max-width: 1360px; margin: 0 auto; padding: 24px 24px 80px; }
+    .tabs { position: sticky; top: 0; z-index: 4; display: flex; gap: 10px; padding: 12px 0; background: color-mix(in srgb, var(--bg), transparent 10%); backdrop-filter: blur(10px); }
+    button { border: 1px solid var(--line); background: var(--paper); color: var(--ink); border-radius: 999px; padding: 8px 16px; cursor: pointer; font-weight: 700; }
+    button.active { background: var(--accent); border-color: var(--accent); color: white; }
+    article { display: none; background: var(--paper); border: 1px solid var(--line); border-radius: 22px; padding: 24px; box-shadow: 0 18px 50px rgba(55, 45, 30, 0.08); }
+    article.active { display: block; }
+    h1, h2, h3, h4 { line-height: 1.2; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    h1 { font-size: clamp(2rem, 4vw, 3.3rem); margin: 0 0 12px; }
+    h2 { margin-top: 2.2rem; border-top: 1px solid var(--line); padding-top: 1.4rem; }
+    h3 { color: var(--accent); }
+    a { color: var(--accent); }
+    code { background: #efe8dc; border: 1px solid #e4d8c8; border-radius: 6px; padding: 0.08rem 0.28rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+    pre { overflow: auto; background: var(--code); color: #edf7f5; border-radius: 14px; padding: 16px; line-height: 1.45; }
+    pre code { background: transparent; border: 0; color: inherit; padding: 0; }
+    table { display: block; overflow-x: auto; width: 100%; border-collapse: collapse; margin: 1rem 0; border: 1px solid var(--line); border-radius: 14px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: #eee5d7; font-family: ui-sans-serif, system-ui, sans-serif; }
+    tr:last-child td { border-bottom: 0; }
+    blockquote { border-left: 4px solid var(--accent-2); margin-left: 0; padding: 0.5rem 1rem; background: #fff7ed; color: #78410a; }
+    .doc-layout { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); gap: 24px; align-items: start; margin-top: 24px; }
+    .doc-body { min-width: 0; }
+    .toc { position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow: auto; border: 1px solid var(--line); border-radius: 16px; background: #fdf7ed; padding: 16px 18px; margin: 0; }
+    .toc h2 { border-top: 0; margin-top: 0; padding-top: 0; }
+    .toc ul { columns: 1; padding-left: 1.2rem; }
+    @media (max-width: 900px) {
+      .doc-layout { display: block; }
+      .toc { position: static; max-height: none; margin: 24px 0; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <nav class="tabs" aria-label="Language selector">
+      <button class="active" type="button" data-target="doc-cn">中文完整手册</button>
+      <button type="button" data-target="doc-en">English reference</button>
+    </nav>
+    <article id="doc-cn" class="active">
+<h1>MySQL Vector 使用说明</h1>
+<p>MySQL Vector 是向量能力扩展，用于在 MySQL 内保存向量、构建向量索引，并通过 SQL 完成语义检索、推荐召回、多模态相似度匹配等工作负载。本手册说明公开 SQL、DDL、构建参数、运行时变量、状态观测和运维建议。</p>
+<h2 id="cn-supported-versions">支持版本</h2>
+<table>
+<thead>
+<tr>
+<th>MySQL 版本</th>
+<th>MySQL 分支</th>
+<th>HNSW版本</th>
+<th>FAISS版本</th>
+<th>DiskANN 版本</th>
+<th>DiskANN补丁路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MySQL 8.0.46</td>
+<td><a href="../../tree/mysql-vector-8046">mysql-vector-8046</a></td>
+<td><a href="https://github.com/nmslib/hnswlib/commit/d9b3608c83d83b46c96e25088cb1d729b29dcfe9">v0.9.0</a></td>
+<td><a href="https://github.com/facebookresearch/faiss/commit/ca87f41dfe58336245a013118e38ddaad0f7cab3">v1.14.2-5-gca87f41df</a></td>
+<td><a href="https://github.com/microsoft/DiskANN/commit/e3139b4838f20f1ffa36a600ef1fce403e68f92f">diskann-garnet-v1.0.27</a></td>
+<td><a href="extra/vector/diskann-garnet-bulk-build-c-abi.patch">extra/vector/diskann-garnet-bulk-build-c-abi.patch</a></td>
+</tr>
+</tbody>
+</table>
+<h3>已验证测试套件分支</h3>
+<p>测试套件和三方软件需要适配 MySQL-Vector 接口才能使用，已经适配的版本如下，可以提取补丁使用。</p>
+<table>
+<thead>
+<tr>
+<th>测试套件</th>
+<th>软件版本 / 基线</th>
+<th>已验证分支</th>
+<th>已验证提交</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/plinux/ann-benchmarks">ANN-Benchmarks</a></td>
+<td><code>f402b2c</code></td>
+<td><a href="https://github.com/plinux/ann-benchmarks/tree/mysql-vector-connector-f402b2c">mysql-vector-connector-f402b2c</a></td>
+<td><code>87cc631596291fa69d41fd4ad431211fa5f92e12</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/plinux/VectorDBBench">VectorDBBench</a></td>
+<td><code>v1.0.22</code></td>
+<td><a href="https://github.com/plinux/VectorDBBench/tree/mysql-vector-connector-1.0.22">mysql-vector-connector-1.0.22</a></td>
+<td><code>9672bbfccf4579f716dac56f0882acf290dd01df</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/plinux/mem0">Mem0</a></td>
+<td><code>v2.0.2</code></td>
+<td><a href="https://github.com/plinux/mem0/tree/mysql-vector-connector-2.0.2">mysql-vector-connector-2.0.2</a></td>
+<td><code>ad9d2f5e76c51015c6f2a2c610bf4669ce9d4278</code></td>
+</tr>
+</tbody>
+</table>
+<div class="doc-layout">
+<nav class="toc" aria-label="中文目录">
+<h2>目录</h2>
+<ul>
+<li><a href="#cn-supported-versions">支持版本</a></li>
+<li><a href="#cn-build">构建依赖配置</a></li>
+<li><a href="#cn-runtime-vars">运行时系统变量</a></li>
+<li><a href="#cn-upgrade-guard">升级保护参数</a></li>
+<li><a href="#cn-vector-columns">向量列</a></li>
+<li><a href="#cn-vector-functions">基础向量函数和枚举参数</a></li>
+<li><a href="#cn-named-index-functions">独立命名索引函数</a></li>
+<li><a href="#cn-transaction-functions">显式事务缓冲函数</a></li>
+<li><a href="#cn-table-ddl">表级 DDL</a></li>
+<li><a href="#cn-status">状态查看</a></li>
+<li><a href="#cn-usage">使用建议</a></li>
+</ul>
+</nav>
+<div class="doc-body">
+<h2 id="cn-build">0. 构建依赖配置</h2>
+<p>向量相关可选依赖优先通过 CMake 参数传入，而不是写死本机路径。</p>
+<p>当前支持的参数：</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HAVE_VECTOR_INDEX</code></td>
+<td>是否编译 MySQL Vector 特性；向量版本必须显式设置为 <code>ON</code></td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_FAISS_ROOT</code></td>
+<td>Faiss 安装根目录</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_FAISS_INCLUDE_DIR</code></td>
+<td>Faiss 头文件目录</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_FAISS_LIBRARY_DIR</code></td>
+<td>Faiss 库目录</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_HNSWLIB_ROOT</code></td>
+<td>hnswlib 安装根目录</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_HNSWLIB_INCLUDE_DIR</code></td>
+<td>hnswlib 头文件目录</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_DISKANN_LIB</code></td>
+<td>DiskANN 共享库完整路径</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_DISKANN_LIB_DIR</code></td>
+<td>DiskANN 共享库目录</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_ENABLE_NATIVE_SIMD</code></td>
+<td>是否在编译器支持时为 native 向量后端启用 CPU-native SIMD 编译；默认 <code>ON</code></td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_FAISS_OPT_LEVEL</code></td>
+<td>Faiss 源码编译时的 CPU SIMD 目标；默认留空，由 MySQL 按平台选择</td>
+</tr>
+</tbody>
+</table>
+<p>说明：</p>
+<ul>
+<li>编译向量版本时必须显式传 <code>-DHAVE_VECTOR_INDEX=ON</code>。如果传
+  <code>-DHAVE_VECTOR_INDEX=OFF</code> 或不启用该选项，服务端会构建为无向量标准 MySQL 行为版本：
+  不注册向量函数、向量状态变量、向量事务插件和向量 DD truth-store；
+  <code>VECTOR(dim)</code>、<code>CREATE/DROP VECTOR INDEX</code>、<code>SHOW VECTOR STATUS</code> 等入口会返回
+  不支持。</li>
+<li><code>Faiss</code> 在两种模式下工作：</li>
+<li>若 <code>MYSQL_VECTOR_FAISS_ROOT</code> 指向的是带 <code>CMakeLists.txt</code> 的 Faiss 源码树，MySQL 会在构建时直接把 CPU 版 Faiss 一起编出来。</li>
+<li>否则回退到传统模式，由 CMake 查找已有的 Faiss 头文件和库文件。</li>
+<li>Linux 源码编译 Faiss 且 <code>MYSQL_VECTOR_ENABLE_NATIVE_SIMD=ON</code> 时，默认等价于
+  <code>MYSQL_VECTOR_FAISS_OPT_LEVEL=dd</code>，使用 Faiss 主库的运行时 SIMD dispatch；
+  需要通用二进制时显式传 <code>-DMYSQL_VECTOR_FAISS_OPT_LEVEL=generic</code>。</li>
+<li><code>hnswlib</code> 当前按 header-only 方式集成；<code>MYSQL_VECTOR_HNSWLIB_ROOT</code> 可以直接指向源码树根目录，CMake 会把它作为子目录纳入构建，不要求预先生成独立库文件。</li>
+<li><code>MYSQL_VECTOR_ENABLE_NATIVE_SIMD=ON</code> 时，CMake 会仅对
+  <code>sql/vector/vector_index_backend_hnswlib.cc</code> 选择编译器支持的 <code>-march=native</code>
+  或 <code>-mcpu=native</code>。这会让 hnswlib 的 header-only 距离计算实例化为当前 CPU
+  可用的 SIMD 路径；如需构建可搬移到不同 CPU 型号的通用二进制，显式传
+  <code>-DMYSQL_VECTOR_ENABLE_NATIVE_SIMD=OFF</code>。</li>
+<li>hnswlib 批量查询默认使用最多 <code>4</code> 个只读 worker；如需在 benchmark 中调优，启动
+  <code>mysqld</code> 前设置环境变量 <code>MYSQL_VECTOR_HNSWLIB_BATCH_SEARCH_THREADS</code>。当前实现会把
+  该值限制到硬件线程数和 <code>32</code> 之间。</li>
+<li>如果 Faiss 或其他向量依赖在当前系统上通过 OpenBLAS 或 OpenMP 解析 BLAS 符号，且测试中
+  观察到内部 worker 线程干扰 <code>mysqld</code> 信号处理或 benchmark 可重复性，可以只限制对应
+  <code>mysqld</code> 或独立 benchmark 实例的启动环境。不要把这类向量测试环境变量写入
+  <code>mysqld_safe</code>、systemd 模板或其他上游启动脚本；标准 MySQL 构建和无向量构建必须保留
+  上游启动行为。MTR 中不要在 <code>mysql-test-run.pl</code> 进程环境里 <code>export</code> 这些变量，否则
+  可能影响 MTR 对 <code>NUMBER_OF_CPUS</code> 的判断，使 resource group 类用例误 skip。
+  例如：</li>
+</ul>
+<pre><code class="language-bash">cmake --build &quot;${BUILD_DEBUG_DIR}&quot; --target mysqld
+
+cd &quot;${BUILD_DEBUG_DIR}/mysql-test&quot;
+./mysql-test-run.pl --suite=vector \
+  --mysqld-env=OPENBLAS_NUM_THREADS=1 \
+  --mysqld-env=OMP_NUM_THREADS=1 \
+  --mysqld-env=GOTO_NUM_THREADS=1
+</code></pre>
+<p>如果测试框架之外直接启动 <code>mysqld</code> 或 benchmark client，也应在该进程的全局执行环境中
+设置这些变量，而不是依赖 MySQL 启动脚本自动注入。</p>
+<ul>
+<li>hnswlib bulk build / rebuild 默认使用硬件线程数，并在实际执行时限制到工作量、硬件线程数和
+  <code>65535</code> 个 worker 之内；也可以通过
+  全局系统变量 <code>vector_hnsw_build_threads</code> 指定新建 HNSWLIB 索引的默认并行度，或在
+  <code>VEC_INDEX_CREATE(..., build_threads)</code> /
+  <code>CREATE VECTOR INDEX ... WITH (..., build_threads)</code> 中为单个索引指定。该参数在
+  HNSWLIB 索引元数据中保存为 <code>hnsw_build_threads</code>。语句级参数
+  大于 <code>0</code> 时优先级高于全局变量；语句级 <code>0</code> 表示继承全局设置，全局也为 <code>0</code> 时才使用自动策略。</li>
+<li>Faiss build / rebuild 依赖 Faiss 自身的 OpenMP 并行路径；可以通过全局系统变量
+  <code>vector_faiss_build_threads</code> 指定新建 FAISS 索引的默认 OpenMP worker 数，或在
+  <code>VEC_INDEX_CREATE(..., build_threads)</code> /
+  <code>CREATE VECTOR INDEX ... WITH (..., build_threads)</code> 中为单个索引指定。语句级参数
+  大于 <code>0</code> 时优先级高于全局变量；语句级 <code>0</code> 表示继承全局设置，全局也为 <code>0</code> 时交给
+  Faiss/OpenMP 自动选择。取值范围为 <code>0..65535</code>。</li>
+<li>DiskANN native build 默认兼容官方 <code>libdiskann_garnet</code> 串行 C ABI：如果运行时只提供
+  <code>create_index</code> 和 <code>insert</code>，MySQL-Vector 会逐条调用 <code>insert</code> 完成 shadow build，
+  <code>vector_diskann_build_threads</code> 和语句级 <code>build_threads</code> 只记录在索引配置中，不会改变
+  官方串行 ABI 的并行度。若需要实验性的 DiskANN 并行 bulk build，先在 DiskANN Garnet
+  源码上应用 <code>extra/vector/diskann-garnet-bulk-build-c-abi.patch</code>，重新构建
+  <code>libdiskann_garnet</code>；MySQL-Vector 只有在运行时同时探测到
+  <code>create_index_with_build_threads</code> 和 <code>bulk_insert</code> 两个扩展符号时，才会把
+  <code>build_threads</code> 传给 DiskANN 并调用 <code>bulk_insert</code>。该并行路径目前用于性能实验；稳定
+  场景优先使用官方串行 ABI。</li>
+<li><code>vector_diskann_build_threads</code> 可指定新建 DiskANN 索引的默认并行度，或在
+  <code>VEC_INDEX_CREATE(..., build_threads)</code> /
+  <code>CREATE VECTOR INDEX ... WITH (..., build_threads)</code> 中为单个索引指定。语句级参数
+  大于 <code>0</code> 时优先级高于全局变量；语句级 <code>0</code> 表示继承全局设置，全局也为 <code>0</code> 时由
+  DiskANN runtime 自动选择；显式取值范围为 <code>0..65535</code>。在未应用上述实验 ABI patch 的
+  官方串行 DiskANN 共享库上，该参数只保留配置语义，不产生并行效果。</li>
+<li><code>DiskANN</code> 当前在运行时通过 <code>dlopen()</code> 加载 <code>libdiskann_garnet</code>，因此需要传共享库完整路径，或至少传共享库目录。</li>
+<li><code>MYSQL_VECTOR_DISKANN_LIB_DIR</code> 必须指向实际包含 <code>libdiskann_garnet.dylib</code> / <code>libdiskann_garnet.so</code> 的目录，而不是任意上层目录。</li>
+<li>CMake 也会读取同名环境变量
+  <code>MYSQL_VECTOR_FAISS_ROOT</code>、<code>MYSQL_VECTOR_FAISS_INCLUDE_DIR</code>、
+  <code>MYSQL_VECTOR_FAISS_LIBRARY_DIR</code>、<code>MYSQL_VECTOR_HNSWLIB_ROOT</code>、
+  <code>MYSQL_VECTOR_HNSWLIB_INCLUDE_DIR</code>、<code>MYSQL_VECTOR_DISKANN_LIB</code> 和
+  <code>MYSQL_VECTOR_DISKANN_LIB_DIR</code> 作为默认值，便于本地临时构建；可复现构建和 CI
+  应优先显式传 CMake 参数。</li>
+</ul>
+<p>示例：</p>
+<pre><code class="language-bash">BUILD_ROOT=../build/mysql-vector
+BUILD_DEBUG_DIR=&quot;${BUILD_ROOT}/build-debug&quot;
+BOOST_ROOT=&quot;${BUILD_ROOT}/deps&quot;
+FAISS_ROOT=../deps/FAISS
+HNSWLIB_ROOT=../deps/HNSWLib
+DISKANN_LIB_DIR=../deps/DiskANN/target/release
+
+cmake -S . -B &quot;${BUILD_DEBUG_DIR}&quot; -G Ninja \
+-DCMAKE_BUILD_TYPE=Debug \
+-DWITH_DEBUG=1 \
+-DHAVE_VECTOR_INDEX=ON \
+-DWITH_NDB=OFF \
+-DWITH_NDBCLUSTER_STORAGE_ENGINE=OFF \
+-DDOWNLOAD_BOOST=1 \
+-DWITH_BOOST=&quot;${BOOST_ROOT}&quot; \
+-DMYSQL_VECTOR_FAISS_ROOT=&quot;${FAISS_ROOT}&quot; \
+-DMYSQL_VECTOR_HNSWLIB_ROOT=&quot;${HNSWLIB_ROOT}&quot; \
+-DMYSQL_VECTOR_DISKANN_LIB_DIR=&quot;${DISKANN_LIB_DIR}&quot;
+</code></pre>
+<p>DiskANN 实验并行 ABI patch 示例：</p>
+<pre><code class="language-bash">MYSQL_SOURCE_DIR=.
+DISKANN_SOURCE_DIR=../deps/DiskANN
+
+git -C &quot;${DISKANN_SOURCE_DIR}&quot; apply \
+&quot;${MYSQL_SOURCE_DIR}/extra/vector/diskann-garnet-bulk-build-c-abi.patch&quot;
+cargo build --manifest-path &quot;${DISKANN_SOURCE_DIR}/Cargo.toml&quot; \
+-p diskann-garnet --release
+</code></pre>
+<p>如果不应用该 patch，官方 <code>libdiskann_garnet</code> 仍可被 MySQL-Vector 加载，DiskANN build /
+rebuild 会回退到串行 <code>insert</code> 路径。</p>
+<p>如果不想在 MySQL 构建时编译 Faiss，也可以继续显式指定已有库：</p>
+<pre><code class="language-bash">FAISS_INSTALL_ROOT=../deps/faiss-install
+FAISS_LIBRARY_DIR=&quot;${FAISS_INSTALL_ROOT}/lib&quot;
+
+-DMYSQL_VECTOR_FAISS_ROOT=&quot;${FAISS_INSTALL_ROOT}&quot; \
+-DMYSQL_VECTOR_FAISS_LIBRARY_DIR=&quot;${FAISS_LIBRARY_DIR}&quot;
+</code></pre>
+<h2 id="cn-runtime-vars">0.1 运行时系统变量</h2>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>作用域</th>
+<th>默认值</th>
+<th>取值范围</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vector_hnsw_build_threads</code></td>
+<td>Global dynamic</td>
+<td><code>0</code></td>
+<td><code>0..65535</code></td>
+<td>新建 HNSWLIB 索引默认 build/rebuild worker 数；<code>0</code> 表示自动</td>
+</tr>
+<tr>
+<td><code>vector_faiss_build_threads</code></td>
+<td>Global dynamic</td>
+<td><code>0</code></td>
+<td><code>0..65535</code></td>
+<td>新建 FAISS 索引默认 build/rebuild OpenMP worker 数；<code>0</code> 表示交给 Faiss/OpenMP 自动选择</td>
+</tr>
+<tr>
+<td><code>vector_diskann_build_threads</code></td>
+<td>Global dynamic</td>
+<td><code>0</code></td>
+<td><code>0..65535</code></td>
+<td>新建 DiskANN 索引默认 build/rebuild worker 数；<code>0</code> 表示交给 DiskANN runtime 自动选择</td>
+</tr>
+<tr>
+<td><code>innodb_vector_upgrade_require_clean_shutdown</code></td>
+<td>Global read only, non-persistent</td>
+<td><code>OFF</code></td>
+<td><code>OFF</code> / <code>ON</code></td>
+<td>启动期升级保护；开启后禁止带 redo recovery 的旧数据目录直接升级到向量 DD 版本</td>
+</tr>
+</tbody>
+</table>
+<p>实际执行案例：</p>
+<pre><code class="language-sql">mysql&gt; SELECT @@global.vector_hnsw_build_threads AS hnsw_threads,
+            @@global.vector_faiss_build_threads AS faiss_threads,
+            @@global.vector_diskann_build_threads AS diskann_threads,
+            @@global.innodb_vector_upgrade_require_clean_shutdown AS clean_shutdown_required;
++--------------+---------------+-----------------+-------------------------+
+| hnsw_threads | faiss_threads | diskann_threads | clean_shutdown_required |
++--------------+---------------+-----------------+-------------------------+
+|            0 |             0 |               0 |                       0 |
++--------------+---------------+-----------------+-------------------------+
+
+mysql&gt; SET GLOBAL vector_hnsw_build_threads = 4;
+
+mysql&gt; SELECT @@global.vector_hnsw_build_threads AS hnsw_threads;
++--------------+
+| hnsw_threads |
++--------------+
+|            4 |
++--------------+
+
+mysql&gt; SET GLOBAL vector_hnsw_build_threads = 65536;
+ERROR 42000: Variable 'vector_hnsw_build_threads' can't be set to the value of '65536'
+
+mysql&gt; SET GLOBAL innodb_vector_upgrade_require_clean_shutdown = ON;
+ERROR HY000: Variable 'innodb_vector_upgrade_require_clean_shutdown' is a read only variable
+</code></pre>
+<p><code>vector_faiss_build_threads</code> 和 <code>vector_diskann_build_threads</code> 的可见性、动态修改语义和
+<code>0..65535</code> 范围校验与 <code>vector_hnsw_build_threads</code> 一致。语句级
+<code>build_threads</code> 大于 <code>0</code> 时优先于对应全局变量；语句级 <code>0</code> 表示继承全局变量。</p>
+<h2 id="cn-upgrade-guard">0.2 升级保护参数</h2>
+<p>从没有向量数据字典的旧版本升级到向量版本时，推荐先使用旧版本执行一次干净关机：</p>
+<pre><code class="language-sql">SET GLOBAL innodb_fast_shutdown = 0;
+</code></pre>
+<p>然后正常关闭旧版本，再启动向量版本。</p>
+<p>向量版本提供启动参数：</p>
+<pre><code class="language-ini">innodb_vector_upgrade_require_clean_shutdown = ON
+</code></pre>
+<p>该参数默认 <code>OFF</code>，不改变 MySQL 原有升级行为。若设置为 <code>ON</code>，服务器在升级到向量数据
+字典版本前会检查本次启动是否执行了 InnoDB redo recovery；如果旧数据目录需要 redo
+恢复，则拒绝升级并要求先回到旧版本用 <code>innodb_fast_shutdown=0</code> 干净关机后再升级。</p>
+<p>使用建议：</p>
+<ul>
+<li>生产升级窗口建议显式设置
+  <code>--innodb-vector-upgrade-require-clean-shutdown=ON</code>，把“旧版本异常关机后直接升级到向量
+  版本”的场景提前阻断。</li>
+<li>若已有升级流程可以保证旧版本干净关机，该参数可以保持默认 <code>OFF</code>。</li>
+<li>该参数是启动期只读参数，不能在运行时修改，也不会被 <code>SET PERSIST</code> 持久化。</li>
+</ul>
+<h2 id="cn-vector-columns">1. 向量列</h2>
+<h3>1.1 语法</h3>
+<pre><code class="language-sql">VECTOR(dim)
+</code></pre>
+<ul>
+<li><code>dim</code> 必须是正整数。</li>
+<li><code>SHOW CREATE TABLE</code>、<code>SHOW COLUMNS</code>、<code>DESCRIBE</code>、<code>INFORMATION_SCHEMA</code>
+  中都显示为 <code>VECTOR(dim)</code>。</li>
+</ul>
+<p>示例：</p>
+<pre><code class="language-sql">CREATE TABLE t_vec (
+id BIGINT PRIMARY KEY,
+emb VECTOR(4)
+) ENGINE=InnoDB;
+</code></pre>
+<h3>1.2 写入建议</h3>
+<ul>
+<li>文本字面量建议统一先通过 <code>VEC_FROMTEXT('[1,2,3]')</code> 转成内部向量值。</li>
+<li>写入值的维度必须和列定义一致，否则会报错。</li>
+</ul>
+<h2 id="cn-vector-functions">2. 基础向量函数和枚举参数</h2>
+<p>本节示例输出来自当前分支编译出的 <code>8.0.46-debug</code> 二进制，在独立本地实例中通过
+<code>mysql --table --raw</code> 实际执行得到。浮点数按客户端真实输出展示。</p>
+<p>注册表中还存在 <code>VEC_DEBUG_TRUTH_STORE_GET_HEX()</code> 和
+<code>VEC_DEBUG_TRUTH_STORE_SET_HEX()</code>。它们只在 Debug/MTR 构建中注册，用于故障注入和
+恢复测试；Release 构建不会注册这些内部破坏性入口，也不作为用户接口记录在本手册
+主路径中。</p>
+<h3>2.1 枚举参数</h3>
+<p><code>metric</code>、<code>mode</code>、<code>provider</code> 解析不区分大小写，前后空白会被忽略。</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>支持值</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>metric</code></td>
+<td><code>EUCLIDEAN</code>、<code>L2</code></td>
+<td>欧氏距离，返回 <code>sqrt(sum((lhs-rhs)^2))</code>，值越小越相似</td>
+</tr>
+<tr>
+<td><code>metric</code></td>
+<td><code>COSINE</code></td>
+<td>余弦距离，返回 <code>1 - cosine_similarity</code>，值越小越相似，零向量不可计算</td>
+</tr>
+<tr>
+<td><code>metric</code></td>
+<td><code>IP</code>、<code>INNER_PRODUCT</code></td>
+<td>内积距离。<code>VEC_INNER_PRODUCT()</code> 返回原始内积；<code>VEC_DISTANCE(..., 'IP')</code> 返回 <code>-dot(lhs,rhs)</code>，用于保持“距离越小越相似”的排序语义</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td><code>MEMORY</code></td>
+<td>内存服务态索引</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td><code>EXTERNAL</code></td>
+<td>带外部持久化 sidecar 的索引</td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td><code>NATIVE</code></td>
+<td>内置后端，支持 <code>MEMORY</code> 和 <code>EXTERNAL</code></td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td><code>FAISS</code></td>
+<td>Faiss 后端，常用于 <code>EXTERNAL</code>；支持 <code>hnsw</code>、<code>ivf_flat</code>、<code>ivf_pq</code> 变体</td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td><code>DISKANN</code></td>
+<td>DiskANN 后端，只支持 <code>EXTERNAL</code></td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td><code>HNSWLIB</code>、<code>HNSW</code></td>
+<td>hnswlib 后端，只支持 <code>MEMORY</code></td>
+</tr>
+</tbody>
+</table>
+<p>不支持的 <code>mode/provider</code> 组合会在创建索引时失败，例如 <code>DISKANN/MEMORY</code> 和
+<code>HNSWLIB/EXTERNAL</code>。</p>
+<h3>2.2 基础函数参考</h3>
+<table>
+<thead>
+<tr>
+<th>函数名</th>
+<th>函数行为</th>
+<th>输入参数含义</th>
+<th>返回值含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VEC_FROMTEXT(text)</code></td>
+<td>把文本向量字面量编码成 MySQL 内部 <code>VECTOR</code> 二进制格式</td>
+<td><code>text</code>：形如 <code>'[1,2,3]'</code> 的浮点数组文本</td>
+<td>二进制向量值；直接展示不可读，排查时用 <code>HEX(...)</code> 或 <code>VEC_TOTEXT(...)</code></td>
+</tr>
+<tr>
+<td><code>VEC_TOTEXT(vector_expr)</code></td>
+<td>把内部二进制向量解码为文本</td>
+<td><code>vector_expr</code>：<code>VECTOR</code> 列值或 <code>VEC_FROMTEXT(...)</code> 结果</td>
+<td>文本向量，如 <code>[1,2,3]</code></td>
+</tr>
+<tr>
+<td><code>VECTOR_DIM(vector_expr)</code></td>
+<td>读取向量维度</td>
+<td><code>vector_expr</code>：二进制向量值</td>
+<td>向量元素个数</td>
+</tr>
+<tr>
+<td><code>VEC_NORMALIZE(vector_expr)</code></td>
+<td>对向量做 L2 归一化</td>
+<td><code>vector_expr</code>：非零二进制向量值</td>
+<td>归一化后的二进制向量</td>
+</tr>
+<tr>
+<td><code>VEC_DOT_PRODUCT(lhs, rhs)</code></td>
+<td>计算两个同维向量点积</td>
+<td><code>lhs</code>、<code>rhs</code>：同维二进制向量值</td>
+<td>原始点积 <code>sum(lhs[i] * rhs[i])</code></td>
+</tr>
+<tr>
+<td><code>VEC_INNER_PRODUCT(lhs, rhs)</code></td>
+<td>计算两个同维向量内积</td>
+<td><code>lhs</code>、<code>rhs</code>：同维二进制向量值</td>
+<td>原始内积；当前与 <code>VEC_DOT_PRODUCT()</code> 等价</td>
+</tr>
+<tr>
+<td><code>VEC_DISTANCE_EUCLIDEAN(lhs, rhs)</code></td>
+<td>计算两个同维向量欧氏距离</td>
+<td><code>lhs</code>、<code>rhs</code>：同维二进制向量值</td>
+<td><code>sqrt(sum((lhs-rhs)^2))</code></td>
+</tr>
+<tr>
+<td><code>VEC_DISTANCE_COSINE(lhs, rhs)</code></td>
+<td>计算两个同维向量余弦距离</td>
+<td><code>lhs</code>、<code>rhs</code>：同维非零二进制向量值</td>
+<td><code>1 - cosine_similarity</code></td>
+</tr>
+<tr>
+<td><code>VEC_DISTANCE(lhs, rhs[, metric])</code></td>
+<td>按指定度量计算通用距离</td>
+<td><code>lhs</code>、<code>rhs</code>：同维二进制向量值；<code>metric</code>：可选，见 2.1</td>
+<td>距离值；<code>IP</code>/<code>INNER_PRODUCT</code> 返回负内积，以保持距离升序语义</td>
+</tr>
+</tbody>
+</table>
+<p>说明：</p>
+<ul>
+<li><code>VEC_FROMTEXT()</code> 的直接返回值是内部二进制向量，手工排查时建议用 <code>HEX(...)</code> 或
+  <code>VEC_TOTEXT(...)</code> 包起来查看。</li>
+<li><code>VEC_NORMALIZE()</code> 对零向量会报错。</li>
+<li>如果输入是文本字面量，建议先用 <code>VEC_FROMTEXT(...)</code> 包起来；索引查询函数也接受
+  文本字面量，但统一显式转换更利于排查客户端编码问题。</li>
+</ul>
+<p>基础函数实际执行案例：</p>
+<pre><code class="language-sql">mysql&gt; SELECT HEX(VEC_FROMTEXT('[1,2,3]')) AS vec_fromtext_hex;
++--------------------------+
+| vec_fromtext_hex         |
++--------------------------+
+| 0000803F0000004000004040 |
++--------------------------+
+
+mysql&gt; SELECT VEC_TOTEXT(VEC_FROMTEXT('[1,2,3]')) AS vec_totext;
++------------+
+| vec_totext |
++------------+
+| [1,2,3]    |
++------------+
+
+mysql&gt; SELECT VECTOR_DIM(VEC_FROMTEXT('[1,2,3]')) AS vector_dim;
++------------+
+| vector_dim |
++------------+
+|          3 |
++------------+
+
+mysql&gt; SELECT VEC_TOTEXT(VEC_NORMALIZE(VEC_FROMTEXT('[3,4]'))) AS normalized;
++----------------------------------------+
+| normalized                             |
++----------------------------------------+
+| [0.6000000238418579,0.800000011920929] |
++----------------------------------------+
+
+mysql&gt; SELECT VEC_DOT_PRODUCT(VEC_FROMTEXT('[1,2,3]'), VEC_FROMTEXT('[4,5,6]')) AS dot_product;
++-------------+
+| dot_product |
++-------------+
+|          32 |
++-------------+
+
+mysql&gt; SELECT VEC_INNER_PRODUCT(VEC_FROMTEXT('[1,2,3]'), VEC_FROMTEXT('[4,5,6]')) AS inner_product;
++---------------+
+| inner_product |
++---------------+
+|            32 |
++---------------+
+
+mysql&gt; SELECT VEC_DISTANCE_EUCLIDEAN(VEC_FROMTEXT('[0,0]'), VEC_FROMTEXT('[3,4]')) AS l2_distance;
++-------------+
+| l2_distance |
++-------------+
+|           5 |
++-------------+
+
+mysql&gt; SELECT VEC_DISTANCE_COSINE(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')) AS cosine_distance;
++-----------------+
+| cosine_distance |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT VEC_DISTANCE(VEC_FROMTEXT('[0,0]'), VEC_FROMTEXT('[3,4]'), 'L2') AS distance_l2;
++-------------+
+| distance_l2 |
++-------------+
+|           5 |
++-------------+
+
+mysql&gt; SELECT VEC_DISTANCE(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]'), 'COSINE') AS distance_cosine;
++-----------------+
+| distance_cosine |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT VEC_DISTANCE(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[3,4]'), 'IP') AS distance_ip;
++-------------+
+| distance_ip |
++-------------+
+|         -11 |
++-------------+
+</code></pre>
+<h2 id="cn-named-index-functions">3. 独立命名索引函数</h2>
+<p>独立命名索引由 <code>VEC_INDEX_CREATE()</code> 创建，不绑定表列，不会出现在 <code>SHOW CREATE TABLE</code>
+中。调用方需要显式 <code>UPSERT</code>、<code>ERASE</code>、事务提交、重建和恢复。</p>
+<p>默认值：</p>
+<ul>
+<li><code>metric='euclidean'</code></li>
+<li><code>mode='memory'</code></li>
+<li><code>provider='native'</code></li>
+</ul>
+<h3>3.1 生命周期、写入和查询函数参考</h3>
+<table>
+<thead>
+<tr>
+<th>函数名</th>
+<th>函数行为</th>
+<th>输入参数含义</th>
+<th>返回值含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VEC_INDEX_CREATE(index_name, dim[, metric[, mode[, provider[, build_threads]]]])</code></td>
+<td>创建独立命名向量索引</td>
+<td><code>index_name</code>：索引名；<code>dim</code>：维度；<code>metric</code>、<code>mode</code>、<code>provider</code>：可选枚举，见 2.1；<code>build_threads</code>：HNSWLIB、FAISS 或 DiskANN build / rebuild worker 数，<code>0</code> 表示继承对应 provider 的全局设置</td>
+<td><code>1</code> 表示创建成功，失败时报错</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_DROP(index_name)</code></td>
+<td>删除独立命名向量索引</td>
+<td><code>index_name</code>：索引名</td>
+<td><code>1</code> 表示删除成功，<code>0</code> 表示索引不存在或未删除</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_UPSERT(index_name, doc_id, vector_expr)</code></td>
+<td>插入或覆盖一个文档向量</td>
+<td><code>index_name</code>：索引名；<code>doc_id</code>：无符号 64 位整数文档 ID；<code>vector_expr</code>：向量值</td>
+<td><code>1</code> 表示写入成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_ERASE(index_name, doc_id)</code></td>
+<td>删除一个文档向量</td>
+<td><code>index_name</code>：索引名；<code>doc_id</code>：无符号 64 位整数文档 ID</td>
+<td><code>1</code> 表示删除成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SEARCH(index_name, query_vector_expr, top_k)</code></td>
+<td>近邻搜索，只返回文档 ID</td>
+<td><code>index_name</code>：索引名；<code>query_vector_expr</code>：查询向量；<code>top_k</code>：候选数量，范围 <code>0..10000</code>，<code>0</code> 返回空结果</td>
+<td>JSON 文本数组，如 <code>[1,2]</code></td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SEARCH_BATCH(index_name, query_batch_expr, query_count, top_k)</code></td>
+<td>批量近邻搜索，只返回文档 ID；无 pending 事务和 mapped MVCC 回表过滤时可走后端批量并行搜索</td>
+<td><code>index_name</code>：索引名；<code>query_batch_expr</code>：<code>query_count</code> 个同维二进制向量的连续拼接；<code>query_count</code>：查询数量，范围 <code>1..1024</code>；<code>top_k</code>：每个查询返回数量，范围 <code>0..10000</code>；<code>query_count * top_k</code> 不能超过 <code>65536</code></td>
+<td>JSON 文本二维数组，如 <code>[[1,2],[2,1]]</code></td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SEARCH_WITH_DISTANCE(index_name, query_vector_expr, top_k)</code></td>
+<td>近邻搜索，返回文档 ID 和距离</td>
+<td>参数同 <code>VEC_INDEX_SEARCH()</code></td>
+<td>JSON 文本数组，元素包含 <code>doc_id</code> 和 <code>distance</code></td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_INFO(index_name)</code></td>
+<td>查询索引配置、状态和计数</td>
+<td><code>index_name</code>：索引名</td>
+<td>JSON 文本对象</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_LIST()</code></td>
+<td>列出当前注册的向量索引</td>
+<td>无</td>
+<td>JSON 文本数组，元素为索引名</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_BULK_LOAD_BEGIN(index_name)</code></td>
+<td>进入 bulk-load 模式，后续事务只写 committed truth rows，暂不更新 serving backend</td>
+<td><code>index_name</code>：索引名；要求该索引没有未提交 staged 变更</td>
+<td><code>1</code> 表示进入 bulk-load 成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_BULK_BUILD(index_name)</code></td>
+<td>从 committed truth rows 构建 shadow backend 并原子替换 serving backend；hnswlib 后端按索引配置的 <code>hnsw_build_threads</code> 并行建图；Faiss 后端按索引配置的 <code>faiss_build_threads</code> 设置 OpenMP worker；DiskANN native 后端优先探测实验扩展 ABI，存在 <code>create_index_with_build_threads</code> 和 <code>bulk_insert</code> 时调用 <code>bulk_insert</code> 批量建图，否则回退到官方串行 <code>insert</code> 路径；构建期 native store 先写内存，成功后一次性 flush 到持久化目录，成功路径不生成 FAISS/DiskANN sidecar</td>
+<td><code>index_name</code>：索引名</td>
+<td><code>1</code> 表示 bulk build 成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_REBUILD(index_name)</code></td>
+<td>用 committed entries 重建单个索引服务态；实现上使用 shadow backend，锁内捕获快照，锁外构建，成功后再短锁校验并替换 live backend；hnswlib 后端可并行建图；Faiss 后端可临时设置 OpenMP worker；DiskANN native 后端按运行时 ABI 能力选择实验 bulk insert 或官方串行 insert，并使用同一构建期内存 store flush 路径</td>
+<td><code>index_name</code>：索引名</td>
+<td><code>1</code> 表示重建成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_RECOVER(index_name)</code></td>
+<td>从持久化 sidecar 或 committed entries 恢复单个索引；锁外构建 recovered shadow backend，成功后短锁安装</td>
+<td><code>index_name</code>：索引名</td>
+<td><code>1</code> 表示恢复成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_REBUILD_ALL()</code></td>
+<td>重建全部已注册索引；锁外逐个构建 shadow backend，全部校验通过后批量安装</td>
+<td>无</td>
+<td>成功重建的索引数量</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_RECOVER_ALL()</code></td>
+<td>恢复全部已注册索引；锁外逐个构建 recovered shadow backend，全部校验通过后批量安装</td>
+<td>无</td>
+<td>成功恢复的索引数量</td>
+</tr>
+</tbody>
+</table>
+<p><code>VEC_INDEX_LIST()</code>、<code>VEC_INDEX_SEARCH()</code>、<code>VEC_INDEX_SEARCH_BATCH()</code>、
+<code>VEC_INDEX_SEARCH_WITH_DISTANCE()</code> 和 <code>VEC_INDEX_INFO()</code> 返回的是 JSON 文本，不是原生
+JSON 列类型。</p>
+<p>生命周期、写入和查询函数实际执行案例：</p>
+<pre><code class="language-sql">mysql&gt; SELECT VEC_INDEX_CREATE('idx_fn', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE') AS create_idx_fn;
++---------------+
+| create_idx_fn |
++---------------+
+|             1 |
++---------------+
+
+mysql&gt; SELECT VEC_INDEX_UPSERT('idx_fn', 1, VEC_FROMTEXT('[0,0]')) AS upsert_1;
++----------+
+| upsert_1 |
++----------+
+|        1 |
++----------+
+
+mysql&gt; SELECT VEC_INDEX_UPSERT('idx_fn', 2, VEC_FROMTEXT('[3,4]')) AS upsert_2;
++----------+
+| upsert_2 |
++----------+
+|        1 |
++----------+
+
+mysql&gt; SELECT VEC_INDEX_SEARCH('idx_fn', VEC_FROMTEXT('[0,0]'), 2) AS search_ids;
++------------+
+| search_ids |
++------------+
+| [1,2]      |
++------------+
+
+mysql&gt; SELECT VEC_INDEX_SEARCH_BATCH(
+            'idx_fn',
+            CONCAT(VEC_FROMTEXT('[0,0]'), VEC_FROMTEXT('[3,4]')),
+            2,
+            2) AS search_batch_ids;
++------------------+
+| search_batch_ids |
++------------------+
+| [[1,2],[2,1]]    |
++------------------+
+
+mysql&gt; SELECT VEC_INDEX_SEARCH_WITH_DISTANCE('idx_fn', VEC_FROMTEXT('[0,0]'), 2) AS search_with_distance;
++-------------------------------------------------------+
+| search_with_distance                                  |
++-------------------------------------------------------+
+| [{&quot;doc_id&quot;:1,&quot;distance&quot;:0},{&quot;doc_id&quot;:2,&quot;distance&quot;:5}] |
++-------------------------------------------------------+
+
+mysql&gt; SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_fn'), '$.dimension') AS info_dimension,
+            JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_fn'), '$.metric')) AS info_metric,
+            JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_fn'), '$.mode')) AS info_mode,
+            JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_fn'), '$.provider')) AS info_provider,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_fn'), '$.entry_count') AS info_entry_count;
++----------------+-------------+-----------+---------------+------------------+
+| info_dimension | info_metric | info_mode | info_provider | info_entry_count |
++----------------+-------------+-----------+---------------+------------------+
+| 2              | euclidean   | memory    | native        | 2                |
++----------------+-------------+-----------+---------------+------------------+
+
+mysql&gt; SELECT VEC_INDEX_LIST() AS index_list_after_create;
++-------------------------+
+| index_list_after_create |
++-------------------------+
+| [&quot;idx_fn&quot;]              |
++-------------------------+
+
+mysql&gt; SELECT VEC_INDEX_ERASE('idx_fn', 2) AS erase_2;
++---------+
+| erase_2 |
++---------+
+|       1 |
++---------+
+
+mysql&gt; SELECT VEC_INDEX_SEARCH('idx_fn', VEC_FROMTEXT('[0,0]'), 2) AS search_after_erase;
++--------------------+
+| search_after_erase |
++--------------------+
+| [1]                |
++--------------------+
+
+mysql&gt; SELECT VEC_INDEX_REBUILD('idx_fn') AS rebuild_idx_fn;
++----------------+
+| rebuild_idx_fn |
++----------------+
+|              1 |
++----------------+
+
+mysql&gt; SELECT VEC_INDEX_CREATE('idx_bulk', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE') AS create_idx_bulk;
++-----------------+
+| create_idx_bulk |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_bulk') AS bulk_begin;
++------------+
+| bulk_begin |
++------------+
+|          1 |
++------------+
+
+mysql&gt; SET @bulk_txn = VEC_INDEX_TXN_BEGIN();
+mysql&gt; SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk', @bulk_txn, 1, VEC_FROMTEXT('[1,1]')) AS bulk_stage_1;
++--------------+
+| bulk_stage_1 |
++--------------+
+|            1 |
++--------------+
+
+mysql&gt; SELECT VEC_INDEX_STAGE_UPSERT('idx_bulk', @bulk_txn, 2, VEC_FROMTEXT('[2,2]')) AS bulk_stage_2;
++--------------+
+| bulk_stage_2 |
++--------------+
+|            1 |
++--------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_COMMIT(@bulk_txn) AS bulk_commit;
++-------------+
+| bulk_commit |
++-------------+
+|           1 |
++-------------+
+
+mysql&gt; SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.lifecycle_state')) AS bulk_state,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.entry_count') AS entry_count,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.committed_entry_count') AS committed_entry_count,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_bulk'), '$.pending_apply_count') AS pending_apply_count;
++--------------+-------------+-----------------------+---------------------+
+| bulk_state   | entry_count | committed_entry_count | pending_apply_count |
++--------------+-------------+-----------------------+---------------------+
+| bulk_loading | 0           | 2                     | 2                   |
++--------------+-------------+-----------------------+---------------------+
+
+mysql&gt; SELECT VEC_INDEX_BULK_BUILD('idx_bulk') AS bulk_build;
++------------+
+| bulk_build |
++------------+
+|          1 |
++------------+
+
+mysql&gt; SELECT VEC_INDEX_SEARCH('idx_bulk', VEC_FROMTEXT('[1,1]'), 2) AS bulk_search;
++-------------+
+| bulk_search |
++-------------+
+| [1,2]       |
++-------------+
+
+mysql&gt; SELECT VEC_INDEX_RECOVER('idx_fn') AS recover_idx_fn;
++----------------+
+| recover_idx_fn |
++----------------+
+|              1 |
++----------------+
+
+mysql&gt; SELECT VEC_INDEX_DROP('idx_fn') AS drop_idx_fn;
++-------------+
+| drop_idx_fn |
++-------------+
+|           1 |
++-------------+
+</code></pre>
+<h3>3.2 后端参数函数参考</h3>
+<table>
+<thead>
+<tr>
+<th>函数名</th>
+<th>函数行为</th>
+<th>输入参数含义</th>
+<th>返回值含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VEC_INDEX_SET_SEARCH_EF(index_name, ef)</code></td>
+<td>设置 HNSW/Faiss HNSW 查询期候选宽度</td>
+<td><code>index_name</code>：索引名；<code>ef</code>：查询候选宽度</td>
+<td><code>1</code> 表示设置成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_HNSW_BUILD_PARAMS(index_name, m, ef_construction)</code></td>
+<td>设置 HNSW 构建参数</td>
+<td><code>m</code>：图最大连接数；<code>ef_construction</code>：构建候选宽度</td>
+<td><code>1</code> 表示设置成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_FAISS_IVF_PARAMS(index_name, nlist, nprobe)</code></td>
+<td>切换或设置 Faiss IVF-Flat 参数</td>
+<td><code>nlist</code>：聚类列表数；<code>nprobe</code>：查询探测列表数</td>
+<td><code>1</code> 表示设置成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(index_name, nlist, nprobe, pq_m, pq_bits)</code></td>
+<td>切换或设置 Faiss IVF-PQ 参数</td>
+<td><code>pq_m</code>：PQ 子量化器数量；<code>pq_bits</code>：每个子量化器 bit 数；其他参数同 IVF</td>
+<td><code>1</code> 表示设置成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_DISKANN_BUILD_PARAMS(index_name, max_degree, build_complexity[, build_threads])</code></td>
+<td>设置 DiskANN 构建参数</td>
+<td><code>max_degree</code>：图最大度；<code>build_complexity</code>：构建搜索复杂度；<code>build_threads</code>：可选 build worker 数，<code>0</code> 或省略表示使用全局 <code>vector_diskann_build_threads</code></td>
+<td><code>1</code> 表示设置成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(index_name, search_complexity)</code></td>
+<td>设置 DiskANN 查询复杂度</td>
+<td><code>search_complexity</code>：查询时搜索复杂度</td>
+<td><code>1</code> 表示设置成功</td>
+</tr>
+</tbody>
+</table>
+<p>特别说明：</p>
+<ul>
+<li><code>VEC_INDEX_SET_FAISS_IVF_PARAMS(index_name, 0, 0)</code> 会切回 Faiss <code>hnsw</code> 变体。</li>
+<li>构建期参数会保存到索引配置；如需立刻让构建期参数生效，显式执行
+  <code>VEC_INDEX_REBUILD(...)</code> 或 <code>VEC_INDEX_REBUILD_ALL()</code>。</li>
+<li>Faiss build worker 数当前只在创建索引、bulk build、rebuild 和内存后端批量加载时
+  生效。它不会改变查询并行度；查询批量路径由 Faiss <code>Index::search(nq, ...)</code> 自身调度。</li>
+<li>DiskANN native build / rebuild 在构建期间不会直接重写持久化 native store；
+  只有 native build 和内存 store flush 都成功后才替换持久化目录。失败时旧 serving
+  backend 和旧 native store 继续保留。</li>
+<li>DiskANN native build / rebuild 成功后，当前 <code>mysqld</code> 进程会继续持有
+  resident native store 服务查询，优先从内存 resident store 响应 DiskANN callback；
+  持久化目录用于重启恢复或 resident miss fallback。该路径减少查询期逐 key 文件打开
+  开销，但会增加与 native store 大小相关的进程内存占用。</li>
+<li>运行态调参只持久化索引 metadata 和 manifest，不应重写已提交向量数据、change log
+  或 prepared 事务记录。实现采用两阶段模型：先构造候选 backend/config，再持久化
+  metadata/manifest，成功后才切换 live 配置；如果持久化失败，旧配置继续生效并返回
+  错误。</li>
+</ul>
+<p>后端参数函数实际执行案例。Faiss 和 DiskANN 示例在同一次实际执行中已先用
+<code>VEC_INDEX_CREATE()</code> 创建对应索引，并写入了最小测试向量；这里只展示调参函数本身及
+调参后的 <code>VEC_INDEX_INFO()</code> 核验输出。</p>
+<pre><code class="language-sql">mysql&gt; SELECT VEC_INDEX_CREATE('idx_hnsw', 2, 'COSINE', 'MEMORY', 'HNSWLIB') AS create_idx_hnsw;
++-----------------+
+| create_idx_hnsw |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw', 24, 320) AS set_hnsw_build;
++----------------+
+| set_hnsw_build |
++----------------+
+|              1 |
++----------------+
+
+mysql&gt; SELECT VEC_INDEX_SET_SEARCH_EF('idx_hnsw', 96) AS set_search_ef;
++---------------+
+| set_search_ef |
++---------------+
+|             1 |
++---------------+
+
+mysql&gt; SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw'), '$.hnsw_m') AS hnsw_m,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw'), '$.hnsw_ef_construction') AS hnsw_ef_construction,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw'), '$.search_ef') AS search_ef;
++--------+----------------------+-----------+
+| hnsw_m | hnsw_ef_construction | search_ef |
++--------+----------------------+-----------+
+| 24     | 320                  | 96        |
++--------+----------------------+-----------+
+
+mysql&gt; SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss', 2, 1) AS set_faiss_ivf;
++---------------+
+| set_faiss_ivf |
++---------------+
+|             1 |
++---------------+
+
+mysql&gt; SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss'), '$.backend_variant')) AS faiss_variant,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss'), '$.faiss_nlist') AS faiss_nlist,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss'), '$.faiss_nprobe') AS faiss_nprobe;
++---------------+-------------+--------------+
+| faiss_variant | faiss_nlist | faiss_nprobe |
++---------------+-------------+--------------+
+| ivf_flat      | 2           | 1            |
++---------------+-------------+--------------+
+
+mysql&gt; SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_ivfpq', 2, 1, 1, 1) AS set_faiss_ivfpq;
++-----------------+
+| set_faiss_ivfpq |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_ivfpq'), '$.backend_variant')) AS ivfpq_variant,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_ivfpq'), '$.faiss_nlist') AS ivfpq_nlist,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_ivfpq'), '$.faiss_nprobe') AS ivfpq_nprobe,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_ivfpq'), '$.faiss_pq_m') AS ivfpq_pq_m,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_ivfpq'), '$.faiss_pq_bits') AS ivfpq_pq_bits;
++---------------+-------------+--------------+------------+---------------+
+| ivfpq_variant | ivfpq_nlist | ivfpq_nprobe | ivfpq_pq_m | ivfpq_pq_bits |
++---------------+-------------+--------------+------------+---------------+
+| ivf_pq        | 2           | 1            | 1          | 1             |
++---------------+-------------+--------------+------------+---------------+
+
+mysql&gt; SET GLOBAL vector_diskann_build_threads = 2;
+
+mysql&gt; SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann', 48, 96, 4) AS set_diskann_build;
++-------------------+
+| set_diskann_build |
++-------------------+
+|                 1 |
++-------------------+
+
+mysql&gt; SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann', 80) AS set_diskann_search;
++--------------------+
+| set_diskann_search |
++--------------------+
+|                  1 |
++--------------------+
+
+mysql&gt; SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann'), '$.diskann_max_degree') AS diskann_max_degree,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann'), '$.diskann_build_complexity') AS diskann_build_complexity,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann'), '$.diskann_build_threads') AS diskann_build_threads,
+            JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann'), '$.diskann_search_complexity') AS diskann_search_complexity;
++--------------------+--------------------------+-----------------------+---------------------------+
+| diskann_max_degree | diskann_build_complexity | diskann_build_threads | diskann_search_complexity |
++--------------------+--------------------------+-----------------------+---------------------------+
+| 48                 | 96                       | 4                     | 80                        |
++--------------------+--------------------------+-----------------------+---------------------------+
+
+mysql&gt; SELECT VEC_INDEX_REBUILD_ALL() AS rebuild_all;
++-------------+
+| rebuild_all |
++-------------+
+|           5 |
++-------------+
+
+mysql&gt; SELECT VEC_INDEX_RECOVER_ALL() AS recover_all;
++-------------+
+| recover_all |
++-------------+
+|           5 |
++-------------+
+</code></pre>
+<h2 id="cn-transaction-functions">4. 显式事务缓冲函数</h2>
+<p>显式事务函数用于把多次向量写入作为一组提交或回滚。单次直接写入优先使用
+<code>VEC_INDEX_UPSERT()</code> / <code>VEC_INDEX_ERASE()</code>。</p>
+<p>真实表映射索引的普通 SQL 事务会通过隐藏 handlerton 参与 MySQL 保存点协议。
+<code>SAVEPOINT name</code>、<code>ROLLBACK TO SAVEPOINT name</code> 和 <code>RELEASE SAVEPOINT name</code>
+会同步裁剪或释放向量暂存变更；显式 <code>VEC_INDEX_TXN_*</code> 保存点函数只用于直接管理
+独立向量事务缓冲。</p>
+<table>
+<thead>
+<tr>
+<th>函数名</th>
+<th>函数行为</th>
+<th>输入参数含义</th>
+<th>返回值含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VEC_INDEX_TXN_BEGIN()</code></td>
+<td>创建一个显式向量事务缓冲</td>
+<td>无</td>
+<td><code>txn_id</code>，实例内部分配的事务 ID</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_STAGE_UPSERT(index_name, txn_id, doc_id, vector_expr)</code></td>
+<td>在事务缓冲中暂存 upsert</td>
+<td><code>index_name</code>：索引名；<code>txn_id</code>：事务 ID；<code>doc_id</code>：无符号 64 位文档 ID；<code>vector_expr</code>：向量值</td>
+<td><code>1</code> 表示暂存成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_STAGE_ERASE(index_name, txn_id, doc_id)</code></td>
+<td>在事务缓冲中暂存 erase</td>
+<td><code>index_name</code>：索引名；<code>txn_id</code>：事务 ID；<code>doc_id</code>：无符号 64 位文档 ID</td>
+<td><code>1</code> 表示暂存成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_PENDING(txn_id)</code></td>
+<td>查询事务缓冲中的待提交变更数</td>
+<td><code>txn_id</code>：事务 ID</td>
+<td>待提交 upsert/erase 数量</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_SAVEPOINT(txn_id, name)</code></td>
+<td>创建向量事务保存点</td>
+<td><code>txn_id</code>：事务 ID；<code>name</code>：保存点名</td>
+<td><code>1</code> 表示创建成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_ROLLBACK_TO(txn_id, name)</code></td>
+<td>回滚到指定保存点</td>
+<td><code>txn_id</code>：事务 ID；<code>name</code>：保存点名</td>
+<td><code>1</code> 表示回滚成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_RELEASE_SAVEPOINT(txn_id, name)</code></td>
+<td>释放指定保存点</td>
+<td><code>txn_id</code>：事务 ID；<code>name</code>：保存点名</td>
+<td><code>1</code> 表示释放成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_COMMIT(txn_id)</code></td>
+<td>提交事务缓冲中的所有变更</td>
+<td><code>txn_id</code>：事务 ID</td>
+<td><code>1</code> 表示提交成功</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_ROLLBACK(txn_id)</code></td>
+<td>丢弃事务缓冲中的所有变更</td>
+<td><code>txn_id</code>：事务 ID</td>
+<td><code>1</code> 表示回滚成功</td>
+</tr>
+</tbody>
+</table>
+<p><code>txn_id</code> 是实例内部分配的 ID，具体数字会随执行历史变化；下例中的 <code>1</code> 是一次真实执行
+的输出样例。</p>
+<p>显式事务函数实际执行案例：</p>
+<pre><code class="language-sql">mysql&gt; SELECT VEC_INDEX_CREATE('idx_txn', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE') AS create_idx_txn;
++----------------+
+| create_idx_txn |
++----------------+
+|              1 |
++----------------+
+
+mysql&gt; SET @txn = VEC_INDEX_TXN_BEGIN();
+mysql&gt; SELECT @txn AS txn_id;
++--------+
+| txn_id |
++--------+
+|      1 |
++--------+
+
+mysql&gt; SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn, 10, VEC_FROMTEXT('[1,1]')) AS stage_upsert_10;
++-----------------+
+| stage_upsert_10 |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_PENDING(@txn) AS pending_after_one;
++-------------------+
+| pending_after_one |
++-------------------+
+|                 1 |
++-------------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_SAVEPOINT(@txn, 'sp1') AS savepoint_sp1;
++---------------+
+| savepoint_sp1 |
++---------------+
+|             1 |
++---------------+
+
+mysql&gt; SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn, 20, VEC_FROMTEXT('[2,2]')) AS stage_upsert_20;
++-----------------+
+| stage_upsert_20 |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_PENDING(@txn) AS pending_after_two;
++-------------------+
+| pending_after_two |
++-------------------+
+|                 2 |
++-------------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn, 'sp1') AS rollback_to_sp1;
++-----------------+
+| rollback_to_sp1 |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_PENDING(@txn) AS pending_after_rollback_to;
++---------------------------+
+| pending_after_rollback_to |
++---------------------------+
+|                         1 |
++---------------------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn, 'sp1') AS release_sp1;
++-------------+
+| release_sp1 |
++-------------+
+|           1 |
++-------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_COMMIT(@txn) AS commit_txn;
++------------+
+| commit_txn |
++------------+
+|          1 |
++------------+
+
+mysql&gt; SELECT VEC_INDEX_SEARCH('idx_txn', VEC_FROMTEXT('[1,1]'), 5) AS search_after_commit;
++---------------------+
+| search_after_commit |
++---------------------+
+| [10]                |
++---------------------+
+
+mysql&gt; SET @txn2 = VEC_INDEX_TXN_BEGIN();
+mysql&gt; SELECT @txn2 AS txn2_id;
++---------+
+| txn2_id |
++---------+
+|       2 |
++---------+
+
+mysql&gt; SELECT VEC_INDEX_STAGE_ERASE('idx_txn', @txn2, 10) AS stage_erase_10;
++----------------+
+| stage_erase_10 |
++----------------+
+|              1 |
++----------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_PENDING(@txn2) AS pending_erase;
++---------------+
+| pending_erase |
++---------------+
+|             1 |
++---------------+
+
+mysql&gt; SELECT VEC_INDEX_TXN_ROLLBACK(@txn2) AS rollback_txn2;
++---------------+
+| rollback_txn2 |
++---------------+
+|             1 |
++---------------+
+
+mysql&gt; SELECT VEC_INDEX_SEARCH('idx_txn', VEC_FROMTEXT('[1,1]'), 5) AS search_after_rollback;
++-----------------------+
+| search_after_rollback |
++-----------------------+
+| [10]                  |
++-----------------------+
+</code></pre>
+<h2 id="cn-table-ddl">5. 表级 DDL</h2>
+<h3>5.1 语法</h3>
+<pre><code class="language-sql">CREATE VECTOR INDEX ON tbl(col) WITH (dim)
+CREATE VECTOR INDEX IF NOT EXISTS ON tbl(col) WITH (dim)
+CREATE VECTOR INDEX ON tbl(col) WITH (dim, metric, mode, provider)
+CREATE VECTOR INDEX ON tbl(col) WITH (dim, metric, mode, provider, build_threads)
+
+DROP VECTOR INDEX ON tbl(col)
+DROP VECTOR INDEX IF EXISTS ON tbl(col)
+</code></pre>
+<p><code>WITH</code> 参数含义：</p>
+<ul>
+<li><code>dim</code>：向量维度，必须大于 0。</li>
+<li><code>metric</code>：支持 <code>EUCLIDEAN</code>、<code>L2</code>、<code>COSINE</code>、<code>IP</code>、<code>INNER_PRODUCT</code>。</li>
+<li><code>mode</code>：支持 <code>MEMORY</code>、<code>EXTERNAL</code>。</li>
+<li><code>provider</code>：支持 <code>NATIVE</code>、<code>FAISS</code>、<code>DISKANN</code>、<code>HNSWLIB</code>、<code>HNSW</code>。</li>
+<li><code>build_threads</code>：仅用于 <code>provider='HNSWLIB'</code>、<code>provider='FAISS'</code> 或
+  <code>provider='DISKANN'</code>，取值 <code>0..65535</code>；大于 <code>0</code> 的语句级参数优先于对应全局变量
+  <code>vector_hnsw_build_threads</code>、<code>vector_faiss_build_threads</code> 或
+  <code>vector_diskann_build_threads</code>，语句级 <code>0</code> 表示继承全局设置，全局 <code>0</code> 表示自动。</li>
+</ul>
+<h3>5.2 <code>VEC_INDEX_CREATE</code> 与 <code>CREATE VECTOR INDEX</code> 的区别</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th><code>VEC_INDEX_CREATE(...)</code></th>
+<th><code>CREATE VECTOR INDEX ON tbl(col)</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>索引名称</td>
+<td>调用方传入任意独立名称，如 <code>idx_fn</code></td>
+<td>自动使用 <code>schema.table.column</code>，如 <code>readme_vector.t_ddl.v</code></td>
+</tr>
+<tr>
+<td>表绑定</td>
+<td>不绑定表列</td>
+<td>绑定一个 InnoDB <code>VECTOR(dim)</code> 列</td>
+</tr>
+<tr>
+<td>数据来源</td>
+<td>调用方显式 <code>VEC_INDEX_UPSERT()</code> / <code>VEC_INDEX_ERASE()</code></td>
+<td>建索引时 backfill 已有行，后续普通 DML 自动同步</td>
+</tr>
+<tr>
+<td>元数据导出</td>
+<td>不出现在 <code>SHOW CREATE TABLE</code></td>
+<td><code>SHOW CREATE TABLE</code> 会导出 <code>CREATE VECTOR INDEX</code> 定义</td>
+</tr>
+<tr>
+<td>适用场景</td>
+<td>benchmark、外部客户端自管 doc_id、自定义导入管线</td>
+<td>生产表列索引、随表生命周期管理</td>
+</tr>
+</tbody>
+</table>
+<p>独立命名索引示例：</p>
+<pre><code class="language-sql">SELECT VEC_INDEX_CREATE('idx_fn', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
++---------------+
+| create_idx_fn |
++---------------+
+|             1 |
++---------------+
+
+SELECT VEC_INDEX_LIST();
++-------------------------+
+| index_list_after_create |
++-------------------------+
+| [&quot;idx_fn&quot;]              |
++-------------------------+
+</code></pre>
+<p>表级 DDL 示例：</p>
+<pre><code class="language-sql">CREATE TABLE t_ddl (
+id BIGINT NOT NULL PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+
+INSERT INTO t_ddl VALUES
+(1, VEC_FROMTEXT('[0,0]')),
+(2, VEC_FROMTEXT('[3,4]'));
+
+CREATE VECTOR INDEX ON t_ddl(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+
+SHOW CREATE TABLE t_ddl;
++-------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Table | Create Table                                                                                                                                                                                                                           |
++-------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| t_ddl | CREATE TABLE `t_ddl` (
+`id` bigint NOT NULL,
+`v` vector(2),
+PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+CREATE VECTOR INDEX ON `t_ddl`(`v`) WITH (2, 'euclidean', 'memory', 'native') |
++-------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+SELECT VEC_INDEX_SEARCH('readme_vector.t_ddl.v',
+                      VEC_FROMTEXT('[0,0]'), 2);
++---------------+
+| mapped_search |
++---------------+
+| [1,2]         |
++---------------+
+</code></pre>
+<h3>5.3 使用限制</h3>
+<ul>
+<li>目标列必须是 <code>VECTOR(dim)</code> 列，且 <code>WITH (dim)</code> 必须和列维度一致。</li>
+<li><code>CREATE VECTOR INDEX</code> 当前只支持 InnoDB 基表；非 InnoDB 表会被拒绝。</li>
+<li>当前映射索引要求表具有单列、非空、整数主键作为 <code>doc_id</code>；无符号整数主键支持完整
+  <code>uint64_t</code> 范围，有符号整数主键的负值不作为有效 <code>doc_id</code>。</li>
+<li>不支持临时表上的 <code>CREATE VECTOR INDEX</code> / <code>DROP VECTOR INDEX</code>。</li>
+<li><code>CREATE VECTOR INDEX</code> backfill 期间会持有 no-write 元数据锁，以避免扫描快照覆盖并发 DML
+  已提交的向量变更。</li>
+<li><code>CREATE VECTOR INDEX</code> 内部使用 <code>creating -&gt; backfilling -&gt; ready</code> 生命周期。
+  如果 mysqld 在 <code>ready</code> 前重启，恢复会清理未完成索引的 metadata、committed entries、
+  changelog 和 prepared rows，不会把半成品索引暴露给查询。</li>
+</ul>
+<h3>5.4 生命周期联动</h3>
+<p>以下表级操作会自动同步向量索引生命周期：</p>
+<ul>
+<li><code>CREATE TABLE ... LIKE</code></li>
+<li><code>RENAME TABLE</code></li>
+<li><code>ALTER TABLE ... RENAME TO</code></li>
+<li><code>ALTER TABLE ... RENAME COLUMN</code></li>
+<li><code>ALTER TABLE ... CHANGE/MODIFY COLUMN</code></li>
+<li><code>ALTER TABLE ... DROP COLUMN</code></li>
+<li><code>TRUNCATE TABLE</code></li>
+<li><code>DROP TABLE</code></li>
+<li><code>DROP DATABASE</code></li>
+</ul>
+<h2 id="cn-status">6. 状态查看</h2>
+<h3>6.1 <code>SHOW VECTOR STATUS</code></h3>
+<p>支持：</p>
+<pre><code class="language-sql">SHOW VECTOR STATUS;
+SHOW VECTOR STATUS LIKE 'pattern';
+SHOW VECTOR STATUS WHERE expr;
+SHOW VECTOR STATUS FOR INDEX index_name;
+SHOW VECTOR STATUS FOR INDEX index_name LIKE 'pattern';
+SHOW VECTOR STATUS FOR INDEX index_name WHERE expr;
+</code></pre>
+<p>说明：</p>
+<ul>
+<li>需要 <code>PROCESS</code> 全局权限。</li>
+<li>推荐自动化采集优先使用这个接口。</li>
+<li><code>WHERE</code> 当前只支持 <code>Section</code>、<code>Variable_name</code>、<code>Value</code> 三列上的 <code>=</code>、<code>!=</code>、<code>&lt;&gt;</code>、
+  <code>LIKE</code>、<code>NOT LIKE</code>，以及 <code>Value</code> 的 <code>&gt;</code>、<code>&gt;=</code>、<code>&lt;</code>、<code>&lt;=</code> 比较，可用 <code>AND</code> / <code>OR</code>
+  组合；不支持 <code>IN (...)</code>。</li>
+</ul>
+<p><code>Section</code> 含义：</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GLOBAL</code></td>
+<td>全局计数器、manifest checkpoint、truth store 状态</td>
+</tr>
+<tr>
+<td><code>INDEX_STATE</code></td>
+<td>单个索引的配置、表列绑定、生命周期和条目计数</td>
+</tr>
+<tr>
+<td><code>BACKEND_HEALTH</code></td>
+<td>单个索引后端是否加载、是否可写、错误码和外部 manifest 状态</td>
+</tr>
+<tr>
+<td><code>SYNC_PIPELINE</code></td>
+<td>单个索引待应用变更、最近应用延迟、重建/恢复进度</td>
+</tr>
+</tbody>
+</table>
+<h3>6.2 状态字段含义</h3>
+<p><code>INDEX_STATE</code> 字段：</p>
+<table>
+<thead>
+<tr>
+<th>字段后缀</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dimension</code></td>
+<td>索引向量维度</td>
+</tr>
+<tr>
+<td><code>metric</code></td>
+<td>距离度量，取值见 2.1</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td>服务态模式，<code>memory</code> 或 <code>external</code></td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td>后端提供者，<code>native</code>、<code>faiss</code>、<code>diskann</code>、<code>hnswlib</code></td>
+</tr>
+<tr>
+<td><code>backend_variant</code></td>
+<td>后端内部变体；空值表示无额外变体，Faiss 常见为 <code>hnsw</code>、<code>ivf_flat</code>、<code>ivf_pq</code></td>
+</tr>
+<tr>
+<td><code>schema_name</code></td>
+<td>表级 DDL 绑定的 schema；独立命名索引为空</td>
+</tr>
+<tr>
+<td><code>table_name</code></td>
+<td>表级 DDL 绑定的表名；独立命名索引为空</td>
+</tr>
+<tr>
+<td><code>column_name</code></td>
+<td>表级 DDL 绑定的列名；独立命名索引为空</td>
+</tr>
+<tr>
+<td><code>search_ef</code></td>
+<td>HNSW/Faiss HNSW 查询期候选宽度，<code>0</code> 表示该后端未使用此参数</td>
+</tr>
+<tr>
+<td><code>hnsw_m</code></td>
+<td>HNSW 图出边参数，<code>0</code> 表示该后端未使用此参数</td>
+</tr>
+<tr>
+<td><code>hnsw_ef_construction</code></td>
+<td>HNSW 构建候选宽度，<code>0</code> 表示该后端未使用此参数</td>
+</tr>
+<tr>
+<td><code>hnsw_build_threads</code></td>
+<td>HNSWLIB bulk build / rebuild worker 数，<code>0</code> 表示全局也为自动，或该后端未使用此参数</td>
+</tr>
+<tr>
+<td><code>faiss_nlist</code></td>
+<td>Faiss IVF 聚类列表数，<code>0</code> 表示未启用 IVF</td>
+</tr>
+<tr>
+<td><code>faiss_nprobe</code></td>
+<td>Faiss IVF 查询探测列表数，<code>0</code> 表示未启用 IVF</td>
+</tr>
+<tr>
+<td><code>faiss_pq_m</code></td>
+<td>Faiss IVFPQ 子量化器数量，<code>0</code> 表示未启用 PQ</td>
+</tr>
+<tr>
+<td><code>faiss_pq_bits</code></td>
+<td>Faiss IVFPQ 每个子量化器 bit 数，<code>0</code> 表示未启用 PQ</td>
+</tr>
+<tr>
+<td><code>faiss_build_threads</code></td>
+<td>Faiss build / rebuild OpenMP worker 数，<code>0</code> 表示自动或该后端未使用此参数</td>
+</tr>
+<tr>
+<td><code>diskann_max_degree</code></td>
+<td>DiskANN 构建最大度，<code>0</code> 表示该后端未使用此参数</td>
+</tr>
+<tr>
+<td><code>diskann_build_complexity</code></td>
+<td>DiskANN 构建复杂度，<code>0</code> 表示该后端未使用此参数</td>
+</tr>
+<tr>
+<td><code>diskann_build_threads</code></td>
+<td>DiskANN native build / rebuild worker 数，<code>0</code> 表示自动或该后端未使用此参数</td>
+</tr>
+<tr>
+<td><code>diskann_search_complexity</code></td>
+<td>DiskANN 查询复杂度，<code>0</code> 表示该后端未使用此参数</td>
+</tr>
+<tr>
+<td><code>lifecycle_state</code></td>
+<td>生命周期状态，见下方状态值表</td>
+</tr>
+<tr>
+<td><code>lifecycle_version</code></td>
+<td>生命周期状态版本，每次持久化状态安装递增；同步 rebuild/recover 的锁外 shadow 构建阶段不额外递增</td>
+</tr>
+<tr>
+<td><code>supports_mutations</code></td>
+<td><code>1</code> 表示后端支持直接写入变更，<code>0</code> 表示当前后端只读或不支持直接 mutation</td>
+</tr>
+<tr>
+<td><code>entry_count</code></td>
+<td>当前服务态条目数</td>
+</tr>
+<tr>
+<td><code>committed_entry_count</code></td>
+<td>已提交快照条目数</td>
+</tr>
+</tbody>
+</table>
+<p><code>BACKEND_HEALTH</code> 字段：</p>
+<table>
+<thead>
+<tr>
+<th>字段后缀</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>backend_type</code></td>
+<td>后端提供者类型</td>
+</tr>
+<tr>
+<td><code>backend_variant</code></td>
+<td>后端内部变体</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td>后端模式</td>
+</tr>
+<tr>
+<td><code>loaded</code></td>
+<td><code>1</code> 表示后端已加载；生命周期为 <code>failed</code> 时为 <code>0</code></td>
+</tr>
+<tr>
+<td><code>writable</code></td>
+<td><code>1</code> 表示后端已加载且支持 mutation</td>
+</tr>
+<tr>
+<td><code>last_error_code</code></td>
+<td>最近一次生命周期错误码，<code>0</code> 表示无错误</td>
+</tr>
+<tr>
+<td><code>last_error_ts</code></td>
+<td>最近一次错误的 Unix 时间戳，<code>0</code> 表示无错误</td>
+</tr>
+<tr>
+<td><code>recover_fallback_count</code></td>
+<td>恢复时回退到 committed entries 重放的次数</td>
+</tr>
+<tr>
+<td><code>last_recover_fallback_ts</code></td>
+<td>最近一次恢复 fallback 的 Unix 时间戳，<code>0</code> 表示从未 fallback</td>
+</tr>
+<tr>
+<td><code>external_manifest_present</code></td>
+<td><code>1</code> 表示当前后端正在使用外部 sidecar manifest；DiskANN native bulk/rebuild 成功后该值为 <code>0</code>，因为 serving graph 来自 native store 和 committed-entry fallback</td>
+</tr>
+<tr>
+<td><code>external_manifest_generation</code></td>
+<td>当前活跃外部 sidecar manifest 的 generation，<code>0</code> 表示不存在或当前路径未使用 sidecar</td>
+</tr>
+</tbody>
+</table>
+<p><code>SYNC_PIPELINE</code> 字段：</p>
+<table>
+<thead>
+<tr>
+<th>字段后缀</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pending_apply_count</code></td>
+<td><code>entry_count</code> 与 <code>committed_entry_count</code> 的非负差值；bulk-load 期间通常等于已提交但尚未进入 serving backend 的条目数</td>
+</tr>
+<tr>
+<td><code>apply_latency_ms</code></td>
+<td>最近一次应用变更耗时</td>
+</tr>
+<tr>
+<td><code>rebuild_progress</code></td>
+<td>重建状态指示：<code>100</code> 表示 ready，<code>50</code> 表示 rebuilding，其他状态为 <code>0</code></td>
+</tr>
+<tr>
+<td><code>recover_progress</code></td>
+<td>恢复状态指示：<code>100</code> 表示 ready，<code>50</code> 表示 recovering，其他状态为 <code>0</code></td>
+</tr>
+</tbody>
+</table>
+<p>生命周期状态值：</p>
+<table>
+<thead>
+<tr>
+<th>值</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ready</code></td>
+<td>索引可读写，最近一次创建、重建、恢复或提交已完成</td>
+</tr>
+<tr>
+<td><code>creating</code></td>
+<td>表级 <code>CREATE VECTOR INDEX</code> 已持久化 metadata，但尚未开始 backfill；重启恢复会清理该未完成 DDL 状态</td>
+</tr>
+<tr>
+<td><code>backfilling</code></td>
+<td>表级 <code>CREATE VECTOR INDEX</code> 正在扫描基表并构建初始 committed/serving 快照；查询会失败，重启恢复会清理该未完成 DDL 状态</td>
+</tr>
+<tr>
+<td><code>bulk_loading</code></td>
+<td>索引处于 bulk-load 模式，提交只更新 truth rows；查询会失败，直到执行 <code>VEC_INDEX_BULK_BUILD()</code> 或 <code>VEC_INDEX_REBUILD()</code> 成功</td>
+</tr>
+<tr>
+<td><code>rebuilding</code></td>
+<td>正在重建服务态索引；当前同步 rebuild API 使用锁外 shadow 构建，通常只在显式诊断状态中可见</td>
+</tr>
+<tr>
+<td><code>recovering</code></td>
+<td>正在从持久化状态或 committed entries 恢复；当前同步 recover API 使用锁外 shadow 构建，通常只在显式诊断状态中可见</td>
+</tr>
+<tr>
+<td><code>failed</code></td>
+<td>最近一次生命周期操作失败，查看 <code>last_error_code</code> 和 <code>last_error_ts</code></td>
+</tr>
+</tbody>
+</table>
+<p>错误码：</p>
+<table>
+<thead>
+<tr>
+<th>错误码</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>无错误</td>
+</tr>
+<tr>
+<td><code>1001</code></td>
+<td>存在未提交变更，当前操作不能安全执行</td>
+</tr>
+<tr>
+<td><code>1002</code></td>
+<td>创建后端失败</td>
+</tr>
+<tr>
+<td><code>1003</code></td>
+<td>后端恢复失败</td>
+</tr>
+<tr>
+<td><code>1004</code></td>
+<td>committed entries 重放失败</td>
+</tr>
+<tr>
+<td><code>1005</code></td>
+<td>后端不支持 mutation</td>
+</tr>
+<tr>
+<td><code>1006</code></td>
+<td>后端应用变更失败</td>
+</tr>
+</tbody>
+</table>
+<h3>6.3 状态查询真实输出示例</h3>
+<p>独立命名索引 <code>idx_fn</code> 的实际输出：</p>
+<pre><code class="language-sql">SHOW VECTOR STATUS LIKE 'idx_fn.%';
++----------------+-------------------------------------+-----------+
+| Section        | Variable_name                       | Value     |
++----------------+-------------------------------------+-----------+
+| INDEX_STATE    | idx_fn.dimension                    | 2         |
+| INDEX_STATE    | idx_fn.metric                       | euclidean |
+| INDEX_STATE    | idx_fn.mode                         | memory    |
+| INDEX_STATE    | idx_fn.provider                     | native    |
+| INDEX_STATE    | idx_fn.backend_variant              |           |
+| INDEX_STATE    | idx_fn.schema_name                  |           |
+| INDEX_STATE    | idx_fn.table_name                   |           |
+| INDEX_STATE    | idx_fn.column_name                  |           |
+| INDEX_STATE    | idx_fn.search_ef                    | 0         |
+| INDEX_STATE    | idx_fn.hnsw_m                       | 0         |
+| INDEX_STATE    | idx_fn.hnsw_ef_construction         | 0         |
+| INDEX_STATE    | idx_fn.hnsw_build_threads           | 0         |
+| INDEX_STATE    | idx_fn.faiss_nlist                  | 0         |
+| INDEX_STATE    | idx_fn.faiss_nprobe                 | 0         |
+| INDEX_STATE    | idx_fn.faiss_pq_m                   | 0         |
+| INDEX_STATE    | idx_fn.faiss_pq_bits                | 0         |
+| INDEX_STATE    | idx_fn.faiss_build_threads          | 0         |
+| INDEX_STATE    | idx_fn.diskann_max_degree           | 0         |
+| INDEX_STATE    | idx_fn.diskann_build_complexity     | 0         |
+| INDEX_STATE    | idx_fn.diskann_build_threads        | 0         |
+| INDEX_STATE    | idx_fn.diskann_search_complexity    | 0         |
+| INDEX_STATE    | idx_fn.lifecycle_state              | ready     |
+| INDEX_STATE    | idx_fn.lifecycle_version            | 9         |
+| INDEX_STATE    | idx_fn.supports_mutations           | 1         |
+| INDEX_STATE    | idx_fn.entry_count                  | 1         |
+| INDEX_STATE    | idx_fn.committed_entry_count        | 1         |
+| BACKEND_HEALTH | idx_fn.backend_type                 | native    |
+| BACKEND_HEALTH | idx_fn.backend_variant              |           |
+| BACKEND_HEALTH | idx_fn.mode                         | memory    |
+| BACKEND_HEALTH | idx_fn.loaded                       | 1         |
+| BACKEND_HEALTH | idx_fn.writable                     | 1         |
+| BACKEND_HEALTH | idx_fn.last_error_code              | 0         |
+| BACKEND_HEALTH | idx_fn.last_error_ts                | 0         |
+| BACKEND_HEALTH | idx_fn.recover_fallback_count       | 0         |
+| BACKEND_HEALTH | idx_fn.last_recover_fallback_ts     | 0         |
+| BACKEND_HEALTH | idx_fn.external_manifest_present    | 0         |
+| BACKEND_HEALTH | idx_fn.external_manifest_generation | 0         |
+| SYNC_PIPELINE  | idx_fn.pending_apply_count          | 0         |
+| SYNC_PIPELINE  | idx_fn.apply_latency_ms             | 1         |
+| SYNC_PIPELINE  | idx_fn.rebuild_progress             | 100       |
+| SYNC_PIPELINE  | idx_fn.recover_progress             | 100       |
++----------------+-------------------------------------+-----------+
+</code></pre>
+<p>表级 DDL 索引的 <code>INDEX_STATE</code> 会包含表列绑定信息，以下为真实输出节选：</p>
+<pre><code class="language-sql">SHOW VECTOR STATUS FOR INDEX 'readme_vector.t_ddl.v'
+WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'readme_vector.t_ddl.v.%';
++-------------+-------------------------------------------------+---------------+
+| Section     | Variable_name                                   | Value         |
++-------------+-------------------------------------------------+---------------+
+| INDEX_STATE | readme_vector.t_ddl.v.dimension                 | 2             |
+| INDEX_STATE | readme_vector.t_ddl.v.metric                    | euclidean     |
+| INDEX_STATE | readme_vector.t_ddl.v.mode                      | memory        |
+| INDEX_STATE | readme_vector.t_ddl.v.provider                  | native        |
+| INDEX_STATE | readme_vector.t_ddl.v.schema_name               | readme_vector |
+| INDEX_STATE | readme_vector.t_ddl.v.table_name                | t_ddl         |
+| INDEX_STATE | readme_vector.t_ddl.v.column_name               | v             |
+| INDEX_STATE | readme_vector.t_ddl.v.lifecycle_state           | ready         |
+| INDEX_STATE | readme_vector.t_ddl.v.entry_count               | 2             |
+| INDEX_STATE | readme_vector.t_ddl.v.committed_entry_count     | 2             |
++-------------+-------------------------------------------------+---------------+
+</code></pre>
+<h3>6.4 其他状态入口</h3>
+<ul>
+<li><code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code></li>
+<li><code>SHOW ENGINE INNODB STATUS</code></li>
+</ul>
+<p><code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code> 中所有 <code>Vector_</code> 前缀变量都是向量相关状态。
+这些变量按名称大致分组如下：</p>
+<table>
+<thead>
+<tr>
+<th>状态项前缀</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Vector_index_*</code></td>
+<td>向量索引创建、删除请求计数</td>
+</tr>
+<tr>
+<td><code>Vector_metadata_*</code></td>
+<td>向量索引元数据加载和持久化失败计数</td>
+</tr>
+<tr>
+<td><code>Vector_committed_*</code></td>
+<td>committed entries 快照行数和读写失败计数</td>
+</tr>
+<tr>
+<td><code>Vector_manifest_*</code></td>
+<td>向量 manifest 版本、checkpoint 和读写失败计数</td>
+</tr>
+<tr>
+<td><code>Vector_change_log_*</code></td>
+<td>向量 change-log 加载、重放、持久化失败计数</td>
+</tr>
+<tr>
+<td><code>Vector_backend_*</code></td>
+<td>后端恢复 fallback、provider/mode/manifest 等后端状态</td>
+</tr>
+<tr>
+<td><code>Vector_rebuild_*</code>、<code>Vector_recover_*</code></td>
+<td>重建和恢复请求计数</td>
+</tr>
+<tr>
+<td><code>Vector_search_*</code></td>
+<td>查询请求、失败、返回结果，以及 mapped MVCC 候选扩张计数</td>
+</tr>
+<tr>
+<td><code>Vector_stage_*</code>、<code>Vector_txn_*</code>、<code>Vector_pending_txn_changes</code></td>
+<td>显式事务缓冲和提交/回滚状态</td>
+</tr>
+<tr>
+<td><code>Vector_runtime_state_*</code>、<code>Vector_persist_artifact_*</code></td>
+<td>运行态和持久化 artifact rollback 状态</td>
+</tr>
+<tr>
+<td><code>Vector_truth_store_*</code></td>
+<td>truth store 后端、事务能力和完整持久化计数；delta 持久化与 changelog compact 计数通过 <code>SHOW VECTOR STATUS</code> 查看</td>
+</tr>
+<tr>
+<td><code>Vector_apply_latency_ms</code></td>
+<td>最近一次向量变更应用耗时</td>
+</tr>
+<tr>
+<td><code>Vector_registered_indexes</code></td>
+<td>当前注册的向量索引数量</td>
+</tr>
+</tbody>
+</table>
+<p><code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code> 实际执行样例；该样例先创建
+<code>readme_smoke</code> 索引，写入一个向量并执行一次搜索，计数值会随执行路径变化：</p>
+<pre><code class="language-sql">mysql&gt; SHOW GLOBAL STATUS LIKE 'Vector_%';
++-------------------------------------------+-------+
+| Variable_name                             | Value |
++-------------------------------------------+-------+
+| Vector_apply_latency_ms                   | 1     |
+| Vector_backend_recover_fallbacks          | 0     |
+| Vector_change_log_load_failures           | 0     |
+| Vector_change_log_persist_failures        | 0     |
+| Vector_change_log_replay_failures         | 0     |
+| Vector_committed_load_failures            | 0     |
+| Vector_committed_persist_failures         | 0     |
+| Vector_committed_snapshot_rows            | 1     |
+| Vector_index_create_requests              | 1     |
+| Vector_index_drop_requests                | 0     |
+| Vector_manifest_change_log_checkpoint     | 1     |
+| Vector_manifest_committed_checkpoint      | 1     |
+| Vector_manifest_load_failures             | 0     |
+| Vector_manifest_metadata_checkpoint       | 1     |
+| Vector_manifest_persist_failures          | 0     |
+| Vector_manifest_version                   | 3     |
+| Vector_metadata_load_failures             | 0     |
+| Vector_metadata_persist_failures          | 0     |
+| Vector_pending_txn_changes                | 0     |
+| Vector_persist_artifact_rollback_failures | 0     |
+| Vector_persist_artifact_rollbacks         | 0     |
+| Vector_rebuild_all_requests               | 0     |
+| Vector_rebuild_requests                   | 0     |
+| Vector_recover_all_requests               | 0     |
+| Vector_recover_requests                   | 0     |
+| Vector_registered_indexes                 | 1     |
+| Vector_runtime_state_rollback_failures    | 0     |
+| Vector_runtime_state_rollbacks            | 0     |
+| Vector_search_failures                    | 0     |
+| Vector_search_mvcc_candidate_rows         | 0     |
+| Vector_search_mvcc_expansions             | 0     |
+| Vector_search_mvcc_limit_hits             | 0     |
+| Vector_search_requests                    | 1     |
+| Vector_search_results_returned            | 1     |
+| Vector_stage_erase_requests               | 0     |
+| Vector_stage_upsert_requests              | 1     |
+| Vector_truth_store_backend                | mysql |
+| Vector_truth_store_persist_failures       | 0     |
+| Vector_truth_store_persist_requests       | 2     |
+| Vector_truth_store_transactional          | 1     |
+| Vector_txn_commit_failures                | 0     |
+| Vector_txn_commit_requests                | 1     |
+| Vector_txn_rollback_requests              | 0     |
++-------------------------------------------+-------+
+</code></pre>
+<p><code>SHOW ENGINE INNODB STATUS</code> 中只有 <code>VECTOR OBSERVABILITY</code> 小节是向量相关状态；同一输出里的
+事务、锁、buffer pool 等其他小节仍是 InnoDB 原生状态。该小节只保留 truth-store、
+manifest、change-log、artifact rollback 等持久化/引擎边界摘要；索引生命周期、
+provider/mode、查询、重建和显式事务等 SQL registry 状态请使用
+<code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code> 或 <code>SHOW VECTOR STATUS</code> 查看。实际执行样例：</p>
+<pre><code class="language-sql">mysql&gt; SHOW ENGINE INNODB STATUS;
+...
+--------------------
+VECTOR OBSERVABILITY
+--------------------
+vector metadata: load_fail=0, persist_fail=0
+vector truth store: backend=mysql, transactional=1
+vector truth-store persist: requests=2, failures=0
+vector committed snapshot: rows=1, load_fail=0, persist_fail=0
+vector manifest: version=3, metadata_ckpt=1, committed_ckpt=1, change_log_ckpt=1, load_fail=0, persist_fail=0
+vector change-log: load_fail=0, replay_fail=0, persist_fail=0, backend_recover_fallback=0
+vector artifact rollback: persist_artifact=0, persist_artifact_fail=0
+...
+</code></pre>
+<p>建议：</p>
+<ul>
+<li>轻量全局监控用 <code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code>。</li>
+<li>精确排查单索引用 <code>SHOW VECTOR STATUS FOR INDEX ...</code>。</li>
+<li>需要排查 truth-store / manifest / change-log 持久化摘要时看
+  <code>SHOW ENGINE INNODB STATUS</code>。</li>
+</ul>
+<h2 id="cn-usage">7. 使用建议</h2>
+<ul>
+<li>文本向量输入统一使用 <code>VEC_FROMTEXT(...)</code>，避免客户端二进制编码差异。</li>
+<li>面向表列的生产路径优先用表级 DDL 与正常 DML，同步行为更直观。</li>
+<li>需要 HNSW / Faiss / DiskANN 调参时，先确认索引当前的 <code>mode/provider</code>。</li>
+<li>读取机器可消费结果时，把 <code>VEC_INDEX_INFO()</code> / <code>VEC_INDEX_SEARCH*()</code> 当作 JSON 文本处理。</li>
+<li>批量修改索引参数后，如需立刻让构建期参数生效，显式执行 <code>VEC_INDEX_REBUILD(...)</code>。</li>
+</ul>
+<h3>7.1 Benchmark 与压测经验</h3>
+<ul>
+<li>接入外部 benchmark 前，建议先用小规模数据集确认建表、建索引、写入、查询和参数映射都正常，再切到大数据集。</li>
+<li>高维大批量导入优先使用独立命名索引快路径：
+  <ul>
+  <li><code>VEC_INDEX_CREATE</code> 创建索引。</li>
+  <li><code>VEC_INDEX_STAGE_UPSERT</code> 批量暂存向量。</li>
+  <li><code>VEC_INDEX_TXN_COMMIT</code> 分批提交。</li>
+  <li><code>VEC_INDEX_BULK_BUILD</code> 或 <code>VEC_INDEX_REBUILD</code> 一次性构建服务态索引。</li>
+  <li><code>VEC_INDEX_SEARCH</code> 执行查询。</li>
+  </ul>
+</li>
+<li>大规模导入建议客户端直接传 <code>float32</code> 二进制向量载荷；<code>VEC_FROMTEXT('[...]')</code> 更适合作为 SQL 示例、小规模 smoke 和手工排查入口。</li>
+<li>长时间压测建议使用独立 <code>mysqld</code> 实例，并为 <code>innodb_redo_log_capacity</code>、<code>innodb_buffer_pool_size</code> 和后端 build threads 预留足够资源，避免把 redo 回收、buffer pool 抖动或过低并行度误判为向量索引瓶颈。</li>
+<li>如果 benchmark runner 把 <code>load</code>、<code>optimize</code>、<code>search</code> 放在不同进程中，后续进程应先用 <code>VEC_INDEX_INFO(index_name)</code> 重新附着已有索引状态，不要盲目重复 <code>VEC_INDEX_CREATE(...)</code>。</li>
+<li>如果 <code>VEC_INDEX_INFO()</code> 返回的 <code>search_ef</code> 已经等于目标值，通常不需要重复执行 <code>VEC_INDEX_SET_SEARCH_EF(...)</code>；重复下发只会更新 metadata/manifest。</li>
+<li>压测过程变慢或中断时，先区分是客户端导入路径慢还是服务端索引构建慢：
+  <ul>
+  <li>用 <code>SHOW PROCESSLIST</code> 查看当前会话正在执行的 SQL。</li>
+  <li>用 <code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code> 查看写入、提交、持久化和搜索计数。</li>
+  <li>用 <code>SHOW ENGINE INNODB STATUS</code> 查看 truth-store、manifest 和 change-log 持久化摘要。</li>
+  </ul>
+</li>
+<li>当前公开 ANN API 没有原生 filter 参数；需要验证过滤语义时，应明确写成精确查询，例如 <code>WHERE ... ORDER BY VEC_DISTANCE(...) LIMIT k</code>，不要把 over-fetch 或后过滤结果写成原生 ANN filter。</li>
+<li>如需验证非默认 DiskANN 参数，建议在测试配置中记录：
+  <ul>
+  <li><code>DISKANN_MAX_DEGREE</code></li>
+  <li><code>DISKANN_BUILD_COMPLEXITY</code></li>
+  <li><code>DISKANN_SEARCH_COMPLEXITY</code></li>
+  </ul>
+</li>
+</ul>
+    </div>
+    </div>
+    </article>
+    <article id="doc-en">
+<h1>MySQL Vector Reference</h1>
+<p>MySQL Vector is a vector-search extension. It lets MySQL store vector values, build vector indexes, and run similarity search through SQL for semantic search, recommendation, retrieval-augmented generation, and multimodal workloads. This manual documents the public SQL, DDL, build options, runtime variables, observability surfaces, and operations guidance.</p>
+<h2 id="en-supported-versions">Supported Versions</h2>
+<table>
+<thead>
+<tr>
+<th>MySQL version</th>
+<th>MySQL branch</th>
+<th>HNSW version</th>
+<th>FAISS version</th>
+<th>DiskANN version</th>
+<th>DiskANN patch path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MySQL 8.0.46</td>
+<td><a href="../../tree/mysql-vector-8046">mysql-vector-8046</a></td>
+<td><a href="https://github.com/nmslib/hnswlib/commit/d9b3608c83d83b46c96e25088cb1d729b29dcfe9">v0.9.0</a></td>
+<td><a href="https://github.com/facebookresearch/faiss/commit/ca87f41dfe58336245a013118e38ddaad0f7cab3">v1.14.2-5-gca87f41df</a></td>
+<td><a href="https://github.com/microsoft/DiskANN/commit/e3139b4838f20f1ffa36a600ef1fce403e68f92f">diskann-garnet-v1.0.27</a></td>
+<td><a href="extra/vector/diskann-garnet-bulk-build-c-abi.patch">extra/vector/diskann-garnet-bulk-build-c-abi.patch</a></td>
+</tr>
+</tbody>
+</table>
+<h3>Verified Test Suite Branches</h3>
+<p>Test suites and third-party software need MySQL-Vector interface adapters before use. The adapted versions are listed below, and their patches can be extracted from these branches.</p>
+<table>
+<thead>
+<tr>
+<th>Test suite</th>
+<th>Software version / baseline</th>
+<th>Verified branch</th>
+<th>Verified commit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/plinux/ann-benchmarks">ANN-Benchmarks</a></td>
+<td><code>f402b2c</code></td>
+<td><a href="https://github.com/plinux/ann-benchmarks/tree/mysql-vector-connector-f402b2c">mysql-vector-connector-f402b2c</a></td>
+<td><code>87cc631596291fa69d41fd4ad431211fa5f92e12</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/plinux/VectorDBBench">VectorDBBench</a></td>
+<td><code>v1.0.22</code></td>
+<td><a href="https://github.com/plinux/VectorDBBench/tree/mysql-vector-connector-1.0.22">mysql-vector-connector-1.0.22</a></td>
+<td><code>9672bbfccf4579f716dac56f0882acf290dd01df</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/plinux/mem0">Mem0</a></td>
+<td><code>v2.0.2</code></td>
+<td><a href="https://github.com/plinux/mem0/tree/mysql-vector-connector-2.0.2">mysql-vector-connector-2.0.2</a></td>
+<td><code>ad9d2f5e76c51015c6f2a2c610bf4669ce9d4278</code></td>
+</tr>
+</tbody>
+</table>
+<div class="doc-layout">
+<nav class="toc" aria-label="English table of contents">
+<h2>Contents</h2>
+<ul>
+<li><a href="#en-supported-versions">Supported Versions</a></li>
+<li><a href="#en-build">Build Dependency Configuration</a></li>
+<li><a href="#en-runtime-vars">Runtime System Variables</a></li>
+<li><a href="#en-upgrade-guard">Upgrade Guard Parameter</a></li>
+<li><a href="#en-vector-columns">Vector Columns</a></li>
+<li><a href="#en-vector-functions">Basic Vector Functions and Enum Parameters</a></li>
+<li><a href="#en-named-index-functions">Standalone Named Index Functions</a></li>
+<li><a href="#en-transaction-functions">Explicit Transaction Buffer Functions</a></li>
+<li><a href="#en-table-ddl">Table-Level DDL</a></li>
+<li><a href="#en-status">Status Inspection</a></li>
+<li><a href="#en-usage">Usage Recommendations</a></li>
+</ul>
+</nav>
+<div class="doc-body">
+<h2 id="en-build">0. Build Dependency Configuration</h2>
+<p>Vector-related optional dependencies should be passed through CMake options instead of hard-coded local paths.</p>
+<p>Currently supported options:</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HAVE_VECTOR_INDEX</code></td>
+<td>Enables or disables the vector feature at build time. Pass <code>ON</code> for vector builds and <code>OFF</code> for an upstream-compatible behavior profile.</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_FAISS_ROOT</code></td>
+<td>Faiss source or install root. A source tree with <code>CMakeLists.txt</code> is built as part of MySQL.</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_FAISS_INCLUDE_DIR</code></td>
+<td>Faiss header directory for a prebuilt Faiss installation.</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_FAISS_LIBRARY_DIR</code></td>
+<td>Directory that contains prebuilt Faiss libraries.</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_HNSWLIB_ROOT</code></td>
+<td>hnswlib source root or include root.</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_HNSWLIB_INCLUDE_DIR</code></td>
+<td>hnswlib header directory when no source root is provided.</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_DISKANN_LIB</code> / <code>MYSQL_VECTOR_DISKANN_LIB_DIR</code></td>
+<td>DiskANN Garnet shared library path or directory. DiskANN is loaded at runtime through <code>dlopen()</code>.</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_ENABLE_NATIVE_SIMD</code></td>
+<td>Enables native SIMD flags for supported vector backend compilation units.</td>
+</tr>
+<tr>
+<td><code>MYSQL_VECTOR_FAISS_OPT_LEVEL</code></td>
+<td>Selects the Faiss SIMD target, such as <code>generic</code>, <code>avx2</code>, <code>avx512</code>, <code>avx512_spr</code>, <code>sve</code>, or runtime-dispatch <code>dd</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Notes:</p>
+<ul>
+<li>Vector builds must pass <code>-DHAVE_VECTOR_INDEX=ON</code> explicitly. If
+  <code>-DHAVE_VECTOR_INDEX=OFF</code> is passed, or the option is not enabled, the server is built with standard no-vector MySQL behavior:
+  vector functions, vector status variables, the vector transaction plugin, and vector DD truth-store are not registered;
+  <code>VECTOR(dim)</code>, <code>CREATE/DROP VECTOR INDEX</code>, and <code>SHOW VECTOR STATUS</code> return unsupported errors.</li>
+<li><code>Faiss</code> has two build modes:</li>
+<li>If <code>MYSQL_VECTOR_FAISS_ROOT</code> points to a Faiss source tree with <code>CMakeLists.txt</code>, MySQL builds the CPU Faiss library as part of the MySQL build.</li>
+<li>Otherwise CMake falls back to the traditional mode and looks for existing Faiss headers and libraries.</li>
+<li>When Faiss is built from source on Linux and <code>MYSQL_VECTOR_ENABLE_NATIVE_SIMD=ON</code>, the default is equivalent to
+  <code>MYSQL_VECTOR_FAISS_OPT_LEVEL=dd</code>, using Faiss runtime SIMD dispatch in the main library;
+  pass <code>-DMYSQL_VECTOR_FAISS_OPT_LEVEL=generic</code> explicitly when a portable binary is required.</li>
+<li><code>hnswlib</code> is integrated as a header-only backend. <code>MYSQL_VECTOR_HNSWLIB_ROOT</code> can point directly to the source root; CMake adds it as a subdirectory and does not require a prebuilt standalone library.</li>
+<li>When <code>MYSQL_VECTOR_ENABLE_NATIVE_SIMD=ON</code>, CMake applies the supported <code>-march=native</code>
+  or <code>-mcpu=native</code> flag only to <code>sql/vector/vector_index_backend_hnswlib.cc</code>.
+  This lets hnswlib distance kernels instantiate SIMD code for the current CPU. To build a portable binary for different CPU models, pass
+  <code>-DMYSQL_VECTOR_ENABLE_NATIVE_SIMD=OFF</code>.</li>
+<li>hnswlib batch search uses up to <code>4</code> read-only workers by default. For benchmark tuning, set
+  <code>MYSQL_VECTOR_HNSWLIB_BATCH_SEARCH_THREADS</code> before starting <code>mysqld</code>. The implementation clamps the value to the hardware thread count and <code>32</code>.</li>
+<li>If Faiss or another vector dependency resolves BLAS symbols through OpenBLAS or OpenMP on the current system, and tests show internal worker threads interfering with <code>mysqld</code> signal handling or benchmark repeatability, limit only the startup environment of the tested <code>mysqld</code> or standalone benchmark instance. Do not inject these vector-test environment variables into <code>mysqld_safe</code>, systemd templates, or other upstream startup scripts; standard MySQL builds and no-vector builds must keep upstream startup behavior. In MTR, do not <code>export</code> these variables in the <code>mysql-test-run.pl</code> process environment, because that can affect MTR's <code>NUMBER_OF_CPUS</code> detection and incorrectly skip resource group tests. Example:</li>
+</ul>
+<pre><code class="language-bash">cmake --build "${BUILD_DEBUG_DIR}" --target mysqld
+
+cd "${BUILD_DEBUG_DIR}/mysql-test"
+./mysql-test-run.pl --suite=vector \
+  --mysqld-env=OPENBLAS_NUM_THREADS=1 \
+  --mysqld-env=OMP_NUM_THREADS=1 \
+  --mysqld-env=GOTO_NUM_THREADS=1
+</code></pre>
+<p>If <code>mysqld</code> or a benchmark client is started directly outside the test framework, set these variables in that process environment rather than relying on MySQL startup scripts to inject them.</p>
+<ul>
+<li>hnswlib bulk build / rebuild uses the hardware thread count by default and clamps the actual worker count to the workload size, hardware thread count, and <code>65535</code>. The global system variable <code>vector_hnsw_build_threads</code> can specify the default parallelism for new HNSWLIB indexes, and <code>VEC_INDEX_CREATE(..., build_threads)</code> /
+  <code>CREATE VECTOR INDEX ... WITH (..., build_threads)</code> can override it per index. The value is stored in HNSWLIB index metadata as <code>hnsw_build_threads</code>. A statement-level value greater than <code>0</code> takes precedence over the global variable; statement-level <code>0</code> means inherit the global setting, and only a global <code>0</code> selects the automatic strategy.</li>
+<li>Faiss build / rebuild relies on Faiss's OpenMP parallel path. The global system variable
+  <code>vector_faiss_build_threads</code> can specify the default OpenMP worker count for new FAISS indexes, and <code>VEC_INDEX_CREATE(..., build_threads)</code> /
+  <code>CREATE VECTOR INDEX ... WITH (..., build_threads)</code> can override it per index. A statement-level value greater than <code>0</code> takes precedence over the global variable; statement-level <code>0</code> means inherit the global setting, and a global <code>0</code> lets Faiss/OpenMP choose automatically. The range is <code>0..65535</code>.</li>
+<li>DiskANN native build is compatible by default with the official <code>libdiskann_garnet</code> serial C ABI. If only <code>create_index</code> and <code>insert</code> are available at runtime, MySQL-Vector calls <code>insert</code> row by row to complete shadow build. <code>vector_diskann_build_threads</code> and statement-level <code>build_threads</code> are recorded in index configuration but do not change the parallelism of the official serial ABI. To use the experimental DiskANN parallel bulk build path, first apply <code>extra/vector/diskann-garnet-bulk-build-c-abi.patch</code> to DiskANN Garnet and rebuild <code>libdiskann_garnet</code>. MySQL-Vector passes <code>build_threads</code> to DiskANN and calls <code>bulk_insert</code> only when it detects both <code>create_index_with_build_threads</code> and <code>bulk_insert</code> runtime symbols. This parallel path is intended for performance experiments; stable scenarios should prefer the official serial ABI.</li>
+<li><code>vector_diskann_build_threads</code> can specify the default parallelism for new DiskANN indexes, and <code>VEC_INDEX_CREATE(..., build_threads)</code> /
+  <code>CREATE VECTOR INDEX ... WITH (..., build_threads)</code> can override it per index. A statement-level value greater than <code>0</code> takes precedence over the global variable; statement-level <code>0</code> means inherit the global setting, and a global <code>0</code> lets the DiskANN runtime choose automatically. Explicit values use the range <code>0..65535</code>. With an unpatched official serial DiskANN shared library, this setting only preserves configuration semantics and does not create parallelism.</li>
+<li><code>DiskANN</code> is loaded at runtime through <code>dlopen()</code>, so pass either the full shared-library path or at least the shared-library directory.</li>
+<li><code>MYSQL_VECTOR_DISKANN_LIB_DIR</code> must point to the directory that actually contains <code>libdiskann_garnet.dylib</code> / <code>libdiskann_garnet.so</code>, not an arbitrary parent directory.</li>
+<li>CMake also reads the same-named environment variables
+  <code>MYSQL_VECTOR_FAISS_ROOT</code>, <code>MYSQL_VECTOR_FAISS_INCLUDE_DIR</code>,
+  <code>MYSQL_VECTOR_FAISS_LIBRARY_DIR</code>, <code>MYSQL_VECTOR_HNSWLIB_ROOT</code>,
+  <code>MYSQL_VECTOR_HNSWLIB_INCLUDE_DIR</code>, <code>MYSQL_VECTOR_DISKANN_LIB</code>, and
+  <code>MYSQL_VECTOR_DISKANN_LIB_DIR</code> as defaults for temporary local builds. Reproducible builds and CI should prefer explicit CMake options.</li>
+</ul>
+<p>Example:</p>
+<pre><code class="language-bash">BUILD_ROOT=../build/mysql-vector
+BUILD_DEBUG_DIR="${BUILD_ROOT}/build-debug"
+BOOST_ROOT="${BUILD_ROOT}/deps"
+FAISS_ROOT=../deps/FAISS
+HNSWLIB_ROOT=../deps/HNSWLib
+DISKANN_LIB_DIR=../deps/DiskANN/target/release
+
+cmake -S . -B "${BUILD_DEBUG_DIR}" -G Ninja \
+-DCMAKE_BUILD_TYPE=Debug \
+-DWITH_DEBUG=1 \
+-DHAVE_VECTOR_INDEX=ON \
+-DWITH_NDB=OFF \
+-DWITH_NDBCLUSTER_STORAGE_ENGINE=OFF \
+-DDOWNLOAD_BOOST=1 \
+-DWITH_BOOST="${BOOST_ROOT}" \
+-DMYSQL_VECTOR_FAISS_ROOT="${FAISS_ROOT}" \
+-DMYSQL_VECTOR_HNSWLIB_ROOT="${HNSWLIB_ROOT}" \
+-DMYSQL_VECTOR_DISKANN_LIB_DIR="${DISKANN_LIB_DIR}"
+</code></pre>
+<p>DiskANN experimental parallel ABI patch example:</p>
+<pre><code class="language-bash">MYSQL_SOURCE_DIR=.
+DISKANN_SOURCE_DIR=../deps/DiskANN
+
+git -C "${DISKANN_SOURCE_DIR}" apply \
+"${MYSQL_SOURCE_DIR}/extra/vector/diskann-garnet-bulk-build-c-abi.patch"
+cargo build --manifest-path "${DISKANN_SOURCE_DIR}/Cargo.toml" \
+-p diskann-garnet --release
+</code></pre>
+<p>If the patch is not applied, the official <code>libdiskann_garnet</code> can still be loaded by MySQL-Vector, and DiskANN build / rebuild falls back to the serial <code>insert</code> path.</p>
+<p>If Faiss should not be built during the MySQL build, explicitly point to an existing library installation:</p>
+<pre><code class="language-bash">FAISS_INSTALL_ROOT=../deps/faiss-install
+FAISS_LIBRARY_DIR="${FAISS_INSTALL_ROOT}/lib"
+
+-DMYSQL_VECTOR_FAISS_ROOT="${FAISS_INSTALL_ROOT}" \
+-DMYSQL_VECTOR_FAISS_LIBRARY_DIR="${FAISS_LIBRARY_DIR}"
+</code></pre>
+<h2 id="en-runtime-vars">0.1 Runtime System Variables</h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Scope</th>
+<th>Range</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vector_hnsw_build_threads</code></td>
+<td>Global dynamic</td>
+<td><code>0..65535</code></td>
+<td><code>0</code></td>
+<td>Default worker count for new HNSWLIB build / rebuild operations. <code>0</code> means automatic.</td>
+</tr>
+<tr>
+<td><code>vector_faiss_build_threads</code></td>
+<td>Global dynamic</td>
+<td><code>0..65535</code></td>
+<td><code>0</code></td>
+<td>Default Faiss/OpenMP worker count for new FAISS build / rebuild operations. <code>0</code> lets Faiss choose.</td>
+</tr>
+<tr>
+<td><code>vector_diskann_build_threads</code></td>
+<td>Global dynamic</td>
+<td><code>0..65535</code></td>
+<td><code>0</code></td>
+<td>Default worker count for new DiskANN build / rebuild operations. <code>0</code> lets the DiskANN runtime choose.</td>
+</tr>
+<tr>
+<td><code>innodb_vector_upgrade_require_clean_shutdown</code></td>
+<td>Global read only, non-persistent</td>
+<td><code>OFF</code> / <code>ON</code></td>
+<td><code>OFF</code></td>
+<td>Startup guard that rejects vector DD upgrade when redo recovery is required.</td>
+</tr>
+</tbody>
+</table>
+<p>Actual execution example:</p>
+<pre><code class="language-sql">mysql&gt; SELECT @@global.vector_hnsw_build_threads AS hnsw_threads,
+            @@global.vector_faiss_build_threads AS faiss_threads,
+            @@global.vector_diskann_build_threads AS diskann_threads,
+            @@global.innodb_vector_upgrade_require_clean_shutdown AS clean_shutdown_required;
++--------------+---------------+-----------------+-------------------------+
+| hnsw_threads | faiss_threads | diskann_threads | clean_shutdown_required |
++--------------+---------------+-----------------+-------------------------+
+|            0 |             0 |               0 |                       0 |
++--------------+---------------+-----------------+-------------------------+
+
+mysql&gt; SET GLOBAL vector_hnsw_build_threads = 4;
+
+mysql&gt; SELECT @@global.vector_hnsw_build_threads AS hnsw_threads;
++--------------+
+| hnsw_threads |
++--------------+
+|            4 |
++--------------+
+
+mysql&gt; SET GLOBAL vector_hnsw_build_threads = 65536;
+ERROR 42000: Variable 'vector_hnsw_build_threads' can't be set to the value of '65536'
+
+mysql&gt; SET GLOBAL innodb_vector_upgrade_require_clean_shutdown = ON;
+ERROR HY000: Variable 'innodb_vector_upgrade_require_clean_shutdown' is a read only variable
+</code></pre>
+<p><code>vector_faiss_build_threads</code> and <code>vector_diskann_build_threads</code> have the same visibility, dynamic update semantics, and <code>0..65535</code> range validation as <code>vector_hnsw_build_threads</code>. Statement-level <code>build_threads</code> overrides the corresponding global variable when it is greater than <code>0</code>; statement-level <code>0</code> inherits the global variable.</p>
+<h2 id="en-upgrade-guard">0.2 Upgrade Guard Parameter</h2>
+<p>When upgrading from an old version without the vector data dictionary to a vector version, it is recommended to perform one clean shutdown with the old version first:</p>
+<pre><code class="language-sql">SET GLOBAL innodb_fast_shutdown = 0;
+</code></pre>
+<p>Then shut down the old version normally and start the vector version.</p>
+<p>The vector version provides this startup option:</p>
+<pre><code class="language-ini">innodb_vector_upgrade_require_clean_shutdown = ON
+</code></pre>
+<p>The default is <code>OFF</code>, so the original MySQL upgrade behavior is unchanged. If set to <code>ON</code>, the server checks whether this startup performed InnoDB redo recovery before upgrading to the vector data dictionary version. If the old data directory requires redo recovery, the upgrade is rejected and the user must return to the old version, shut it down cleanly with <code>innodb_fast_shutdown=0</code>, and then upgrade again.</p>
+<p>Usage recommendations:</p>
+<ul>
+<li>During production upgrade windows, explicitly set
+  <code>--innodb-vector-upgrade-require-clean-shutdown=ON</code> to block direct upgrade to the vector version after an abnormal old-version shutdown.</li>
+<li>If the existing upgrade process already guarantees a clean old-version shutdown, this option can stay at the default <code>OFF</code>.</li>
+<li>This option is a startup-time read-only parameter. It cannot be changed at runtime and is not persisted by <code>SET PERSIST</code>.</li>
+</ul>
+<h2 id="en-vector-columns">1. Vector Columns</h2>
+<h3>1.1 Syntax</h3>
+<pre><code class="language-sql">VECTOR(dim)
+</code></pre>
+<ul>
+<li><code>dim</code> must be a positive integer.</li>
+<li><code>SHOW CREATE TABLE</code>, <code>SHOW COLUMNS</code>, <code>DESCRIBE</code>, and <code>INFORMATION_SCHEMA</code>
+  all display the type as <code>VECTOR(dim)</code>.</li>
+</ul>
+<p>Example:</p>
+<pre><code class="language-sql">CREATE TABLE t_vec (
+id BIGINT PRIMARY KEY,
+emb VECTOR(4)
+) ENGINE=InnoDB;
+</code></pre>
+<h3>1.2 Write Recommendations</h3>
+<ul>
+<li>For text literals, consistently convert through <code>VEC_FROMTEXT('[1,2,3]')</code> first.</li>
+<li>The written value dimension must match the column definition, otherwise an error is returned.</li>
+</ul>
+<h2 id="en-vector-functions">2. Basic Vector Functions and Enum Parameters</h2>
+<p>The example output in this section was obtained by actually running <code>mysql --table --raw</code> against an isolated local instance built from the current branch's <code>8.0.46-debug</code> binary. Floating-point values are shown exactly as returned by the client.</p>
+<p>The registry also contains <code>VEC_DEBUG_TRUTH_STORE_GET_HEX()</code> and
+<code>VEC_DEBUG_TRUTH_STORE_SET_HEX()</code>. They are registered only in Debug/MTR builds for fault injection and recovery tests. Release builds do not register these internal destructive entry points, and they are not documented as main-path user APIs in this manual.</p>
+<h3>2.1 Enum Parameters</h3>
+<p><code>metric</code>, <code>mode</code>, and <code>provider</code> parsing is case-insensitive, and leading or trailing whitespace is ignored.</p>
+<table>
+<thead>
+<tr>
+<th>Enum</th>
+<th>Values</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>metric</code></td>
+<td><code>EUCLIDEAN</code>, <code>L2</code></td>
+<td>Euclidean distance. Lower is more similar.</td>
+</tr>
+<tr>
+<td><code>metric</code></td>
+<td><code>COSINE</code></td>
+<td><code>1 - cosine_similarity</code>. Lower is more similar. Zero vectors are invalid.</td>
+</tr>
+<tr>
+<td><code>metric</code></td>
+<td><code>IP</code>, <code>INNER_PRODUCT</code></td>
+<td>Negative inner product in <code>VEC_DISTANCE()</code> so ascending distance order still means more similar first.</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td><code>MEMORY</code></td>
+<td>In-memory serving index.</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td><code>EXTERNAL</code></td>
+<td>External/native persistent backend mode.</td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td><code>NATIVE</code></td>
+<td>Built-in backend.</td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td><code>HNSWLIB</code>, <code>HNSW</code></td>
+<td>hnswlib backend. Supports <code>MEMORY</code>.</td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td><code>FAISS</code></td>
+<td>Faiss backend.</td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td><code>DISKANN</code></td>
+<td>DiskANN backend. Supports <code>EXTERNAL</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Unsupported <code>mode/provider</code> combinations fail at index creation time, for example <code>DISKANN/MEMORY</code> and
+<code>HNSWLIB/EXTERNAL</code>.</p>
+<h3>2.2 Basic Function Reference</h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Behavior</th>
+<th>Input parameters</th>
+<th>Return value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VEC_FROMTEXT(text)</code></td>
+<td>Encodes a text vector literal into MySQL internal vector bytes.</td>
+<td><code>text</code>: a vector literal such as <code>'[1,2,3]'</code>.</td>
+<td>Binary float32 vector bytes.</td>
+</tr>
+<tr>
+<td><code>VEC_TOTEXT(vector_expr)</code></td>
+<td>Decodes internal vector bytes into text.</td>
+<td><code>vector_expr</code>: a binary vector value.</td>
+<td>Text vector literal.</td>
+</tr>
+<tr>
+<td><code>VECTOR_DIM(vector_expr)</code></td>
+<td>Returns vector dimension.</td>
+<td><code>vector_expr</code>: a binary vector value.</td>
+<td>Number of vector elements.</td>
+</tr>
+<tr>
+<td><code>VEC_NORMALIZE(vector_expr)</code></td>
+<td>Returns an L2-normalized vector.</td>
+<td><code>vector_expr</code>: a non-zero binary vector value.</td>
+<td>Normalized binary vector bytes.</td>
+</tr>
+<tr>
+<td><code>VEC_DOT_PRODUCT(lhs, rhs)</code></td>
+<td>Computes dot product.</td>
+<td><code>lhs</code> and <code>rhs</code>: same-dimension binary vector values.</td>
+<td><code>sum(lhs[i] * rhs[i])</code>.</td>
+</tr>
+<tr>
+<td><code>VEC_INNER_PRODUCT(lhs, rhs)</code></td>
+<td>Computes inner product.</td>
+<td><code>lhs</code> and <code>rhs</code>: same-dimension binary vector values.</td>
+<td>Raw inner product; currently equivalent to <code>VEC_DOT_PRODUCT()</code>.</td>
+</tr>
+<tr>
+<td><code>VEC_DISTANCE_EUCLIDEAN(lhs, rhs)</code></td>
+<td>Computes Euclidean distance.</td>
+<td><code>lhs</code> and <code>rhs</code>: same-dimension binary vector values.</td>
+<td><code>sqrt(sum((lhs-rhs)^2))</code>.</td>
+</tr>
+<tr>
+<td><code>VEC_DISTANCE_COSINE(lhs, rhs)</code></td>
+<td>Computes cosine distance.</td>
+<td><code>lhs</code> and <code>rhs</code>: same-dimension non-zero binary vector values.</td>
+<td><code>1 - cosine_similarity</code>.</td>
+</tr>
+<tr>
+<td><code>VEC_DISTANCE(lhs, rhs[, metric])</code></td>
+<td>Computes distance with the selected metric.</td>
+<td><code>lhs</code> and <code>rhs</code>: same-dimension binary vector values; optional <code>metric</code> uses the enum values in section 2.1.</td>
+<td>Distance value; <code>IP</code> / <code>INNER_PRODUCT</code> returns negative inner product to preserve ascending distance order.</td>
+</tr>
+</tbody>
+</table>
+<p>Debug or MTR builds also register <code>VEC_DEBUG_TRUTH_STORE_GET_HEX()</code> and
+<code>VEC_DEBUG_TRUTH_STORE_SET_HEX()</code> for truth-store verification. They are diagnostic
+helpers, not normal application APIs.</p>
+<p>Actual execution examples for basic functions:</p>
+<pre><code class="language-sql">mysql&gt; SELECT HEX(VEC_FROMTEXT('[1,2,3]')) AS vec_fromtext_hex;
++--------------------------+
+| vec_fromtext_hex         |
++--------------------------+
+| 0000803F0000004000004040 |
++--------------------------+
+
+mysql&gt; SELECT VEC_TOTEXT(VEC_FROMTEXT('[1,2,3]')) AS vec_totext;
++------------+
+| vec_totext |
++------------+
+| [1,2,3]    |
++------------+
+
+mysql&gt; SELECT VECTOR_DIM(VEC_FROMTEXT('[1,2,3]')) AS vector_dim;
++------------+
+| vector_dim |
++------------+
+|          3 |
++------------+
+
+mysql&gt; SELECT VEC_TOTEXT(VEC_NORMALIZE(VEC_FROMTEXT('[3,4]'))) AS normalized;
++----------------------------------------+
+| normalized                             |
++----------------------------------------+
+| [0.6000000238418579,0.800000011920929] |
++----------------------------------------+
+
+mysql&gt; SELECT VEC_DOT_PRODUCT(VEC_FROMTEXT('[1,2,3]'), VEC_FROMTEXT('[4,5,6]')) AS dot_product;
++-------------+
+| dot_product |
++-------------+
+|          32 |
++-------------+
+
+mysql&gt; SELECT VEC_INNER_PRODUCT(VEC_FROMTEXT('[1,2,3]'), VEC_FROMTEXT('[4,5,6]')) AS inner_product;
++---------------+
+| inner_product |
++---------------+
+|            32 |
++---------------+
+
+mysql&gt; SELECT VEC_DISTANCE_EUCLIDEAN(VEC_FROMTEXT('[0,0]'), VEC_FROMTEXT('[3,4]')) AS l2_distance;
++-------------+
+| l2_distance |
++-------------+
+|           5 |
++-------------+
+
+mysql&gt; SELECT VEC_DISTANCE_COSINE(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')) AS cosine_distance;
++-----------------+
+| cosine_distance |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT VEC_DISTANCE(VEC_FROMTEXT('[0,0]'), VEC_FROMTEXT('[3,4]'), 'L2') AS distance_l2;
++-------------+
+| distance_l2 |
++-------------+
+|           5 |
++-------------+
+
+mysql&gt; SELECT VEC_DISTANCE(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]'), 'COSINE') AS distance_cosine;
++-----------------+
+| distance_cosine |
++-----------------+
+|               1 |
++-----------------+
+
+mysql&gt; SELECT VEC_DISTANCE(VEC_FROMTEXT('[1,2]'), VEC_FROMTEXT('[3,4]'), 'IP') AS distance_ip;
++-------------+
+| distance_ip |
++-------------+
+|         -11 |
++-------------+
+</code></pre>
+<h2 id="en-named-index-functions">3. Standalone Named Index Functions</h2>
+<p>Standalone named indexes are created by <code>VEC_INDEX_CREATE()</code>. They are not bound to table columns and do not appear in <code>SHOW CREATE TABLE</code>. Callers explicitly perform <code>UPSERT</code>, <code>ERASE</code>, transaction commit, rebuild, and recovery.</p>
+<p>Defaults:</p>
+<ul>
+<li><code>metric='euclidean'</code></li>
+<li><code>mode='memory'</code></li>
+<li><code>provider='native'</code></li>
+</ul>
+<h3>3.1 Lifecycle, Write, and Query Function Reference</h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Behavior</th>
+<th>Input parameters</th>
+<th>Return value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VEC_INDEX_CREATE(index_name, dim[, metric[, mode[, provider[, build_threads]]]])</code></td>
+<td>Creates a standalone named vector index.</td>
+<td><code>index_name</code>: index name; <code>dim</code>: dimension; optional <code>metric</code>, <code>mode</code>, and <code>provider</code> use the enum values in section 2.1; <code>build_threads</code>: HNSWLIB, FAISS, or DiskANN build / rebuild worker count, where <code>0</code> inherits the corresponding provider global variable.</td>
+<td><code>1</code> on success; errors on failure.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_DROP(index_name)</code></td>
+<td>Drops a standalone named vector index.</td>
+<td><code>index_name</code>: index name.</td>
+<td><code>1</code> when dropped; <code>0</code> when the index does not exist or was not removed.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_UPSERT(index_name, id, vector)</code></td>
+<td>Inserts or replaces one vector in an index.</td>
+<td><code>index_name</code>: index name; <code>id</code>: unsigned 64-bit document id; <code>vector</code>: vector value.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_ERASE(index_name, id)</code></td>
+<td>Deletes one vector id from an index.</td>
+<td><code>index_name</code>: index name; <code>id</code>: unsigned 64-bit document id.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SEARCH(index_name, query, top_k)</code></td>
+<td>Nearest-neighbor search that returns document ids.</td>
+<td><code>index_name</code>: index name; <code>query</code>: query vector; <code>top_k</code>: <code>0..10000</code>, where <code>0</code> returns an empty result.</td>
+<td>JSON text array, such as <code>[1,2]</code>.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SEARCH_BATCH(index_name, query_batch_expr, query_count, top_k)</code></td>
+<td>Batch nearest-neighbor search that returns document ids. It may use backend batch parallel search when there are no pending transactions or mapped MVCC table filters.</td>
+<td><code>query_batch_expr</code>: contiguous binary concatenation of <code>query_count</code> same-dimension vectors; <code>query_count</code>: <code>1..1024</code>; <code>top_k</code>: <code>0..10000</code>; <code>query_count * top_k</code> must not exceed <code>65536</code>.</td>
+<td>JSON text two-dimensional array, such as <code>[[1,2],[2,1]]</code>.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SEARCH_WITH_DISTANCE(index_name, query, top_k)</code></td>
+<td>Returns JSON search results with distances.</td>
+<td>Same parameters as <code>VEC_INDEX_SEARCH()</code>.</td>
+<td>JSON text array; each element contains <code>doc_id</code> and <code>distance</code>.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_INFO(index_name)</code></td>
+<td>Returns JSON metadata and lifecycle state.</td>
+<td><code>index_name</code>: index name.</td>
+<td>JSON text object.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_LIST()</code></td>
+<td>Lists registered vector indexes.</td>
+<td>None.</td>
+<td>JSON text array of index names.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_BULK_LOAD_BEGIN(index_name)</code></td>
+<td>Enters bulk-load mode. Later transactions write only committed truth rows and do not update the serving backend yet.</td>
+<td><code>index_name</code>: index name; the index must not have uncommitted staged changes.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_BULK_BUILD(index_name)</code></td>
+<td>Builds a shadow backend from committed truth rows and atomically swaps it into service. hnswlib uses the configured <code>hnsw_build_threads</code>; Faiss applies the configured OpenMP worker count; DiskANN native detects the experimental bulk ABI and otherwise falls back to official serial <code>insert</code>. Native build data is held in a build-time memory store and flushed once to the persistent directory on success; the successful path does not generate FAISS/DiskANN sidecar manifests.</td>
+<td><code>index_name</code>: index name.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_REBUILD(index_name)</code></td>
+<td>Rebuilds one serving index from committed entries. The implementation captures a snapshot under a short lock, builds the shadow backend outside the lock, then validates and swaps the live backend under a short lock. hnswlib and Faiss can use their configured build workers, and DiskANN native chooses the experimental bulk ABI or official serial ABI at runtime.</td>
+<td><code>index_name</code>: index name.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_RECOVER(index_name)</code></td>
+<td>Recovers one index from persistent sidecar state or committed entries. A recovered shadow backend is built outside the lock and installed under a short lock on success.</td>
+<td><code>index_name</code>: index name.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_REBUILD_ALL()</code></td>
+<td>Rebuilds all registered indexes by constructing shadow backends outside the lock and installing them after validation.</td>
+<td>None.</td>
+<td>Number of successfully rebuilt indexes.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_RECOVER_ALL()</code></td>
+<td>Recovers all registered indexes by constructing recovered shadow backends outside the lock and installing them after validation.</td>
+<td>None.</td>
+<td>Number of successfully recovered indexes.</td>
+</tr>
+</tbody>
+</table>
+<p><code>VEC_INDEX_LIST()</code>, <code>VEC_INDEX_SEARCH()</code>,
+<code>VEC_INDEX_SEARCH_BATCH()</code>, <code>VEC_INDEX_SEARCH_WITH_DISTANCE()</code>, and
+<code>VEC_INDEX_INFO()</code> return JSON text, not native JSON column values.</p>
+<h3>3.2 Backend Parameter Function Reference</h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Behavior</th>
+<th>Input parameters</th>
+<th>Return value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VEC_INDEX_SET_SEARCH_EF(index_name, ef)</code></td>
+<td>Sets HNSW/Faiss HNSW query-time candidate breadth.</td>
+<td><code>index_name</code>: index name; <code>ef</code>: query candidate breadth.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_HNSW_BUILD_PARAMS(index_name, m, ef_construction)</code></td>
+<td>Sets HNSW build parameters.</td>
+<td><code>m</code>: maximum graph connections; <code>ef_construction</code>: build candidate breadth.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_FAISS_IVF_PARAMS(index_name, nlist, nprobe)</code></td>
+<td>Switches to or sets Faiss IVF-Flat parameters.</td>
+<td><code>nlist</code>: cluster list count; <code>nprobe</code>: query-time probed list count.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_FAISS_IVFPQ_PARAMS(index_name, nlist, nprobe, pq_m, pq_bits)</code></td>
+<td>Switches to or sets Faiss IVF-PQ parameters.</td>
+<td><code>pq_m</code>: number of PQ subquantizers; <code>pq_bits</code>: bits per subquantizer; other parameters match IVF.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_DISKANN_BUILD_PARAMS(index_name, max_degree, build_complexity[, build_threads])</code></td>
+<td>Sets DiskANN build parameters.</td>
+<td><code>max_degree</code>: maximum graph degree; <code>build_complexity</code>: build-time search complexity; <code>build_threads</code>: optional build worker count, where <code>0</code> or omission uses global <code>vector_diskann_build_threads</code>.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(index_name, search_complexity)</code></td>
+<td>Sets DiskANN query complexity.</td>
+<td><code>search_complexity</code>: query-time search complexity.</td>
+<td><code>1</code> on success.</td>
+</tr>
+</tbody>
+</table>
+<p>Special notes:</p>
+<ul>
+<li><code>VEC_INDEX_SET_FAISS_IVF_PARAMS(index_name, 0, 0)</code> switches back to the Faiss <code>hnsw</code> variant.</li>
+<li>Build-time parameters are saved in index configuration. To make build-time parameters take effect immediately, run
+  <code>VEC_INDEX_REBUILD(...)</code> or <code>VEC_INDEX_REBUILD_ALL()</code> explicitly.</li>
+<li>Faiss build worker count currently applies only when creating an index, bulk building, rebuilding, and bulk-loading an in-memory backend. It does not change query parallelism; batch query execution is scheduled by Faiss <code>Index::search(nq, ...)</code> itself.</li>
+<li>DiskANN native build / rebuild does not rewrite the persistent native store directly during construction. The persistent directory is replaced only after both native build and memory-store flush succeed. On failure, the old serving backend and old native store remain available.</li>
+<li>After DiskANN native build / rebuild succeeds, the current <code>mysqld</code> process keeps a resident native store to serve queries and preferentially answers DiskANN callbacks from that resident store. The persistent directory is used for restart recovery or resident-miss fallback. This reduces per-key file open overhead during query execution, but increases process memory usage according to native-store size.</li>
+<li>Runtime tuning persists only index metadata and manifest checkpoints. It should not rewrite committed vector data, the change log, or prepared transaction records. The implementation uses a two-phase model: build candidate backend/config first, persist metadata/manifest, and switch the live configuration only after persistence succeeds. If persistence fails, the old configuration stays effective and an error is returned.</li>
+</ul>
+<h2 id="en-transaction-functions">4. Explicit Transaction Buffer Functions</h2>
+<p>Explicit transaction functions are used to commit or roll back multiple vector writes as a group. For single direct writes, prefer
+<code>VEC_INDEX_UPSERT()</code> / <code>VEC_INDEX_ERASE()</code>.</p>
+<p>Normal SQL transactions for real table-mapped indexes participate in the MySQL savepoint protocol through the hidden handlerton.
+<code>SAVEPOINT name</code>, <code>ROLLBACK TO SAVEPOINT name</code>, and <code>RELEASE SAVEPOINT name</code>
+trim or release staged vector changes together with the SQL transaction. Explicit <code>VEC_INDEX_TXN_*</code> savepoint functions are only for directly managing standalone vector transaction buffers.</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Behavior</th>
+<th>Input parameters</th>
+<th>Return value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VEC_INDEX_TXN_BEGIN()</code></td>
+<td>Starts an explicit vector transaction.</td>
+<td>None.</td>
+<td>Transaction id allocated inside the current instance.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_STAGE_UPSERT(index_name, txn_id, id, vector)</code></td>
+<td>Stages an upsert in a vector transaction.</td>
+<td><code>index_name</code>: index name; <code>txn_id</code>: transaction id; <code>id</code>: unsigned 64-bit document id; <code>vector</code>: vector value.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_STAGE_ERASE(index_name, txn_id, id)</code></td>
+<td>Stages an erase in a vector transaction.</td>
+<td><code>index_name</code>: index name; <code>txn_id</code>: transaction id; <code>id</code>: unsigned 64-bit document id.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_PENDING(txn_id)</code></td>
+<td>Returns the number of staged changes in a transaction buffer.</td>
+<td><code>txn_id</code>: transaction id.</td>
+<td>Pending upsert / erase count.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_SAVEPOINT(txn_id, name)</code></td>
+<td>Creates a vector transaction savepoint.</td>
+<td><code>txn_id</code>: transaction id; <code>name</code>: savepoint name.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_ROLLBACK_TO(txn_id, name)</code></td>
+<td>Rolls back staged vector changes to the named savepoint.</td>
+<td><code>txn_id</code>: transaction id; <code>name</code>: savepoint name.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_RELEASE_SAVEPOINT(txn_id, name)</code></td>
+<td>Releases a vector transaction savepoint.</td>
+<td><code>txn_id</code>: transaction id; <code>name</code>: savepoint name.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_COMMIT(txn_id)</code></td>
+<td>Commits staged changes.</td>
+<td><code>txn_id</code>: transaction id.</td>
+<td><code>1</code> on success.</td>
+</tr>
+<tr>
+<td><code>VEC_INDEX_TXN_ROLLBACK(txn_id)</code></td>
+<td>Rolls back staged changes.</td>
+<td><code>txn_id</code>: transaction id.</td>
+<td><code>1</code> on success.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="en-table-ddl">5. Table-Level DDL</h2>
+<h3>5.1 Syntax</h3>
+<pre><code class="language-sql">CREATE VECTOR INDEX ON tbl(col) WITH (dim)
+CREATE VECTOR INDEX IF NOT EXISTS ON tbl(col) WITH (dim)
+CREATE VECTOR INDEX ON tbl(col) WITH (dim, metric, mode, provider)
+CREATE VECTOR INDEX ON tbl(col) WITH (dim, metric, mode, provider, build_threads)
+
+DROP VECTOR INDEX ON tbl(col)
+DROP VECTOR INDEX IF EXISTS ON tbl(col)
+</code></pre>
+<p><code>WITH</code> parameter meanings:</p>
+<ul>
+<li><code>dim</code>: vector dimension; must be greater than <code>0</code>.</li>
+<li><code>metric</code>: supports <code>EUCLIDEAN</code>, <code>L2</code>, <code>COSINE</code>, <code>IP</code>, and <code>INNER_PRODUCT</code>.</li>
+<li><code>mode</code>: supports <code>MEMORY</code> and <code>EXTERNAL</code>.</li>
+<li><code>provider</code>: supports <code>NATIVE</code>, <code>FAISS</code>, <code>DISKANN</code>, <code>HNSWLIB</code>, and <code>HNSW</code>.</li>
+<li><code>build_threads</code>: only applies to <code>provider='HNSWLIB'</code>, <code>provider='FAISS'</code>, or
+  <code>provider='DISKANN'</code>. The range is <code>0..65535</code>. A statement-level value greater than <code>0</code> overrides the corresponding global variable
+  <code>vector_hnsw_build_threads</code>, <code>vector_faiss_build_threads</code>, or
+  <code>vector_diskann_build_threads</code>; statement-level <code>0</code> means inherit the global setting, and global <code>0</code> means automatic.</li>
+</ul>
+<p>Table-level vector indexes bind an InnoDB table column to a vector serving index. The index name is derived from schema, table, and column metadata rather than supplied in the SQL statement. DML updates are propagated through the vector transaction bridge and recover from truth rows.</p>
+<pre><code class="language-sql">CREATE TABLE t_ddl (
+  id BIGINT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+
+CREATE VECTOR INDEX ON t_ddl(v)
+WITH (2, 'euclidean', 'memory', 'native');
+
+SHOW CREATE TABLE t_ddl\G
+*************************** 1. row ***************************
+       Table: t_ddl
+Create Table: CREATE TABLE `t_ddl` (
+  `id` bigint NOT NULL,
+  `v` vector(2) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+CREATE VECTOR INDEX ON `t_ddl`(`v`) WITH (2, 'euclidean', 'memory', 'native')
+</code></pre>
+<h3>5.2 <code>VEC_INDEX_CREATE</code> vs <code>CREATE VECTOR INDEX</code></h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th><code>VEC_INDEX_CREATE()</code></th>
+<th><code>CREATE VECTOR INDEX</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Target</td>
+<td>Standalone named index.</td>
+<td>InnoDB table column.</td>
+</tr>
+<tr>
+<td>Lifecycle</td>
+<td>Controlled by scalar SQL functions.</td>
+<td>Controlled by table DDL and normal DML.</td>
+</tr>
+<tr>
+<td>Persistence</td>
+<td>Metadata and truth rows are persistent.</td>
+<td>Table binding is persisted through DD metadata.</td>
+</tr>
+<tr>
+<td>Typical use</td>
+<td>Smoke tests, benchmarks, explicit lifecycle control.</td>
+<td>Application tables and production-style usage.</td>
+</tr>
+</tbody>
+</table>
+<h3>5.3 Usage Limits</h3>
+<ul>
+<li>The target column must be a <code>VECTOR(dim)</code> column, and <code>WITH (dim)</code> must match the column dimension.</li>
+<li><code>CREATE VECTOR INDEX</code> currently supports only InnoDB base tables; non-InnoDB tables are rejected.</li>
+<li>Mapped indexes currently require a single-column, non-null integer primary key as <code>doc_id</code>. Unsigned integer primary keys support the full <code>uint64_t</code> range; negative signed integer primary-key values are not valid <code>doc_id</code> values.</li>
+<li><code>CREATE VECTOR INDEX</code> / <code>DROP VECTOR INDEX</code> is not supported on temporary tables.</li>
+<li><code>CREATE VECTOR INDEX</code> holds a no-write metadata lock during backfill to avoid having the scan snapshot overwrite vector changes committed by concurrent DML.</li>
+<li><code>CREATE VECTOR INDEX</code> internally uses the <code>creating -&gt; backfilling -&gt; ready</code> lifecycle. If <code>mysqld</code> restarts before <code>ready</code>, recovery cleans up metadata, committed entries, change log, and prepared rows for the incomplete index, and it does not expose a half-built index to queries.</li>
+</ul>
+<h3>5.4 Lifecycle Coupling</h3>
+<p>The following table-level operations automatically synchronize the vector index lifecycle:</p>
+<ul>
+<li><code>CREATE TABLE ... LIKE</code></li>
+<li><code>RENAME TABLE</code></li>
+<li><code>ALTER TABLE ... RENAME TO</code></li>
+<li><code>ALTER TABLE ... RENAME COLUMN</code></li>
+<li><code>ALTER TABLE ... CHANGE/MODIFY COLUMN</code></li>
+<li><code>ALTER TABLE ... DROP COLUMN</code></li>
+<li><code>TRUNCATE TABLE</code></li>
+<li><code>DROP TABLE</code></li>
+<li><code>DROP DATABASE</code></li>
+</ul>
+<h2 id="en-status">6. Status Inspection</h2>
+<h3>6.1 <code>SHOW VECTOR STATUS</code></h3>
+<p>Supported forms:</p>
+<pre><code class="language-sql">SHOW VECTOR STATUS;
+SHOW VECTOR STATUS LIKE 'pattern';
+SHOW VECTOR STATUS WHERE expr;
+SHOW VECTOR STATUS FOR INDEX index_name;
+SHOW VECTOR STATUS FOR INDEX index_name LIKE 'pattern';
+SHOW VECTOR STATUS FOR INDEX index_name WHERE expr;
+</code></pre>
+<p>Notes:</p>
+<ul>
+<li>Requires the global <code>PROCESS</code> privilege.</li>
+<li>This interface is recommended for automated collection.</li>
+<li><code>WHERE</code> currently supports <code>=</code>, <code>!=</code>, <code>&lt;&gt;</code>,
+  <code>LIKE</code>, and <code>NOT LIKE</code> on <code>Section</code>, <code>Variable_name</code>, and <code>Value</code>, plus <code>&gt;</code>, <code>&gt;=</code>, <code>&lt;</code>, and <code>&lt;=</code> comparisons on <code>Value</code>. Predicates can be combined with <code>AND</code> / <code>OR</code>. <code>IN (...)</code> is not supported.</li>
+</ul>
+<p><code>Section</code> meanings:</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GLOBAL</code></td>
+<td>Global counters, manifest checkpoints, and truth-store state.</td>
+</tr>
+<tr>
+<td><code>INDEX_STATE</code></td>
+<td>Per-index configuration, table-column binding, lifecycle, and entry counts.</td>
+</tr>
+<tr>
+<td><code>BACKEND_HEALTH</code></td>
+<td>Whether a per-index backend is loaded and writable, plus error code and external manifest state.</td>
+</tr>
+<tr>
+<td><code>SYNC_PIPELINE</code></td>
+<td>Per-index pending changes, latest apply latency, and rebuild/recover progress.</td>
+</tr>
+</tbody>
+</table>
+<h3>6.2 Status Field Meanings</h3>
+<p><code>INDEX_STATE</code> fields include dimension, metric, mode, provider, backend variant, table binding names, HNSW/Faiss/DiskANN tuning parameters, lifecycle state/version, mutation support, serving entry count, and committed entry count. A value of <code>0</code> for backend-specific tuning fields means the backend does not use that parameter or automatic/default behavior is active.</p>
+<p><code>BACKEND_HEALTH</code> fields include backend type, variant, mode, loaded/writable flags, the latest lifecycle error code and timestamp, recovery fallback counters, and external sidecar manifest presence/generation. After successful DiskANN native bulk/rebuild, <code>external_manifest_present</code> is <code>0</code> because the serving graph comes from the native store and committed-entry fallback.</p>
+<p><code>SYNC_PIPELINE</code> fields:</p>
+<table>
+<thead>
+<tr>
+<th>Field suffix</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pending_apply_count</code></td>
+<td>Non-negative difference between <code>entry_count</code> and <code>committed_entry_count</code>; during bulk-load it usually equals the number of committed entries not yet served by the backend.</td>
+</tr>
+<tr>
+<td><code>apply_latency_ms</code></td>
+<td>Time spent by the latest apply operation.</td>
+</tr>
+<tr>
+<td><code>rebuild_progress</code></td>
+<td>Rebuild state indicator: <code>100</code> means ready, <code>50</code> means rebuilding, and other states report <code>0</code>.</td>
+</tr>
+<tr>
+<td><code>recover_progress</code></td>
+<td>Recovery state indicator: <code>100</code> means ready, <code>50</code> means recovering, and other states report <code>0</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Lifecycle state values:</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ready</code></td>
+<td>The index is readable and writable, and the latest create, rebuild, recover, or commit has completed.</td>
+</tr>
+<tr>
+<td><code>creating</code></td>
+<td>Table-level <code>CREATE VECTOR INDEX</code> metadata has been persisted but backfill has not started; restart recovery removes this incomplete DDL state.</td>
+</tr>
+<tr>
+<td><code>backfilling</code></td>
+<td>Table-level <code>CREATE VECTOR INDEX</code> is scanning the base table and building the initial committed/serving snapshot; queries fail, and restart recovery removes this incomplete DDL state.</td>
+</tr>
+<tr>
+<td><code>bulk_loading</code></td>
+<td>The index is in bulk-load mode. Commits update only truth rows; queries fail until <code>VEC_INDEX_BULK_BUILD()</code> or <code>VEC_INDEX_REBUILD()</code> succeeds.</td>
+</tr>
+<tr>
+<td><code>rebuilding</code></td>
+<td>The serving index is being rebuilt. The current synchronous rebuild API builds a shadow backend outside the lock, so this is usually visible only through explicit diagnostic state.</td>
+</tr>
+<tr>
+<td><code>recovering</code></td>
+<td>The index is recovering from persistent state or committed entries. The current synchronous recover API builds a shadow backend outside the lock, so this is usually visible only through explicit diagnostic state.</td>
+</tr>
+<tr>
+<td><code>failed</code></td>
+<td>The latest lifecycle operation failed; inspect <code>last_error_code</code> and <code>last_error_ts</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Error codes:</p>
+<table>
+<thead>
+<tr>
+<th>Error code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr><td><code>0</code></td><td>No error.</td></tr>
+<tr><td><code>1001</code></td><td>Uncommitted changes exist, so the current operation cannot safely execute.</td></tr>
+<tr><td><code>1002</code></td><td>Backend creation failed.</td></tr>
+<tr><td><code>1003</code></td><td>Backend recovery failed.</td></tr>
+<tr><td><code>1004</code></td><td>Committed-entry replay failed.</td></tr>
+<tr><td><code>1005</code></td><td>The backend does not support mutation.</td></tr>
+<tr><td><code>1006</code></td><td>Backend apply failed.</td></tr>
+</tbody>
+</table>
+<h3>6.3 Actual Status Query Output Examples</h3>
+<p>Actual output for standalone named index <code>idx_fn</code>:</p>
+<pre><code class="language-sql">SHOW VECTOR STATUS LIKE 'idx_fn.%';
++----------------+-------------------------------------+-----------+
+| Section        | Variable_name                       | Value     |
++----------------+-------------------------------------+-----------+
+| INDEX_STATE    | idx_fn.dimension                    | 2         |
+| INDEX_STATE    | idx_fn.metric                       | euclidean |
+| INDEX_STATE    | idx_fn.mode                         | memory    |
+| INDEX_STATE    | idx_fn.provider                     | native    |
+| INDEX_STATE    | idx_fn.backend_variant              |           |
+| INDEX_STATE    | idx_fn.lifecycle_state              | ready     |
+| INDEX_STATE    | idx_fn.entry_count                  | 1         |
+| INDEX_STATE    | idx_fn.committed_entry_count        | 1         |
+| BACKEND_HEALTH | idx_fn.backend_type                 | native    |
+| BACKEND_HEALTH | idx_fn.loaded                       | 1         |
+| BACKEND_HEALTH | idx_fn.writable                     | 1         |
+| BACKEND_HEALTH | idx_fn.last_error_code              | 0         |
+| BACKEND_HEALTH | idx_fn.external_manifest_present    | 0         |
+| SYNC_PIPELINE  | idx_fn.pending_apply_count          | 0         |
+| SYNC_PIPELINE  | idx_fn.apply_latency_ms             | 1         |
+| SYNC_PIPELINE  | idx_fn.rebuild_progress             | 100       |
+| SYNC_PIPELINE  | idx_fn.recover_progress             | 100       |
++----------------+-------------------------------------+-----------+
+</code></pre>
+<p>The <code>INDEX_STATE</code> section for a table-level DDL index includes table-column binding information. The following is an actual output excerpt:</p>
+<pre><code class="language-sql">SHOW VECTOR STATUS FOR INDEX 'readme_vector.t_ddl.v'
+WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'readme_vector.t_ddl.v.%';
++-------------+-------------------------------------------------+---------------+
+| Section     | Variable_name                                   | Value         |
++-------------+-------------------------------------------------+---------------+
+| INDEX_STATE | readme_vector.t_ddl.v.dimension                 | 2             |
+| INDEX_STATE | readme_vector.t_ddl.v.metric                    | euclidean     |
+| INDEX_STATE | readme_vector.t_ddl.v.mode                      | memory        |
+| INDEX_STATE | readme_vector.t_ddl.v.provider                  | native        |
+| INDEX_STATE | readme_vector.t_ddl.v.schema_name               | readme_vector |
+| INDEX_STATE | readme_vector.t_ddl.v.table_name                | t_ddl         |
+| INDEX_STATE | readme_vector.t_ddl.v.column_name               | v             |
+| INDEX_STATE | readme_vector.t_ddl.v.lifecycle_state           | ready         |
+| INDEX_STATE | readme_vector.t_ddl.v.entry_count               | 2             |
+| INDEX_STATE | readme_vector.t_ddl.v.committed_entry_count     | 2             |
++-------------+-------------------------------------------------+---------------+
+</code></pre>
+<h3>6.4 Other Status Entrypoints</h3>
+<ul>
+<li><code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code></li>
+<li><code>SHOW ENGINE INNODB STATUS</code></li>
+</ul>
+<p>All variables with the <code>Vector_</code> prefix in <code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code> are vector-related status. They are roughly grouped by name:</p>
+<table>
+<thead>
+<tr>
+<th>Status prefix</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr><td><code>Vector_index_*</code></td><td>Vector index create/drop request counters.</td></tr>
+<tr><td><code>Vector_metadata_*</code></td><td>Vector index metadata load and persist failure counters.</td></tr>
+<tr><td><code>Vector_committed_*</code></td><td>Committed-entry snapshot row count and read/write failure counters.</td></tr>
+<tr><td><code>Vector_manifest_*</code></td><td>Vector manifest version, checkpoint, and read/write failure counters.</td></tr>
+<tr><td><code>Vector_change_log_*</code></td><td>Vector change-log load, replay, and persist failure counters.</td></tr>
+<tr><td><code>Vector_backend_*</code></td><td>Backend recovery fallback, provider/mode/manifest, and related backend state.</td></tr>
+<tr><td><code>Vector_rebuild_*</code>, <code>Vector_recover_*</code></td><td>Rebuild and recovery request counters.</td></tr>
+<tr><td><code>Vector_search_*</code></td><td>Search requests, failures, returned results, and mapped MVCC candidate expansion counters.</td></tr>
+<tr><td><code>Vector_stage_*</code>, <code>Vector_txn_*</code>, <code>Vector_pending_txn_changes</code></td><td>Explicit transaction buffer and commit/rollback state.</td></tr>
+<tr><td><code>Vector_runtime_state_*</code>, <code>Vector_persist_artifact_*</code></td><td>Runtime-state and persisted-artifact rollback state.</td></tr>
+<tr><td><code>Vector_truth_store_*</code></td><td>Truth-store backend, transaction capability, and full-persist counters; delta persist and changelog compact counters are exposed through <code>SHOW VECTOR STATUS</code>.</td></tr>
+<tr><td><code>Vector_apply_latency_ms</code></td><td>Time spent by the latest vector change apply.</td></tr>
+<tr><td><code>Vector_registered_indexes</code></td><td>Number of currently registered vector indexes.</td></tr>
+</tbody>
+</table>
+<p>In <code>SHOW ENGINE INNODB STATUS</code>, only the <code>VECTOR OBSERVABILITY</code> subsection is vector-related. Transaction, lock, buffer pool, and other sections in the same output remain native InnoDB status. This subsection keeps only the truth-store, manifest, change-log, artifact rollback, and other persistence/engine-boundary summaries. Use <code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code> or <code>SHOW VECTOR STATUS</code> for SQL registry state such as index lifecycle, provider/mode, query, rebuild, and explicit transaction state. Actual output example:</p>
+<pre><code class="language-sql">mysql&gt; SHOW ENGINE INNODB STATUS;
+...
+--------------------
+VECTOR OBSERVABILITY
+--------------------
+vector metadata: load_fail=0, persist_fail=0
+vector truth store: backend=mysql, transactional=1
+vector truth-store persist: requests=2, failures=0
+vector committed snapshot: rows=1, load_fail=0, persist_fail=0
+vector manifest: version=3, metadata_ckpt=1, committed_ckpt=1, change_log_ckpt=1, load_fail=0, persist_fail=0
+vector change-log: load_fail=0, replay_fail=0, persist_fail=0, backend_recover_fallback=0
+vector artifact rollback: persist_artifact=0, persist_artifact_fail=0
+...
+</code></pre>
+<p>Recommendations:</p>
+<ul>
+<li>Use <code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code> for lightweight global monitoring.</li>
+<li>Use <code>SHOW VECTOR STATUS FOR INDEX ...</code> for precise single-index diagnostics.</li>
+<li>Use <code>SHOW ENGINE INNODB STATUS</code> when diagnosing truth-store / manifest / change-log persistence summaries.</li>
+</ul>
+<h2 id="en-usage">7. Usage Recommendations</h2>
+<ul>
+<li>Use <code>VEC_FROMTEXT(...)</code> consistently for text vector input to avoid client-side binary encoding differences.</li>
+<li>For production table-column paths, prefer table-level DDL with normal DML because synchronization behavior is more direct.</li>
+<li>Before tuning HNSW / Faiss / DiskANN, confirm the current index <code>mode/provider</code>.</li>
+<li>When consuming machine-readable results, treat <code>VEC_INDEX_INFO()</code> / <code>VEC_INDEX_SEARCH*()</code> as JSON text.</li>
+<li>After changing index parameters in batches, explicitly run <code>VEC_INDEX_REBUILD(...)</code> when build-time settings must take effect immediately.</li>
+</ul>
+<h3>7.1 Benchmark and Load Testing Experience</h3>
+<ul>
+<li>Before integrating an external benchmark, run a small dataset first to confirm table creation, index creation, writes, queries, and parameter mapping, then switch to a large dataset.</li>
+<li>For high-dimensional large-batch imports, prefer the standalone named-index fast path:
+  <ul>
+  <li>Create the index with <code>VEC_INDEX_CREATE</code>.</li>
+  <li>Stage vectors in batches with <code>VEC_INDEX_STAGE_UPSERT</code>.</li>
+  <li>Commit each batch with <code>VEC_INDEX_TXN_COMMIT</code>.</li>
+  <li>Build the serving index once with <code>VEC_INDEX_BULK_BUILD</code> or <code>VEC_INDEX_REBUILD</code>.</li>
+  <li>Run queries with <code>VEC_INDEX_SEARCH</code>.</li>
+  </ul>
+</li>
+<li>Large imports should pass binary <code>float32</code> vector payloads directly from the client. <code>VEC_FROMTEXT('[...]')</code> is better for SQL examples, small smoke tests, and manual diagnostics.</li>
+<li>Long-running load tests should use an isolated <code>mysqld</code> instance and reserve enough <code>innodb_redo_log_capacity</code>, <code>innodb_buffer_pool_size</code>, and backend build threads, so redo recycling, buffer pool churn, or low parallelism is not mistaken for a vector-index bottleneck.</li>
+<li>If a benchmark runner separates <code>load</code>, <code>optimize</code>, and <code>search</code> into different processes, later processes should first call <code>VEC_INDEX_INFO(index_name)</code> to attach to existing index state instead of blindly repeating <code>VEC_INDEX_CREATE(...)</code>.</li>
+<li>If <code>VEC_INDEX_INFO()</code> already reports the target <code>search_ef</code>, repeated <code>VEC_INDEX_SET_SEARCH_EF(...)</code> is usually unnecessary; reissuing it only updates metadata/manifest.</li>
+<li>When a load test becomes slow or interrupted, first distinguish whether the client import path or the server index build path is slow:
+  <ul>
+  <li>Use <code>SHOW PROCESSLIST</code> to see the SQL currently running in each session.</li>
+  <li>Use <code>SHOW GLOBAL STATUS LIKE 'Vector_%'</code> to inspect write, commit, persist, and search counters.</li>
+  <li>Use <code>SHOW ENGINE INNODB STATUS</code> to inspect truth-store, manifest, and change-log persistence summaries.</li>
+  </ul>
+</li>
+<li>The current public ANN API has no native filter parameter. To validate filter semantics, write it as an exact query such as <code>WHERE ... ORDER BY VEC_DISTANCE(...) LIMIT k</code>. Do not describe over-fetch or post-filter results as native ANN filtering.</li>
+<li>When validating non-default DiskANN parameters, record them in the test configuration:
+  <ul>
+  <li><code>DISKANN_MAX_DEGREE</code></li>
+  <li><code>DISKANN_BUILD_COMPLEXITY</code></li>
+  <li><code>DISKANN_SEARCH_COMPLEXITY</code></li>
+  </ul>
+</li>
+</ul>
+    </div>
+    </div>
+    </article>
+  </main>
+  <script>
+    const buttons = document.querySelectorAll('button[data-target]');
+    const articles = document.querySelectorAll('article');
+    buttons.forEach((button) => {
+      button.addEventListener('click', () => {
+        buttons.forEach((item) => item.classList.remove('active'));
+        articles.forEach((item) => item.classList.remove('active'));
+        button.classList.add('active');
+        document.getElementById(button.dataset.target).classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>
