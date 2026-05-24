@@ -1,20 +1,23 @@
-Copyright (c) 2000, 2026, Oracle and/or its affiliates.
+MySQL-Vector
+============
 
-This is a release of MySQL, an SQL database server.
+MySQL-Vector is a vector-search extension for MySQL. It lets MySQL
+store vector values, build vector indexes, and run similarity search
+through SQL for semantic search, recommendation, retrieval-augmented
+generation, and multimodal workloads.
 
-License information can be found in the LICENSE file.
+The vector branches provide:
 
-In test packages where this file is renamed README-test, the license
-file is renamed LICENSE-test.
+* `VECTOR(dim)` columns in InnoDB tables.
+* SQL vector functions such as `VEC_FROMTEXT()`, `VEC_DISTANCE()`, and
+  `VEC_INDEX_SEARCH()`.
+* Standalone named vector indexes and table-bound `CREATE VECTOR INDEX`
+  syntax.
+* HNSWLIB, Faiss, and DiskANN backend integration.
+* Durable truth-store persistence, transaction integration, recovery,
+  replication coverage, and observability surfaces.
 
-This distribution may include materials developed by third parties.
-For license and attribution notices for these materials,
-please refer to the LICENSE file.
+Supported versions:
 
-For further information on MySQL or additional documentation, visit
-  http://dev.mysql.com/doc/
-
-For additional downloads and the source of MySQL, visit
-  http://dev.mysql.com/downloads/
-
-MySQL is brought to you by the MySQL team at Oracle.
+* MySQL 8.0.46:
+  [mysql-vector-8046](https://github.com/plinux/MySQL-Vector/tree/mysql-vector-8046)
