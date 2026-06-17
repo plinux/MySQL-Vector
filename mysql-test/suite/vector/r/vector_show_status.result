@@ -178,6 +178,10 @@ SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name LIKE 'idx_show_filter.%'
   AND Value = '0';
 Section	Variable_name	Value
+BACKEND_HEALTH	idx_show_filter.backend_build_rows	0
+BACKEND_HEALTH	idx_show_filter.backend_build_manifest_ms	0
+BACKEND_HEALTH	idx_show_filter.backend_build_offline_ms	0
+BACKEND_HEALTH	idx_show_filter.backend_build_load_ms	0
 BACKEND_HEALTH	idx_show_filter.last_error_code	0
 BACKEND_HEALTH	idx_show_filter.last_error_ts	0
 BACKEND_HEALTH	idx_show_filter.recover_fallback_count	0

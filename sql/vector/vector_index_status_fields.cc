@@ -77,6 +77,37 @@ void append_bool(field_values *fields, const char *name, bool value) {
   fields->push_back(std::move(field));
 }
 
+bool has_build_diagnostics(
+    const vector_index::backend_build_diagnostics &diagnostics) {
+  bool present = false;
+  present |= !diagnostics.runtime.empty();
+  present |= !diagnostics.input_source.empty();
+  present |= diagnostics.row_count != 0;
+  present |= diagnostics.segment_count != 0;
+  present |= diagnostics.manifest_ms != 0;
+  present |= diagnostics.offline_build_ms != 0;
+  present |= diagnostics.load_ms != 0;
+  present |= !diagnostics.fallback_reason.empty();
+  return present;
+}
+
+void append_build_diagnostics(
+    field_values *fields,
+    const vector_index::backend_build_diagnostics &diagnostics) {
+  if (!has_build_diagnostics(diagnostics)) return;
+  append_nullable_string(fields, "backend_build_runtime", diagnostics.runtime);
+  append_nullable_string(fields, "backend_build_input_source",
+                         diagnostics.input_source);
+  append_uint(fields, "backend_build_rows", diagnostics.row_count);
+  append_uint(fields, "backend_build_segments", diagnostics.segment_count);
+  append_uint(fields, "backend_build_manifest_ms", diagnostics.manifest_ms);
+  append_uint(fields, "backend_build_offline_ms",
+              diagnostics.offline_build_ms);
+  append_uint(fields, "backend_build_load_ms", diagnostics.load_ms);
+  append_nullable_string(fields, "backend_build_fallback_reason",
+                         diagnostics.fallback_reason);
+}
+
 }  // namespace
 
 uint64_t pending_apply_count(const vector_index_registry::index_info &info) {
@@ -155,6 +186,7 @@ void collect_info_fields(const vector_index_registry::index_info &info,
   append_uint(fields, "standalone_raw_segment_bytes",
               info.standalone_raw_segment_bytes);
   append_nullable_string(fields, "backend_variant", info.backend_variant);
+  append_build_diagnostics(fields, info.build_diagnostics);
   append_nullable_string(fields, "schema_name", info.schema_name);
   append_nullable_string(fields, "table_name", info.table_name);
   append_nullable_string(fields, "column_name", info.column_name);
@@ -274,6 +306,7 @@ void collect_backend_health_fields(
 
   append_string(fields, "backend_type", info.provider);
   append_nullable_string(fields, "backend_variant", info.backend_variant);
+  append_build_diagnostics(fields, info.build_diagnostics);
   append_string(fields, "mode", info.mode);
   append_string(fields, "consistency_mode", info.consistency_mode);
   append_bool(fields, "truth_store_enabled", info.truth_store_enabled);

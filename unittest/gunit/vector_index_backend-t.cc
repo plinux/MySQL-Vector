@@ -28,7 +28,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -46,10 +48,12 @@
 #include "sql/mysqld.h"
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_build_options.h"
+#include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_runtime_config.h"
 #include "sql/vector/vector_index_runtime_thread_pool.h"
+#include "sql/vector/vector_index_status_fields.h"
 #include "sql/vector/vector_status.h"
 #include "unittest/gunit/vector_test_utils.h"
 
@@ -67,6 +71,15 @@ bool has_prefix(const std::string &text, const std::string &prefix) {
 bool has_suffix(const std::string &text, const std::string &suffix) {
   return text.size() >= suffix.size() &&
          text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+const vector_index_status_fields::field_value *find_status_field(
+    const vector_index_status_fields::field_values &fields,
+    const char *name) {
+  for (const vector_index_status_fields::field_value &field : fields) {
+    if (std::strcmp(field.name, name) == 0) return &field;
+  }
+  return nullptr;
 }
 
 [[maybe_unused]] std::string find_snapshot_file(const std::string &directory,
@@ -277,6 +290,20 @@ class BoolGuard {
   bool m_original;
 };
 
+class UlongGuard {
+ public:
+  UlongGuard(ulong *value, ulong replacement)
+      : m_value(value), m_original(*value) {
+    *m_value = replacement;
+  }
+
+  ~UlongGuard() { *m_value = m_original; }
+
+ private:
+  ulong *m_value;
+  ulong m_original;
+};
+
 class StubBackend final : public vector_index::backend {
  public:
   bool upsert(uint64_t doc_id [[maybe_unused]],
@@ -291,11 +318,18 @@ class StubBackend final : public vector_index::backend {
   bool erase(uint64_t doc_id [[maybe_unused]]) override { return true; }
 
   bool search(const vector_index::vector_data &query [[maybe_unused]],
-              size_t top_k [[maybe_unused]],
+              size_t top_k,
               std::vector<vector_index::search_result> *results) const override {
+    ++search_calls;
+    if (fail_search_call != 0 && search_calls == fail_search_call) return false;
     results->clear();
+    if (top_k != 0) {
+      results->push_back({search_calls, query.empty() ? 0.0 : query.front()});
+    }
     return true;
   }
+
+  bool recover() override { return allow_recover; }
 
   size_t dimension() const override { return 2; }
   vector_index::metric_type metric() const override {
@@ -311,124 +345,15 @@ class StubBackend final : public vector_index::backend {
 
   bool m_supports_mutations{true};
   bool allow_upsert{true};
+  bool allow_recover{true};
   size_t upsert_calls{0};
+  mutable size_t search_calls{0};
+  size_t fail_search_call{0};
   std::unordered_map<uint64_t, vector_index::vector_data> upserted_entries;
   vector_index::vector_data last_vector;
 };
 
 }  // namespace
-
-TEST(VectorIndexRuntimeThreadPoolTest,
-     EffectiveRuntimeWorkerCountUsesConfiguredAutoAndCaps) {
-  EXPECT_EQ(0U, vector_index::effective_runtime_worker_count(0, 4));
-  EXPECT_EQ(1U, vector_index::effective_runtime_worker_count(1, 4));
-  EXPECT_EQ(4U, vector_index::effective_runtime_worker_count(64, 4));
-  EXPECT_EQ(vector_index::k_max_build_threads,
-            vector_index::effective_runtime_worker_count(
-                vector_index::k_max_build_threads + 8U,
-                vector_index::k_max_build_threads + 8U));
-
-  const size_t auto_threads =
-      vector_index::effective_runtime_worker_count(64, 0);
-  EXPECT_GE(auto_threads, 1U);
-  EXPECT_LE(auto_threads, 64U);
-}
-
-TEST(VectorIndexRuntimeThreadPoolTest,
-     ParallelForQueriesVisitsRangesAndPropagatesFailure) {
-  std::vector<int> seen(7, 0);
-  EXPECT_TRUE(vector_index::parallel_for_queries(
-      seen.size(), 3, [&](size_t begin, size_t end, size_t) {
-        EXPECT_LT(begin, end);
-        for (size_t i = begin; i < end; ++i) ++seen[i];
-        return true;
-      }));
-  for (int value : seen) EXPECT_EQ(1, value);
-
-  EXPECT_TRUE(vector_index::parallel_for_queries(
-      0, 3, [](size_t, size_t, size_t) { return false; }));
-  EXPECT_FALSE(vector_index::parallel_for_queries(
-      4, 2, [](size_t begin, size_t, size_t) { return begin == 0; }));
-  EXPECT_FALSE(vector_index::parallel_for_queries(
-      1, 1, vector_index::query_range_visitor{}));
-  EXPECT_TRUE(vector_index::parallel_for_queries(
-      3, 1, [](size_t begin, size_t end, size_t worker_id) {
-        EXPECT_EQ(0U, begin);
-        EXPECT_EQ(3U, end);
-        EXPECT_EQ(0U, worker_id);
-        return true;
-      }));
-}
-
-TEST(VectorIndexRuntimeConfigTest,
-     ValidatesCommonProviderModeAndThreadSemantics) {
-  vector_index::runtime_common_config config;
-  config.dimension = 4;
-  config.provider = vector_index::backend_provider::kDiskAnn;
-  config.mode = vector_index::backend_mode::kExternal;
-  EXPECT_TRUE(vector_index::runtime_common_config_valid(config));
-
-  config.dimension = 0;
-  EXPECT_FALSE(vector_index::runtime_common_config_valid(config));
-
-  config.dimension = 4;
-  config.mode = vector_index::backend_mode::kMemory;
-  EXPECT_FALSE(vector_index::runtime_common_config_valid(config));
-
-  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
-      vector_index::backend_provider::kFaiss,
-      vector_index::backend_mode::kMemory));
-  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
-      vector_index::backend_provider::kFaiss,
-      vector_index::backend_mode::kExternal));
-  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
-      vector_index::backend_provider::kNative,
-      vector_index::backend_mode::kMemory));
-  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
-      vector_index::backend_provider::kNative,
-      vector_index::backend_mode::kExternal));
-  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
-      vector_index::backend_provider::kHnswlib,
-      vector_index::backend_mode::kMemory));
-  EXPECT_FALSE(vector_index::runtime_provider_accepts_mode(
-      vector_index::backend_provider::kHnswlib,
-      vector_index::backend_mode::kExternal));
-  EXPECT_FALSE(vector_index::runtime_provider_accepts_mode(
-      vector_index::backend_provider::kFaiss,
-      static_cast<vector_index::backend_mode>(999)));
-  EXPECT_FALSE(vector_index::runtime_provider_accepts_mode(
-      vector_index::backend_provider::kNative,
-      static_cast<vector_index::backend_mode>(999)));
-  EXPECT_FALSE(vector_index::backend_provider_supported(
-      static_cast<vector_index::backend_provider>(999)));
-  EXPECT_FALSE(vector_index::default_backend_provider(nullptr));
-  vector_index::backend_mode default_mode =
-      vector_index::backend_mode::kExternal;
-  EXPECT_FALSE(vector_index::default_backend_mode_for_provider(
-      vector_index::backend_provider::kFaiss, nullptr));
-  EXPECT_FALSE(vector_index::default_backend_mode_for_provider(
-      static_cast<vector_index::backend_provider>(999), &default_mode));
-
-  EXPECT_EQ(0U, vector_index::resolve_runtime_threads(0, 0));
-  EXPECT_EQ(8U, vector_index::resolve_runtime_threads(0, 8));
-  EXPECT_EQ(4U, vector_index::resolve_runtime_threads(4, 8));
-  EXPECT_EQ(vector_index::k_max_build_threads,
-            vector_index::resolve_runtime_threads(
-                vector_index::k_max_build_threads + 1U, 8));
-}
-
-TEST(VectorIndexRuntimeConfigTest, InfersFaissRuntimeKindFromParams) {
-  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kHnsw,
-            vector_index::faiss_runtime_kind_from_params(0, 0, 0));
-  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfFlat,
-            vector_index::faiss_runtime_kind_from_params(16, 4, 0));
-  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfFlat,
-            vector_index::faiss_runtime_kind_from_params(16, 0, 8));
-  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfFlat,
-            vector_index::faiss_runtime_kind_from_params(16, 0, 0));
-  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfPq,
-            vector_index::faiss_runtime_kind_from_params(16, 4, 8));
-}
 
 TEST(VectorIndexRuntimeConfigTest, ValidatesFaissIvfPqLibraryBoundaries) {
   EXPECT_TRUE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 4, 8));
@@ -457,6 +382,293 @@ TEST(VectorIndexBackendTest, BackendHelperParseUint64RejectsMalformedInputs) {
   EXPECT_EQ(42U, value);
 }
 
+TEST(VectorIndexBackendTest, BackendDefaultMethodsCoverReaderAndTuningGuards) {
+  StubBackend backend;
+  std::vector<std::vector<vector_index::search_result>> batch_results;
+
+  backend.m_supports_mutations = false;
+  EXPECT_TRUE(backend.load_committed_entries({}));
+  EXPECT_FALSE(backend.load_committed_entries({{1, {1.0F, 1.0F}}}));
+  EXPECT_TRUE(backend.recover());
+  EXPECT_FALSE(backend.recover_committed_entries({{1, {1.0F, 1.0F}}}));
+
+  backend.m_supports_mutations = true;
+  backend.allow_upsert = false;
+  EXPECT_FALSE(backend.load_committed_entries({{1, {1.0F, 1.0F}}}));
+  EXPECT_EQ(1U, backend.upsert_calls);
+
+  EXPECT_FALSE(backend.load_committed_entries_from_reader(nullptr));
+  EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(nullptr));
+  EXPECT_FALSE(backend.recover_committed_entries_from_reader(nullptr));
+  const vector_index::committed_entry_reader failing_reader =
+      [](const vector_index::committed_entry_visitor &) { return false; };
+  EXPECT_FALSE(backend.load_committed_entries_from_reader(failing_reader));
+
+  backend.allow_upsert = true;
+  const vector_index::committed_entry_reader reader =
+      [](const vector_index::committed_entry_visitor &visitor) {
+        return visitor(2, {2.0F, 2.0F});
+      };
+  EXPECT_TRUE(backend.load_committed_entries_from_reader(reader));
+  EXPECT_TRUE(backend.rebuild_from_committed_entries_from_reader(reader));
+  EXPECT_TRUE(backend.recover_committed_entries_from_reader(reader));
+  EXPECT_EQ(1U, backend.upserted_entries.count(2));
+
+  backend.allow_recover = false;
+  EXPECT_FALSE(backend.recover_committed_entries({}));
+  backend.allow_recover = true;
+
+  EXPECT_FALSE(backend.search_batch({{1.0F, 1.0F}}, 1, nullptr));
+  EXPECT_TRUE(backend.search_batch({}, 1, &batch_results));
+  EXPECT_TRUE(batch_results.empty());
+  EXPECT_TRUE(backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 1,
+                                   &batch_results));
+  EXPECT_EQ(2U, batch_results.size());
+  ASSERT_EQ(1U, batch_results[0].size());
+  EXPECT_EQ(1U, batch_results[0][0].doc_id);
+  backend.search_calls = 0;
+  backend.fail_search_call = 2;
+  EXPECT_FALSE(backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 1,
+                                    &batch_results));
+  EXPECT_EQ(2U, backend.search_calls);
+  backend.fail_search_call = 0;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/backend_default_raw_segments_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {5.0F, 0.0F, 6.0F, 0.0F});
+  write_raw_docid_file(docid_path, {5, 6});
+
+  vector_index::raw_vector_segment segment;
+  segment.vector_path = vector_path;
+  segment.docid_path = docid_path;
+  segment.row_count = 2;
+  segment.dimension = 2;
+  segment.bytes = std::filesystem::file_size(vector_path, ec) +
+                  std::filesystem::file_size(docid_path, ec);
+  ASSERT_FALSE(ec);
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(nullptr));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [](const vector_index::raw_vector_segment_visitor &) { return false; }));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        vector_index::raw_vector_segment bad_segment = segment;
+        bad_segment.dimension = 3;
+        return visitor(bad_segment);
+      }));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        vector_index::raw_vector_segment bad_segment = segment;
+        bad_segment.row_count = 3;
+        return visitor(bad_segment);
+      }));
+  backend.upserted_entries.clear();
+  EXPECT_TRUE(backend.rebuild_from_raw_segments(
+      [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment);
+      }));
+  ASSERT_EQ(2U, backend.upserted_entries.size());
+  EXPECT_EQ((vector_index::vector_data{5.0F, 0.0F}),
+            backend.upserted_entries.at(5));
+  EXPECT_EQ((vector_index::vector_data{6.0F, 0.0F}),
+            backend.upserted_entries.at(6));
+
+  vector_index::segment_build_input segment_input;
+  segment_input.segment = segment;
+  segment_input.segment_id = 7;
+  segment_input.generation = 9;
+  segment_input.artifact_prefix = root + "/segment-7";
+  vector_index::segment_build_result segment_result;
+  EXPECT_FALSE(backend.build_segment_from_raw(segment_input, nullptr));
+  vector_index::segment_build_input invalid_segment_input = segment_input;
+  invalid_segment_input.segment_id = 0;
+  EXPECT_FALSE(
+      backend.build_segment_from_raw(invalid_segment_input, &segment_result));
+
+  backend.upserted_entries.clear();
+  EXPECT_TRUE(backend.build_segment_from_raw(segment_input, &segment_result));
+  EXPECT_EQ(7U, segment_result.segment_id);
+  EXPECT_EQ(9U, segment_result.generation);
+  EXPECT_EQ(2U, segment_result.row_count);
+  EXPECT_EQ(segment.bytes, segment_result.payload_size);
+  EXPECT_EQ(vector_path, segment_result.vector_path);
+  EXPECT_EQ(docid_path, segment_result.docid_path);
+  EXPECT_EQ(root + "/segment-7", segment_result.artifact_prefix);
+  EXPECT_TRUE(segment_result.ready);
+  EXPECT_TRUE(backend.load_segment_handle(segment_result));
+  segment_result.ready = false;
+  EXPECT_FALSE(backend.load_segment_handle(segment_result));
+  std::filesystem::remove_all(root, ec);
+
+  EXPECT_FALSE(backend.last_recover_used_fallback());
+  EXPECT_EQ(0U, backend.entry_count());
+  EXPECT_TRUE(backend.backend_variant().empty());
+  EXPECT_FALSE(backend.set_search_ef(1));
+  EXPECT_EQ(0U, backend.search_ef());
+  EXPECT_FALSE(backend.set_hnsw_build_params(16, 200));
+  EXPECT_EQ(0U, backend.hnsw_m());
+  EXPECT_EQ(0U, backend.hnsw_ef_construction());
+  EXPECT_TRUE(backend.set_hnsw_build_threads(0));
+  EXPECT_FALSE(backend.set_hnsw_build_threads(1));
+  EXPECT_FALSE(backend.set_faiss_ivf_params(1, 1));
+  EXPECT_TRUE(backend.set_faiss_build_threads(0));
+  EXPECT_FALSE(backend.set_faiss_build_threads(1));
+  EXPECT_FALSE(backend.set_faiss_ivf_pq_params(1, 1, 1, 1));
+  EXPECT_FALSE(backend.set_diskann_build_params(32, 64, 0));
+  EXPECT_TRUE(backend.set_diskann_build_threads(0));
+  EXPECT_FALSE(backend.set_diskann_build_threads(1));
+  EXPECT_TRUE(
+      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kAuto));
+  EXPECT_FALSE(
+      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kSerial));
+  EXPECT_FALSE(backend.set_diskann_search_complexity(64));
+  EXPECT_FALSE(backend.set_diskann_search_beamwidth(16));
+  EXPECT_FALSE(backend.external_manifest_present());
+  EXPECT_EQ(0U, backend.external_manifest_generation());
+}
+
+TEST(VectorIndexBackendTest,
+     BackendBuildDiagnosticsAppearInInfoAndBackendHealthFields) {
+  vector_index_registry::index_info info;
+  info.provider = "diskann";
+  info.mode = "external";
+  info.consistency_mode = "standalone";
+  info.lifecycle_state = "ready";
+  info.supports_mutations = true;
+  info.build_diagnostics.runtime = "official_cpp_main";
+  info.build_diagnostics.input_source = "raw_segments";
+  info.build_diagnostics.row_count = 42;
+  info.build_diagnostics.segment_count = 3;
+  info.build_diagnostics.manifest_ms = 11;
+  info.build_diagnostics.offline_build_ms = 22;
+  info.build_diagnostics.load_ms = 33;
+  info.build_diagnostics.fallback_reason = "offline_unavailable";
+
+  vector_index_status_fields::field_values fields;
+  vector_index_status_fields::collect_info_fields(info, &fields);
+
+  const auto *runtime = find_status_field(fields, "backend_build_runtime");
+  ASSERT_NE(nullptr, runtime);
+  EXPECT_EQ("official_cpp_main", runtime->string_value);
+  const auto *source =
+      find_status_field(fields, "backend_build_input_source");
+  ASSERT_NE(nullptr, source);
+  EXPECT_EQ("raw_segments", source->string_value);
+  const auto *rows = find_status_field(fields, "backend_build_rows");
+  ASSERT_NE(nullptr, rows);
+  EXPECT_EQ(42U, rows->uint_value);
+  const auto *segments =
+      find_status_field(fields, "backend_build_segments");
+  ASSERT_NE(nullptr, segments);
+  EXPECT_EQ(3U, segments->uint_value);
+  const auto *offline_ms =
+      find_status_field(fields, "backend_build_offline_ms");
+  ASSERT_NE(nullptr, offline_ms);
+  EXPECT_EQ("22", vector_index_status_fields::status_value(*offline_ms));
+
+  vector_index_status_fields::collect_backend_health_fields(info, &fields);
+  const auto *fallback =
+      find_status_field(fields, "backend_build_fallback_reason");
+  ASSERT_NE(nullptr, fallback);
+  EXPECT_EQ("offline_unavailable", fallback->string_value);
+  const auto *load_ms = find_status_field(fields, "backend_build_load_ms");
+  ASSERT_NE(nullptr, load_ms);
+  EXPECT_EQ(33U, load_ms->uint_value);
+}
+
+TEST(VectorIndexBackendTest,
+     BackendStatusFieldsCoverEmptyDiagnosticsAndLifecycleBranches) {
+  vector_index_registry::index_info info;
+  info.provider = "diskann";
+  info.mode = "external";
+  info.consistency_mode = "transactional";
+  info.supports_mutations = true;
+  info.entry_count = 12;
+  info.committed_entry_count = 5;
+
+  vector_index_status_fields::field_values fields;
+  vector_index_status_fields::collect_info_fields(info, &fields);
+  EXPECT_EQ(nullptr, find_status_field(fields, "backend_build_runtime"));
+  const auto *pending = find_status_field(fields, "pending_apply_count");
+  ASSERT_NE(nullptr, pending);
+  EXPECT_EQ(7U, pending->uint_value);
+
+  info.lifecycle_state = "failed";
+  vector_index_status_fields::collect_backend_health_fields(info, &fields);
+  const auto *loaded = find_status_field(fields, "loaded");
+  ASSERT_NE(nullptr, loaded);
+  EXPECT_FALSE(loaded->bool_value);
+  const auto *writable = find_status_field(fields, "writable");
+  ASSERT_NE(nullptr, writable);
+  EXPECT_FALSE(writable->bool_value);
+
+  info.lifecycle_state = "rebuilding";
+  vector_index_status_fields::collect_sync_pipeline_fields(info, &fields);
+  const auto *rebuild_progress = find_status_field(fields, "rebuild_progress");
+  ASSERT_NE(nullptr, rebuild_progress);
+  EXPECT_EQ(50U, rebuild_progress->uint_value);
+  const auto *recover_progress = find_status_field(fields, "recover_progress");
+  ASSERT_NE(nullptr, recover_progress);
+  EXPECT_EQ(0U, recover_progress->uint_value);
+
+  info.lifecycle_state = "recovering";
+  vector_index_status_fields::collect_sync_pipeline_fields(info, &fields);
+  recover_progress = find_status_field(fields, "recover_progress");
+  ASSERT_NE(nullptr, recover_progress);
+  EXPECT_EQ(50U, recover_progress->uint_value);
+
+  vector_index_status_fields::collect_info_fields(info, nullptr);
+  vector_index_status_fields::collect_index_state_fields(info, nullptr);
+  vector_index_status_fields::collect_backend_health_fields(info, nullptr);
+  vector_index_status_fields::collect_sync_pipeline_fields(info, nullptr);
+}
+
+TEST(VectorIndexBackendTest, BackendPublicHelpersCoverEntryCountAndParserEdges) {
+  vector_index::memory_backend memory_backend(
+      2, vector_index::metric_type::kEuclidean);
+  std::unordered_map<uint64_t, vector_index::vector_data> entries;
+  EXPECT_FALSE(memory_backend.snapshot_entries(nullptr));
+  ASSERT_TRUE(memory_backend.upsert(1, {1.0F, 0.0F}));
+  ASSERT_TRUE(memory_backend.snapshot_entries(&entries));
+  EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), entries.at(1));
+
+  vector_index::external_backend external_backend(
+      2, vector_index::metric_type::kEuclidean);
+  ASSERT_TRUE(external_backend.upsert(1, {1.0F, 0.0F}));
+  ASSERT_TRUE(external_backend.upsert(2, {0.0F, 1.0F}));
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(external_backend.search({1.0F, 0.0F}, 2, &results));
+  ASSERT_EQ(2U, results.size());
+  EXPECT_EQ(1U, results[0].doc_id);
+
+  vector_index::index_consistency_mode consistency_mode;
+  ASSERT_TRUE(vector_index::parse_index_consistency_mode("non-transactional",
+                                                         &consistency_mode));
+  EXPECT_EQ(vector_index::index_consistency_mode::kStandalone,
+            consistency_mode);
+  EXPECT_FALSE(vector_index::parse_index_consistency_mode("standalone",
+                                                          nullptr));
+
+#ifdef HAVE_FAISS
+  vector_index::faiss_backend faiss_memory(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(faiss_memory.upsert(10, {1.0F, 0.0F}));
+  EXPECT_EQ(1U, faiss_memory.entry_count());
+
+  vector_index::faiss_backend faiss_non_faiss_sidecar(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_non_faiss_sidecar",
+      vector_index::external_sidecar_profile::kDiskAnn);
+  EXPECT_EQ(0U, faiss_non_faiss_sidecar.entry_count());
+#endif
+}
+
 TEST(VectorIndexBackendTest,
      BackendHelperLoadManifestGenerationHandlesMissingAndMalformedFiles) {
   const std::string root =
@@ -475,6 +687,11 @@ TEST(VectorIndexBackendTest,
   EXPECT_FALSE(exists);
   EXPECT_EQ(0U, generation);
 
+  ASSERT_TRUE(std::filesystem::create_directory(manifest_path, ec));
+  EXPECT_FALSE(vector_index::load_external_manifest_generation_for_testing(
+      manifest_path, "header", &generation, &exists));
+  ASSERT_TRUE(std::filesystem::remove(manifest_path, ec));
+
   write_binary_file(manifest_path, "wrong\n1\n");
   EXPECT_FALSE(vector_index::load_external_manifest_generation_for_testing(
       manifest_path, "header", &generation, &exists));
@@ -488,6 +705,10 @@ TEST(VectorIndexBackendTest,
       manifest_path, "header", &generation, &exists));
 
   write_binary_file(manifest_path, "header\nabc\n");
+  EXPECT_FALSE(vector_index::load_external_manifest_generation_for_testing(
+      manifest_path, "header", &generation, &exists));
+
+  write_binary_file(manifest_path, "header\n18446744073709551616\n");
   EXPECT_FALSE(vector_index::load_external_manifest_generation_for_testing(
       manifest_path, "header", &generation, &exists));
 
@@ -847,6 +1068,20 @@ TEST(VectorIndexBackendTest, DiskAnnExternalRejectsWrongDimensionsBeforeNativePa
   EXPECT_FALSE(backend.rebuild_from_committed_entries(bad_entries));
   EXPECT_FALSE(backend.recover_committed_entries(bad_entries));
   EXPECT_FALSE(backend.search({1.0F}, 1, &result));
+  result = {{99, 99.0}};
+  EXPECT_TRUE(backend.search({1.0F, 1.0F}, 0, &result));
+  EXPECT_TRUE(result.empty());
+
+  std::vector<std::vector<vector_index::search_result>> batch_results;
+  EXPECT_FALSE(backend.search_batch({{1.0F, 1.0F}}, 1, nullptr));
+  EXPECT_TRUE(backend.search_batch({}, 1, &batch_results));
+  EXPECT_TRUE(batch_results.empty());
+  EXPECT_FALSE(backend.search_batch({{1.0F}}, 1, &batch_results));
+  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 0,
+                                   &batch_results));
+  ASSERT_EQ(2U, batch_results.size());
+  EXPECT_TRUE(batch_results[0].empty());
+  EXPECT_TRUE(batch_results[1].empty());
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -1189,6 +1424,350 @@ TEST(VectorIndexBackendTest, MemoryBackendRejectsDimensionMismatch) {
   EXPECT_FALSE(backend.search({1.0F, 2.0F, 3.0F}, 1, &result));
 }
 
+TEST(VectorIndexBuildOptionsTest,
+     EffectiveBatchSearchThreadsUseOverrideGlobalAndCap) {
+  UlongGuard global_guard(&opt_vector_batch_search_threads, 32);
+  UlongGuard hnsw_guard(&opt_vector_hnsw_search_threads, 0);
+  UlongGuard faiss_guard(&opt_vector_faiss_search_threads, 0);
+  UlongGuard diskann_guard(&opt_vector_diskann_search_threads, 0);
+
+  EXPECT_EQ(0U, vector_index::effective_batch_search_threads(0, 0));
+  EXPECT_EQ(1U, vector_index::effective_batch_search_threads(1, 0));
+  EXPECT_EQ(8U, vector_index::effective_batch_search_threads(8, 0));
+  EXPECT_EQ(32U, vector_index::effective_batch_search_threads(64, 0));
+  EXPECT_EQ(4U, vector_index::effective_batch_search_threads(64, 4));
+  EXPECT_EQ(2U, vector_index::effective_batch_search_threads(2, 4));
+  EXPECT_EQ(64U, vector_index::effective_batch_search_threads(64, 65535));
+
+  opt_vector_hnsw_search_threads = 2;
+  opt_vector_faiss_search_threads = 3;
+  opt_vector_diskann_search_threads = 4;
+  EXPECT_EQ(2U, vector_index::effective_hnsw_search_threads(64));
+  EXPECT_EQ(3U, vector_index::effective_faiss_search_threads(64));
+  EXPECT_EQ(4U, vector_index::effective_diskann_search_threads(64));
+
+  opt_vector_batch_search_threads = 0;
+  opt_vector_hnsw_search_threads = 0;
+  EXPECT_GE(vector_index::effective_hnsw_search_threads(64), 1U);
+  EXPECT_LE(vector_index::effective_hnsw_search_threads(64), 32U);
+}
+
+TEST(VectorIndexRuntimeThreadPoolTest,
+     EffectiveRuntimeWorkerCountUsesConfiguredAutoAndCaps) {
+  EXPECT_EQ(0U, vector_index::effective_runtime_worker_count(0, 4));
+  EXPECT_EQ(1U, vector_index::effective_runtime_worker_count(1, 4));
+  EXPECT_EQ(4U, vector_index::effective_runtime_worker_count(64, 4));
+  EXPECT_EQ(vector_index::k_max_build_threads,
+            vector_index::effective_runtime_worker_count(
+                vector_index::k_max_build_threads + 8U,
+                vector_index::k_max_build_threads + 8U));
+
+  const size_t auto_threads =
+      vector_index::effective_runtime_worker_count(64, 0);
+  EXPECT_GE(auto_threads, 1U);
+  EXPECT_LE(auto_threads, 64U);
+}
+
+TEST(VectorIndexRuntimeThreadPoolTest,
+     ParallelForQueriesVisitsRangesAndPropagatesFailure) {
+  vector_index::reset_runtime_worker_pool_for_testing();
+  std::vector<int> seen(7, 0);
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      seen.size(), 3, [&](size_t begin, size_t end, size_t) {
+        EXPECT_LT(begin, end);
+        for (size_t i = begin; i < end; ++i) ++seen[i];
+        return true;
+      }));
+  for (int value : seen) EXPECT_EQ(1, value);
+
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      0, 3, [](size_t, size_t, size_t) { return false; }));
+  EXPECT_FALSE(vector_index::parallel_for_queries(
+      4, 2, [](size_t begin, size_t, size_t) { return begin == 0; }));
+  EXPECT_FALSE(vector_index::parallel_for_queries(
+      1, 1, vector_index::query_range_visitor{}));
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      3, 1, [](size_t begin, size_t end, size_t worker_id) {
+        EXPECT_EQ(0U, begin);
+        EXPECT_EQ(3U, end);
+        EXPECT_EQ(0U, worker_id);
+        return true;
+      }));
+
+  for (size_t attempt = 0; attempt < 128; ++attempt) {
+    EXPECT_FALSE(vector_index::parallel_for_queries(
+        4, 2, [](size_t begin, size_t, size_t) { return begin == 0; }));
+  }
+  EXPECT_FALSE(vector_index::parallel_for_queries(
+      4, 2, [](size_t begin, size_t, size_t) {
+        if (begin != 0) throw std::runtime_error("visitor failure");
+        return true;
+      }));
+  vector_index::reset_runtime_worker_pool_for_testing();
+}
+
+TEST(VectorIndexRuntimeThreadPoolTest, ParallelForQueriesReusesWorkerPool) {
+  vector_index::reset_runtime_worker_pool_for_testing();
+  EXPECT_EQ(0U, vector_index::runtime_worker_pool_size_for_testing());
+
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      8, 3, [](size_t, size_t, size_t) { return true; }));
+  EXPECT_EQ(3U, vector_index::runtime_worker_pool_size_for_testing());
+
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      6, 3, [](size_t, size_t, size_t) { return true; }));
+  EXPECT_EQ(3U, vector_index::runtime_worker_pool_size_for_testing());
+
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      8, 4, [](size_t, size_t, size_t) { return true; }));
+  EXPECT_EQ(4U, vector_index::runtime_worker_pool_size_for_testing());
+
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      3, 1, [](size_t, size_t, size_t) { return true; }));
+  EXPECT_EQ(4U, vector_index::runtime_worker_pool_size_for_testing());
+
+  vector_index::reset_runtime_worker_pool_for_testing();
+  EXPECT_EQ(0U, vector_index::runtime_worker_pool_size_for_testing());
+}
+
+TEST(VectorIndexRuntimeThreadPoolTest,
+     ParallelForRangesSupportsNonQueryWorkItems) {
+  std::vector<int> seen(5, 0);
+  EXPECT_TRUE(vector_index::parallel_for_ranges(
+      seen.size(), 2, [&](size_t begin, size_t end, size_t) {
+        for (size_t i = begin; i < end; ++i) ++seen[i];
+        return true;
+      }));
+  for (int value : seen) EXPECT_EQ(1, value);
+}
+
+TEST(VectorIndexRuntimeThreadPoolTest,
+     ScopedParallelForRangesAllowsNestedSharedPoolWork) {
+  vector_index::reset_runtime_worker_pool_for_testing();
+  std::vector<int> seen(4, 0);
+  EXPECT_TRUE(vector_index::parallel_for_ranges_scoped(
+      seen.size(), 2, [&](size_t begin, size_t end, size_t) {
+        return vector_index::parallel_for_ranges(
+            end - begin, 2, [&](size_t nested_begin, size_t nested_end,
+                                size_t) {
+              for (size_t i = begin + nested_begin; i < begin + nested_end;
+                   ++i) {
+                ++seen[i];
+              }
+              return true;
+            });
+      }));
+  for (int value : seen) EXPECT_EQ(1, value);
+  EXPECT_EQ(2U, vector_index::runtime_worker_pool_size_for_testing());
+  vector_index::reset_runtime_worker_pool_for_testing();
+}
+
+TEST(VectorIndexRuntimeConfigTest,
+     ValidatesCommonProviderModeAndThreadSemantics) {
+  vector_index::runtime_common_config config;
+  config.dimension = 4;
+  config.provider = vector_index::backend_provider::kDiskAnn;
+  config.mode = vector_index::backend_mode::kExternal;
+  EXPECT_TRUE(vector_index::runtime_common_config_valid(config));
+
+  config.dimension = 0;
+  EXPECT_FALSE(vector_index::runtime_common_config_valid(config));
+
+  config.dimension = 4;
+  config.mode = vector_index::backend_mode::kMemory;
+  EXPECT_FALSE(vector_index::runtime_common_config_valid(config));
+
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kFaiss,
+      vector_index::backend_mode::kMemory));
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kFaiss,
+      vector_index::backend_mode::kExternal));
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kNative,
+      vector_index::backend_mode::kMemory));
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kNative,
+      vector_index::backend_mode::kExternal));
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kHnswlib,
+      vector_index::backend_mode::kMemory));
+  EXPECT_FALSE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kHnswlib,
+      vector_index::backend_mode::kExternal));
+  EXPECT_FALSE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kFaiss,
+      static_cast<vector_index::backend_mode>(999)));
+  EXPECT_FALSE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kNative,
+      static_cast<vector_index::backend_mode>(999)));
+  EXPECT_FALSE(vector_index::backend_provider_supported(
+      static_cast<vector_index::backend_provider>(999)));
+  EXPECT_FALSE(vector_index::default_backend_provider(nullptr));
+  vector_index::backend_mode default_mode =
+      vector_index::backend_mode::kExternal;
+  EXPECT_FALSE(vector_index::default_backend_mode_for_provider(
+      vector_index::backend_provider::kFaiss, nullptr));
+  EXPECT_FALSE(vector_index::default_backend_mode_for_provider(
+      static_cast<vector_index::backend_provider>(999), &default_mode));
+
+  EXPECT_EQ(0U, vector_index::resolve_runtime_threads(0, 0));
+  EXPECT_EQ(8U, vector_index::resolve_runtime_threads(0, 8));
+  EXPECT_EQ(4U, vector_index::resolve_runtime_threads(4, 8));
+  EXPECT_EQ(vector_index::k_max_build_threads,
+            vector_index::resolve_runtime_threads(
+                vector_index::k_max_build_threads + 1U, 8));
+}
+
+TEST(VectorIndexRuntimeConfigTest, InfersFaissRuntimeKindFromParams) {
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kHnsw,
+            vector_index::faiss_runtime_kind_from_params(0, 0, 0));
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfFlat,
+            vector_index::faiss_runtime_kind_from_params(16, 4, 0));
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfFlat,
+            vector_index::faiss_runtime_kind_from_params(16, 0, 8));
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfFlat,
+            vector_index::faiss_runtime_kind_from_params(16, 0, 0));
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfPq,
+            vector_index::faiss_runtime_kind_from_params(16, 4, 8));
+}
+
+TEST(VectorIndexBackendTest, CommonHelpersCoverDistanceHexAndSizeBounds) {
+  double distance = 0.0;
+  EXPECT_FALSE(vector_index::detail::compute_distance(
+      vector_index::metric_type::kEuclidean, {1.0F}, {1.0F, 2.0F},
+      &distance));
+  ASSERT_TRUE(vector_index::detail::compute_distance(
+      vector_index::metric_type::kEuclidean, {1.0F, 1.0F}, {4.0F, 5.0F},
+      &distance));
+  EXPECT_DOUBLE_EQ(5.0, distance);
+  ASSERT_TRUE(vector_index::detail::compute_distance(
+      vector_index::metric_type::kInnerProduct, {1.0F, 2.0F}, {3.0F, 4.0F},
+      &distance));
+  EXPECT_DOUBLE_EQ(-11.0, distance);
+  EXPECT_FALSE(vector_index::detail::compute_distance(
+      vector_index::metric_type::kCosine, {0.0F, 0.0F}, {1.0F, 0.0F},
+      &distance));
+  ASSERT_TRUE(vector_index::detail::compute_distance(
+      vector_index::metric_type::kCosine, {1.0F, 0.0F}, {1.0F, 0.0F},
+      &distance));
+  EXPECT_DOUBLE_EQ(0.0, distance);
+
+  EXPECT_EQ("mixed token",
+            vector_index::detail::normalize_token("  MIXED Token  "));
+  EXPECT_TRUE(vector_index::detail::starts_with("abcdef", "abc"));
+  EXPECT_FALSE(vector_index::detail::starts_with("ab", "abc"));
+  EXPECT_TRUE(vector_index::detail::ends_with("abcdef", "def"));
+  EXPECT_FALSE(vector_index::detail::ends_with("ab", "abc"));
+
+  unsigned value = 99;
+  EXPECT_FALSE(vector_index::detail::hex_value('0', nullptr));
+  EXPECT_FALSE(vector_index::detail::hex_value('/', &value));
+  ASSERT_TRUE(vector_index::detail::hex_value('0', &value));
+  EXPECT_EQ(0U, value);
+  ASSERT_TRUE(vector_index::detail::hex_value('9', &value));
+  EXPECT_EQ(9U, value);
+  ASSERT_TRUE(vector_index::detail::hex_value('a', &value));
+  EXPECT_EQ(10U, value);
+  ASSERT_TRUE(vector_index::detail::hex_value('F', &value));
+  EXPECT_EQ(15U, value);
+  EXPECT_FALSE(vector_index::detail::hex_value('G', &value));
+  EXPECT_FALSE(vector_index::detail::hex_value('g', &value));
+
+  std::string decoded;
+  EXPECT_TRUE(vector_index::detail::decode_hex_bytes("", &decoded));
+  EXPECT_TRUE(decoded.empty());
+  EXPECT_FALSE(vector_index::detail::decode_hex_bytes("0", &decoded));
+  EXPECT_FALSE(vector_index::detail::decode_hex_bytes("0g", &decoded));
+  EXPECT_FALSE(vector_index::detail::decode_hex_bytes("g0", &decoded));
+  EXPECT_FALSE(vector_index::detail::decode_hex_bytes("00", nullptr));
+  ASSERT_TRUE(vector_index::detail::decode_hex_bytes("41427a", &decoded));
+  EXPECT_EQ("ABz", decoded);
+
+  const size_t max_size = std::numeric_limits<size_t>::max();
+  EXPECT_EQ(0U, vector_index::saturated_mul_size(0, max_size));
+  EXPECT_EQ(0U, vector_index::saturated_mul_size(max_size, 0));
+  EXPECT_EQ(42U, vector_index::saturated_mul_size(6, 7));
+  EXPECT_EQ(max_size, vector_index::saturated_mul_size(max_size, 2));
+  EXPECT_EQ(9U, vector_index::saturated_add_size(4, 5));
+  EXPECT_EQ(max_size, vector_index::saturated_add_size(max_size, 1));
+}
+
+TEST(VectorIndexRuntimeConfigTest, SelectsUniformSamplePositions) {
+  size_t position = 0;
+
+  ASSERT_TRUE(
+      vector_index::runtime_uniform_sample_position(0, 10, 4, &position));
+  EXPECT_EQ(0U, position);
+  ASSERT_TRUE(
+      vector_index::runtime_uniform_sample_position(1, 10, 4, &position));
+  EXPECT_EQ(2U, position);
+  ASSERT_TRUE(
+      vector_index::runtime_uniform_sample_position(2, 10, 4, &position));
+  EXPECT_EQ(5U, position);
+  ASSERT_TRUE(
+      vector_index::runtime_uniform_sample_position(3, 10, 4, &position));
+  EXPECT_EQ(7U, position);
+
+  EXPECT_FALSE(
+      vector_index::runtime_uniform_sample_position(0, 0, 4, &position));
+  EXPECT_FALSE(
+      vector_index::runtime_uniform_sample_position(0, 4, 0, &position));
+  EXPECT_FALSE(
+      vector_index::runtime_uniform_sample_position(4, 10, 4, &position));
+  EXPECT_FALSE(
+      vector_index::runtime_uniform_sample_position(0, 4, 5, &position));
+  EXPECT_FALSE(vector_index::runtime_uniform_sample_position(0, 4, 1, nullptr));
+}
+
+TEST(VectorIndexBuildOptionsTest, GlobalEnumOptionsReturnKnownValuesAndFallbacks) {
+  UlongGuard diskann_build_mode_guard(
+      &opt_vector_diskann_build_mode,
+      static_cast<ulong>(vector_index::diskann_build_mode::kAuto));
+  UlongGuard default_library_guard(
+      &opt_vector_default_library,
+      static_cast<ulong>(vector_index::vector_default_library::kNone));
+  UlongGuard consistency_mode_guard(
+      &opt_vector_index_consistency_mode,
+      static_cast<ulong>(vector_index::index_consistency_mode::kTransactional));
+
+  opt_vector_diskann_build_mode =
+      static_cast<ulong>(vector_index::diskann_build_mode::kSerial);
+  EXPECT_EQ(vector_index::diskann_build_mode::kSerial,
+            vector_index::global_diskann_build_mode());
+  opt_vector_diskann_build_mode =
+      static_cast<ulong>(vector_index::diskann_build_mode::kOffline);
+  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+            vector_index::global_diskann_build_mode());
+  opt_vector_diskann_build_mode = 999;
+  EXPECT_EQ(vector_index::diskann_build_mode::kAuto,
+            vector_index::global_diskann_build_mode());
+
+  opt_vector_default_library =
+      static_cast<ulong>(vector_index::vector_default_library::kDiskAnn);
+  EXPECT_EQ(vector_index::vector_default_library::kDiskAnn,
+            vector_index::global_vector_default_library());
+  opt_vector_default_library =
+      static_cast<ulong>(vector_index::vector_default_library::kHnsw);
+  EXPECT_EQ(vector_index::vector_default_library::kHnsw,
+            vector_index::global_vector_default_library());
+  opt_vector_default_library =
+      static_cast<ulong>(vector_index::vector_default_library::kFaiss);
+  EXPECT_EQ(vector_index::vector_default_library::kFaiss,
+            vector_index::global_vector_default_library());
+  opt_vector_default_library = 999;
+  EXPECT_EQ(vector_index::vector_default_library::kNone,
+            vector_index::global_vector_default_library());
+
+  opt_vector_index_consistency_mode =
+      static_cast<ulong>(vector_index::index_consistency_mode::kStandalone);
+  EXPECT_EQ(vector_index::index_consistency_mode::kStandalone,
+            vector_index::global_index_consistency_mode());
+  opt_vector_index_consistency_mode = 999;
+  EXPECT_EQ(vector_index::index_consistency_mode::kTransactional,
+            vector_index::global_index_consistency_mode());
+}
+
 TEST(VectorIndexBackendTest, MemoryBackendEraseAndZeroTopK) {
   vector_index::memory_backend backend(2, vector_index::metric_type::kEuclidean);
   std::vector<vector_index::search_result> result;
@@ -1494,6 +2073,15 @@ TEST(VectorIndexBackendTest,
   ASSERT_TRUE(euclidean.search({1.0F, 0.0F}, 2, &result));
   ASSERT_EQ(2U, result.size());
   EXPECT_EQ(1U, result[0].doc_id);
+  UlongGuard faiss_threads_guard(&opt_vector_faiss_search_threads, 2);
+  std::vector<std::vector<vector_index::search_result>> batch_results;
+  ASSERT_TRUE(euclidean.search_batch({{1.0F, 0.0F}, {2.0F, 0.0F}}, 1,
+                                     &batch_results));
+  ASSERT_EQ(2U, batch_results.size());
+  ASSERT_EQ(1U, batch_results[0].size());
+  ASSERT_EQ(1U, batch_results[1].size());
+  EXPECT_EQ(1U, batch_results[0][0].doc_id);
+  EXPECT_EQ(2U, batch_results[1][0].doc_id);
 
   vector_index::faiss_backend inner_product(
       2, vector_index::metric_type::kInnerProduct,
@@ -2867,6 +3455,32 @@ TEST(VectorIndexBackendTest, CreateBackendFactoryReturnsExpectedImplementations)
 }
 
 TEST(VectorIndexBackendTest,
+     CreateBackendFactoryRoutesStandaloneAnnProvidersToNativeRuntime) {
+  const vector_index::backend_provider providers[] = {
+      vector_index::backend_provider::kFaiss,
+      vector_index::backend_provider::kDiskAnn,
+      vector_index::backend_provider::kHnswlib};
+
+  for (const auto provider : providers) {
+    auto backend = vector_index::create_backend(
+        2, vector_index::metric_type::kEuclidean,
+        provider == vector_index::backend_provider::kDiskAnn
+            ? vector_index::backend_mode::kExternal
+            : vector_index::backend_mode::kMemory,
+        provider, vector_index::index_consistency_mode::kStandalone,
+        "standalone_native_runtime");
+    if (!vector_index::backend_provider_supported(provider)) {
+      EXPECT_EQ(nullptr, backend);
+      continue;
+    }
+    ASSERT_NE(nullptr, backend);
+    EXPECT_EQ(provider, backend->provider());
+    EXPECT_TRUE(backend->supports_mutations());
+    EXPECT_FALSE(backend->backend_variant().empty());
+  }
+}
+
+TEST(VectorIndexBackendTest,
      DiskAnnExternalLoadsCommittedSnapshotForMutableSearchAndPersistsSidecar) {
   const std::string root =
       std::string(testing::TempDir()) + "/vector_diskann_external_snapshot_t";
@@ -3643,12 +4257,16 @@ TEST(VectorIndexBackendTest, EnumToStringHelpersHandleUnknownValues) {
 }
 
 TEST(VectorIndexBackendTest, CreateBackendFactoryCreatesNativeExternal) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "native provider is available only in debug builds";
+#else
   auto native_external = vector_index::create_backend(
       2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
       vector_index::backend_provider::kNative);
   ASSERT_NE(nullptr, native_external);
   EXPECT_EQ(vector_index::backend_provider::kNative, native_external->provider());
   EXPECT_TRUE(native_external->supports_mutations());
+#endif
 }
 
 TEST(VectorIndexBackendTest,
@@ -4307,6 +4925,12 @@ TEST(VectorIndexBackendTest, DiskAnnExternalBuildParamsCanBeConfigured) {
   EXPECT_TRUE(backend.set_diskann_build_threads(0));
   EXPECT_EQ(0U, backend.diskann_build_threads());
   EXPECT_FALSE(backend.set_diskann_build_threads(65536));
+  EXPECT_EQ(vector_index::diskann_build_mode::kAuto,
+            backend.diskann_build_mode_value());
+  EXPECT_TRUE(
+      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+            backend.diskann_build_mode_value());
 }
 
 TEST(VectorIndexBackendTest, DiskAnnExternalSearchComplexityCanBeConfigured) {
@@ -4514,6 +5138,7 @@ TEST(VectorIndexBackendTest,
   result = {{99, 99.0}};
   ASSERT_TRUE(empty_backend.search({1.0F, 1.0F}, 1, &result));
   EXPECT_TRUE(result.empty());
+
 }
 
 TEST(VectorIndexBackendTest, FaissMemoryRejectsExternalOnlyTunings) {

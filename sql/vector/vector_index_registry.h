@@ -57,6 +57,7 @@ struct index_info {
   size_t standalone_raw_segment_count{0};
   size_t standalone_raw_segment_bytes{0};
   std::string backend_variant;
+  vector_index::backend_build_diagnostics build_diagnostics;
   std::string schema_name;
   std::string table_name;
   std::string column_name;

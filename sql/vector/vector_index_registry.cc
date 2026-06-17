@@ -372,7 +372,17 @@ uint32_t effective_diskann_search_complexity(const std::string &provider) {
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
-  return vector_index::k_default_diskann_search_complexity;
+  return static_cast<uint32_t>(opt_vector_diskann_search_complexity);
+}
+
+uint32_t effective_diskann_search_beamwidth(const std::string &provider) {
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+      provider_value != vector_index::backend_provider::kDiskAnn) {
+    return 0;
+  }
+  return static_cast<uint32_t>(opt_vector_diskann_search_beamwidth);
 }
 
 uint32_t effective_faiss_build_threads(
@@ -745,6 +755,18 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
   if (diskann_search_complexity != 0 &&
       !g_index_service.set_diskann_search_complexity(
           index_name, diskann_search_complexity)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
+  const uint32_t diskann_search_beamwidth =
+      effective_diskann_search_beamwidth(effective_provider);
+  if (diskann_search_beamwidth != 0 &&
+      !g_index_service.set_diskann_search_beamwidth(index_name,
+                                                    diskann_search_beamwidth)) {
     if (!rollback_runtime_state_locked(metadata_before, committed_before,
                                        change_log_before,
                                        lagging_indexes_before)) {

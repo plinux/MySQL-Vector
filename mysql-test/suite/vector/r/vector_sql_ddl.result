@@ -190,6 +190,14 @@ INDEX_STATE	test.t_vector_ddl_renamed.v.entry_count	1
 INDEX_STATE	test.t_vector_ddl_renamed.v.committed_entry_count	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_type	faiss
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_variant	hnsw
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_runtime	faiss_scheduler
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_input_source	reader
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_rows	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_segments	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_manifest_ms	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_offline_ms	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_load_ms	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_fallback_reason	
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.mode	external
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.consistency_mode	transactional
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.truth_store_enabled	1

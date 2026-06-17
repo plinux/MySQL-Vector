@@ -68,6 +68,8 @@ VEC_INDEX_CREATE('idx_load_standalone', 2, 'EUCLIDEAN', 'MEMORY',
 'NATIVE', 0, 'standalone')
 1
 SET @old_local_infile = @@GLOBAL.local_infile;
+SET @old_vector_build_segment_max_rows = @@GLOBAL.vector_build_segment_max_rows;
+SET @old_vector_build_segment_target_size = @@GLOBAL.vector_build_segment_target_size;
 SET GLOBAL local_infile = ON;
 LOAD VECTOR DATA LOCAL INFILE 'vectors.fbin'
   DOCID INFILE 'docids.u64'
@@ -141,6 +143,42 @@ VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[0,2]'), 1),
 CAST(101 AS JSON)) AS replaced_doc_visible;
 replaced_doc_visible
 1
+SELECT VEC_INDEX_CREATE('idx_load_segmented', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone');
+VEC_INDEX_CREATE('idx_load_segmented', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone')
+1
+SET GLOBAL vector_build_segment_max_rows = 1;
+SET GLOBAL vector_build_segment_target_size = 1048576;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_load_segmented'),
+'$.standalone_raw_segment_count') AS raw_segment_count;
+raw_segment_count
+3
+SELECT VEC_INDEX_BULK_BUILD('idx_load_segmented');
+VEC_INDEX_BULK_BUILD('idx_load_segmented')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_load_segmented'),
+'$.build_pipeline_decision')) AS decision,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_load_segmented'),
+'$.build_pipeline_raw_segments') AS raw_segments;
+decision	raw_segments
+segmented	3
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_segmented', VEC_FROMTEXT('[2,0]'), 3),
+CAST(103 AS JSON)) AS segmented_doc_visible;
+segmented_doc_visible
+1
+SET @segmented_batch = VEC_INDEX_SEARCH_BATCH(
+'idx_load_segmented',
+CONCAT(VEC_FROMTEXT('[2,0]'), VEC_FROMTEXT('[1,0]')), 2, 3);
+SELECT JSON_CONTAINS(JSON_EXTRACT(@segmented_batch, '$[0]'),
+CAST(103 AS JSON)) AS segmented_batch_doc_103_visible,
+JSON_CONTAINS(JSON_EXTRACT(@segmented_batch, '$[1]'),
+CAST(101 AS JSON)) AS segmented_batch_doc_101_visible;
+segmented_batch_doc_103_visible	segmented_batch_doc_101_visible
+1	1
+SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
 SELECT VEC_INDEX_CREATE('idx_load_generated_docid', 2, 'EUCLIDEAN', 'MEMORY',
 'NATIVE', 0, 'standalone');
 VEC_INDEX_CREATE('idx_load_generated_docid', 2, 'EUCLIDEAN', 'MEMORY',
@@ -162,6 +200,9 @@ VEC_INDEX_DROP('idx_load_standalone')
 1
 SELECT VEC_INDEX_DROP('idx_load_pending');
 VEC_INDEX_DROP('idx_load_pending')
+1
+SELECT VEC_INDEX_DROP('idx_load_segmented');
+VEC_INDEX_DROP('idx_load_segmented')
 1
 SELECT VEC_INDEX_DROP('idx_load_generated_docid');
 VEC_INDEX_DROP('idx_load_generated_docid')

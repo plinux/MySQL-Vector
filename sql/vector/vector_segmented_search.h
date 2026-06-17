@@ -32,6 +32,18 @@
 namespace vector_index {
 
 /**
+  Calculate the internal per-segment topK used by segmented search.
+
+  The returned value is an internal ANN candidate window. It is allowed to be
+  larger than the SQL-visible final topK, but it is capped by the segment size,
+  backend topK limit and batch result budget to avoid unbounded memory growth.
+*/
+size_t segmented_search_candidate_top_k(size_t top_k, size_t segment_count,
+                                        size_t segment_entry_count,
+                                        size_t query_count,
+                                        size_t result_budget);
+
+/**
   Merge per-segment topK results into one globally ordered result set.
 
   Distances use the same ascending semantics as backend::search(). Duplicate
@@ -42,6 +54,17 @@ namespace vector_index {
 bool merge_segment_topk(
     const std::vector<std::vector<search_result>> &segment_results,
     size_t top_k, std::vector<search_result> *results);
+
+/**
+  Merge per-segment batch topK results.
+
+  The first dimension is segment, the second dimension is query, and the third
+  dimension is the per-query search result list returned by that segment.
+*/
+bool merge_segment_batch_topk(
+    const std::vector<std::vector<std::vector<search_result>>>
+        &segment_batch_results,
+    size_t top_k, std::vector<std::vector<search_result>> *results);
 
 }  // namespace vector_index
 

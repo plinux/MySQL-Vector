@@ -27,6 +27,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include "sql/vector/vector_index_limits.h"
+
 namespace vector_index {
 
 namespace {
@@ -37,6 +39,36 @@ bool search_result_less(const search_result &lhs, const search_result &rhs) {
 }
 
 }  // namespace
+
+size_t segmented_search_candidate_top_k(size_t top_k, size_t segment_count,
+                                        size_t segment_entry_count,
+                                        size_t query_count,
+                                        size_t result_budget) {
+  if (top_k == 0 || segment_count == 0 || segment_entry_count == 0) {
+    return 0;
+  }
+
+  const size_t requested =
+      std::max(top_k, saturated_mul_size(top_k, segment_count));
+  size_t candidate_top_k =
+      std::min({requested, segment_entry_count,
+                static_cast<size_t>(k_max_search_top_k)});
+
+  const size_t safe_query_count = std::max<size_t>(query_count, 1);
+  const size_t budget_denominator =
+      saturated_mul_size(safe_query_count, segment_count);
+  if (result_budget > 0 && budget_denominator > 0) {
+    const size_t budget_per_segment = result_budget / budget_denominator;
+    if (budget_per_segment < top_k) {
+      candidate_top_k = top_k;
+    } else {
+      candidate_top_k = std::min(candidate_top_k, budget_per_segment);
+    }
+  }
+
+  if (segment_entry_count <= top_k) return segment_entry_count;
+  return std::min(std::max(top_k, candidate_top_k), segment_entry_count);
+}
 
 bool merge_segment_topk(
     const std::vector<std::vector<search_result>> &segment_results,
@@ -56,12 +88,64 @@ bool merge_segment_topk(
     }
   }
 
-  results->reserve(best_by_doc_id.size());
-  for (const auto &entry : best_by_doc_id) {
-    results->push_back(entry.second);
+  if (best_by_doc_id.size() <= top_k) {
+    results->reserve(best_by_doc_id.size());
+    for (const auto &entry : best_by_doc_id) {
+      results->push_back(entry.second);
+    }
+    std::sort(results->begin(), results->end(), search_result_less);
+    return true;
   }
-  std::sort(results->begin(), results->end(), search_result_less);
-  if (results->size() > top_k) results->resize(top_k);
+
+  results->reserve(top_k);
+  for (const auto &entry : best_by_doc_id) {
+    const search_result &candidate = entry.second;
+    if (results->size() < top_k) {
+      results->push_back(candidate);
+      std::push_heap(results->begin(), results->end(), search_result_less);
+      continue;
+    }
+
+    if (!search_result_less(candidate, results->front())) continue;
+
+    std::pop_heap(results->begin(), results->end(), search_result_less);
+    results->back() = candidate;
+    std::push_heap(results->begin(), results->end(), search_result_less);
+  }
+  std::sort_heap(results->begin(), results->end(), search_result_less);
+  return true;
+}
+
+bool merge_segment_batch_topk(
+    const std::vector<std::vector<std::vector<search_result>>>
+        &segment_batch_results,
+    size_t top_k, std::vector<std::vector<search_result>> *results) {
+  if (results == nullptr) return false;
+  results->clear();
+
+  size_t query_count = 0;
+  if (!segment_batch_results.empty()) {
+    query_count = segment_batch_results.front().size();
+  }
+  for (const auto &segment_results : segment_batch_results) {
+    if (segment_results.size() != query_count) return false;
+  }
+
+  results->resize(query_count);
+  if (top_k == 0) return true;
+
+  std::vector<std::vector<search_result>> per_query_segments;
+  per_query_segments.reserve(segment_batch_results.size());
+  for (size_t query_index = 0; query_index < query_count; ++query_index) {
+    per_query_segments.clear();
+    for (const auto &segment_results : segment_batch_results) {
+      per_query_segments.push_back(segment_results[query_index]);
+    }
+    if (!merge_segment_topk(per_query_segments, top_k,
+                            &(*results)[query_index])) {
+      return false;
+    }
+  }
   return true;
 }
 

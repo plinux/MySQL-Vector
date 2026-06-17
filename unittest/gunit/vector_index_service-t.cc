@@ -34,6 +34,7 @@
 
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_build_options.h"
+#include "sql/vector/vector_index_runtime_thread_pool.h"
 #include "sql/vector/vector_index_service.h"
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
@@ -231,6 +232,18 @@ bool hnswlib_tuning_supported() {
   return backend.set_search_ef(64) && backend.set_hnsw_build_params(16, 200);
 }
 
+const char *segmented_memory_provider_for_testing() {
+#ifdef HAVE_HNSWLIB
+  return "hnsw";
+#else
+#ifndef NDEBUG
+  return "native";
+#else
+  return nullptr;
+#endif
+#endif
+}
+
 class BoolGuard {
  public:
   BoolGuard(bool *value, bool replacement)
@@ -257,6 +270,20 @@ class UlonglongGuard {
  private:
   ulonglong *m_value;
   ulonglong m_original;
+};
+
+class UlongGuard {
+ public:
+  UlongGuard(ulong *value, ulong replacement)
+      : m_value(value), m_original(*value) {
+    *m_value = replacement;
+  }
+
+  ~UlongGuard() { *m_value = m_original; }
+
+ private:
+  ulong *m_value;
+  ulong m_original;
 };
 
 class committed_rows_truth_store final : public vector_index_truth_store::truth_store {
@@ -1138,7 +1165,6 @@ TEST(VectorIndexServiceTest, DirectMutationsRequireStandaloneBulkRebuild) {
 
 TEST(VectorIndexServiceTest, BuildPipelineRecordsDefaultDirectDecision) {
   build_pipeline_options_guard guard;
-  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
   const std::string root =
       std::string(testing::TempDir()) + "/pipeline_direct_t";
   std::error_code ec;
@@ -1146,6 +1172,7 @@ TEST(VectorIndexServiceTest, BuildPipelineRecordsDefaultDirectDecision) {
   std::filesystem::create_directories(root, ec);
   ASSERT_FALSE(ec);
   faiss_snapshot_root_guard root_guard(root);
+  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
 
   vector_index::index_service service;
   ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_direct", 2,
@@ -1162,14 +1189,17 @@ TEST(VectorIndexServiceTest, BuildPipelineRecordsDefaultDirectDecision) {
   ASSERT_TRUE(
       service.describe_build_pipeline("idx_pipeline_direct", &snapshot));
   expect_pipeline_snapshot(snapshot, "auto", "direct", "below_threshold", 1, 8,
-                           1);
+                           0);
 
   std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorIndexServiceTest, BuildPipelineHonorsForcedSegmentedMode) {
   build_pipeline_options_guard guard;
-  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
   const std::string root =
       std::string(testing::TempDir()) + "/pipeline_forced_t";
   std::error_code ec;
@@ -1177,13 +1207,14 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsForcedSegmentedMode) {
   std::filesystem::create_directories(root, ec);
   ASSERT_FALSE(ec);
   faiss_snapshot_root_guard root_guard(root);
+  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
   opt_vector_build_pipeline_mode =
       static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
 
   vector_index::index_service service;
   ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_forced", 2,
                                                   "euclidean", "memory",
-                                                  "native"));
+                                                  provider));
   ASSERT_TRUE(service.set_index_consistency_mode(
       "idx_pipeline_forced",
       vector_index::index_consistency_mode::kStandalone));
@@ -1195,7 +1226,7 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsForcedSegmentedMode) {
   ASSERT_TRUE(
       service.describe_build_pipeline("idx_pipeline_forced", &snapshot));
   expect_pipeline_snapshot(snapshot, "segmented", "segmented",
-                           "forced_segmented", 1, 8, 1);
+                           "forced_segmented", 1, 8, 0);
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(service.search("idx_pipeline_forced", {1.0F, 0.0F}, 1,
@@ -1203,19 +1234,128 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsForcedSegmentedMode) {
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(11U, result[0].doc_id);
 
+  ASSERT_TRUE(service.search("idx_pipeline_forced", {1.0F, 0.0F}, 0,
+                             &result));
+  EXPECT_TRUE(result.empty());
+  EXPECT_FALSE(service.search("idx_pipeline_forced", {1.0F}, 1, &result));
+
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexServiceTest, BuildPipelineHonorsRowThreshold) {
+TEST(VectorIndexServiceTest, SegmentedBatchSearchKeepsEmptyQuerySlots) {
   build_pipeline_options_guard guard;
-  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
   const std::string root =
-      std::string(testing::TempDir()) + "/pipeline_rows_t";
+      std::string(testing::TempDir()) + "/pipeline_empty_batch_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
   ASSERT_FALSE(ec);
   faiss_snapshot_root_guard root_guard(root);
+  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_empty_batch", 2,
+                                                  "euclidean", "memory",
+                                                  provider));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_pipeline_empty_batch",
+      vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.rebuild_index("idx_pipeline_empty_batch"));
+
+  std::vector<std::vector<vector_index::search_result>> batch_result;
+  ASSERT_TRUE(service.search_batch(
+      "idx_pipeline_empty_batch", {{1.0F, 0.0F}, {0.0F, 1.0F}}, 2,
+      &batch_result));
+  ASSERT_EQ(2U, batch_result.size());
+  EXPECT_TRUE(batch_result[0].empty());
+  EXPECT_TRUE(batch_result[1].empty());
+
+  ASSERT_TRUE(service.search_batch(
+      "idx_pipeline_empty_batch", {{1.0F, 0.0F}, {0.0F, 1.0F}}, 0,
+      &batch_result));
+  ASSERT_EQ(2U, batch_result.size());
+  EXPECT_TRUE(batch_result[0].empty());
+  EXPECT_TRUE(batch_result[1].empty());
+  EXPECT_FALSE(service.search_batch(
+      "idx_pipeline_empty_batch", {{1.0F}, {0.0F, 1.0F}}, 1,
+      &batch_result));
+}
+
+TEST(VectorIndexServiceTest, DiskAnnSearchTuningsUpdateConfig) {
+  build_pipeline_options_guard guard;
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_segmented_diskann", 2,
+                                                  "euclidean", "external",
+                                                  "diskann"));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_segmented_diskann",
+      vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.rebuild_index("idx_segmented_diskann"));
+
+  ASSERT_TRUE(service.set_diskann_search_complexity("idx_segmented_diskann",
+                                                    200));
+  ASSERT_TRUE(service.set_diskann_search_beamwidth("idx_segmented_diskann",
+                                                  32));
+
+  vector_index::index_service::index_config described;
+  ASSERT_TRUE(service.describe_index("idx_segmented_diskann", &described,
+                                     nullptr, nullptr, nullptr));
+  EXPECT_EQ(200U, described.diskann_search_complexity);
+  EXPECT_EQ(32U, described.diskann_search_beamwidth);
+}
+
+TEST(VectorIndexServiceTest, SegmentedFaissTuningsUpdateConfig) {
+  build_pipeline_options_guard guard;
+  const std::string root =
+      std::string(testing::TempDir()) + "/pipeline_segmented_faiss_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_segmented_faiss", 4,
+                                                  "euclidean", "external",
+                                                  "faiss"));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_segmented_faiss",
+      vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.rebuild_index("idx_segmented_faiss"));
+
+  ASSERT_TRUE(service.set_faiss_ivf_params("idx_segmented_faiss", 4, 2));
+  ASSERT_TRUE(
+      service.set_faiss_ivf_pq_params("idx_segmented_faiss", 4, 2, 2, 4));
+
+  vector_index::index_service::index_config described;
+  ASSERT_TRUE(service.describe_index("idx_segmented_faiss", &described,
+                                     nullptr, nullptr, nullptr));
+  EXPECT_EQ(4U, described.faiss_nlist);
+  EXPECT_EQ(2U, described.faiss_nprobe);
+  EXPECT_EQ(2U, described.faiss_pq_m);
+  EXPECT_EQ(4U, described.faiss_pq_bits);
+}
+
+TEST(VectorIndexServiceTest, BuildPipelineHonorsRowThreshold) {
+  build_pipeline_options_guard guard;
+  const std::string root = std::string(testing::TempDir()) + "/pipeline_rows_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
   opt_vector_build_pipeline_mode =
       static_cast<ulong>(vector_index::build_pipeline_mode::kAuto);
   opt_vector_build_pipeline_min_rows = 1;
@@ -1233,13 +1373,19 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsRowThreshold) {
   vector_index::index_service::build_pipeline_snapshot snapshot;
   ASSERT_TRUE(service.describe_build_pipeline("idx_pipeline_rows", &snapshot));
   expect_pipeline_snapshot(snapshot, "auto", "segmented", "row_count", 1, 8,
-                           1);
+                           0);
 
   std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorIndexServiceTest, BuildPipelineHonorsMultipleRawSegments) {
   build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  opt_vector_build_pipeline_max_tasks = 2;
+  vector_index::reset_runtime_worker_pool_for_testing();
   const std::string root =
       std::string(testing::TempDir()) + "/pipeline_raw_segments_t";
   std::error_code ec;
@@ -1260,7 +1406,7 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsMultipleRawSegments) {
   vector_index::index_service service;
   ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_raw", 2,
                                                   "euclidean", "memory",
-                                                  "native"));
+                                                  provider));
   ASSERT_TRUE(service.set_index_consistency_mode(
       "idx_pipeline_raw", vector_index::index_consistency_mode::kStandalone));
 
@@ -1278,11 +1424,24 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsMultipleRawSegments) {
       << error;
   EXPECT_EQ(1U, loaded_rows);
   ASSERT_TRUE(service.rebuild_index("idx_pipeline_raw"));
+  EXPECT_EQ(0U, vector_index::runtime_worker_pool_size_for_testing());
 
   vector_index::index_service::build_pipeline_snapshot snapshot;
   ASSERT_TRUE(service.describe_build_pipeline("idx_pipeline_raw", &snapshot));
   expect_pipeline_snapshot(snapshot, "auto", "segmented", "raw_segment_count",
                            2, 16, 2);
+
+  vector_index::index_service::index_config described;
+  vector_index::backend_build_diagnostics diagnostics;
+  ASSERT_TRUE(service.describe_index(
+      "idx_pipeline_raw", &described, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      &diagnostics));
+  EXPECT_EQ("segmented", diagnostics.runtime);
+  EXPECT_EQ("raw_segments", diagnostics.input_source);
+  EXPECT_EQ(2U, diagnostics.row_count);
+  EXPECT_EQ(2U, diagnostics.segment_count);
+  EXPECT_EQ(2U, diagnostics.build_invocations);
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(service.search("idx_pipeline_raw", {1.0F, 0.0F}, 2, &result));
@@ -1300,21 +1459,190 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsMultipleRawSegments) {
   EXPECT_EQ(11U, batch_result[0][0].doc_id);
   EXPECT_EQ(22U, batch_result[1][0].doc_id);
 
+  vector_index::reset_runtime_worker_pool_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, SegmentedSearchHandlesNestedParallelBackend) {
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  UlongGuard hnsw_search_threads_guard(&opt_vector_hnsw_search_threads, 2);
+  UlongGuard batch_search_threads_guard(&opt_vector_batch_search_threads, 2);
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+  opt_vector_build_pipeline_max_tasks = 2;
+  vector_index::reset_runtime_worker_pool_for_testing();
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/pipeline_raw_parallel_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string first_vector_path = root + "/first.fbin";
+  const std::string first_docid_path = root + "/first.u64";
+  const std::string second_vector_path = root + "/second.fbin";
+  const std::string second_docid_path = root + "/second.u64";
+  write_raw_fbin_file(first_vector_path, 1, 2, {1.0F, 0.0F});
+  write_raw_docid_file(first_docid_path, {11});
+  write_raw_fbin_file(second_vector_path, 1, 2, {0.0F, 1.0F});
+  write_raw_docid_file(second_docid_path, {22});
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_raw_parallel",
+                                                  2, "euclidean", "memory",
+                                                  provider));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_pipeline_raw_parallel",
+      vector_index::index_consistency_mode::kStandalone));
+
+  vector_index::index_service::bulk_load_options options;
+  uint64_t loaded_rows = 0;
+  std::string error;
+  ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+      "idx_pipeline_raw_parallel", first_vector_path, first_docid_path,
+      options, &loaded_rows, &error))
+      << error;
+  EXPECT_EQ(1U, loaded_rows);
+  ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+      "idx_pipeline_raw_parallel", second_vector_path, second_docid_path,
+      options, &loaded_rows, &error))
+      << error;
+  EXPECT_EQ(1U, loaded_rows);
+
+  ASSERT_TRUE(service.rebuild_index("idx_pipeline_raw_parallel"));
+  EXPECT_EQ(0U, vector_index::runtime_worker_pool_size_for_testing());
+
+  std::vector<std::vector<vector_index::search_result>> batch_result;
+  ASSERT_TRUE(service.search_batch("idx_pipeline_raw_parallel",
+                                   {{1.0F, 0.0F}, {0.0F, 1.0F}}, 1,
+                                   &batch_result));
+  ASSERT_EQ(2U, batch_result.size());
+  ASSERT_EQ(1U, batch_result[0].size());
+  ASSERT_EQ(1U, batch_result[1].size());
+  EXPECT_EQ(11U, batch_result[0][0].doc_id);
+  EXPECT_EQ(22U, batch_result[1][0].doc_id);
+  if (std::string(provider) == "hnsw") {
+    EXPECT_EQ(2U, vector_index::runtime_worker_pool_size_for_testing());
+  } else {
+    EXPECT_EQ(0U, vector_index::runtime_worker_pool_size_for_testing());
+  }
+
+  vector_index::reset_runtime_worker_pool_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, SegmentedRebuildRecordsReadySegmentTasks) {
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/segment_tasks_ready_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_segment_tasks", 2,
+                                                  "euclidean", "memory",
+                                                  provider));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_segment_tasks", vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.direct_upsert("idx_segment_tasks", 11, {1.0F, 0.0F}));
+  ASSERT_TRUE(service.direct_upsert("idx_segment_tasks", 22, {0.0F, 1.0F}));
+
+  ASSERT_TRUE(service.rebuild_index("idx_segment_tasks"));
+
+  std::vector<vector_index_metadata_store::segment_task_row> rows;
+  ASSERT_TRUE(service.snapshot_segment_tasks("idx_segment_tasks", &rows));
+  ASSERT_EQ(1U, rows.size());
+  EXPECT_EQ("idx_segment_tasks", rows[0].index_name);
+  EXPECT_NE(0U, rows[0].segment_id);
+  EXPECT_EQ(vector_index_metadata_store::segment_task_state::kReady,
+            rows[0].state);
+  EXPECT_EQ(2U, rows[0].row_count);
+  EXPECT_GE(rows[0].payload_size, 2U * 2U * sizeof(float));
+  EXPECT_FALSE(rows[0].vector_path.empty());
+  EXPECT_FALSE(rows[0].docid_path.empty());
+  EXPECT_EQ(1U, rows[0].attempt);
+  EXPECT_EQ(0U, rows[0].last_error_code);
+  EXPECT_NE(0U, rows[0].updated_ts);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, SegmentedRebuildKeepsTasksOnPrePublishFailure) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug sync failure injection requires a debug build";
+#endif
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/segment_tasks_fail_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_segment_fail", 2,
+                                                  "euclidean", "memory",
+                                                  provider));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_segment_fail", vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.direct_upsert("idx_segment_fail", 33, {3.0F, 0.0F}));
+
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_segment_task_before_publish");
+    EXPECT_FALSE(service.rebuild_index("idx_segment_fail"));
+  }
+
+  std::vector<vector_index_metadata_store::segment_task_row> rows;
+  ASSERT_TRUE(service.snapshot_segment_tasks("idx_segment_fail", &rows));
+  ASSERT_EQ(1U, rows.size());
+  EXPECT_EQ(vector_index_metadata_store::segment_task_state::kReady,
+            rows[0].state);
+  EXPECT_EQ(1U, service.standalone_raw_segment_count("idx_segment_fail"));
+  EXPECT_EQ(1U, rows[0].row_count);
+
   std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorIndexServiceTest, RebuildAllIndexesHonorsSegmentedStandaloneSource) {
   build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
   opt_vector_build_pipeline_mode =
       static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
 
   vector_index::index_service service;
   ASSERT_TRUE(service.register_index_from_strings("idx_all_first", 2,
                                                   "euclidean", "memory",
-                                                  "native"));
+                                                  provider));
   ASSERT_TRUE(service.register_index_from_strings("idx_all_second", 2,
                                                   "euclidean", "memory",
-                                                  "native"));
+                                                  provider));
   ASSERT_TRUE(service.set_index_consistency_mode(
       "idx_all_first", vector_index::index_consistency_mode::kStandalone));
   ASSERT_TRUE(service.set_index_consistency_mode(
@@ -1439,6 +1767,7 @@ TEST(VectorIndexServiceTest, TransactionalRawFileBulkLoadPublishesRows) {
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
   ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
 
   const std::string vector_path = root + "/source.fbin";
   const std::string docid_path = root + "/source.u64";
@@ -1477,6 +1806,59 @@ TEST(VectorIndexServiceTest, TransactionalRawFileBulkLoadPublishesRows) {
   ASSERT_TRUE(service.search("idx_bulk_raw_txn", {0.0F, 1.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(42U, result[0].doc_id);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, StandaloneRawFileBulkLoadSplitsBySegmentRowLimit) {
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  opt_vector_build_segment_max_rows = 1;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_split_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 3, 2,
+                      {1.0F, 0.0F, 0.0F, 1.0F, 2.0F, 0.0F});
+  write_raw_docid_file(docid_path, {11, 22, 33});
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_raw_split", 2,
+                                                  "euclidean", "memory",
+                                                  provider));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_raw_split", vector_index::index_consistency_mode::kStandalone));
+
+  vector_index::index_service::bulk_load_options options;
+  uint64_t loaded_rows = 0;
+  std::string error;
+  ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+      "idx_raw_split", vector_path, docid_path, options, &loaded_rows, &error))
+      << error;
+  EXPECT_EQ(3U, loaded_rows);
+  EXPECT_EQ(3U, service.standalone_raw_segment_count("idx_raw_split"));
+
+  ASSERT_TRUE(service.rebuild_index("idx_raw_split"));
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search("idx_raw_split", {2.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(33U, result[0].doc_id);
+
+  vector_index::index_service::build_pipeline_snapshot snapshot;
+  ASSERT_TRUE(service.describe_build_pipeline("idx_raw_split", &snapshot));
+  expect_pipeline_snapshot(snapshot, "auto", "segmented", "raw_segment_count",
+                           3, 24, 3);
 
   std::filesystem::remove_all(root, ec);
 }
@@ -1652,6 +2034,10 @@ TEST(VectorIndexServiceTest, BulkLoadValidationCoversBusinessErrorPaths) {
 }
 
 TEST(VectorIndexServiceTest, BulkLoadRawSegmentManifestRoundTrip) {
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
   const std::string root =
       std::string(testing::TempDir()) + "/bulk_load_raw_segment_round_trip_t";
   std::error_code ec;
@@ -1668,7 +2054,7 @@ TEST(VectorIndexServiceTest, BulkLoadRawSegmentManifestRoundTrip) {
   vector_index::index_service service;
   ASSERT_TRUE(service.register_index_from_strings("idx_raw_round_trip", 2,
                                                   "euclidean", "memory",
-                                                  "native"));
+                                                  provider));
   ASSERT_TRUE(service.set_index_consistency_mode(
       "idx_raw_round_trip",
       vector_index::index_consistency_mode::kStandalone));
@@ -1703,7 +2089,7 @@ TEST(VectorIndexServiceTest, BulkLoadRawSegmentManifestRoundTrip) {
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(recovered.register_index_from_strings("idx_raw_round_trip", 2,
                                                     "euclidean", "memory",
-                                                    "native"));
+                                                    provider));
   ASSERT_TRUE(recovered.set_index_consistency_mode(
       "idx_raw_round_trip",
       vector_index::index_consistency_mode::kStandalone));
@@ -3020,6 +3406,10 @@ TEST(VectorStandaloneEntryStoreTest,
 
 TEST(VectorIndexServiceTest,
      StandaloneMutationsSpillSegmentsAndRebuildFromStandaloneSource) {
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
   const std::string root = std::string(testing::TempDir()) +
                            "/vector_service_standalone_segments_t";
   std::error_code ec;
@@ -3033,7 +3423,7 @@ TEST(VectorIndexServiceTest,
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(service.register_index_from_strings("idx_standalone_spill", 2,
                                                   "euclidean", "memory",
-                                                  "native"));
+                                                  provider));
   ASSERT_TRUE(service.set_index_consistency_mode(
       "idx_standalone_spill",
       vector_index::index_consistency_mode::kStandalone));
@@ -3067,7 +3457,7 @@ TEST(VectorIndexServiceTest,
   vector_index::index_service recovered;
   ASSERT_TRUE(recovered.register_index_from_strings("idx_standalone_spill", 2,
                                                     "euclidean", "memory",
-                                                    "native"));
+                                                    provider));
   ASSERT_TRUE(recovered.set_index_consistency_mode(
       "idx_standalone_spill",
       vector_index::index_consistency_mode::kStandalone));
@@ -4713,9 +5103,20 @@ TEST(VectorIndexServiceTest, InternalRebuildGuardsCoverNegativeModes) {
   using vector_index::detail::all_true;
   using vector_index::detail::can_rebuild_after_search_failure;
 
+  EXPECT_TRUE(all_true(true));
+  EXPECT_FALSE(all_true(false));
+  EXPECT_TRUE(all_true(true, true));
+  EXPECT_FALSE(all_true(false, true));
+  EXPECT_FALSE(all_true(true, false));
   EXPECT_TRUE(all_true(true, 1, "non-null"));
-  EXPECT_FALSE(all_true(true, 0, true));
   EXPECT_FALSE(all_true(false, true, true));
+  EXPECT_FALSE(all_true(true, 0, true));
+  EXPECT_FALSE(all_true(true, true, false));
+  EXPECT_TRUE(all_true(true, true, true, true));
+  EXPECT_FALSE(all_true(false, true, true, true));
+  EXPECT_FALSE(all_true(true, false, true, true));
+  EXPECT_FALSE(all_true(true, true, false, true));
+  EXPECT_FALSE(all_true(true, true, true, false));
 
   vector_index::index_service::index_config config{
       2, vector_index::metric_type::kEuclidean, backend_mode::kMemory,

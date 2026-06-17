@@ -1,0 +1,82 @@
+--source include/have_vector_hnsw.inc
+
+--echo #
+--echo # WL#Vector: segmented pipeline search fanout remains visible
+--echo #
+
+SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
+SET @old_vector_build_segment_max_rows = @@GLOBAL.vector_build_segment_max_rows;
+SET @old_vector_build_segment_target_size = @@GLOBAL.vector_build_segment_target_size;
+
+SET GLOBAL vector_build_pipeline_mode = 'segmented';
+SET GLOBAL vector_build_segment_max_rows = 1048576;
+SET GLOBAL vector_build_segment_target_size = 1048576;
+
+--disable_query_log
+--let $vector_fbin=$MYSQLTEST_VARDIR/vector_segmented_search_params.fbin
+--let $vector_docid=$MYSQLTEST_VARDIR/vector_segmented_search_params.u64
+--exec rm -f $vector_fbin $vector_docid
+--copy_file $MYSQL_TEST_DIR/suite/vector/std_data/vector_load_data_256.fbin $vector_fbin
+--copy_file $MYSQL_TEST_DIR/suite/vector/std_data/vector_load_data_256.u64 $vector_docid
+--enable_query_log
+
+SELECT VEC_INDEX_CREATE('idx_segmented_search_params', 2, 'EUCLIDEAN',
+                        'MEMORY', 'HNSWLIB', 0, 'standalone');
+
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_segmented_search_params.fbin'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_segmented_search_params.u64'
+  INTO VECTOR INDEX idx_segmented_search_params
+  FORMAT FBIN;
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_segmented_search_params.fbin'
+  INTO VECTOR INDEX idx_segmented_search_params
+  FORMAT FBIN;
+--enable_query_log
+
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                    '$.standalone_raw_segment_count') AS raw_segment_count;
+
+--disable_query_log
+delimiter |;
+CREATE PROCEDURE try_segmented_search_params_build()
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET @build_ok = 0;
+  SET @build_ok = 1;
+  SET @build_result = VEC_INDEX_BULK_BUILD('idx_segmented_search_params');
+END|
+delimiter ;|
+CALL try_segmented_search_params_build();
+DROP PROCEDURE try_segmented_search_params_build;
+--let $build_ok=`SELECT @build_ok`
+if (!$build_ok)
+{
+  SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+  SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+  SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+  SELECT VEC_INDEX_DROP('idx_segmented_search_params');
+  --remove_file $vector_fbin
+  --remove_file $vector_docid
+  --skip Test requires DISKANN offline adapter support
+}
+--enable_query_log
+
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+  '$.backend_variant')) AS backend_variant,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+  '$.backend_build_segments') AS backend_build_segments;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_segmented_search_params', VEC_FROMTEXT('[1,0]'), 6),
+  CAST(100000 AS JSON)) AS has_doc_100000,
+  JSON_CONTAINS(
+  VEC_INDEX_SEARCH_BATCH('idx_segmented_search_params',
+                         CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')),
+                         2, 6),
+  CAST(100001 AS JSON)) AS batch_has_doc_100001;
+
+SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+
+SELECT VEC_INDEX_DROP('idx_segmented_search_params');
+--remove_file $vector_fbin
+--remove_file $vector_docid

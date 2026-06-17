@@ -117,6 +117,14 @@ INDEX_STATE	idx_ext.entry_count	0
 INDEX_STATE	idx_ext.committed_entry_count	0
 BACKEND_HEALTH	idx_ext.backend_type	faiss
 BACKEND_HEALTH	idx_ext.backend_variant	hnsw
+BACKEND_HEALTH	idx_ext.backend_build_runtime	faiss_scheduler
+BACKEND_HEALTH	idx_ext.backend_build_input_source	reader
+BACKEND_HEALTH	idx_ext.backend_build_rows	0
+BACKEND_HEALTH	idx_ext.backend_build_segments	1
+BACKEND_HEALTH	idx_ext.backend_build_manifest_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_offline_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_load_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_fallback_reason	
 BACKEND_HEALTH	idx_ext.mode	external
 BACKEND_HEALTH	idx_ext.consistency_mode	transactional
 BACKEND_HEALTH	idx_ext.truth_store_enabled	1
@@ -180,6 +188,14 @@ INDEX_STATE	idx_ext.entry_count	0
 INDEX_STATE	idx_ext.committed_entry_count	0
 BACKEND_HEALTH	idx_ext.backend_type	faiss
 BACKEND_HEALTH	idx_ext.backend_variant	hnsw
+BACKEND_HEALTH	idx_ext.backend_build_runtime	faiss_scheduler
+BACKEND_HEALTH	idx_ext.backend_build_input_source	reader
+BACKEND_HEALTH	idx_ext.backend_build_rows	0
+BACKEND_HEALTH	idx_ext.backend_build_segments	1
+BACKEND_HEALTH	idx_ext.backend_build_manifest_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_offline_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_load_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_fallback_reason	
 BACKEND_HEALTH	idx_ext.mode	external
 BACKEND_HEALTH	idx_ext.consistency_mode	transactional
 BACKEND_HEALTH	idx_ext.truth_store_enabled	1

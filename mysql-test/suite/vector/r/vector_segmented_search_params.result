@@ -1,0 +1,40 @@
+#
+# WL#Vector: segmented pipeline search fanout remains visible
+#
+SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
+SET @old_vector_build_segment_max_rows = @@GLOBAL.vector_build_segment_max_rows;
+SET @old_vector_build_segment_target_size = @@GLOBAL.vector_build_segment_target_size;
+SET GLOBAL vector_build_pipeline_mode = 'segmented';
+SET GLOBAL vector_build_segment_max_rows = 1048576;
+SET GLOBAL vector_build_segment_target_size = 1048576;
+SELECT VEC_INDEX_CREATE('idx_segmented_search_params', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB', 0, 'standalone');
+VEC_INDEX_CREATE('idx_segmented_search_params', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB', 0, 'standalone')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+'$.standalone_raw_segment_count') AS raw_segment_count;
+raw_segment_count
+2
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+'$.backend_variant')) AS backend_variant,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+'$.backend_build_segments') AS backend_build_segments;
+backend_variant	backend_build_segments
+segmented	2
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_segmented_search_params', VEC_FROMTEXT('[1,0]'), 6),
+CAST(100000 AS JSON)) AS has_doc_100000,
+JSON_CONTAINS(
+VEC_INDEX_SEARCH_BATCH('idx_segmented_search_params',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')),
+2, 6),
+CAST(100001 AS JSON)) AS batch_has_doc_100001;
+has_doc_100000	batch_has_doc_100001
+1	1
+SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+SELECT VEC_INDEX_DROP('idx_segmented_search_params');
+VEC_INDEX_DROP('idx_segmented_search_params')
+1

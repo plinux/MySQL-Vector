@@ -38,7 +38,9 @@
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_index_build_options.h"
+#include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_runtime_config.h"
+#include "sql/vector/vector_index_runtime_thread_pool.h"
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_segmented_search.h"
@@ -106,6 +108,19 @@ bool file_size_as_size(const std::string &path, size_t *bytes) {
   if (ec || file_bytes > std::numeric_limits<size_t>::max()) return false;
   *bytes = static_cast<size_t>(file_bytes);
   return true;
+}
+
+uint64_t raw_segment_row_limit(size_t dimension) {
+  uint64_t row_limit = opt_vector_build_segment_max_rows == 0
+                           ? std::numeric_limits<uint64_t>::max()
+                           : opt_vector_build_segment_max_rows;
+  const uint64_t target_size = opt_vector_build_segment_target_size;
+  const uint64_t bytes_per_row =
+      static_cast<uint64_t>(dimension) * sizeof(float) + sizeof(uint64_t);
+  if (target_size != 0 && bytes_per_row != 0) {
+    row_limit = std::min(row_limit, std::max<uint64_t>(1, target_size / bytes_per_row));
+  }
+  return std::max<uint64_t>(1, row_limit);
 }
 
 bool copy_or_link_file(const std::string &source, const std::string &target) {
@@ -690,59 +705,176 @@ bool standalone_entry_store::bulk_upsert_raw_files(
   if (!flush_index(index_name, &state_it->second)) return false;
   const index_state before_bulk = state_it->second;
 
-  const uint64_t segment_id = state_it->second.next_segment_id;
-  const std::string target_vector_path = raw_vector_path(index_name, segment_id);
-  const std::string target_docid_path = raw_docid_path(index_name, segment_id);
-  if (target_vector_path.empty() || target_docid_path.empty()) return false;
+  std::vector<std::string> created_files;
+  std::vector<standalone_segment> new_segments;
+  const auto cleanup_created_files = [&created_files]() {
+    for (const std::string &path : created_files) remove_file_if_exists(path);
+  };
+  const auto append_segment =
+      [this, &index_name, &state_it, &created_files, &new_segments](
+          uint64_t segment_id, uint64_t generation, size_t rows) {
+        const std::string target_vector_path =
+            raw_vector_path(index_name, segment_id);
+        const std::string target_docid_path =
+            raw_docid_path(index_name, segment_id);
+        if (target_vector_path.empty() || target_docid_path.empty())
+          return false;
+        if (!detail::ensure_parent_directory(target_vector_path) ||
+            !detail::ensure_parent_directory(target_docid_path)) {
+          return false;
+        }
 
-  if (!copy_or_link_file(vector_filename, target_vector_path)) return false;
-  bool docid_ready = false;
-  if (docid_filename.empty()) {
-    docid_ready = write_generated_docid_file(target_docid_path, row_count);
+        created_files.push_back(target_vector_path);
+        created_files.push_back(target_docid_path);
+        standalone_segment segment;
+        segment.kind = standalone_segment_kind::kRawFbin;
+        segment.vector_path = target_vector_path;
+        segment.docid_path = target_docid_path;
+        segment.record_count = rows;
+        segment.dimension = state_it->second.dimension;
+        segment.generation = generation;
+        new_segments.push_back(std::move(segment));
+        return true;
+      };
+
+  const uint64_t row_limit = raw_segment_row_limit(state_it->second.dimension);
+  if (row_count <= row_limit) {
+    const uint64_t segment_id = state_it->second.next_segment_id;
+    if (!append_segment(segment_id, state_it->second.generation + 1,
+                        static_cast<size_t>(row_count))) {
+      return false;
+    }
+
+    standalone_segment &segment = new_segments.back();
+    if (!copy_or_link_file(vector_filename, segment.vector_path)) {
+      cleanup_created_files();
+      return false;
+    }
+    bool docid_ready = false;
+    if (docid_filename.empty()) {
+      docid_ready = write_generated_docid_file(segment.docid_path, row_count);
+    } else {
+      docid_ready = copy_or_link_file(docid_filename, segment.docid_path);
+    }
+    if (!docid_ready) {
+      cleanup_created_files();
+      return false;
+    }
+
+    size_t vector_bytes = 0;
+    size_t docid_bytes = 0;
+    if (!file_size_as_size(segment.vector_path, &vector_bytes) ||
+        !file_size_as_size(segment.docid_path, &docid_bytes) ||
+        vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes) {
+      state_it->second = before_bulk;
+      cleanup_created_files();
+      return false;
+    }
+    segment.bytes = vector_bytes + docid_bytes;
   } else {
-    docid_ready = copy_or_link_file(docid_filename, target_docid_path);
-  }
-  if (!docid_ready) {
-    remove_file_if_exists(target_vector_path);
-    return false;
+    std::ofstream vector_file;
+    std::ofstream docid_file;
+    uint64_t rows_seen = 0;
+    uint64_t rows_in_segment = 0;
+    uint64_t current_segment_rows = 0;
+
+    const auto close_segment = [&]() {
+      vector_file.close();
+      docid_file.close();
+      if (!vector_file || !docid_file) return false;
+
+      standalone_segment &segment = new_segments.back();
+      size_t vector_bytes = 0;
+      size_t docid_bytes = 0;
+      if (!file_size_as_size(segment.vector_path, &vector_bytes) ||
+          !file_size_as_size(segment.docid_path, &docid_bytes) ||
+          vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes) {
+        return false;
+      }
+      segment.bytes = vector_bytes + docid_bytes;
+      rows_in_segment = 0;
+      current_segment_rows = 0;
+      return true;
+    };
+
+    const auto open_segment = [&]() {
+      const uint64_t remaining = row_count - rows_seen;
+      current_segment_rows = std::min(row_limit, remaining);
+      const uint64_t segment_id =
+          state_it->second.next_segment_id + new_segments.size();
+      const uint64_t generation =
+          state_it->second.generation + new_segments.size() + 1;
+      if (!append_segment(segment_id, generation,
+                          static_cast<size_t>(current_segment_rows))) {
+        return false;
+      }
+      vector_file.open(new_segments.back().vector_path,
+                       std::ios::out | std::ios::binary | std::ios::trunc);
+      docid_file.open(new_segments.back().docid_path,
+                      std::ios::out | std::ios::binary | std::ios::trunc);
+      if (!vector_file.is_open() || !docid_file.is_open()) return false;
+      return write_plain_value(vector_file,
+                               static_cast<uint32_t>(current_segment_rows)) &&
+             write_plain_value(
+                 vector_file,
+                 static_cast<uint32_t>(state_it->second.dimension)) &&
+             write_plain_value(docid_file, current_segment_rows);
+    };
+
+    const size_t vector_bytes_per_row =
+        state_it->second.dimension * sizeof(float);
+    if (vector_bytes_per_row >
+        static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+      cleanup_created_files();
+      return false;
+    }
+
+    const bool split_ok = read_fbin_vectors(
+        vector_filename, docid_filename, state_it->second.dimension, nullptr,
+        &load_error,
+        [&](uint64_t doc_id, const float *values, size_t vector_dimension) {
+          if (values == nullptr ||
+              vector_dimension != state_it->second.dimension)
+            return false;
+          if (rows_in_segment == 0 && !open_segment()) return false;
+          if (!write_plain_value(docid_file, doc_id)) return false;
+          vector_file.write(reinterpret_cast<const char *>(values),
+                            static_cast<std::streamsize>(
+                                vector_bytes_per_row));
+          if (!vector_file.good()) return false;
+          ++rows_seen;
+          ++rows_in_segment;
+          if (rows_in_segment == current_segment_rows) {
+            return close_segment();
+          }
+          return true;
+        });
+    if (!split_ok || rows_seen != row_count || rows_in_segment != 0) {
+      state_it->second = before_bulk;
+      cleanup_created_files();
+      return false;
+    }
   }
 
-  size_t vector_bytes = 0;
-  size_t docid_bytes = 0;
-  if (!file_size_as_size(target_vector_path, &vector_bytes) ||
-      !file_size_as_size(target_docid_path, &docid_bytes) ||
-      vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes) {
-    state_it->second = before_bulk;
-    remove_file_if_exists(target_vector_path);
-    remove_file_if_exists(target_docid_path);
-    return false;
-  }
-
-  standalone_segment segment;
-  segment.kind = standalone_segment_kind::kRawFbin;
-  segment.vector_path = target_vector_path;
-  segment.docid_path = target_docid_path;
-  segment.record_count = static_cast<size_t>(row_count);
-  segment.dimension = state_it->second.dimension;
-  segment.bytes = vector_bytes + docid_bytes;
-  segment.generation = state_it->second.generation + 1;
-  state_it->second.segments.push_back(std::move(segment));
-  ++state_it->second.next_segment_id;
+  state_it->second.segments.insert(state_it->second.segments.end(),
+                                   new_segments.begin(), new_segments.end());
+  state_it->second.next_segment_id += new_segments.size();
 
   if (loaded_doc_ids != nullptr) {
     state_it->second.live_doc_ids.merge(*loaded_doc_ids);
     loaded_doc_ids->clear();
   } else {
-    if (!read_docid_values(
-            target_docid_path, row_count, &load_error,
-            [&state_it](uint64_t doc_id) {
-              state_it->second.live_doc_ids.insert(doc_id);
-              return true;
-            })) {
-      state_it->second = before_bulk;
-      remove_file_if_exists(target_vector_path);
-      remove_file_if_exists(target_docid_path);
-      return false;
+    for (const standalone_segment &segment : new_segments) {
+      if (!read_docid_values(
+              segment.docid_path, segment.record_count, &load_error,
+              [&state_it](uint64_t doc_id) {
+                state_it->second.live_doc_ids.insert(doc_id);
+                return true;
+              })) {
+        state_it->second = before_bulk;
+        cleanup_created_files();
+        return false;
+      }
     }
   }
   state_it->second.entry_count = state_it->second.live_doc_ids.size();
@@ -751,8 +883,7 @@ bool standalone_entry_store::bulk_upsert_raw_files(
 
   if (!save_manifest(index_name, state_it->second)) {
     state_it->second = before_bulk;
-    remove_file_if_exists(target_vector_path);
-    remove_file_if_exists(target_docid_path);
+    cleanup_created_files();
     return false;
   }
   return true;
@@ -1877,6 +2008,22 @@ bool recover_backend_from_source(const vector_entry_store &entry_store,
              : recover_backend_from_store(entry_store, index_name, target);
 }
 
+size_t segmented_search_threads(const index_service::index_config &config,
+                                size_t segment_count) {
+  if (segment_count <= 1) return 1;
+  switch (config.provider) {
+    case backend_provider::kDiskAnn:
+      return effective_diskann_search_threads(segment_count);
+    case backend_provider::kFaiss:
+      return effective_faiss_search_threads(segment_count);
+    case backend_provider::kHnswlib:
+      return effective_hnsw_search_threads(segment_count);
+    case backend_provider::kNative:
+      return effective_batch_search_threads(segment_count, 0);
+  }
+  return 1;
+}
+
 class segmented_backend final : public backend {
  public:
   segmented_backend(index_service::index_config config,
@@ -1900,14 +2047,25 @@ class segmented_backend final : public backend {
     if (query.size() != m_config.dimension) return false;
     if (top_k == 0) return true;
 
-    std::vector<std::vector<search_result>> segment_results;
-    segment_results.reserve(m_segments.size());
-    for (const auto &segment : m_segments) {
-      if (segment == nullptr) return false;
-      std::vector<search_result> current;
-      if (!segment->search(query, top_k, &current)) return false;
-      segment_results.push_back(std::move(current));
-    }
+    std::vector<std::vector<search_result>> segment_results(m_segments.size());
+    const size_t worker_count =
+        segmented_search_threads(m_config, m_segments.size());
+    const bool search_ok = parallel_for_ranges_scoped(
+        m_segments.size(), worker_count,
+        [&](size_t begin, size_t end, size_t) {
+          for (size_t i = begin; i < end; ++i) {
+            const auto &segment = m_segments[i];
+            if (segment == nullptr) return false;
+            const size_t segment_top_k = segmented_search_candidate_top_k(
+                top_k, m_segments.size(), segment->entry_count(), 1,
+                static_cast<size_t>(opt_vector_search_batch_result_count));
+            if (!segment->search(query, segment_top_k, &segment_results[i])) {
+              return false;
+            }
+          }
+          return true;
+        });
+    if (!search_ok) return false;
     return merge_segment_topk(segment_results, top_k, results);
   }
 
@@ -1916,11 +2074,41 @@ class segmented_backend final : public backend {
       const override {
     if (results == nullptr) return false;
     results->clear();
-    results->resize(queries.size());
-    for (size_t i = 0; i < queries.size(); ++i) {
-      if (!search(queries[i], top_k, &(*results)[i])) return false;
+    for (const auto &query : queries) {
+      if (query.size() != m_config.dimension) return false;
     }
-    return true;
+    if (top_k == 0) {
+      results->resize(queries.size());
+      return true;
+    }
+    if (m_segments.empty()) {
+      results->resize(queries.size());
+      return true;
+    }
+
+    std::vector<std::vector<std::vector<search_result>>> segment_batch_results(
+        m_segments.size());
+    const size_t worker_count =
+        segmented_search_threads(m_config, m_segments.size());
+    const bool search_ok = parallel_for_ranges_scoped(
+        m_segments.size(), worker_count,
+        [&](size_t begin, size_t end, size_t) {
+          for (size_t i = begin; i < end; ++i) {
+            const auto &segment = m_segments[i];
+            if (segment == nullptr) return false;
+            const size_t segment_top_k = segmented_search_candidate_top_k(
+                top_k, m_segments.size(), segment->entry_count(),
+                queries.size(),
+                static_cast<size_t>(opt_vector_search_batch_result_count));
+            if (!segment->search_batch(queries, segment_top_k,
+                                       &segment_batch_results[i])) {
+              return false;
+            }
+          }
+          return true;
+        });
+    if (!search_ok) return false;
+    return merge_segment_batch_topk(segment_batch_results, top_k, results);
   }
 
   size_t entry_count() const override {
@@ -1956,6 +2144,127 @@ class segmented_backend final : public backend {
     return true;
   }
   uint32_t search_ef() const override { return m_config.search_ef; }
+  bool set_faiss_ivf_params(uint32_t faiss_nlist,
+                            uint32_t faiss_nprobe) override {
+    if (m_config.provider != backend_provider::kFaiss) return false;
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_faiss_ivf_params(faiss_nlist, faiss_nprobe)) {
+        return false;
+      }
+    }
+    m_config.faiss_nlist = faiss_nlist;
+    m_config.faiss_nprobe = faiss_nprobe;
+    return true;
+  }
+  bool set_faiss_ivf_pq_params(uint32_t faiss_nlist, uint32_t faiss_nprobe,
+                               uint32_t faiss_pq_m,
+                               uint32_t faiss_pq_bits) override {
+    if (m_config.provider != backend_provider::kFaiss) return false;
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_faiss_ivf_pq_params(faiss_nlist, faiss_nprobe,
+                                            faiss_pq_m, faiss_pq_bits)) {
+        return false;
+      }
+    }
+    m_config.faiss_nlist = faiss_nlist;
+    m_config.faiss_nprobe = faiss_nprobe;
+    m_config.faiss_pq_m = faiss_pq_m;
+    m_config.faiss_pq_bits = faiss_pq_bits;
+    return true;
+  }
+  bool set_diskann_build_params(uint32_t diskann_max_degree,
+                                uint32_t diskann_build_complexity,
+                                uint32_t diskann_build_threads) override {
+    if (m_config.provider != backend_provider::kDiskAnn ||
+        diskann_max_degree == 0 || diskann_build_complexity == 0 ||
+        diskann_build_threads > k_max_build_threads) {
+      return false;
+    }
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_build_params(diskann_max_degree,
+                                             diskann_build_complexity,
+                                             diskann_build_threads)) {
+        return false;
+      }
+    }
+    m_config.diskann_max_degree = diskann_max_degree;
+    m_config.diskann_build_complexity = diskann_build_complexity;
+    m_config.diskann_build_threads = diskann_build_threads;
+    return true;
+  }
+  bool set_diskann_build_threads(uint32_t diskann_build_threads) override {
+    if (m_config.provider != backend_provider::kDiskAnn ||
+        diskann_build_threads > k_max_build_threads) {
+      return false;
+    }
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_build_threads(diskann_build_threads)) {
+        return false;
+      }
+    }
+    m_config.diskann_build_threads = diskann_build_threads;
+    return true;
+  }
+  bool set_diskann_build_mode(
+      diskann_build_mode diskann_build_mode_value) override {
+    if (m_config.provider != backend_provider::kDiskAnn) return false;
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_build_mode(diskann_build_mode_value)) {
+        return false;
+      }
+    }
+    m_config.diskann_build_mode_value = diskann_build_mode_value;
+    return true;
+  }
+  bool set_diskann_search_complexity(
+      uint32_t diskann_search_complexity) override {
+    if (m_config.provider != backend_provider::kDiskAnn ||
+        diskann_search_complexity == 0) {
+      return false;
+    }
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_search_complexity(
+              diskann_search_complexity)) {
+        return false;
+      }
+    }
+    m_config.diskann_search_complexity = diskann_search_complexity;
+    return true;
+  }
+  bool set_diskann_search_beamwidth(
+      uint32_t diskann_search_beamwidth) override {
+    if (m_config.provider != backend_provider::kDiskAnn ||
+        diskann_search_beamwidth == 0) {
+      return false;
+    }
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_search_beamwidth(diskann_search_beamwidth)) {
+        return false;
+      }
+    }
+    m_config.diskann_search_beamwidth = diskann_search_beamwidth;
+    return true;
+  }
+  bool set_diskann_pq_code_budget_size(
+      uint64_t diskann_pq_code_budget_size) override {
+    if (m_config.provider != backend_provider::kDiskAnn) return false;
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_pq_code_budget_size(
+              diskann_pq_code_budget_size)) {
+        return false;
+      }
+    }
+    m_config.diskann_pq_code_budget_size = diskann_pq_code_budget_size;
+    return true;
+  }
   uint32_t hnsw_m() const override { return m_config.hnsw_m; }
   uint32_t hnsw_ef_construction() const override {
     return m_config.hnsw_ef_construction;
@@ -2013,6 +2322,11 @@ bool segmented_backend_contract_valid_impl() {
          !backend.erase(1) && backend.set_search_ef(32) &&
          backend.search_ef() == 32 &&
          backend.diskann_build_mode_value() == diskann_build_mode::kOffline;
+}
+
+bool raw_segments_use_single_backend(
+    const index_service::index_config &config [[maybe_unused]]) {
+  return false;
 }
 
 std::string segment_backend_index_name(const std::string &index_name,
@@ -2107,50 +2421,121 @@ std::unique_ptr<backend> build_segmented_backend_from_standalone(
     return nullptr;
   }
 
-  std::vector<std::shared_ptr<backend>> segments;
+  std::vector<raw_vector_segment> raw_segments;
+  const bool read_ok = standalone_store->read_rebuild_raw_segments(
+      index_name, [&](const raw_vector_segment &segment) {
+        raw_segments.push_back(segment);
+        return true;
+      });
+  if (!read_ok) return nullptr;
+
+  std::vector<std::shared_ptr<backend>> segments(raw_segments.size());
+  std::vector<backend_build_diagnostics> segment_diagnostics(
+      raw_segments.size());
+  std::vector<vector_index_metadata_store::segment_task_row> segment_task_rows;
+  segment_task_rows.reserve(raw_segments.size());
+  for (size_t i = 0; i < raw_segments.size(); ++i) {
+    const raw_vector_segment &segment = raw_segments[i];
+    const uint64_t segment_id =
+        segment.generation == 0 ? i + 1 : segment.generation;
+    segment_task_rows.push_back(
+        make_segment_task_row(index_name, segment, segment_id,
+                              vector_index_metadata_store::
+                                  segment_task_state::kPending));
+  }
+
+  if (raw_segments_use_single_backend(config)) {
+    std::unique_ptr<backend> rebuilt =
+        build_backend_from_config(index_name, config);
+    const auto mark_tasks_done =
+        [&segment_task_rows](
+            vector_index_metadata_store::segment_task_state state,
+            uint32_t error_code) {
+          const uint64_t now = now_unix_epoch_seconds();
+          for (auto &row : segment_task_rows) {
+            row.state = state;
+            row.attempt = 1;
+            row.last_error_code = error_code;
+            row.updated_ts = now;
+          }
+        };
+    if (rebuilt == nullptr) {
+      mark_tasks_done(vector_index_metadata_store::segment_task_state::kFailed,
+                      ERROR_BACKEND_CREATE_FAILED);
+      if (task_rows != nullptr) *task_rows = segment_task_rows;
+      return nullptr;
+    }
+    if (raw_segments.empty()) {
+      if (task_rows != nullptr) *task_rows = segment_task_rows;
+      return rebuilt;
+    }
+    const raw_vector_segment_reader reader =
+        [&raw_segments](const raw_vector_segment_visitor &visitor) {
+          if (!visitor) return false;
+          for (const raw_vector_segment &segment : raw_segments) {
+            if (!visitor(segment)) return false;
+          }
+          return true;
+        };
+    if (!rebuilt->rebuild_from_raw_segments(reader)) {
+      mark_tasks_done(vector_index_metadata_store::segment_task_state::kFailed,
+                      ERROR_REPLAY_STATE_FAILED);
+      if (task_rows != nullptr) *task_rows = segment_task_rows;
+      return nullptr;
+    }
+    mark_tasks_done(vector_index_metadata_store::segment_task_state::kReady,
+                    ERROR_NONE);
+    if (task_rows != nullptr) *task_rows = segment_task_rows;
+    return rebuilt;
+  }
+
+  const bool build_ok = parallel_for_ranges_scoped(
+      raw_segments.size(),
+      global_build_pipeline_runtime_config().thresholds.max_tasks,
+      [&](size_t begin, size_t end, size_t) {
+        for (size_t i = begin; i < end; ++i) {
+          std::shared_ptr<backend> segment_backend;
+          backend_build_diagnostics diagnostics;
+          vector_index_metadata_store::segment_task_row task_row =
+              segment_task_rows[i];
+          if (!build_one_segment_backend(index_name, config, raw_segments[i],
+                                         i + 1, &segment_backend,
+                                         &diagnostics, &task_row)) {
+            segment_task_rows[i] = task_row;
+            return false;
+          }
+          segment_task_rows[i] = task_row;
+          segment_diagnostics[i] = diagnostics;
+          segments[i] = std::move(segment_backend);
+        }
+        return true;
+      });
+  if (task_rows != nullptr) *task_rows = segment_task_rows;
+  if (!build_ok) return nullptr;
+
   backend_build_diagnostics aggregate;
   aggregate.runtime = kSegmentedBackendVariant;
   aggregate.input_source = "raw_segments";
 
-  uint64_t ordinal = 0;
-  const bool read_ok = standalone_store->read_rebuild_raw_segments(
-      index_name, [&](const raw_vector_segment &segment) {
-        ++ordinal;
-        std::shared_ptr<backend> segment_backend;
-        backend_build_diagnostics diagnostics;
-        vector_index_metadata_store::segment_task_row task_row =
-            make_segment_task_row(
-                index_name, segment,
-                segment.generation == 0 ? ordinal : segment.generation,
-                vector_index_metadata_store::segment_task_state::kPending);
-        if (task_rows != nullptr) task_rows->push_back(task_row);
-        if (!build_one_segment_backend(index_name, config, segment, ordinal,
-                                       &segment_backend, &diagnostics,
-                                       &task_row)) {
-          if (task_rows != nullptr && !task_rows->empty()) {
-            task_rows->back() = task_row;
-          }
-          return false;
-        }
-        if (task_rows != nullptr && !task_rows->empty()) {
-          task_rows->back() = task_row;
-        }
-        aggregate.row_count += diagnostics.row_count == 0
-                                   ? segment.row_count
-                                   : diagnostics.row_count;
-        aggregate.segment_count += diagnostics.segment_count == 0
+  for (size_t i = 0; i < raw_segments.size(); ++i) {
+    if (segments[i] == nullptr) return nullptr;
+    const raw_vector_segment &segment = raw_segments[i];
+    const backend_build_diagnostics &diagnostics = segment_diagnostics[i];
+    aggregate.row_count += diagnostics.row_count == 0 ? segment.row_count
+                                                      : diagnostics.row_count;
+    aggregate.segment_count += diagnostics.segment_count == 0
+                                   ? 1
+                                   : diagnostics.segment_count;
+    aggregate.build_invocations += diagnostics.build_invocations == 0
                                        ? 1
-                                       : diagnostics.segment_count;
-        aggregate.manifest_ms += diagnostics.manifest_ms;
-        aggregate.offline_build_ms += diagnostics.offline_build_ms;
-        aggregate.load_ms += diagnostics.load_ms;
-        if (!diagnostics.fallback_reason.empty()) {
-          aggregate.fallback_reason = diagnostics.fallback_reason;
-        }
-        segments.push_back(std::move(segment_backend));
-        return true;
-      });
-  if (!read_ok) return nullptr;
+                                       : diagnostics.build_invocations;
+    aggregate.manifest_ms += diagnostics.manifest_ms;
+    aggregate.offline_build_ms += diagnostics.offline_build_ms;
+    aggregate.load_ms += diagnostics.load_ms;
+    if (!diagnostics.fallback_reason.empty()) {
+      aggregate.fallback_reason = diagnostics.fallback_reason;
+    }
+  }
 
   return std::make_unique<segmented_backend>(config, std::move(segments),
                                              std::move(aggregate));
@@ -2281,8 +2666,7 @@ build_input_stats index_service::collect_build_input_stats(
     const uint64_t raw_segment_count =
         static_cast<uint64_t>(m_standalone_store.raw_segment_count(index_name));
     stats.has_raw_segments = raw_segment_count > 0;
-    stats.raw_segment_count =
-        raw_segment_count == 0 && stats.row_count > 0 ? 1 : raw_segment_count;
+    stats.raw_segment_count = raw_segment_count;
   }
   return stats;
 }
@@ -2310,31 +2694,28 @@ bool index_service::register_index(const std::string &index_name,
                                    std::unique_ptr<backend> backend) {
   if (backend == nullptr || index_name.empty()) return false;
 
-  index_config config{backend->dimension(),
-                      backend->metric(),
-                      backend->mode(),
-                      backend->provider(),
-                      backend->backend_variant(),
-                      backend->search_ef(),
-                      backend->hnsw_m(),
-                      backend->hnsw_ef_construction(),
-                      backend->hnsw_build_threads(),
-                      backend->faiss_nlist(),
-                      backend->faiss_nprobe(),
-                      backend->faiss_pq_m(),
-                      backend->faiss_pq_bits(),
-                      backend->faiss_build_threads(),
-                      backend->diskann_max_degree(),
-                      backend->diskann_build_complexity(),
-                      backend->diskann_build_threads(),
-                      backend->diskann_build_mode_value(),
-                      backend->diskann_search_complexity(),
-                      backend->diskann_search_beamwidth(),
-                      backend->diskann_pq_code_budget_size(),
-                      backend->provider() == backend_provider::kDiskAnn &&
-                          backend->diskann_build_mode_value() !=
-                              diskann_build_mode::kAuto,
-                      index_consistency_mode::kTransactional};
+  index_config config;
+  config.dimension = backend->dimension();
+  config.metric = backend->metric();
+  config.mode = backend->mode();
+  config.provider = backend->provider();
+  config.backend_variant = backend->backend_variant();
+  config.search_ef = backend->search_ef();
+  config.hnsw_m = backend->hnsw_m();
+  config.hnsw_ef_construction = backend->hnsw_ef_construction();
+  config.hnsw_build_threads = backend->hnsw_build_threads();
+  config.faiss_nlist = backend->faiss_nlist();
+  config.faiss_nprobe = backend->faiss_nprobe();
+  config.faiss_pq_m = backend->faiss_pq_m();
+  config.faiss_pq_bits = backend->faiss_pq_bits();
+  config.faiss_build_threads = backend->faiss_build_threads();
+  sync_diskann_build_config_from_backend(*backend, &config);
+  config.diskann_search_complexity = backend->diskann_search_complexity();
+  config.diskann_search_beamwidth = backend->diskann_search_beamwidth();
+  config.diskann_build_mode_specified =
+      backend->provider() == backend_provider::kDiskAnn &&
+      backend->diskann_build_mode_value() != diskann_build_mode::kAuto;
+  config.consistency_mode = index_consistency_mode::kTransactional;
   return register_index_impl(index_name, std::move(config), std::move(backend));
 }
 

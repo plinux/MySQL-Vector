@@ -1106,6 +1106,22 @@ TEST_F(VectorIndexRegistryTest,
   EXPECT_EQ(5U, info.diskann_build_threads);
 }
 
+TEST_F(VectorIndexRegistryTest, CreateIndexAppliesDiskAnnSearchGlobals) {
+  UlongGuard complexity_guard(&opt_vector_diskann_search_complexity, 200);
+  UlongGuard beamwidth_guard(&opt_vector_diskann_search_beamwidth, 32);
+
+  const std::string index_name = "idx_registry_diskann_search_globals";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "external", "diskann"));
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ(200U, info.diskann_search_complexity);
+  EXPECT_EQ(32U, info.diskann_search_beamwidth);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
 TEST_F(VectorIndexRegistryTest, CommitTxnCompactsChangeLogAfterDebugThreshold) {
   vector_index_registry::set_change_log_compact_threshold_for_testing(3);
   const std::string index_name = "idx_registry_changelog_compact";

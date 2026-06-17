@@ -1739,7 +1739,7 @@ bool get_index_info(const std::string &index_name, index_info *info) {
           &last_error_code, &last_error_ts, &info->last_apply_latency_ms,
           &info->recover_fallback_count, &info->last_recover_fallback_ts,
           &info->external_manifest_present,
-          &info->external_manifest_generation)) {
+          &info->external_manifest_generation, &info->build_diagnostics)) {
     return false;
   }
   vector_index::index_service::build_pipeline_snapshot pipeline_snapshot;

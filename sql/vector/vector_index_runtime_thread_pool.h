@@ -46,20 +46,30 @@ size_t effective_runtime_worker_count(size_t item_count,
 /**
   Execute independent item ranges in parallel.
 
-  @retval true All ranges succeeded.
+  @retval true All query ranges succeeded.
   @retval false Invalid visitor or at least one worker reported failure.
 */
 bool parallel_for_ranges(size_t item_count, size_t configured_threads,
                          const range_visitor &visitor);
 
 /**
-  Execute query ranges in parallel.
+  Execute independent item ranges using one-shot scoped worker threads.
 
-  @retval true All query ranges succeeded.
-  @retval false Invalid visitor or at least one worker reported failure.
+  This helper is intended for outer orchestration layers whose visitor may
+  call parallel_for_ranges() again through a backend implementation. It avoids
+  nesting on the shared runtime worker pool.
+*/
+bool parallel_for_ranges_scoped(size_t item_count, size_t configured_threads,
+                                const range_visitor &visitor);
+
+/**
+  Execute query ranges in parallel.
 */
 bool parallel_for_queries(size_t query_count, size_t configured_threads,
                           const query_range_visitor &visitor);
+
+size_t runtime_worker_pool_size_for_testing();
+void reset_runtime_worker_pool_for_testing();
 
 /**
   Temporarily override OpenMP thread count for libraries that use OpenMP/MKL.

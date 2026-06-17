@@ -25,7 +25,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <limits>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -53,6 +56,129 @@ size_t hardware_worker_count() {
   return hardware_threads == 0 ? 1 : static_cast<size_t>(hardware_threads);
 }
 
+class runtime_worker_pool {
+ public:
+  ~runtime_worker_pool() { shutdown(); }
+
+  bool run(size_t item_count, size_t thread_count,
+           const range_visitor &visitor) {
+    if (thread_count == 0) return true;
+    if (thread_count == 1)
+      return invoke_range_visitor(visitor, 0, item_count, 0);
+
+    std::unique_lock<std::mutex> run_guard(m_run_mutex);
+    if (!resize_locked(thread_count)) return false;
+
+    std::atomic<bool> failed{false};
+    std::vector<unsigned char> worker_ok(thread_count, 1);
+    std::mutex done_mutex;
+    std::condition_variable done_cv;
+    size_t remaining = 0;
+    const size_t chunk_size = (item_count + thread_count - 1) / thread_count;
+
+    {
+      std::lock_guard<std::mutex> queue_guard(m_queue_mutex);
+      for (size_t worker_id = 0; worker_id < thread_count; ++worker_id) {
+        const size_t begin = worker_id * chunk_size;
+        const size_t end = std::min(item_count, begin + chunk_size);
+        if (begin >= end) break;
+        ++remaining;
+        m_tasks.emplace_back([&, begin, end, worker_id]() {
+          if (!failed.load(std::memory_order_relaxed)) {
+            const bool ok =
+                invoke_range_visitor(visitor, begin, end, worker_id);
+            if (!ok) worker_ok[worker_id] = 0;
+            if (!ok) failed.store(true, std::memory_order_relaxed);
+          }
+          {
+            std::lock_guard<std::mutex> done_guard(done_mutex);
+            if (--remaining == 0) done_cv.notify_one();
+          }
+        });
+      }
+    }
+    m_queue_cv.notify_all();
+
+    std::unique_lock<std::mutex> done_guard(done_mutex);
+    done_cv.wait(done_guard, [&]() { return remaining == 0; });
+    return std::all_of(worker_ok.begin(), worker_ok.end(),
+                       [](unsigned char ok) { return ok != 0; });
+  }
+
+  size_t size() const {
+    std::lock_guard<std::mutex> guard(m_queue_mutex);
+    return m_workers.size();
+  }
+
+  void reset() { shutdown(); }
+
+ private:
+  bool resize_locked(size_t thread_count) {
+    if (m_workers.size() == thread_count) return true;
+    shutdown_locked();
+    try {
+      for (size_t i = 0; i < thread_count; ++i) {
+        m_workers.emplace_back([this]() { worker_loop(); });
+      }
+    } catch (...) {
+      shutdown_locked();
+      return false;
+    }
+    return true;
+  }
+
+  void worker_loop() {
+    for (;;) {
+      std::function<void()> task;
+      {
+        std::unique_lock<std::mutex> guard(m_queue_mutex);
+        m_queue_cv.wait(guard, [&]() {
+          return m_stop || !m_tasks.empty();
+        });
+        if (m_stop && m_tasks.empty()) return;
+        task = std::move(m_tasks.front());
+        m_tasks.pop_front();
+      }
+      task();
+    }
+  }
+
+  void shutdown() {
+    std::unique_lock<std::mutex> run_guard(m_run_mutex);
+    shutdown_locked();
+  }
+
+  void shutdown_locked() {
+    std::vector<std::thread> workers;
+    {
+      std::lock_guard<std::mutex> queue_guard(m_queue_mutex);
+      m_stop = true;
+      m_tasks.clear();
+      workers.swap(m_workers);
+    }
+    m_queue_cv.notify_all();
+    for (std::thread &worker : workers) {
+      if (worker.joinable()) worker.join();
+    }
+    {
+      std::lock_guard<std::mutex> queue_guard(m_queue_mutex);
+      m_stop = false;
+    }
+  }
+
+  mutable std::mutex m_queue_mutex;
+  std::condition_variable m_queue_cv;
+  std::deque<std::function<void()>> m_tasks;
+  std::vector<std::thread> m_workers;
+  bool m_stop{false};
+  std::mutex m_run_mutex;
+};
+
+runtime_worker_pool &global_runtime_worker_pool() {
+  static runtime_worker_pool pool;
+  return pool;
+}
+
 }  // namespace
 
 size_t effective_runtime_worker_count(size_t item_count,
@@ -72,36 +198,62 @@ bool parallel_for_ranges(size_t item_count, size_t configured_threads,
   const size_t thread_count =
       effective_runtime_worker_count(item_count, configured_threads);
   if (thread_count == 0) return true;
-  if (thread_count == 1) return invoke_range_visitor(visitor, 0, item_count, 0);
+  return global_runtime_worker_pool().run(item_count, thread_count, visitor);
+}
+
+bool parallel_for_ranges_scoped(size_t item_count, size_t configured_threads,
+                                const range_visitor &visitor) {
+  if (!visitor) return false;
+
+  const size_t thread_count =
+      effective_runtime_worker_count(item_count, configured_threads);
+  if (thread_count == 0) return true;
+  if (thread_count == 1)
+    return invoke_range_visitor(visitor, 0, item_count, 0);
 
   std::atomic<bool> failed{false};
-  std::vector<std::thread> workers;
   std::vector<unsigned char> worker_ok(thread_count, 1);
+  std::vector<std::thread> workers;
+  workers.reserve(thread_count);
   const size_t chunk_size = (item_count + thread_count - 1) / thread_count;
 
-  workers.reserve(thread_count);
-  for (size_t worker_id = 0; worker_id < thread_count; ++worker_id) {
-    const size_t begin = worker_id * chunk_size;
-    const size_t end = std::min(item_count, begin + chunk_size);
-    if (begin >= end) break;
-
-    workers.emplace_back([&, begin, end, worker_id]() {
-      if (failed.load(std::memory_order_relaxed)) return;
-      if (!invoke_range_visitor(visitor, begin, end, worker_id)) {
-        worker_ok[worker_id] = 0;
-        failed.store(true, std::memory_order_relaxed);
-      }
-    });
+  try {
+    for (size_t worker_id = 0; worker_id < thread_count; ++worker_id) {
+      const size_t begin = worker_id * chunk_size;
+      const size_t end = std::min(item_count, begin + chunk_size);
+      if (begin >= end) break;
+      workers.emplace_back([&, begin, end, worker_id]() {
+        if (!failed.load(std::memory_order_relaxed)) {
+          const bool ok =
+              invoke_range_visitor(visitor, begin, end, worker_id);
+          if (!ok) worker_ok[worker_id] = 0;
+          if (!ok) failed.store(true, std::memory_order_relaxed);
+        }
+      });
+    }
+  } catch (...) {
+    failed.store(true, std::memory_order_relaxed);
   }
 
-  for (std::thread &worker : workers) worker.join();
-  return std::all_of(worker_ok.begin(), worker_ok.end(),
+  for (std::thread &worker : workers) {
+    if (worker.joinable()) worker.join();
+  }
+  return !failed.load(std::memory_order_relaxed) &&
+         std::all_of(worker_ok.begin(), worker_ok.end(),
                      [](unsigned char ok) { return ok != 0; });
 }
 
 bool parallel_for_queries(size_t query_count, size_t configured_threads,
                           const query_range_visitor &visitor) {
   return parallel_for_ranges(query_count, configured_threads, visitor);
+}
+
+size_t runtime_worker_pool_size_for_testing() {
+  return global_runtime_worker_pool().size();
+}
+
+void reset_runtime_worker_pool_for_testing() {
+  global_runtime_worker_pool().reset();
 }
 
 scoped_omp_threads::scoped_omp_threads(size_t thread_count) {
