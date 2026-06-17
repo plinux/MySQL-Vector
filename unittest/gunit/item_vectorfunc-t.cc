@@ -342,6 +342,22 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
   bool fail_quarantine_metadata{false};
 };
 
+class TruthStoreOverrideGuard {
+ public:
+  explicit TruthStoreOverrideGuard(vector_index_truth_store::truth_store *store) {
+    vector_index_truth_store::set_for_testing(store);
+    vector_index_registry::reset_for_testing();
+  }
+
+  ~TruthStoreOverrideGuard() {
+    vector_index_truth_store::reset_for_testing();
+    vector_index_registry::reset_for_testing();
+  }
+
+  TruthStoreOverrideGuard(const TruthStoreOverrideGuard &) = delete;
+  TruthStoreOverrideGuard &operator=(const TruthStoreOverrideGuard &) = delete;
+};
+
 std::string as_std_string(const String &value) {
   return std::string(value.ptr(), value.length());
 }
@@ -959,6 +975,9 @@ TEST_F(ItemVectorFuncFixture, TxnItemHelpersTreatUnknownTxnAsNoopOrEmpty) {
 }
 
 TEST_F(ItemVectorFuncFixture, RebuildAllAndRecoverAllItemsCoverErrorAndSuccess) {
+  controlled_truth_store store;
+  TruthStoreOverrideGuard truth_store_override(&store);
+
   auto *rebuild_all = new Item_func_vec_index_rebuild_all(POS());
   fix_item(thd(), rebuild_all);
   EXPECT_GE(rebuild_all->val_int(), 0);

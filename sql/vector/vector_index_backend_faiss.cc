@@ -487,6 +487,47 @@ bool faiss_backend::search_external_snapshot_entries(
   return true;
 }
 
+bool faiss_backend::materialize_external_entries_from_faiss(
+    std::unordered_map<uint64_t, vector_data> *entries) const {
+#ifdef HAVE_FAISS
+  if (entries == nullptr || m_faiss_index == nullptr) return false;
+  auto *id_map = dynamic_cast<faiss::IndexIDMap2 *>(m_faiss_index.get());
+  if (id_map == nullptr) return false;
+
+  entries->clear();
+  entries->reserve(id_map->id_map.size());
+  for (faiss::idx_t mapped_id : id_map->id_map) {
+    if (mapped_id < 0) continue;
+    vector_data vector(m_dimension, 0.0F);
+    try {
+      id_map->reconstruct(mapped_id, vector.data());
+    } catch (...) {
+      entries->clear();
+      return false;
+    }
+    entries->emplace(static_cast<uint64_t>(mapped_id), std::move(vector));
+  }
+  return true;
+#else
+  (void)entries;
+  return false;
+#endif
+}
+
+bool faiss_backend::materialize_external_entries(
+    std::unordered_map<uint64_t, vector_data> *entries) const {
+  if (entries == nullptr || m_mode != backend_mode::kExternal) return false;
+  if (!m_external_snapshot_entries.empty()) {
+    *entries = m_external_snapshot_entries;
+    return true;
+  }
+#ifdef HAVE_FAISS
+  if (materialize_external_entries_from_faiss(entries)) return true;
+#endif
+  entries->clear();
+  return true;
+}
+
 bool faiss_backend::external_manifest_present() const {
   uint64_t generation = 0;
   bool exists = false;
@@ -539,7 +580,12 @@ bool faiss_backend::set_hnsw_build_params(uint32_t hnsw_m,
   }
   m_hnsw_m = hnsw_m;
   m_hnsw_ef_construction = hnsw_ef_construction;
-  return rebuild_external_faiss_index(m_external_snapshot_entries);
+  std::unordered_map<uint64_t, vector_data> entries;
+  if (!materialize_external_entries(&entries)) return false;
+  if (!rebuild_external_faiss_index(entries)) return false;
+  m_external_snapshot_entries = std::move(entries);
+  maybe_clear_external_snapshot_entries();
+  return true;
 #else
   (void)hnsw_m;
   (void)hnsw_ef_construction;
@@ -564,7 +610,12 @@ bool faiss_backend::set_faiss_ivf_params(uint32_t faiss_nlist,
   m_faiss_nprobe = faiss_nprobe;
   m_faiss_pq_m = 0;
   m_faiss_pq_bits = 0;
-  return rebuild_external_faiss_index(m_external_snapshot_entries);
+  std::unordered_map<uint64_t, vector_data> entries;
+  if (!materialize_external_entries(&entries)) return false;
+  if (!rebuild_external_faiss_index(entries)) return false;
+  m_external_snapshot_entries = std::move(entries);
+  maybe_clear_external_snapshot_entries();
+  return true;
 #else
   (void)faiss_nlist;
   (void)faiss_nprobe;
@@ -603,7 +654,12 @@ bool faiss_backend::set_faiss_ivf_pq_params(uint32_t faiss_nlist,
   m_faiss_nprobe = faiss_nprobe;
   m_faiss_pq_m = faiss_pq_m;
   m_faiss_pq_bits = faiss_pq_bits;
-  return rebuild_external_faiss_index(m_external_snapshot_entries);
+  std::unordered_map<uint64_t, vector_data> entries;
+  if (!materialize_external_entries(&entries)) return false;
+  if (!rebuild_external_faiss_index(entries)) return false;
+  m_external_snapshot_entries = std::move(entries);
+  maybe_clear_external_snapshot_entries();
+  return true;
 #else
   (void)faiss_nlist;
   (void)faiss_nprobe;
@@ -701,6 +757,7 @@ bool faiss_backend::recover_faiss_index_file(const std::string &path) {
   m_faiss_entry_count = static_cast<size_t>(index->ntotal);
   m_faiss_index = std::move(index);
   m_external_snapshot_entries = std::move(recovered_entries);
+  maybe_clear_external_snapshot_entries();
   return true;
 #else
   (void)path;
@@ -717,19 +774,24 @@ bool faiss_backend::upsert(uint64_t doc_id, const vector_data &vector) {
     return m_memory_fallback.upsert(doc_id, vector);
 #endif
   }
-  const auto before_entries = m_external_snapshot_entries;
-  m_external_snapshot_entries[doc_id] = vector;
+  std::unordered_map<uint64_t, vector_data> entries;
+  if (!materialize_external_entries(&entries)) return false;
+  const auto before_entries = entries;
+  entries[doc_id] = vector;
 #ifdef HAVE_FAISS
-  if (!rebuild_external_faiss_index(m_external_snapshot_entries)) {
+  if (!rebuild_external_faiss_index(entries)) {
     m_external_snapshot_entries = before_entries;
     (void)rebuild_external_faiss_index(before_entries);
+    maybe_clear_external_snapshot_entries();
     return false;
   }
 #endif
+  m_external_snapshot_entries = std::move(entries);
   if (persist_external_snapshot()) return true;
 
   m_external_snapshot_entries = before_entries;
   (void)rebuild_external_faiss_index(before_entries);
+  maybe_clear_external_snapshot_entries();
   return false;
 }
 
@@ -741,19 +803,24 @@ bool faiss_backend::erase(uint64_t doc_id) {
     return m_memory_fallback.erase(doc_id);
 #endif
   }
-  const auto before_entries = m_external_snapshot_entries;
-  m_external_snapshot_entries.erase(doc_id);
+  std::unordered_map<uint64_t, vector_data> entries;
+  if (!materialize_external_entries(&entries)) return false;
+  const auto before_entries = entries;
+  entries.erase(doc_id);
 #ifdef HAVE_FAISS
-  if (!rebuild_external_faiss_index(m_external_snapshot_entries)) {
+  if (!rebuild_external_faiss_index(entries)) {
     m_external_snapshot_entries = before_entries;
     (void)rebuild_external_faiss_index(before_entries);
+    maybe_clear_external_snapshot_entries();
     return false;
   }
 #endif
+  m_external_snapshot_entries = std::move(entries);
   if (persist_external_snapshot()) return true;
 
   m_external_snapshot_entries = before_entries;
   (void)rebuild_external_faiss_index(before_entries);
+  maybe_clear_external_snapshot_entries();
   return false;
 }
 
@@ -814,7 +881,9 @@ bool faiss_backend::load_committed_entries(
   if (!rebuild_external_faiss_index(entries)) return false;
 #endif
   m_external_snapshot_entries = entries;
-  return persist_external_snapshot();
+  if (!persist_external_snapshot()) return false;
+  maybe_clear_external_snapshot_entries();
+  return true;
 }
 
 bool faiss_backend::recover() {
@@ -915,6 +984,7 @@ bool faiss_backend::persist_external_snapshot() {
       return false;
   }
   maybe_release_external_serving_index();
+  maybe_clear_external_snapshot_entries();
   return true;
 }
 
@@ -1018,7 +1088,20 @@ bool faiss_backend::recover_external_snapshot_file(const std::string &path) {
 
   m_external_snapshot_entries = std::move(recovered_entries);
   maybe_release_external_serving_index();
+  maybe_clear_external_snapshot_entries();
   return true;
+}
+
+void faiss_backend::maybe_clear_external_snapshot_entries() {
+#ifdef HAVE_FAISS
+  if (m_mode != backend_mode::kExternal || !m_keep_loaded_external_index ||
+      m_sidecar_profile != external_sidecar_profile::kFaiss ||
+      m_faiss_index == nullptr || m_faiss_nlist != 0 || m_faiss_pq_m != 0 ||
+      m_faiss_entry_count != m_external_snapshot_entries.size()) {
+    return;
+  }
+  m_external_snapshot_entries.clear();
+#endif
 }
 
 void faiss_backend::maybe_release_external_serving_index() {

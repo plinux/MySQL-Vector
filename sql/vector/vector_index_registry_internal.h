@@ -90,24 +90,19 @@ struct commit_runtime_snapshot {
 
 inline constexpr size_t k_mapped_search_min_candidate_top_k = 32;
 
-inline size_t saturated_add_size(size_t lhs, size_t rhs) {
-  const size_t max_value = std::numeric_limits<size_t>::max();
-  if (rhs > max_value - lhs) return max_value;
-  return lhs + rhs;
-}
-
 inline size_t mapped_search_candidate_limit(size_t top_k, size_t entry_count,
                                             size_t pending_count) {
   if (top_k == 0) return 0;
 
-  const size_t total_candidates = saturated_add_size(entry_count, pending_count);
+  const size_t total_candidates =
+      vector_index::saturated_add_size(entry_count, pending_count);
   return std::min(total_candidates,
                   static_cast<size_t>(vector_index::k_max_search_top_k));
 }
 
 inline bool mapped_search_candidate_limit_is_hard(size_t entry_count,
                                                   size_t pending_count) {
-  return saturated_add_size(entry_count, pending_count) >
+  return vector_index::saturated_add_size(entry_count, pending_count) >
          static_cast<size_t>(vector_index::k_max_search_top_k);
 }
 
@@ -179,6 +174,7 @@ bool rollback_runtime_state_locked(
     const std::vector<std::string> &lagging_index_names);
 bool rollback_runtime_state_locked(const runtime_state_snapshot &snapshot);
 bool capture_runtime_state_locked(runtime_state_snapshot *snapshot);
+bool evict_committed_cache_to_budget_locked();
 bool persist_registry_state_locked();
 bool persist_metadata_manifest_locked();
 bool persist_prepared_locked();

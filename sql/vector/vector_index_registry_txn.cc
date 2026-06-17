@@ -33,6 +33,7 @@
 #include "my_dbug.h"
 #include "sql/vector/vector_index_diagnostics.h"
 #include "sql/vector/vector_index_registry_internal.h"
+#include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_mapped_search.h"
 #include "sql/vector/vector_status.h"
@@ -87,6 +88,90 @@ bool ensure_runtime_loaded_for_search(const std::string &index_name) {
   return g_index_service.ensure_runtime_loaded_for_search(index_name);
 }
 
+bool search_committed_runtime_loaded(
+    const std::string &index_name, const vector_index::vector_data &query,
+    size_t top_k, std::vector<vector_index::search_result> *results) {
+  if (results == nullptr) return false;
+
+  vector_index::index_service::backend_ptr runtime;
+  vector_index::index_service::index_config config;
+  {
+    std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+    if (!g_index_service.snapshot_search_backend_loaded(index_name, query,
+                                                        &runtime, &config)) {
+      return false;
+    }
+  }
+
+  {
+    std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
+    if (runtime->search(query, top_k, results)) return true;
+  }
+  if (!vector_index::detail::can_rebuild_after_search_failure(config))
+    return false;
+
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!g_index_service.rebuild_runtime_from_store_for_search(index_name)) {
+      return false;
+    }
+    if (!g_index_service.snapshot_search_backend_loaded(index_name, query,
+                                                        &runtime, nullptr)) {
+      return false;
+    }
+  }
+
+  std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
+  return runtime->search(query, top_k, results);
+}
+
+bool search_committed_runtime_batch_loaded(
+    const std::string &index_name,
+    const std::vector<vector_index::vector_data> &queries, size_t top_k,
+    std::vector<std::vector<vector_index::search_result>> *results) {
+  if (results == nullptr || queries.empty()) return false;
+
+  vector_index::index_service::backend_ptr runtime;
+  vector_index::index_service::index_config config;
+  {
+    std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+    if (!g_index_service.snapshot_search_backend_loaded(index_name, queries[0],
+                                                        &runtime, &config)) {
+      return false;
+    }
+  }
+  for (const vector_index::vector_data &query : queries) {
+    if (query.size() != config.dimension) return false;
+  }
+
+  {
+    std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
+    if (runtime->search_batch(queries, top_k, results)) return true;
+  }
+  if (!vector_index::detail::can_rebuild_after_search_failure(config))
+    return false;
+
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!g_index_service.rebuild_runtime_from_store_for_search(index_name)) {
+      return false;
+    }
+    if (!g_index_service.snapshot_search_backend_loaded(index_name, queries[0],
+                                                        &runtime, nullptr)) {
+      return false;
+    }
+  }
+
+  std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
+  return runtime->search_batch(queries, top_k, results);
+}
+
+size_t pending_change_count_for_thd_locked(uint64_t thd_id) {
+  const auto it = g_thd_txn_contexts.find(thd_id);
+  if (it == g_thd_txn_contexts.end()) return 0;
+  return g_index_service.pending_change_count(it->second.txn_id);
+}
+
 xa_status_code apply_prepared_xid_with_metadata_locked(const XID &xid,
                                                        bool commit,
                                                        uint64_t thd_id) {
@@ -127,9 +212,9 @@ void record_commit_diagnostics(const char *scope, uint64_t txn_id,
        {"ok", ok ? 1U : 0U}});
 }
 
-bool commit_index_service_txn_locked(const char *scope, uint64_t txn_id,
-                                     bool enable_debug_failures) {
-  const size_t pending_change_count = g_index_service.pending_change_count(txn_id);
+bool commit_index_service_txn(const char *scope, uint64_t txn_id,
+                              bool enable_debug_failures) {
+  size_t pending_change_count = 0;
   const bool diagnostics_enabled = vector_index_diagnostics::enabled();
   const auto total_start =
       vector_index_diagnostics::now_if(diagnostics_enabled);
@@ -141,158 +226,200 @@ bool commit_index_service_txn_locked(const char *scope, uint64_t txn_id,
   uint64_t persist_ms = 0;
   std::vector<std::string> pending_index_names;
 
-  if (enable_debug_failures) {
-    DBUG_EXECUTE_IF("vector_registry_fail_pending_change_index_names",
-                    if (pending_change_count > 0) return false;);
-  }
-  const auto pending_names_start =
-      vector_index_diagnostics::now_if(diagnostics_enabled);
-  if (pending_change_count > 0 &&
-      !g_index_service.pending_change_index_names(txn_id, &pending_index_names)) {
-    record_commit_diagnostics(
-        scope, txn_id, pending_change_count, false,
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                pending_names_start),
-        0, 0, 0, 0, 0,
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                total_start));
-    return false;
-  }
-  if (pending_change_count > 0) {
-    pending_index_names_ms =
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                pending_names_start);
-  }
-
   commit_runtime_snapshot before_state;
-  if (enable_debug_failures) {
-    DBUG_EXECUTE_IF("vector_registry_fail_snapshot_committed_before_commit",
-                    if (pending_change_count > 0) return false;);
-  }
-  const auto snapshot_before_start =
-      vector_index_diagnostics::now_if(diagnostics_enabled);
-  if (pending_change_count > 0 &&
-      !capture_runtime_commit_state_locked(&before_state)) {
-    record_commit_diagnostics(
-        scope, txn_id, pending_change_count, false, pending_index_names_ms,
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                snapshot_before_start),
-        0, 0, 0, 0,
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                total_start));
-    return false;
-  }
-  if (pending_change_count > 0) {
-    snapshot_before_ms =
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                snapshot_before_start);
-  }
-
   std::vector<vector_index::index_service::pending_change_snapshot>
       pending_delta;
   vector_index::index_service::pending_state_snapshot before_pending_state;
-  const auto pending_delta_start =
+  vector_index::index_service::commit_build_plan build_plan;
+  const auto commit_started =
+      std::chrono::steady_clock::now();
+  const auto index_commit_start =
       vector_index_diagnostics::now_if(diagnostics_enabled);
-  if (pending_change_count > 0 &&
-      !g_index_service.snapshot_pending_change_delta(txn_id, &pending_delta)) {
-    record_commit_diagnostics(
-        scope, txn_id, pending_change_count, false, pending_index_names_ms,
-        snapshot_before_ms, 0, 0,
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    pending_change_count = g_index_service.pending_change_count(txn_id);
+    if (pending_change_count == 0) return true;
+
+    if (enable_debug_failures) {
+      DBUG_EXECUTE_IF("vector_registry_fail_pending_change_index_names",
+                      return false;);
+    }
+    const auto pending_names_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    if (!g_index_service.pending_change_index_names(txn_id,
+                                                   &pending_index_names)) {
+      record_commit_diagnostics(
+          scope, txn_id, pending_change_count, false,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  pending_names_start),
+          0, 0, 0, 0, 0,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  total_start));
+      return false;
+    }
+    pending_index_names_ms =
         vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                pending_delta_start),
-        0,
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                total_start));
-    return false;
-  }
-  if (pending_change_count > 0 &&
-      !g_index_service.snapshot_pending_state(txn_id, &before_pending_state)) {
-    record_commit_diagnostics(
-        scope, txn_id, pending_change_count, false, pending_index_names_ms,
-        snapshot_before_ms, 0, 0, pending_delta_ms, 0,
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                total_start));
-    return false;
-  }
-  if (pending_change_count > 0) {
+                                                pending_names_start);
+
+    const auto pending_delta_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    if (!g_index_service.snapshot_commit_build_plan(txn_id, &build_plan)) {
+      record_commit_diagnostics(
+          scope, txn_id, pending_change_count, false, pending_index_names_ms,
+          snapshot_before_ms, 0,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  pending_delta_start),
+          0, 0,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  total_start));
+      return false;
+    }
     pending_delta_ms =
         vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
                                                 pending_delta_start);
+
   }
 
-  const size_t change_log_size_before = before_state.change_log_rows.size();
-  const auto commit_started =
-      pending_change_count > 0 ? std::chrono::steady_clock::now()
-                               : std::chrono::steady_clock::time_point{};
-  const auto index_commit_start =
-      vector_index_diagnostics::now_if(diagnostics_enabled);
-  const bool ok = g_index_service.commit(txn_id);
-  index_commit_ms =
-      vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                              index_commit_start);
-  if (!ok) {
+  if (!g_index_service.build_commit_backends(&build_plan)) {
+    index_commit_ms =
+        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                index_commit_start);
     vector_status::record_txn_commit_failure();
     record_commit_diagnostics(
         scope, txn_id, pending_change_count, false, pending_index_names_ms,
-        snapshot_before_ms, index_commit_ms, 0, 0, 0,
+        snapshot_before_ms, index_commit_ms, pending_delta_ms, 0, 0,
         vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
                                                 total_start));
     return false;
   }
 
-  if (pending_change_count == 0) return true;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    if (enable_debug_failures) {
+      DBUG_EXECUTE_IF("vector_registry_fail_snapshot_committed_before_commit",
+                      return false;);
+    }
+    const auto snapshot_before_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    if (!capture_runtime_commit_state_locked(&before_state)) {
+      record_commit_diagnostics(
+          scope, txn_id, pending_change_count, false, pending_index_names_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  snapshot_before_start),
+          index_commit_ms, pending_delta_ms, 0, 0,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  total_start));
+      return false;
+    }
+    snapshot_before_ms =
+        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                snapshot_before_start);
+    const size_t change_log_size_before = before_state.change_log_rows.size();
 
-  const auto changelog_delta_start =
-      vector_index_diagnostics::now_if(diagnostics_enabled);
-  append_pending_change_log_delta_locked(txn_id, pending_delta);
-  changelog_delta_ms =
-      pending_delta_ms +
-      vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                              changelog_delta_start);
-  const std::vector<vector_index_metadata_store::change_log_row>
-      commit_delta_rows(g_change_log_rows.begin() + change_log_size_before,
-                        g_change_log_rows.end());
+    const auto pending_delta_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    if (!g_index_service.snapshot_pending_change_delta(txn_id, &pending_delta)) {
+      record_commit_diagnostics(
+          scope, txn_id, pending_change_count, false, pending_index_names_ms,
+          snapshot_before_ms, index_commit_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  pending_delta_start),
+          0, 0,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  total_start));
+      return false;
+    }
+    if (!g_index_service.snapshot_pending_state(txn_id, &before_pending_state)) {
+      record_commit_diagnostics(
+          scope, txn_id, pending_change_count, false, pending_index_names_ms,
+          snapshot_before_ms, index_commit_ms, pending_delta_ms, 0, 0,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  total_start));
+      return false;
+    }
+    pending_delta_ms =
+        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                pending_delta_start);
+    const bool ok = g_index_service.apply_commit_build_plan(txn_id, &build_plan);
+    index_commit_ms =
+        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                index_commit_start);
+    if (!ok) {
+      vector_status::record_txn_commit_failure();
+      record_commit_diagnostics(
+          scope, txn_id, pending_change_count, false, pending_index_names_ms,
+          snapshot_before_ms, index_commit_ms, pending_delta_ms, 0, 0,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  total_start));
+      return false;
+    }
 
-  vector_status::subtract_pending_txn_changes(pending_change_count);
-  const auto persist_start =
-      vector_index_diagnostics::now_if(diagnostics_enabled);
-  if (!persist_commit_artifacts_locked(&commit_delta_rows)) {
+    const auto changelog_delta_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    append_pending_change_log_delta_locked(txn_id, pending_delta);
+    changelog_delta_ms =
+        pending_delta_ms +
+        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                changelog_delta_start);
+    const std::vector<vector_index_metadata_store::change_log_row>
+        commit_delta_rows(g_change_log_rows.begin() + change_log_size_before,
+                          g_change_log_rows.end());
+
+    vector_status::subtract_pending_txn_changes(pending_change_count);
+    const auto persist_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    if (!persist_commit_artifacts_locked(&commit_delta_rows)) {
+      persist_ms =
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  persist_start);
+      if (!rollback_runtime_commit_state_locked(before_state) ||
+          !g_index_service.restore_pending_state(txn_id, before_pending_state)) {
+        return false;
+      }
+      vector_status::add_pending_txn_changes(pending_change_count);
+      vector_status::record_txn_commit_failure();
+      record_commit_diagnostics(
+          scope, txn_id, pending_change_count, false, pending_index_names_ms,
+          snapshot_before_ms, index_commit_ms, pending_delta_ms,
+          changelog_delta_ms, persist_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  total_start));
+      return false;
+    }
     persist_ms =
         vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
                                                 persist_start);
-    if (!rollback_runtime_commit_state_locked(before_state) ||
-        !g_index_service.restore_pending_state(txn_id, before_pending_state)) {
+    if (!evict_committed_cache_to_budget_locked()) {
+      vector_status::record_runtime_state_rollback_failure();
+      vector_status::record_txn_commit_failure();
+      record_commit_diagnostics(
+          scope, txn_id, pending_change_count, false, pending_index_names_ms,
+          snapshot_before_ms, index_commit_ms, pending_delta_ms,
+          changelog_delta_ms, persist_ms,
+          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                  total_start));
       return false;
     }
-    vector_status::add_pending_txn_changes(pending_change_count);
-    vector_status::record_txn_commit_failure();
+
+    uint64_t apply_latency_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - commit_started)
+            .count());
+    if (apply_latency_ms == 0) apply_latency_ms = 1;
+    vector_status::set_apply_latency_ms(apply_latency_ms);
+    for (const std::string &index_name : pending_index_names) {
+      (void)g_index_service.set_last_apply_latency_ms(index_name,
+                                                      apply_latency_ms);
+    }
     record_commit_diagnostics(
-        scope, txn_id, pending_change_count, false, pending_index_names_ms,
+        scope, txn_id, pending_change_count, true, pending_index_names_ms,
         snapshot_before_ms, index_commit_ms, pending_delta_ms,
         changelog_delta_ms, persist_ms,
         vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
                                                 total_start));
-    return false;
   }
-  persist_ms =
-      vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                              persist_start);
-
-  uint64_t apply_latency_ms = static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now() - commit_started)
-          .count());
-  if (apply_latency_ms == 0) apply_latency_ms = 1;
-  vector_status::set_apply_latency_ms(apply_latency_ms);
-  for (const std::string &index_name : pending_index_names) {
-    (void)g_index_service.set_last_apply_latency_ms(index_name,
-                                                    apply_latency_ms);
-  }
-  record_commit_diagnostics(
-      scope, txn_id, pending_change_count, true, pending_index_names_ms,
-      snapshot_before_ms, index_commit_ms, pending_delta_ms,
-      changelog_delta_ms, persist_ms,
-      vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled, total_start));
   return true;
 }
 
@@ -300,9 +427,7 @@ uint64_t begin_txn() { return allocate_txn_id(); }
 
 bool commit_txn(uint64_t txn_id) {
   vector_status::record_txn_commit_request();
-  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
-  return commit_index_service_txn_locked("explicit", txn_id, false);
+  return commit_index_service_txn("explicit", txn_id, false);
 }
 
 bool rollback_txn(uint64_t txn_id) {
@@ -481,6 +606,8 @@ xa_status_code detail::apply_prepared_xid_locked(const XID &xid, bool commit,
       !load_persisted_commit_artifacts_snapshot_locked(&persisted_before)) {
     return XAER_RMERR;
   }
+  const size_t thd_pending_before =
+      pending_change_count_for_thd_locked(thd_id_to_clear);
 
   std::vector<vector_index::index_service::pending_change_snapshot> changes;
   changes.reserve(prepared_rows.size());
@@ -536,28 +663,41 @@ xa_status_code detail::apply_prepared_xid_locked(const XID &xid, bool commit,
     return XAER_RMERR;
   }
 
-  if (thd_id_to_clear != 0) discard_thd_txn_context_locked(thd_id_to_clear);
+  if (thd_id_to_clear != 0) {
+    const size_t thd_pending_after =
+        pending_change_count_for_thd_locked(thd_id_to_clear);
+    if (thd_pending_before > thd_pending_after) {
+      vector_status::subtract_pending_txn_changes(thd_pending_before -
+                                                  thd_pending_after);
+    }
+    discard_thd_txn_context_locked(thd_id_to_clear);
+  }
   refresh_committed_snapshot_rows_locked();
   return XA_OK;
 }
 
 bool commit_thd_txn(uint64_t thd_id) {
   if (vector_index_truth_store::internal_sql_active()) return true;
-  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  auto it = g_thd_txn_contexts.find(thd_id);
-  if (it == g_thd_txn_contexts.end()) return true;
-  if (!ensure_metadata_loaded_locked()) return false;
+  uint64_t txn_id = 0;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    auto it = g_thd_txn_contexts.find(thd_id);
+    if (it == g_thd_txn_contexts.end()) return true;
+    if (!ensure_metadata_loaded_locked()) return false;
 
-  vector_status::record_txn_commit_request();
+    vector_status::record_txn_commit_request();
 
-  thd_txn_context &ctx = it->second;
-  if (ctx.stmt_savepoint_active) {
-    (void)g_index_service.release_savepoint(ctx.txn_id, ctx.stmt_savepoint_name);
-    clear_stmt_savepoint_state(&ctx);
+    thd_txn_context &ctx = it->second;
+    if (ctx.stmt_savepoint_active) {
+      (void)g_index_service.release_savepoint(ctx.txn_id, ctx.stmt_savepoint_name);
+      clear_stmt_savepoint_state(&ctx);
+    }
+    txn_id = ctx.txn_id;
   }
 
-  if (!commit_index_service_txn_locked("thd", ctx.txn_id, true)) return false;
-  g_thd_txn_contexts.erase(it);
+  if (!commit_index_service_txn("thd", txn_id, true)) return false;
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  g_thd_txn_contexts.erase(thd_id);
   return true;
 }
 
@@ -802,6 +942,10 @@ bool erase(const std::string &index_name, uint64_t doc_id) {
 bool search(const std::string &index_name, const vector_index::vector_data &query,
             size_t top_k, std::vector<vector_index::search_result> *results) {
   vector_status::record_search_request();
+  if (results == nullptr) {
+    vector_status::record_search_failure();
+    return false;
+  }
   if (!ensure_metadata_loaded_for_search()) {
     vector_status::record_search_failure();
     return false;
@@ -810,9 +954,8 @@ bool search(const std::string &index_name, const vector_index::vector_data &quer
     vector_status::record_search_failure();
     return false;
   }
-  std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
   const bool ok =
-      g_index_service.search_loaded(index_name, query, top_k, results);
+      search_committed_runtime_loaded(index_name, query, top_k, results);
   if (!ok) {
     vector_status::record_search_failure();
     return false;
@@ -885,13 +1028,12 @@ bool search_for_thd_txn(THD *thd, uint64_t thd_id, const std::string &index_name
 
   if (!use_mapped_filter) {
     bool ok = false;
-    {
+    if (txn_id != 0) {
       std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
-      ok = (txn_id != 0)
-               ? g_index_service.search_with_pending_loaded(
-                     txn_id, index_name, query, top_k, results)
-               : g_index_service.search_loaded(index_name, query, top_k,
-                                               results);
+      ok = g_index_service.search_with_pending_loaded(txn_id, index_name, query,
+                                                      top_k, results);
+    } else {
+      ok = search_committed_runtime_loaded(index_name, query, top_k, results);
     }
     if (!ok) {
       vector_status::record_search_failure();
@@ -905,15 +1047,13 @@ bool search_for_thd_txn(THD *thd, uint64_t thd_id, const std::string &index_name
     while (candidate_limit > 0) {
       std::vector<vector_index::search_result> candidate_results;
       bool ok = false;
-      {
+      if (txn_id != 0) {
         std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
-        ok = (txn_id != 0)
-                 ? g_index_service.search_with_pending_loaded(
-                       txn_id, index_name, query, candidate_top_k,
-                       &candidate_results)
-                 : g_index_service.search_loaded(index_name, query,
-                                                 candidate_top_k,
-                                                 &candidate_results);
+        ok = g_index_service.search_with_pending_loaded(
+            txn_id, index_name, query, candidate_top_k, &candidate_results);
+      } else {
+        ok = search_committed_runtime_loaded(index_name, query, candidate_top_k,
+                                             &candidate_results);
       }
       if (!ok) {
         vector_status::record_search_failure();
@@ -993,8 +1133,6 @@ bool search_batch_for_thd_txn(
     if (!fallback_to_single_search) {
       for (size_t i = 0; i < queries.size(); ++i)
         vector_status::record_search_request();
-      ok = g_index_service.search_batch_loaded(index_name, queries, top_k,
-                                               results);
     }
   }
 
@@ -1007,6 +1145,11 @@ bool search_batch_for_thd_txn(
       }
     }
     return true;
+  }
+
+  if (!ok) {
+    ok = search_committed_runtime_batch_loaded(index_name, queries, top_k,
+                                               results);
   }
 
   if (!ok) {

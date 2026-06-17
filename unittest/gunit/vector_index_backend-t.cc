@@ -234,7 +234,8 @@ class UlonglongGuard {
 
 class StubBackend final : public vector_index::backend {
  public:
-  bool upsert(uint64_t doc_id, const vector_index::vector_data &vector) override {
+  bool upsert(uint64_t doc_id [[maybe_unused]],
+              const vector_index::vector_data &vector) override {
     ++upsert_calls;
     if (!allow_upsert) return false;
     upserted_entries[doc_id] = vector;
@@ -1386,52 +1387,24 @@ TEST(VectorIndexBackendTest, FaissSearchBatchCoversGuardAndEdgePaths) {
   EXPECT_EQ(2U, batch_results[1][0].doc_id);
 }
 
-TEST(VectorIndexBackendTest,
-     FaissExternalSearchesSnapshotEntriesAfterNativeIndexRelease) {
-  EnvVarGuard keep_loaded_guard("MYSQL_VECTOR_FAISS_KEEP_LOADED");
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_faiss_released_search_t";
-  std::error_code ec;
-  std::filesystem::remove_all(root, ec);
-  std::filesystem::create_directories(root, ec);
-  ASSERT_FALSE(ec);
-  setenv("MYSQL_VECTOR_FAISS_KEEP_LOADED", "0", 1);
-  vector_index::set_faiss_external_snapshot_root_for_testing(root);
-
-  vector_index::faiss_backend euclidean(
+TEST(VectorIndexBackendTest, FaissExternalClearsSnapshotWhenNativeIndexStaysLoaded) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss native snapshot dedup requires HAVE_FAISS";
+#else
+  vector_index::faiss_backend backend(
       2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_faiss_released_l2");
-  ASSERT_TRUE(euclidean.upsert(2, {2.0F, 0.0F}));
-  ASSERT_TRUE(euclidean.upsert(1, {1.0F, 0.0F}));
+      vector_index::backend_mode::kExternal, "idx_faiss_snapshot_dedup");
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+  ASSERT_TRUE(backend.upsert(2, {2.0F, 0.0F}));
 
-  std::vector<vector_index::search_result> result{{99, 99.0}};
-  EXPECT_TRUE(euclidean.search({1.0F, 0.0F}, 0, &result));
-  EXPECT_TRUE(result.empty());
-  EXPECT_FALSE(euclidean.search({1.0F}, 1, &result));
-  ASSERT_TRUE(euclidean.search({1.0F, 0.0F}, 2, &result));
-  ASSERT_EQ(2U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
+  EXPECT_TRUE(backend.external_snapshot_entries().empty());
+  EXPECT_EQ(2U, backend.entry_count());
 
-  vector_index::faiss_backend inner_product(
-      2, vector_index::metric_type::kInnerProduct,
-      vector_index::backend_mode::kExternal, "idx_faiss_released_ip");
-  ASSERT_TRUE(inner_product.upsert(1, {1.0F, 0.0F}));
-  ASSERT_TRUE(inner_product.upsert(2, {0.0F, 1.0F}));
-  ASSERT_TRUE(inner_product.search({1.0F, 0.0F}, 1, &result));
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(1U, result[0].doc_id);
-
-  vector_index::faiss_backend cosine(
-      2, vector_index::metric_type::kCosine,
-      vector_index::backend_mode::kExternal, "idx_faiss_released_cos");
-  ASSERT_TRUE(cosine.upsert(1, {1.0F, 0.0F}));
-  ASSERT_TRUE(cosine.upsert(2, {0.0F, 1.0F}));
-  ASSERT_TRUE(cosine.search({1.0F, 0.0F}, 1, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
-
-  vector_index::reset_faiss_external_snapshot_root_for_testing();
-  std::filesystem::remove_all(root, ec);
+#endif
 }
 
 TEST(VectorIndexBackendTest, FaissExternalSearchEfCanBeConfigured) {

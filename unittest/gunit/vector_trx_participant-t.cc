@@ -28,6 +28,7 @@
 #include <tuple>
 #include <vector>
 
+#include "mysql/plugin.h"
 #include "sql/handler.h"
 #include "sql/mysqld.h"
 #include "sql/query_options.h"
@@ -181,6 +182,10 @@ XID make_xid(int64_t format_id, const std::string &gtrid,
           static_cast<long>(gtrid.size()), bqual.data(),
           static_cast<long>(bqual.size()));
   return xid;
+}
+
+void set_unlocked_ha_data(THD *thd, handlerton *hton, void *ha_data) {
+  *thd_ha_data(thd, hton) = ha_data;
 }
 
 }  // namespace
@@ -350,6 +355,48 @@ TEST(VectorTrxParticipantTest,
   ASSERT_NE(nullptr, xa_state_list);
   EXPECT_EQ(0, hton.recover_prepared_in_tc(&hton, *xa_state_list));
   EXPECT_TRUE(store.quarantine_prepared_called);
+  EXPECT_EQ(0, vector_trx_participant::deinit_plugin(&hton));
+}
+
+TEST(VectorTrxParticipantTest,
+     CommitRollbackPrepareAndCloseHandleRegisteredEmptyTransactions) {
+  handlerton hton{};
+  PreparedRowsTruthStore store;
+  TruthStoreGuard truth_store_guard(&store);
+
+  ASSERT_EQ(0, vector_trx_participant::init_plugin(&hton));
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  THD *thd = initializer.thd();
+  unsigned char token = 0;
+
+  set_unlocked_ha_data(thd, &hton, &token);
+  EXPECT_EQ(0, hton.prepare(&hton, thd, true));
+  EXPECT_EQ(0, hton.set_prepared_in_tc(&hton, thd));
+  EXPECT_EQ(0, hton.commit(&hton, thd, true));
+  EXPECT_EQ(nullptr, thd_get_ha_data(thd, &hton));
+
+  set_unlocked_ha_data(thd, &hton, &token);
+  EXPECT_EQ(0, hton.rollback(&hton, thd, true));
+  EXPECT_EQ(nullptr, thd_get_ha_data(thd, &hton));
+
+  const ulonglong original_option_bits = thd->variables.option_bits;
+  thd->variables.option_bits |= OPTION_BEGIN;
+  thd->set_query_id(12345);
+
+  set_unlocked_ha_data(thd, &hton, &token);
+  EXPECT_EQ(0, hton.commit(&hton, thd, false));
+  EXPECT_NE(nullptr, thd_get_ha_data(thd, &hton));
+
+  set_unlocked_ha_data(thd, &hton, &token);
+  EXPECT_EQ(0, hton.rollback(&hton, thd, false));
+  EXPECT_NE(nullptr, thd_get_ha_data(thd, &hton));
+
+  thd->variables.option_bits = original_option_bits;
+  EXPECT_EQ(0, hton.close_connection(&hton, thd));
+  EXPECT_EQ(nullptr, thd_get_ha_data(thd, &hton));
+
+  initializer.TearDown();
   EXPECT_EQ(0, vector_trx_participant::deinit_plugin(&hton));
 }
 

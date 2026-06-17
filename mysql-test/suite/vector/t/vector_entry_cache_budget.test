@@ -1,0 +1,35 @@
+--source include/have_vector_hnsw.inc
+
+--echo #
+--echo # WL#vector-v1: committed entry cache budget and truth-store read-through
+--echo #
+
+SET @old_vector_entry_cache_size = @@global.vector_entry_cache_size;
+SET GLOBAL vector_entry_cache_size = 0;
+
+SELECT VEC_INDEX_CREATE('idx_entry_cache_budget', 2, 'EUCLIDEAN', 'MEMORY', 'HNSW');
+
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_entry_cache_budget', @txn, 1, '[1,1]');
+SELECT VEC_INDEX_STAGE_UPSERT('idx_entry_cache_budget', @txn, 2, '[2,2]');
+SELECT VEC_INDEX_TXN_COMMIT(@txn);
+
+SHOW GLOBAL STATUS LIKE 'Vector_committed_vector_memory_bytes';
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_entry_cache_budget'),
+  '$.committed_entry_count') AS committed_entry_count;
+
+SET @txn2 = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_entry_cache_budget', @txn2, 3, '[3,3]');
+SELECT VEC_INDEX_TXN_COMMIT(@txn2);
+
+SHOW GLOBAL STATUS LIKE 'Vector_committed_vector_memory_bytes';
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_entry_cache_budget'),
+  '$.committed_entry_count') AS committed_entry_count;
+
+SELECT VEC_INDEX_BULK_BUILD('idx_entry_cache_budget');
+SHOW GLOBAL STATUS LIKE 'Vector_committed_vector_memory_bytes';
+SELECT VEC_INDEX_SEARCH('idx_entry_cache_budget', '[1,1]', 2);
+SHOW GLOBAL STATUS LIKE 'Vector_committed_vector_memory_bytes';
+
+SELECT VEC_INDEX_DROP('idx_entry_cache_budget');
+SET GLOBAL vector_entry_cache_size = @old_vector_entry_cache_size;

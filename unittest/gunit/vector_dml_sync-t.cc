@@ -274,6 +274,34 @@ TEST(VectorDmlSyncTest, PrepareHelpersRejectNullInputs) {
       vector_dml_sync::prepare_update_row(nullptr, nullptr, nullptr, &changes));
 }
 
+TEST_F(VectorDmlSyncFixture, PrepareRowWrappersCoverNullArgumentCombinations) {
+  auto table = MakeVectorTable("db_null_args", "t_null_args");
+  CreateMappedIndexForTable(table.get());
+
+  const std::string payload = binary_vector_payload({1.0F, 2.0F});
+  std::vector<uchar> old_record(MAX_FIELD_WIDTH * MAX_TABLE_COLUMNS);
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), 71,
+             &payload, old_record.data());
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), 72,
+             &payload, table->record[0]);
+
+  vector_dml_sync::prepared_changes changes;
+  EXPECT_TRUE(
+      vector_dml_sync::prepare_insert_row(table.get(), nullptr, &changes));
+  EXPECT_TRUE(
+      vector_dml_sync::prepare_insert_row(table.get(), table->record[0], nullptr));
+  EXPECT_TRUE(
+      vector_dml_sync::prepare_delete_row(table.get(), nullptr, &changes));
+  EXPECT_TRUE(
+      vector_dml_sync::prepare_delete_row(table.get(), table->record[0], nullptr));
+  EXPECT_FALSE(vector_dml_sync::prepare_update_row(
+      table.get(), nullptr, table->record[0], &changes));
+  EXPECT_FALSE(vector_dml_sync::prepare_update_row(
+      table.get(), old_record.data(), nullptr, &changes));
+  EXPECT_FALSE(vector_dml_sync::prepare_update_row(
+      table.get(), old_record.data(), table->record[0], nullptr));
+}
+
 TEST_F(VectorDmlSyncFixture, PrepareInsertDeleteAndUpdateCoverVectorBranches) {
   auto table = MakeVectorTable();
   CreateMappedIndexForTable(table.get());
@@ -365,6 +393,84 @@ TEST_F(VectorDmlSyncFixture, PrepareHelpersRejectMissingVectorColumnsAndDocId) {
                                                  &changes));
   EXPECT_FALSE(vector_dml_sync::prepare_update_row(
       bad_pk.get(), bad_pk->record[0], bad_pk->record[0], &changes));
+}
+
+TEST_F(VectorDmlSyncFixture,
+       PrepareInsertRowForIndexCoversSelectionAndDecodeBranches) {
+  auto table = MakeVectorTable("db_explicit", "t_explicit");
+  const std::string payload = binary_vector_payload({4.0F, 5.0F});
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), 80,
+             &payload, table->record[0]);
+
+  vector_dml_sync::prepared_changes changes;
+  EXPECT_FALSE(vector_dml_sync::prepare_insert_row_for_index(
+      table.get(), "explicit_index", "vec_col", table->record[0], &changes));
+  ASSERT_EQ(1U, changes.size());
+  EXPECT_EQ("explicit_index", changes[0].index_name);
+  EXPECT_EQ(80U, changes[0].doc_id);
+  ASSERT_EQ(2U, changes[0].vector.size());
+  EXPECT_FLOAT_EQ(4.0F, changes[0].vector[0]);
+  EXPECT_FLOAT_EQ(5.0F, changes[0].vector[1]);
+
+  EXPECT_TRUE(vector_dml_sync::prepare_insert_row_for_index(
+      nullptr, "explicit_index", "vec_col", table->record[0], &changes));
+  EXPECT_TRUE(vector_dml_sync::prepare_insert_row_for_index(
+      table.get(), "explicit_index", "vec_col", nullptr, &changes));
+  EXPECT_TRUE(vector_dml_sync::prepare_insert_row_for_index(
+      table.get(), "explicit_index", "vec_col", table->record[0], nullptr));
+
+  auto bad_pk = MakeVectorTable("db_explicit", "t_bad_pk");
+  bad_pk->get_share()->primary_key = MAX_KEY;
+  assign_row(bad_pk.get(), doc_id_field(bad_pk.get()), vector_field(bad_pk.get()),
+             81, &payload, bad_pk->record[0]);
+  EXPECT_FALSE(vector_dml_sync::prepare_insert_row_for_index(
+      bad_pk.get(), "explicit_index", "vec_col", bad_pk->record[0], &changes));
+
+  EXPECT_FALSE(vector_dml_sync::prepare_insert_row_for_index(
+      table.get(), "explicit_index", "missing_vec_col", table->record[0],
+      &changes));
+
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), 82,
+             nullptr, table->record[0]);
+  EXPECT_FALSE(vector_dml_sync::prepare_insert_row_for_index(
+      table.get(), "explicit_index", "vec_col", table->record[0], &changes));
+
+  const std::string bad_payload = "bad";
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), 83,
+             &bad_payload, table->record[0]);
+  Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
+  EXPECT_TRUE(vector_dml_sync::prepare_insert_row_for_index(
+      table.get(), "explicit_index", "vec_col", table->record[0], &changes));
+  thd()->clear_error();
+  Server_initializer::set_expected_error(0);
+}
+
+TEST_F(VectorDmlSyncFixture, PrepareRowsRejectNegativeDocIds) {
+  auto table = MakeVectorTable("db_negative", "t_negative");
+  CreateMappedIndexForTable(table.get());
+
+  const std::string payload = binary_vector_payload({1.0F, 2.0F});
+  vector_dml_sync::prepared_changes changes;
+
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), -1,
+             &payload, table->record[0]);
+  EXPECT_FALSE(
+      vector_dml_sync::prepare_delete_row(table.get(), table->record[0], &changes));
+
+  std::vector<uchar> old_record(MAX_FIELD_WIDTH * MAX_TABLE_COLUMNS);
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), -2,
+             &payload, old_record.data());
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), 84,
+             &payload, table->record[0]);
+  EXPECT_FALSE(vector_dml_sync::prepare_update_row(
+      table.get(), old_record.data(), table->record[0], &changes));
+
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), 85,
+             &payload, old_record.data());
+  assign_row(table.get(), doc_id_field(table.get()), vector_field(table.get()), -3,
+             &payload, table->record[0]);
+  EXPECT_FALSE(vector_dml_sync::prepare_update_row(
+      table.get(), old_record.data(), table->record[0], &changes));
 }
 
 TEST_F(VectorDmlSyncFixture, HelperWrappersCoverDocIdAndVectorDecodingBranches) {

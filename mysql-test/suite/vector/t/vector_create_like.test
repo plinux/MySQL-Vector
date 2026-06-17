@@ -89,3 +89,5 @@ SHOW VECTOR STATUS FOR INDEX 'test.t_vector_like_diskann_dst.v'
 
 DROP TABLE t_vector_like_diskann_dst;
 DROP TABLE t_vector_like_diskann_src;
+
+SHOW GLOBAL STATUS LIKE 'Vector_pending_txn_changes';

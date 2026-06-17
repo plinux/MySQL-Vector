@@ -36,6 +36,12 @@ std::unique_ptr<backend> build_backend_from_config(
     const std::string &index_name,
     const vector_index::index_service::index_config &config);
 
+inline bool can_rebuild_after_search_failure(
+    const vector_index::index_service::index_config &config) {
+  return config.mode == backend_mode::kMemory &&
+         config.provider == backend_provider::kHnswlib;
+}
+
 }  // namespace vector_index::detail
 
 #endif  // SQL_VECTOR_INDEX_SERVICE_INTERNAL_INCLUDED

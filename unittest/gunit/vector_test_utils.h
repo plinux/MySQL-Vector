@@ -26,10 +26,14 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+#include <vector>
+
 #include "my_dbug.h"
 #include "my_sys.h"
 #include "sql/handler.h"
 #include "sql/mysqld.h"
+#include "sql/vector/vector_index_backend.h"
 #include "sql/xa.h"
 
 namespace vector_gunit {
@@ -69,6 +73,45 @@ inline Xa_state_list::instantiation_tuple make_xa_state_list_for_testing() {
   tc_log_page_size = original_tc_log_page_size;
   return xa_state_list;
 }
+
+class FailingSearchHnswBackend final : public vector_index::backend {
+ public:
+  explicit FailingSearchHnswBackend(size_t dimension)
+      : m_entries(dimension, vector_index::metric_type::kEuclidean),
+        m_dimension(dimension) {}
+
+  bool upsert(uint64_t doc_id,
+              const vector_index::vector_data &vector) override {
+    return m_entries.upsert(doc_id, vector);
+  }
+  bool erase(uint64_t doc_id) override { return m_entries.erase(doc_id); }
+  bool search(const vector_index::vector_data &query [[maybe_unused]],
+              size_t top_k [[maybe_unused]],
+              std::vector<vector_index::search_result> *results) const override {
+    if (results != nullptr) results->clear();
+    return false;
+  }
+  size_t entry_count() const override { return m_entries.entry_count(); }
+  size_t dimension() const override { return m_dimension; }
+  vector_index::metric_type metric() const override {
+    return vector_index::metric_type::kEuclidean;
+  }
+  vector_index::backend_mode mode() const override {
+    return vector_index::backend_mode::kMemory;
+  }
+  vector_index::backend_provider provider() const override {
+    return vector_index::backend_provider::kHnswlib;
+  }
+  std::string backend_variant() const override { return "hnsw"; }
+  uint32_t search_ef() const override { return 64; }
+  uint32_t hnsw_m() const override { return 16; }
+  uint32_t hnsw_ef_construction() const override { return 200; }
+  bool supports_mutations() const override { return true; }
+
+ private:
+  vector_index::memory_backend m_entries;
+  size_t m_dimension{0};
+};
 
 }  // namespace vector_gunit
 

@@ -24,15 +24,19 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <limits>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "my_alloc.h"
 #include "sql/mysqld.h"
-#include "sql/vector/vector_index_identity.h"
+#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_ddl_formatter.h"
+#include "sql/vector/vector_index_identity.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_metadata_store.h"
 #include "sql/vector/vector_index_registry.h"
@@ -115,6 +119,7 @@ TEST(VectorIndexDdlFormatterTest, BuildThreadSelectionFollowsProvider) {
   info.provider = "native";
   EXPECT_EQ(0U, vector_index_ddl_formatter::provider_build_threads(info));
 
+  EXPECT_EQ(3U, vector_index_ddl_formatter::first_nonzero_build_threads(info));
   info.hnsw_build_threads = 0;
   EXPECT_EQ(5U, vector_index_ddl_formatter::first_nonzero_build_threads(info));
   info.faiss_build_threads = 0;
@@ -219,6 +224,7 @@ TEST(VectorIndexDdlFormatterTest, TuningStatementsCanEmitAllNonZeroValues) {
   info.faiss_pq_bits = 17;
   info.diskann_max_degree = 18;
   info.diskann_build_complexity = 19;
+  info.diskann_build_threads = 21;
   info.diskann_search_complexity = 20;
   query.length(0);
   vector_index_ddl_formatter::append_tuning_statements(
@@ -228,7 +234,7 @@ TEST(VectorIndexDdlFormatterTest, TuningStatementsCanEmitAllNonZeroValues) {
             ";\nSELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx', 12, 13)"
             ";\nSELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS"
             "('idx', 14, 15, 16, 17)"
-            ";\nSELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx', 18, 19)"
+            ";\nSELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx', 18, 19, 21)"
             ";\nSELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx', 20)",
             string_value_for_testing(query));
 }
@@ -237,6 +243,16 @@ TEST(VectorIndexDdlFormatterTest, TuningStatementsCoverTrailingOptionBranches) {
   String query;
 
   auto hnsw = make_formatter_info_for_testing("hnswlib");
+  hnsw.hnsw_m = 32;
+  vector_index_ddl_formatter::append_tuning_statements(
+      nullptr, &query, "idx_hnsw_m", hnsw,
+      vector_index_ddl_formatter::tuning_emit_policy::k_skip_defaults);
+  EXPECT_EQ(";\nSELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS"
+            "('idx_hnsw_m', 32, 200)",
+            string_value_for_testing(query));
+
+  query.length(0);
+  hnsw = make_formatter_info_for_testing("hnswlib");
   hnsw.hnsw_ef_construction = 400;
   vector_index_ddl_formatter::append_tuning_statements(
       nullptr, &query, "idx_hnsw_ef", hnsw,
@@ -263,6 +279,26 @@ TEST(VectorIndexDdlFormatterTest, TuningStatementsCoverTrailingOptionBranches) {
       vector_index_ddl_formatter::tuning_emit_policy::k_skip_defaults);
   EXPECT_EQ(";\nSELECT VEC_INDEX_SET_FAISS_IVF_PARAMS"
             "('idx_faiss_nprobe', 0, 8)",
+            string_value_for_testing(query));
+
+  faiss = make_formatter_info_for_testing("faiss");
+  faiss.faiss_nlist = 64;
+  query.length(0);
+  vector_index_ddl_formatter::append_tuning_statements(
+      nullptr, &query, "idx_faiss_nlist", faiss,
+      vector_index_ddl_formatter::tuning_emit_policy::k_skip_defaults);
+  EXPECT_EQ(";\nSELECT VEC_INDEX_SET_FAISS_IVF_PARAMS"
+            "('idx_faiss_nlist', 64, 0)",
+            string_value_for_testing(query));
+
+  faiss = make_formatter_info_for_testing("faiss");
+  faiss.faiss_pq_m = 8;
+  query.length(0);
+  vector_index_ddl_formatter::append_tuning_statements(
+      nullptr, &query, "idx_faiss_pq_m", faiss,
+      vector_index_ddl_formatter::tuning_emit_policy::k_skip_defaults);
+  EXPECT_EQ(";\nSELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS"
+            "('idx_faiss_pq_m', 0, 0, 8, 0)",
             string_value_for_testing(query));
 
   auto diskann = make_formatter_info_for_testing("diskann");
@@ -558,6 +594,7 @@ TEST(VectorIndexRegistryInternalTest,
   base.faiss_nprobe = 8;
   base.faiss_pq_m = 4;
   base.faiss_pq_bits = 8;
+  base.faiss_build_threads = 2;
   base.diskann_max_degree = 32;
   base.diskann_build_complexity = 96;
   base.diskann_build_threads = 3;
@@ -587,6 +624,7 @@ TEST(VectorIndexRegistryInternalTest,
   expect_mismatch([](auto *config) { config->faiss_nprobe = 9; });
   expect_mismatch([](auto *config) { config->faiss_pq_m = 5; });
   expect_mismatch([](auto *config) { config->faiss_pq_bits = 9; });
+  expect_mismatch([](auto *config) { config->faiss_build_threads = 3; });
   expect_mismatch([](auto *config) { config->diskann_max_degree = 33; });
   expect_mismatch([](auto *config) { config->diskann_build_complexity = 97; });
   expect_mismatch([](auto *config) { config->diskann_build_threads = 4; });
@@ -637,6 +675,34 @@ class ServerStartedGuard {
 
  private:
   bool m_original;
+};
+
+class UlongGuard {
+ public:
+  UlongGuard(ulong *value, ulong replacement)
+      : m_value(value), m_original(*value) {
+    *m_value = replacement;
+  }
+
+  ~UlongGuard() { *m_value = m_original; }
+
+ private:
+  ulong *m_value;
+  ulong m_original;
+};
+
+class UlonglongGuard {
+ public:
+  UlonglongGuard(ulonglong *value, ulonglong replacement)
+      : m_value(value), m_original(*value) {
+    *m_value = replacement;
+  }
+
+  ~UlonglongGuard() { *m_value = m_original; }
+
+ private:
+  ulonglong *m_value;
+  ulonglong m_original;
 };
 
 XID make_test_xid(long format_id, const char *data) {
@@ -1143,6 +1209,22 @@ TEST_F(VectorIndexRegistryTest,
     EXPECT_EQ("t_original", binding.table_name);
     EXPECT_EQ("v_original", binding.column_name);
 
+    const std::string mapped_index_name =
+        vector_index_registry::detail::make_mapped_index_name("db_new",
+                                                              "t_new",
+                                                              "v_new");
+    vector_index_registry::detail::set_index_binding_locked(
+        "plain_binding_with_mapped_target", "db_original", "t_original",
+        "v_original", "id");
+    vector_index_registry::detail::rename_index_binding_locked(
+        "plain_binding_with_mapped_target", mapped_index_name);
+    const vector_index_registry::detail::index_binding mapped_binding =
+        vector_index_registry::detail::binding_for_index_locked(
+            mapped_index_name);
+    EXPECT_EQ("db_new", mapped_binding.schema_name);
+    EXPECT_EQ("t_new", mapped_binding.table_name);
+    EXPECT_EQ("v_new", mapped_binding.column_name);
+
     std::vector<vector_index_metadata_store::metadata_row> metadata_rows;
     EXPECT_FALSE(vector_index_registry::detail::snapshot_metadata_locked(
         nullptr));
@@ -1167,6 +1249,7 @@ TEST_F(VectorIndexRegistryTest,
 
     info = vector_index_registry::index_info{};
     info.hnsw_m = 16;
+    info.hnsw_ef_construction = 200;
     EXPECT_TRUE(vector_index_registry::detail::apply_index_tuning_locked(
         "idx_apply_tuning_faiss", info));
 
@@ -1176,7 +1259,27 @@ TEST_F(VectorIndexRegistryTest,
         "idx_apply_tuning_native", info));
 
     info = vector_index_registry::index_info{};
+    info.hnsw_ef_construction = 200;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.hnsw_build_threads = 65536;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.faiss_build_threads = 65536;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
     info.faiss_nlist = 2;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.faiss_nprobe = 1;
     EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
         "idx_apply_tuning_faiss", info));
 
@@ -1188,9 +1291,29 @@ TEST_F(VectorIndexRegistryTest,
         "idx_apply_tuning_faiss", info));
 
     info = vector_index_registry::index_info{};
+    info.faiss_pq_bits = 8;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
     info.diskann_max_degree = 32;
     EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
         "idx_apply_tuning_diskann", info));
+
+    info = vector_index_registry::index_info{};
+    info.diskann_build_complexity = 96;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_diskann", info));
+
+    info = vector_index_registry::index_info{};
+    info.diskann_build_threads = 65536;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_diskann", info));
+
+    info = vector_index_registry::index_info{};
+    info.diskann_search_complexity = 80;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_native", info));
 
     info = vector_index_registry::index_info{};
     info.diskann_search_complexity = 80;
@@ -1611,6 +1734,7 @@ TEST_F(VectorIndexRegistryTest,
 
 TEST_F(VectorIndexRegistryTest, PrepareAndCommitPreparedXidAppliesDurableRows) {
   const std::string index_name = "idx_registry_prepared_commit";
+  const uint64_t pending_before = vector_status::pending_txn_changes();
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
                                                   "memory", "native"));
 
@@ -1622,6 +1746,7 @@ TEST_F(VectorIndexRegistryTest, PrepareAndCommitPreparedXidAppliesDurableRows) {
 
   ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
       300, 1, index_name, 7, {7.0F, 7.0F}));
+  EXPECT_EQ(pending_before + 1, vector_status::pending_txn_changes());
   ASSERT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(300, 1));
   ASSERT_TRUE(vector_index_registry::prepare_thd_txn(300, xid));
   ASSERT_TRUE(vector_index_registry::has_prepared_xid(xid));
@@ -1634,6 +1759,7 @@ TEST_F(VectorIndexRegistryTest, PrepareAndCommitPreparedXidAppliesDurableRows) {
   ASSERT_EQ(XA_OK,
             vector_index_registry::commit_prepared_xid_for_thd(300, xid));
   EXPECT_FALSE(vector_index_registry::has_prepared_xid(xid));
+  EXPECT_EQ(pending_before, vector_status::pending_txn_changes());
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(
@@ -2323,6 +2449,43 @@ TEST_F(VectorIndexRegistryTest, RebuildAndRecoverAllRoundTrip) {
   ASSERT_TRUE(vector_index_registry::drop_index("idx_registry_b"));
 }
 
+TEST_F(VectorIndexRegistryTest, SearchAndDifferentIndexRebuildRunConcurrently) {
+  ASSERT_TRUE(vector_index_registry::create_index(
+      "idx_registry_concurrent_search", 2, "euclidean", "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_index(
+      "idx_registry_concurrent_rebuild", 2, "euclidean", "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::upsert("idx_registry_concurrent_search", 1,
+                                            {1.0F, 1.0F}));
+  ASSERT_TRUE(vector_index_registry::upsert("idx_registry_concurrent_rebuild",
+                                            2, {2.0F, 2.0F}));
+
+  std::atomic<bool> failed{false};
+  std::thread searcher([&failed]() {
+    for (int i = 0; i < 200 && !failed.load(); ++i) {
+      std::vector<vector_index::search_result> result;
+      if (!vector_index_registry::search("idx_registry_concurrent_search",
+                                         {1.0F, 1.0F}, 1, &result) ||
+          result.size() != 1 || result[0].doc_id != 1) {
+        failed.store(true);
+      }
+    }
+  });
+  std::thread rebuilder([&failed]() {
+    for (int i = 0; i < 20 && !failed.load(); ++i) {
+      if (!vector_index_registry::rebuild_index(
+              "idx_registry_concurrent_rebuild")) {
+        failed.store(true);
+      }
+    }
+  });
+  searcher.join();
+  rebuilder.join();
+
+  EXPECT_FALSE(failed.load());
+  ASSERT_TRUE(vector_index_registry::drop_index("idx_registry_concurrent_search"));
+  ASSERT_TRUE(vector_index_registry::drop_index("idx_registry_concurrent_rebuild"));
+}
+
 TEST_F(VectorIndexRegistryTest,
        RebuildAllRollbackOnPersistFailureKeepsServingState) {
   ASSERT_TRUE(vector_index_registry::create_index(
@@ -2468,15 +2631,27 @@ TEST_F(VectorIndexRegistryTest, SetFaissIvfPqParamsRollbackOnPersistFailure) {
 
 TEST_F(VectorIndexRegistryTest,
        TuningApisRollbackWhenRuntimeRejectsPersistedCandidate) {
+  const std::string hnsw_name = "idx_registry_hnsw_runtime_reject";
+  ASSERT_TRUE(vector_index_registry::create_index(hnsw_name, 2, "cosine",
+                                                  "memory", "hnswlib"));
+
+  vector_index_registry::index_info before;
+  ASSERT_TRUE(vector_index_registry::get_index_info(hnsw_name, &before));
+  EXPECT_FALSE(vector_index_registry::set_hnsw_build_params(hnsw_name, 0, 200));
+
+  vector_index_registry::index_info after;
+  ASSERT_TRUE(vector_index_registry::get_index_info(hnsw_name, &after));
+  EXPECT_EQ(before.hnsw_m, after.hnsw_m);
+  EXPECT_EQ(before.hnsw_ef_construction, after.hnsw_ef_construction);
+  ASSERT_TRUE(vector_index_registry::drop_index(hnsw_name));
+
   const std::string faiss_name = "idx_registry_faiss_runtime_reject";
   ASSERT_TRUE(vector_index_registry::create_index(faiss_name, 2, "cosine",
                                                   "external", "faiss"));
 
-  vector_index_registry::index_info before;
   ASSERT_TRUE(vector_index_registry::get_index_info(faiss_name, &before));
   EXPECT_FALSE(vector_index_registry::set_faiss_ivf_params(faiss_name, 64, 0));
 
-  vector_index_registry::index_info after;
   ASSERT_TRUE(vector_index_registry::get_index_info(faiss_name, &after));
   EXPECT_EQ(before.faiss_nlist, after.faiss_nlist);
   EXPECT_EQ(before.faiss_nprobe, after.faiss_nprobe);
@@ -2488,11 +2663,27 @@ TEST_F(VectorIndexRegistryTest,
 
   ASSERT_TRUE(vector_index_registry::get_index_info(diskann_name, &before));
   EXPECT_FALSE(
+      vector_index_registry::set_diskann_build_params(diskann_name, 0, 96, 4));
+  ASSERT_TRUE(vector_index_registry::get_index_info(diskann_name, &after));
+  EXPECT_EQ(before.diskann_max_degree, after.diskann_max_degree);
+  EXPECT_EQ(before.diskann_build_complexity, after.diskann_build_complexity);
+  EXPECT_EQ(before.diskann_build_threads, after.diskann_build_threads);
+  EXPECT_FALSE(
       vector_index_registry::set_diskann_build_threads(diskann_name, 65536));
-
   ASSERT_TRUE(vector_index_registry::get_index_info(diskann_name, &after));
   EXPECT_EQ(before.diskann_build_threads, after.diskann_build_threads);
+  EXPECT_FALSE(
+      vector_index_registry::set_diskann_search_complexity(diskann_name, 0));
+  ASSERT_TRUE(vector_index_registry::get_index_info(diskann_name, &after));
+  EXPECT_EQ(before.diskann_search_complexity,
+            after.diskann_search_complexity);
   ASSERT_TRUE(vector_index_registry::drop_index(diskann_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       CleanupDroppedIndexArtifactsIgnoresInvalidDescriptor) {
+  vector_index_registry::cleanup_dropped_index_artifacts(
+      vector_index_registry::dropped_index_artifacts{});
 }
 
 TEST_F(VectorIndexRegistryTest, TuningApisRejectMissingIndexBeforePersistence) {
@@ -2619,6 +2810,42 @@ TEST_F(VectorIndexRegistryTest, RebuildIndexRoundTripPreservesEntries) {
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
 }
 
+TEST_F(VectorIndexRegistryTest,
+       LifecycleRebuildAndReplaceRespectCommittedCacheBudget) {
+  UlonglongGuard guard(&opt_vector_entry_cache_size, 0);
+  const std::string rebuild_index_name = "idx_registry_rebuild_budget";
+  ASSERT_TRUE(vector_index_registry::create_index(
+      rebuild_index_name, 2, "euclidean", "memory", "native"));
+  ASSERT_TRUE(
+      vector_index_registry::upsert(rebuild_index_name, 10, {1.0F, 1.0F}));
+  EXPECT_EQ(0U, vector_index_registry::committed_vector_memory_bytes());
+
+  ASSERT_TRUE(vector_index_registry::rebuild_index(rebuild_index_name));
+  EXPECT_EQ(0U, vector_index_registry::committed_vector_memory_bytes());
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(vector_index_registry::search(rebuild_index_name, {1.0F, 1.0F},
+                                            1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(10U, result[0].doc_id);
+
+  const std::string replace_index_name = "idx_registry_replace_budget";
+  ASSERT_TRUE(vector_index_registry::create_index(
+      replace_index_name, 2, "euclidean", "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::replace_committed_entries(
+      replace_index_name, {{20, {2.0F, 2.0F}}}));
+  EXPECT_EQ(0U, vector_index_registry::committed_vector_memory_bytes());
+
+  result.clear();
+  ASSERT_TRUE(vector_index_registry::search(replace_index_name, {2.0F, 2.0F},
+                                            1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(20U, result[0].doc_id);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(rebuild_index_name));
+  ASSERT_TRUE(vector_index_registry::drop_index(replace_index_name));
+}
+
 TEST_F(VectorIndexRegistryTest, RebuildIndexRejectsMissingIndex) {
   EXPECT_FALSE(vector_index_registry::rebuild_index("idx_registry_missing"));
 }
@@ -2741,6 +2968,43 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
+       ReplaceCommittedEntriesPreservesLifecycleAndRejectsBadRows) {
+  const std::string index_name = "idx_registry_replace_preserve_lifecycle";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 10, {1.0F, 1.0F}));
+  ASSERT_TRUE(vector_index_registry::begin_bulk_load(index_name));
+
+  vector_index::index_service::committed_entries replacement{
+      {20, {2.0F, 2.0F}},
+      {30, {3.0F, 3.0F}},
+  };
+  ASSERT_TRUE(vector_index_registry::replace_committed_entries_preserve_lifecycle(
+      index_name, replacement));
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ("bulk_loading", info.lifecycle_state);
+  EXPECT_EQ(2U, info.entry_count);
+  EXPECT_EQ(2U, info.committed_entry_count);
+
+  EXPECT_FALSE(vector_index_registry::replace_committed_entries_preserve_lifecycle(
+      index_name, {{40, {4.0F, 4.0F, 4.0F}}}));
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ("bulk_loading", info.lifecycle_state);
+  EXPECT_EQ(2U, info.committed_entry_count);
+
+  ASSERT_TRUE(vector_index_registry::bulk_build_index(index_name));
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {2.0F, 2.0F}, 2, &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(20U, result[0].doc_id);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
        ReplaceCommittedEntriesRollbackRestoresPreviousSnapshot) {
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
@@ -2776,6 +3040,49 @@ TEST_F(VectorIndexRegistryTest,
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
 }
 
+TEST_F(VectorIndexRegistryTest, BeginBulkLoadRejectsPendingChanges) {
+  const std::string index_name = "idx_registry_bulk_pending";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  const uint64_t txn_id = vector_index_registry::begin_txn();
+  ASSERT_TRUE(
+      vector_index_registry::stage_upsert(txn_id, index_name, 1, {1.0F, 1.0F}));
+
+  EXPECT_FALSE(vector_index_registry::begin_bulk_load(index_name));
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ("ready", info.lifecycle_state);
+  EXPECT_EQ(0U, info.last_error_code);
+
+  ASSERT_TRUE(vector_index_registry::rollback_txn(txn_id));
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest, BeginBulkLoadThenBulkBuildRestoresServingState) {
+  const std::string index_name = "idx_registry_bulk_roundtrip";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 10, {1.0F, 1.0F}));
+
+  ASSERT_TRUE(vector_index_registry::begin_bulk_load(index_name));
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ("bulk_loading", info.lifecycle_state);
+
+  ASSERT_TRUE(vector_index_registry::bulk_build_index(index_name));
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ("ready", info.lifecycle_state);
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {1.0F, 1.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(10U, result[0].doc_id);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
 TEST_F(VectorIndexRegistryTest,
        BuildBackendFromConfigTestingWrapperCoversTunings) {
   using vector_index::backend_mode;
@@ -2805,9 +3112,16 @@ TEST_F(VectorIndexRegistryTest,
       "idx_config_partial_hnsw_params", config));
 
   config =
+      make_backend_config(backend_mode::kMemory, backend_provider::kNative);
+  config.hnsw_build_threads = 1;
+  EXPECT_FALSE(vector_index_registry::build_backend_from_config_for_testing(
+      "idx_config_native_hnsw_threads", config));
+
+  config =
       make_backend_config(backend_mode::kMemory, backend_provider::kHnswlib);
   config.hnsw_m = 12;
   config.hnsw_ef_construction = 96;
+  config.hnsw_build_threads = 2;
   config.search_ef = 48;
   EXPECT_EQ(hnswlib_tuning_supported(),
             vector_index_registry::build_backend_from_config_for_testing(
@@ -2840,11 +3154,18 @@ TEST_F(VectorIndexRegistryTest,
       "idx_config_native_faiss_pq_bits", config));
 
   config =
+      make_backend_config(backend_mode::kMemory, backend_provider::kNative);
+  config.faiss_build_threads = 1;
+  EXPECT_FALSE(vector_index_registry::build_backend_from_config_for_testing(
+      "idx_config_native_faiss_threads", config));
+
+  config =
       make_backend_config(backend_mode::kExternal, backend_provider::kFaiss);
   config.faiss_nlist = 2;
   config.faiss_nprobe = 1;
   config.faiss_pq_m = 1;
   config.faiss_pq_bits = 8;
+  config.faiss_build_threads = 2;
   EXPECT_TRUE(vector_index_registry::build_backend_from_config_for_testing(
       "idx_config_faiss_pq", config));
 
@@ -2868,9 +3189,16 @@ TEST_F(VectorIndexRegistryTest,
       "idx_config_native_diskann_search", config));
 
   config =
+      make_backend_config(backend_mode::kMemory, backend_provider::kNative);
+  config.diskann_build_threads = 1;
+  EXPECT_FALSE(vector_index_registry::build_backend_from_config_for_testing(
+      "idx_config_native_diskann_threads", config));
+
+  config =
       make_backend_config(backend_mode::kExternal, backend_provider::kDiskAnn);
   config.diskann_max_degree = 32;
   config.diskann_build_complexity = 64;
+  config.diskann_build_threads = 2;
   config.diskann_search_complexity = 48;
   EXPECT_TRUE(vector_index_registry::build_backend_from_config_for_testing(
       "idx_config_diskann", config));
@@ -4715,8 +5043,7 @@ TEST_F(VectorIndexRegistryTest,
 TEST_F(VectorIndexRegistryTest, MappedSearchCandidatePlannerUsesBoundedChunks) {
   const size_t max_size = std::numeric_limits<size_t>::max();
 
-  EXPECT_EQ(max_size,
-            vector_index_registry::detail::saturated_add_size(max_size, 1));
+  EXPECT_EQ(max_size, vector_index::saturated_add_size(max_size, 1));
   EXPECT_TRUE(vector_index_registry::detail::mapped_search_candidate_limit_is_hard(
       vector_index::k_max_search_top_k, 1));
   EXPECT_FALSE(vector_index_registry::detail::mapped_search_candidate_limit_is_hard(
@@ -4751,9 +5078,16 @@ TEST_F(VectorIndexRegistryTest, MappedSearchCandidatePlannerUsesBoundedChunks) {
 
 TEST_F(VectorIndexRegistryTest,
        SearchBatchForThdTxnCoversEmptyMissingAndPendingFallback) {
+  std::vector<vector_index::search_result> flat_results;
   std::vector<std::vector<vector_index::search_result>> batches = {
       {{99, 99.0}}};
 
+  EXPECT_FALSE(vector_index_registry::search("missing_batch", {1.0F, 1.0F}, 1,
+                                             nullptr));
+  EXPECT_FALSE(vector_index_registry::search_for_thd_txn(
+      nullptr, 0, "missing_batch", {1.0F, 1.0F}, 1, nullptr));
+  EXPECT_FALSE(vector_index_registry::search_for_thd_txn(
+      nullptr, 0, "missing_batch", {1.0F, 1.0F}, 1, &flat_results));
   EXPECT_FALSE(vector_index_registry::search_batch_for_thd_txn(
       nullptr, 0, "missing_batch", {{1.0F, 1.0F}}, 1, nullptr));
   ASSERT_TRUE(vector_index_registry::search_batch_for_thd_txn(
@@ -4768,6 +5102,10 @@ TEST_F(VectorIndexRegistryTest,
                                                   "memory", "native"));
   ASSERT_TRUE(vector_index_registry::upsert(index_name, 51, {1.0F, 1.0F}));
   ASSERT_TRUE(vector_index_registry::upsert(index_name, 52, {5.0F, 5.0F}));
+  EXPECT_FALSE(vector_index_registry::search_for_thd_txn(
+      nullptr, 0, index_name, {1.0F}, 1, &flat_results));
+  EXPECT_FALSE(vector_index_registry::search_batch_for_thd_txn(
+      nullptr, 0, index_name, {{1.0F}}, 1, &batches));
 
   ASSERT_TRUE(vector_index_registry::search_batch_for_thd_txn(
       nullptr, 0, index_name, {{1.0F, 1.0F}, {5.0F, 5.0F}}, 1, &batches));
@@ -4789,6 +5127,43 @@ TEST_F(VectorIndexRegistryTest,
 
   ASSERT_TRUE(vector_index_registry::rollback_thd_txn(703));
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       SearchBatchForThdTxnRebuildsHnswRuntimeAfterSearchFailure) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native recovery requires HAVE_HNSWLIB";
+  }
+
+  const std::string index_name = "idx_registry_hnsw_batch_recover";
+  {
+    std::lock_guard<std::shared_mutex> guard(
+        vector_index_registry::detail::g_registry_mutex);
+    vector_index_registry::detail::g_metadata_loaded = true;
+    ASSERT_TRUE(vector_index_registry::detail::g_index_service.register_index(
+        index_name,
+        std::make_unique<vector_gunit::FailingSearchHnswBackend>(2)));
+  }
+
+  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
+      704, 1, index_name, 61, {1.0F, 0.0F}));
+  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
+      704, 1, index_name, 62, {0.0F, 1.0F}));
+  ASSERT_TRUE(vector_index_registry::commit_thd_txn(704));
+
+  std::vector<std::vector<vector_index::search_result>> batches;
+  ASSERT_TRUE(vector_index_registry::search_batch_for_thd_txn(
+      nullptr, 0, index_name, {{1.0F, 0.0F}, {0.0F, 1.0F}}, 1, &batches));
+  ASSERT_EQ(2U, batches.size());
+  ASSERT_EQ(1U, batches[0].size());
+  EXPECT_EQ(61U, batches[0][0].doc_id);
+  ASSERT_EQ(1U, batches[1].size());
+  EXPECT_EQ(62U, batches[1][0].doc_id);
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ(1U, info.recover_fallback_count);
+  EXPECT_GT(info.last_recover_fallback_ts, 0U);
 }
 
 TEST_F(VectorIndexRegistryTest,

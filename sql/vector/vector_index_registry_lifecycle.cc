@@ -824,7 +824,7 @@ bool rebuild_index(const std::string &index_name) {
     if (!rollback_runtime_state_locked(snapshot)) return false;
     return false;
   }
-  return true;
+  return evict_committed_cache_to_budget_locked();
 }
 
 bool replace_committed_entries(
@@ -873,7 +873,7 @@ bool replace_committed_entries(
     }
     return false;
   }
-  return true;
+  return evict_committed_cache_to_budget_locked();
 }
 
 bool replace_committed_entries_preserve_lifecycle(
@@ -907,7 +907,7 @@ bool replace_committed_entries_preserve_lifecycle(
     }
     return false;
   }
-  return true;
+  return evict_committed_cache_to_budget_locked();
 }
 
 bool set_lifecycle_state(const std::string &index_name,
@@ -966,7 +966,7 @@ bool recover_index(const std::string &index_name) {
     if (!rollback_runtime_state_locked(snapshot)) return false;
     return false;
   }
-  return true;
+  return evict_committed_cache_to_budget_locked();
 }
 
 bool set_search_ef(const std::string &index_name, uint32_t search_ef) {
@@ -1145,6 +1145,7 @@ bool rebuild_all_indexes(size_t *rebuilt_count) {
     if (!rollback_runtime_state_locked(snapshot)) return false;
     return false;
   }
+  if (!evict_committed_cache_to_budget_locked()) return false;
   *rebuilt_count = prepared_backends.size();
   return true;
 }
@@ -1199,6 +1200,7 @@ bool recover_all_indexes(size_t *recovered_count) {
     if (!rollback_runtime_state_locked(snapshot)) return false;
     return false;
   }
+  if (!evict_committed_cache_to_budget_locked()) return false;
   *recovered_count = prepared_backends.size();
   return true;
 }

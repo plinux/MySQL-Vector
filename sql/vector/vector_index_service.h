@@ -26,14 +26,67 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "sql/vector/vector_index_backend.h"
 
 namespace vector_index {
+
+using committed_entries = std::unordered_map<uint64_t, vector_data>;
+using committed_state = std::unordered_map<std::string, committed_entries>;
+
+/**
+  Bounded committed vector entry cache.
+
+  The truth-store is the authoritative source after commit persistence. This
+  cache keeps hot committed entries in memory and can evict whole indexes once
+  the configured memory budget is exceeded.
+*/
+class vector_entry_store {
+ public:
+  using entry_visitor = std::function<bool(uint64_t, const vector_data &)>;
+
+  bool register_index(const std::string &index_name);
+  bool drop_index(const std::string &index_name);
+  bool rename_index(const std::string &old_index_name,
+                    const std::string &new_index_name);
+  bool has_index(const std::string &index_name) const;
+  bool clear_index(const std::string &index_name);
+  bool replace_index(const std::string &index_name,
+                     const committed_entries &entries);
+  bool upsert(const std::string &index_name, uint64_t doc_id,
+              const vector_data &vector);
+  bool erase(const std::string &index_name, uint64_t doc_id);
+  bool snapshot(committed_state *state) const;
+  bool snapshot_index(const std::string &index_name,
+                      committed_entries *entries) const;
+  bool find_committed_entry(const std::string &index_name, uint64_t doc_id,
+                            vector_data *vector, bool *found) const;
+  bool for_each_committed_entry(const std::string &index_name,
+                                const entry_visitor &visitor) const;
+  bool evict_until_under_budget(size_t budget);
+  size_t entry_count() const;
+  size_t entry_count(const std::string &index_name) const;
+  size_t memory_bytes() const;
+  size_t memory_bytes(const std::string &index_name) const;
+  uint64_t generation(const std::string &index_name) const;
+
+ private:
+  bool load_index_from_truth_store(const std::string &index_name,
+                                   committed_entries *entries) const;
+  bool ensure_index_cached(const std::string &index_name);
+  void bump_generation(const std::string &index_name);
+
+  committed_state m_entries;
+  std::unordered_map<std::string, size_t> m_entry_counts;
+  std::unordered_map<std::string, uint64_t> m_index_generations;
+  std::unordered_set<std::string> m_evicted_indexes;
+};
 
 /**
   Transaction-buffered index service on top of backend implementations.
@@ -43,8 +96,9 @@ namespace vector_index {
 */
 class index_service {
  public:
-  using committed_entries = std::unordered_map<uint64_t, vector_data>;
-  using committed_state = std::unordered_map<std::string, committed_entries>;
+  using committed_entries = vector_index::committed_entries;
+  using committed_state = vector_index::committed_state;
+  using backend_ptr = std::shared_ptr<backend>;
 
   struct lifecycle_info {
     std::string state{"ready"};
@@ -94,6 +148,19 @@ class index_service {
     std::vector<pending_savepoint_snapshot> savepoints;
   };
 
+  struct commit_rebuild_plan {
+    std::string index_name;
+    index_config config;
+    uint64_t before_generation{0};
+    std::vector<pending_change_snapshot> changes;
+    std::unique_ptr<backend> rebuilt_backend;
+  };
+
+  struct commit_build_plan {
+    std::vector<pending_change_snapshot> changes;
+    std::vector<commit_rebuild_plan> rebuilds;
+  };
+
   bool register_index(const std::string &index_name,
                       std::unique_ptr<backend> backend);
   bool register_index(const std::string &index_name,
@@ -140,6 +207,9 @@ class index_service {
                    uint64_t doc_id);
 
   bool commit(uint64_t txn_id);
+  bool snapshot_commit_build_plan(uint64_t txn_id, commit_build_plan *plan);
+  bool build_commit_backends(commit_build_plan *plan) const;
+  bool apply_commit_build_plan(uint64_t txn_id, commit_build_plan *plan);
   void rollback(uint64_t txn_id);
   bool savepoint(uint64_t txn_id, const std::string &name);
   bool rollback_to_savepoint(uint64_t txn_id, const std::string &name);
@@ -153,6 +223,10 @@ class index_service {
   bool search_loaded(const std::string &index_name, const vector_data &query,
                      size_t top_k,
                      std::vector<search_result> *results) const;
+  bool snapshot_search_backend_loaded(const std::string &index_name,
+                                      const vector_data &query,
+                                      backend_ptr *runtime,
+                                      index_config *config = nullptr) const;
   bool search_batch_loaded(
       const std::string &index_name, const std::vector<vector_data> &queries,
       size_t top_k, std::vector<std::vector<search_result>> *results) const;
@@ -163,6 +237,7 @@ class index_service {
       uint64_t txn_id, const std::string &index_name, const vector_data &query,
       size_t top_k, std::vector<search_result> *results) const;
   bool ensure_runtime_loaded_for_search(const std::string &index_name);
+  bool rebuild_runtime_from_store_for_search(const std::string &index_name);
   bool describe_index(const std::string &index_name, index_config *config,
                       bool *supports_mutations, size_t *entry_count,
                       size_t *committed_entry_count,
@@ -190,6 +265,7 @@ class index_service {
   bool snapshot_committed_state(committed_state *state) const;
   size_t committed_entry_count() const;
   size_t committed_vector_memory_bytes() const;
+  bool evict_committed_cache_to_budget();
   size_t pending_vector_memory_bytes(uint64_t txn_id) const;
   size_t total_pending_vector_memory_bytes() const;
   bool restore_committed_state(const committed_state &state);
@@ -236,10 +312,9 @@ class index_service {
     size_t change_count{0};
   };
 
-  std::unordered_map<std::string, std::unique_ptr<backend>> m_indexes;
+  std::unordered_map<std::string, backend_ptr> m_indexes;
   std::unordered_map<std::string, index_config> m_index_configs;
-  std::unordered_map<std::string, std::unordered_map<uint64_t, vector_data>>
-      m_committed_entries;
+  vector_entry_store m_entry_store;
   std::unordered_map<std::string, lifecycle_info> m_lifecycle_infos;
   std::unordered_map<uint64_t, std::vector<pending_change>> m_pending_changes;
   std::unordered_map<uint64_t, std::vector<savepoint_marker>> m_savepoints;

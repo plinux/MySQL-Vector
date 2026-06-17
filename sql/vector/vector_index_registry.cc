@@ -815,6 +815,10 @@ bool rollback_runtime_state_locked(const runtime_state_snapshot &snapshot) {
       snapshot.change_log_rows, snapshot.lagging_index_names);
 }
 
+bool evict_committed_cache_to_budget_locked() {
+  return g_index_service.evict_committed_cache_to_budget();
+}
+
 bool persist_or_rollback_runtime_state_locked(
     const runtime_state_snapshot &snapshot) {
   if (persist_registry_state_locked()) return true;
@@ -1042,6 +1046,7 @@ bool ensure_metadata_loaded_locked() {
   vector_status::set_registered_indexes(rows.size());
   refresh_committed_snapshot_rows_locked();
   refresh_manifest_status_locked();
+  if (!evict_committed_cache_to_budget_locked()) return false;
   g_metadata_loaded = true;
   if (cleanup_incomplete_create_state && !persist_registry_state_locked()) {
     vector_status::record_truth_store_persist_failure();

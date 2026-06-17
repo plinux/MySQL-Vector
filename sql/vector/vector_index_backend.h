@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -77,6 +78,12 @@ struct search_result {
 class backend {
  public:
   virtual ~backend() = default;
+
+  /**
+    Per-runtime guard used when registry-level code snapshots a backend handle
+    and executes search outside the global registry mutex.
+  */
+  std::shared_mutex &runtime_mutex() const { return m_runtime_mutex; }
 
   /**
     insert or replace a vector by document id.
@@ -283,6 +290,9 @@ class backend {
     Non-sidecar backends return 0 by default.
   */
   virtual uint64_t external_manifest_generation() const { return 0; }
+
+ private:
+  mutable std::shared_mutex m_runtime_mutex;
 };
 
 /**
@@ -291,12 +301,19 @@ class backend {
 class memory_backend final : public backend {
  public:
   memory_backend(size_t dimension, metric_type metric);
+  memory_backend(memory_backend &&other) noexcept;
+  memory_backend &operator=(memory_backend &&other) noexcept;
+  memory_backend(const memory_backend &) = delete;
+  memory_backend &operator=(const memory_backend &) = delete;
 
   bool upsert(uint64_t doc_id, const vector_data &vector) override;
   bool erase(uint64_t doc_id) override;
   bool search(const vector_data &query, size_t top_k,
               std::vector<search_result> *results) const override;
   void reset();
+  bool contains(uint64_t doc_id) const;
+  bool snapshot_entries(
+      std::unordered_map<uint64_t, vector_data> *entries) const;
 
   size_t entry_count() const override { return m_entries.size(); }
   size_t dimension() const override { return m_dimension; }
@@ -372,7 +389,14 @@ class faiss_backend final : public backend {
   }
 
   size_t entry_count() const override {
-    if (m_mode == backend_mode::kExternal) return m_external_snapshot_entries.size();
+    if (m_mode == backend_mode::kExternal) {
+#ifdef HAVE_FAISS
+      if (m_sidecar_profile == external_sidecar_profile::kFaiss &&
+          (m_faiss_entry_count != 0 || m_external_snapshot_entries.empty()))
+        return m_faiss_entry_count;
+#endif
+      return m_external_snapshot_entries.size();
+    }
     if (m_faiss_entry_count != 0) return m_faiss_entry_count;
     if (m_mode == backend_mode::kMemory) return m_memory_fallback.entry_count();
     return m_external_fallback.entry_count();
@@ -458,10 +482,15 @@ class faiss_backend final : public backend {
   bool persist_external_snapshot();
   bool recover_external_snapshot();
   bool recover_external_snapshot_file(const std::string &path);
+  bool materialize_external_entries(
+      std::unordered_map<uint64_t, vector_data> *entries) const;
+  bool materialize_external_entries_from_faiss(
+      std::unordered_map<uint64_t, vector_data> *entries) const;
   bool load_external_manifest_generation(uint64_t *generation, bool *exists) const;
   bool save_external_manifest_generation(uint64_t generation);
   std::string external_snapshot_path_for_generation(uint64_t generation) const;
   bool remove_external_generated_snapshots() const;
+  void maybe_clear_external_snapshot_entries();
   void maybe_release_external_serving_index();
 };
 
