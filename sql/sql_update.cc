@@ -1009,8 +1009,8 @@ bool Sql_cmd_update::update_single_table(THD *thd) {
                       : table->file->ha_update_row(table->record[1],
                                                    table->record[0]);
 #else
-          error = table->file->ha_update_row(table->record[1],
-                                             table->record[0]);
+          error =
+              table->file->ha_update_row(table->record[1], table->record[0]);
 #endif
         }
 #ifdef HAVE_VECTOR_INDEX

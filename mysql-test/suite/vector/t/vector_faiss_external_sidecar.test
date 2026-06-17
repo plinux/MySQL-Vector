@@ -9,8 +9,10 @@ SELECT VEC_INDEX_UPSERT('idx_faiss_sidecar', 1, VEC_FROMTEXT('[1,2]'));
 SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
 
 --let $datadir=`SELECT @@datadir`
---let $manifest_file=$datadir/mysql_vector_index/6964785f66616973735f73696465636172/faiss_external.manifest.v1
---let $snapshot_glob=$datadir/mysql_vector_index/6964785f66616973735f73696465636172/faiss_external.snapshot.*.v1
+--let $snapshot_dir=$datadir/mysql_vector_index/6964785f66616973735f73696465636172
+--let $manifest_file=$snapshot_dir/faiss_external.manifest.v1
+--let $snapshot_glob=$snapshot_dir/faiss_external.snapshot.*.v1
+--let $broken_snapshot=$snapshot_dir/faiss_external.broken
 --exec test -f $manifest_file
 --exec /bin/sh -c "ls $snapshot_glob >/dev/null 2>&1"
 
@@ -25,7 +27,9 @@ SET @recover_fallback_before = (
   FROM performance_schema.global_status
   WHERE VARIABLE_NAME = 'Vector_backend_recover_fallbacks');
 
---exec /bin/sh -c "ls $snapshot_glob | xargs -I{} sh -c 'printf \"broken-sidecar\\n\" > \"{}\"'"
+--exec printf "broken-sidecar\n" > $broken_snapshot
+--exec /usr/bin/find $snapshot_dir -name 'faiss_external.snapshot.*.v1' -exec /bin/cp $broken_snapshot {} \;
+--remove_file $broken_snapshot
 SELECT VEC_INDEX_RECOVER('idx_faiss_sidecar');
 SELECT (
   SELECT CAST(VARIABLE_VALUE AS UNSIGNED)

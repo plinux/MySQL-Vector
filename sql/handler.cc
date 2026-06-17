@@ -8939,7 +8939,10 @@ Xa_state_list::instantiation_tuple Xa_state_list::new_instance() {
       std::move(mem_root), std::move(map_alloc), std::move(xid_map),
       std::move(xa_list));
 #else
-  return std::make_tuple(std::move(mem_root), std::move(map_alloc),
-                         std::move(xid_map), std::move(xa_list));
+  return std::make_tuple<
+      std::unique_ptr<MEM_ROOT>, std::unique_ptr<Xa_state_list::allocator>,
+      std::unique_ptr<Xa_state_list::list>, std::unique_ptr<Xa_state_list>>(
+      std::move(mem_root), std::move(map_alloc), std::move(xid_map),
+      std::move(xa_list));
 #endif
 }
