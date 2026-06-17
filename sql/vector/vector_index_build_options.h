@@ -36,5 +36,20 @@
 extern ulong opt_vector_hnsw_build_threads;
 extern ulong opt_vector_faiss_build_threads;
 extern ulong opt_vector_diskann_build_threads;
+extern ulong opt_vector_default_library;
+
+namespace vector_index {
+
+enum class vector_default_library : ulong {
+  kNone = 0,
+  kDiskAnn = 1,
+  kHnsw = 2,
+  kFaiss = 3
+};
+
+/** Return the global default vector library. */
+vector_default_library global_vector_default_library();
+
+}  // namespace vector_index
 
 #endif  // SQL_VECTOR_VECTOR_INDEX_BUILD_OPTIONS_H

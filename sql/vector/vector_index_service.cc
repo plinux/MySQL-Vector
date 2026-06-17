@@ -299,8 +299,17 @@ bool index_service::register_index_from_strings(const std::string &index_name,
   backend_provider provider_value = backend_provider::kNative;
 
   if (!parse_metric(metric, &metric_value)) return false;
-  if (!parse_backend_mode(mode, &mode_value)) return false;
-  if (!parse_backend_provider(provider, &provider_value)) return false;
+  if (provider.empty()) {
+    if (!default_backend_provider(&provider_value)) return false;
+  } else if (!parse_backend_provider(provider, &provider_value)) {
+    return false;
+  }
+  if (mode.empty()) {
+    if (!default_backend_mode_for_provider(provider_value, &mode_value))
+      return false;
+  } else if (!parse_backend_mode(mode, &mode_value)) {
+    return false;
+  }
 
   index_config config;
   config.dimension = dimension;

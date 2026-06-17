@@ -1,13 +1,15 @@
---source include/have_vector_index.inc
+--source include/have_vector_debug_native.inc
+--source include/have_vector_faiss.inc
+--source include/have_vector_hnsw.inc
 
 --echo #
 --echo # WL#vector-v1: SQL wrapper for vector index registry service
 --echo #
 
 SELECT VEC_INDEX_LIST();
-SELECT VEC_INDEX_CREATE('idx_mem', 2);
+SELECT VEC_INDEX_CREATE('idx_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 --error ER_WRONG_ARGUMENTS
-SELECT VEC_INDEX_CREATE('idx_mem', 2);
+SELECT VEC_INDEX_CREATE('idx_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
 SELECT VEC_INDEX_INFO('idx_mem');
 SELECT VEC_INDEX_LIST();

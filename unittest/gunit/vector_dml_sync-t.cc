@@ -38,6 +38,7 @@
 #include "unittest/gunit/fake_table.h"
 #include "unittest/gunit/mock_field_long.h"
 #include "unittest/gunit/test_utils.h"
+#include "unittest/gunit/vector_test_utils.h"
 
 namespace vector_dml_sync_unittest {
 
@@ -229,6 +230,7 @@ class VectorDmlSyncFixture : public ::testing::Test {
         table->field[0]->field_name));
   }
 
+  vector_gunit::NativeProviderGuard native_provider_guard_;
   Server_initializer initializer_;
   in_memory_truth_store store_;
 };

@@ -144,6 +144,7 @@
 #include "sql/tztime.h"                    // my_tz_SYSTEM
 #ifdef HAVE_VECTOR_INDEX
 #include "sql/vector/vector_index_ddl_formatter.h"
+#include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_status_fields.h"
 #include "sql/vector/vector_index_truth_store.h"
@@ -5233,6 +5234,35 @@ static int fill_schema_engines(THD *thd, Table_ref *tables, Item *) {
   return 0;
 }
 
+#ifdef HAVE_VECTOR_INDEX
+static int fill_vector_libraries(THD *thd, Table_ref *tables, Item *) {
+  DBUG_TRACE;
+
+  TABLE *table = tables->table;
+  const CHARSET_INFO *cs = system_charset_info;
+  size_t library_count = 0;
+  const vector_index::vector_library_status *libraries =
+      vector_index::vector_library_statuses(&library_count);
+
+  for (size_t i = 0; i < library_count; ++i) {
+    const vector_index::vector_library_status &library = libraries[i];
+    const char *support = library.supported ? "YES" : "NO";
+    const char *offline_build =
+        !library.offline_build_applicable
+            ? "N/A"
+            : (library.offline_build_supported ? "YES" : "NO");
+
+    restore_record(table, s->default_values);
+    table->field[0]->store(library.library, strlen(library.library), cs);
+    table->field[1]->store(support, strlen(support), cs);
+    table->field[2]->store(offline_build, strlen(offline_build), cs);
+    table->field[3]->store(library.comment, strlen(library.comment), cs);
+    if (schema_table_store_record(thd, table)) return 1;
+  }
+  return 0;
+}
+#endif
+
 /* Define fields' indexes for KEYS of temporary tables */
 #define TMP_TABLE_KEYS_TABLE_NAME 0
 #define TMP_TABLE_KEYS_IS_NON_UNIQUE 1
@@ -5996,6 +6026,15 @@ ST_FIELD_INFO engines_fields_info[] = {
     {"SAVEPOINTS", 3, MYSQL_TYPE_STRING, 0, 1, "Savepoints", 0},
     {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
 
+#ifdef HAVE_VECTOR_INDEX
+ST_FIELD_INFO vector_libraries_fields_info[] = {
+    {"LIBRARY", 64, MYSQL_TYPE_STRING, 0, 0, "Library", 0},
+    {"SUPPORT", 8, MYSQL_TYPE_STRING, 0, 0, "Support", 0},
+    {"OFFLINE_BUILD", 8, MYSQL_TYPE_STRING, 0, 0, "Offline build", 0},
+    {"COMMENT", 128, MYSQL_TYPE_STRING, 0, 0, "Comment", 0},
+    {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
+#endif
+
 ST_FIELD_INFO tmp_table_keys_fields_info[] = {
     {"TABLE_NAME", NAME_CHAR_LEN, MYSQL_TYPE_STRING, 0, 0, "Table", 0},
     {"NON_UNIQUE", 1, MYSQL_TYPE_LONGLONG, 0, 0, "Non_unique", 0},
@@ -6142,6 +6181,10 @@ ST_SCHEMA_TABLE schema_tables[] = {
      fill_schema_column_privileges, nullptr, nullptr, false},
     {"ENGINES", engines_fields_info, fill_schema_engines, make_old_format,
      nullptr, false},
+#ifdef HAVE_VECTOR_INDEX
+    {"VECTOR_LIBRARIES", vector_libraries_fields_info, fill_vector_libraries,
+     make_old_format, nullptr, false},
+#endif
     {"OPEN_TABLES", open_tables_fields_info, fill_open_tables, make_old_format,
      nullptr, true},
     {"OPTIMIZER_TRACE", optimizer_trace_info, fill_optimizer_trace_info,

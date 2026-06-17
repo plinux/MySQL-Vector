@@ -1,4 +1,4 @@
---source include/have_vector_index.inc
+--source include/have_vector_debug_native.inc
 
 --echo #
 --echo # WL#vector-v1: quarantine corrupt prepared artifact during startup load

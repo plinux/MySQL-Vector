@@ -50,8 +50,8 @@ longlong Item_func_vec_index_create::val_int() {
   std::string index_name;
   to_std_string(name, &index_name);
   std::string metric = "euclidean";
-  std::string mode = "memory";
-  std::string provider = "native";
+  std::string mode;
+  std::string provider;
   vector_index_registry::create_index_options options;
 
   String metric_buf;
@@ -66,11 +66,19 @@ longlong Item_func_vec_index_create::val_int() {
     const String *mode_arg = args[3]->val_str(&mode_buf);
     if (mode_arg == nullptr || args[3]->null_value) return error_int();
     to_std_string(mode_arg, &mode);
+    if (mode.empty()) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+      return error_int();
+    }
   }
   if (arg_count >= 5) {
     const String *provider_arg = args[4]->val_str(&provider_buf);
     if (provider_arg == nullptr || args[4]->null_value) return error_int();
     to_std_string(provider_arg, &provider);
+    if (provider.empty()) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+      return error_int();
+    }
   }
   if (arg_count >= 6) {
     const longlong build_threads_ll = args[5]->val_int();

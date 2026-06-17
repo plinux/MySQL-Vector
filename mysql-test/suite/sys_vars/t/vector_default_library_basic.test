@@ -1,0 +1,98 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # Variable name : vector_default_library
+--echo #
+
+SELECT @@global.vector_default_library IN
+       ('', 'diskann', 'hnsw', 'faiss') AS default_library_is_valid;
+SELECT COUNT(*) = 1 AS global_variable_registered
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='vector_default_library';
+SELECT COUNT(*) = 1 AS session_variable_registered
+FROM performance_schema.session_variables
+WHERE VARIABLE_NAME='vector_default_library';
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_default_library;
+
+--Error ER_BAD_FIELD_ERROR
+SELECT vector_default_library;
+
+--disable_query_log
+--let $diskann_support= query_get_value("SELECT SUPPORT FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES WHERE LIBRARY = 'diskann'", SUPPORT, 1)
+--let $hnsw_support= query_get_value("SELECT SUPPORT FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES WHERE LIBRARY = 'hnsw'", SUPPORT, 1)
+--let $faiss_support= query_get_value("SELECT SUPPORT FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES WHERE LIBRARY = 'faiss'", SUPPORT, 1)
+--enable_query_log
+
+if (`SELECT '$diskann_support' = 'YES'`)
+{
+  --disable_query_log
+  SET GLOBAL vector_default_library='diskann';
+  --enable_query_log
+  if (`SELECT @@global.vector_default_library <> 'diskann'`)
+  {
+    --die vector_default_library=diskann was rejected despite compiled DiskANN support
+  }
+}
+if (`SELECT '$diskann_support' = 'NO'`)
+{
+  --disable_query_log
+  --disable_result_log
+  --Error ER_WRONG_VALUE_FOR_VAR
+  SET GLOBAL vector_default_library='diskann';
+  --enable_result_log
+  --enable_query_log
+}
+
+if (`SELECT '$hnsw_support' = 'YES'`)
+{
+  --disable_query_log
+  SET GLOBAL vector_default_library='hnsw';
+  --enable_query_log
+  if (`SELECT @@global.vector_default_library <> 'hnsw'`)
+  {
+    --die vector_default_library=hnsw was rejected despite compiled hnswlib support
+  }
+}
+if (`SELECT '$hnsw_support' = 'NO'`)
+{
+  --disable_query_log
+  --disable_result_log
+  --Error ER_WRONG_VALUE_FOR_VAR
+  SET GLOBAL vector_default_library='hnsw';
+  --enable_result_log
+  --enable_query_log
+}
+
+if (`SELECT '$faiss_support' = 'YES'`)
+{
+  --disable_query_log
+  SET GLOBAL vector_default_library='faiss';
+  --enable_query_log
+  if (`SELECT @@global.vector_default_library <> 'faiss'`)
+  {
+    --die vector_default_library=faiss was rejected despite compiled Faiss support
+  }
+}
+if (`SELECT '$faiss_support' = 'NO'`)
+{
+  --disable_query_log
+  --disable_result_log
+  --Error ER_WRONG_VALUE_FOR_VAR
+  SET GLOBAL vector_default_library='faiss';
+  --enable_result_log
+  --enable_query_log
+}
+
+--disable_query_log
+SET GLOBAL vector_default_library='';
+--enable_query_log
+SELECT @@global.vector_default_library = '' AS is_empty;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_default_library='invalid';
+
+SET GLOBAL vector_default_library=DEFAULT;
+SELECT @@global.vector_default_library IN
+       ('', 'diskann', 'hnsw', 'faiss') AS default_library_is_valid;

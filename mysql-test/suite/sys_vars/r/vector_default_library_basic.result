@@ -1,0 +1,31 @@
+#
+# Variable name : vector_default_library
+#
+SELECT @@global.vector_default_library IN
+('', 'diskann', 'hnsw', 'faiss') AS default_library_is_valid;
+default_library_is_valid
+1
+SELECT COUNT(*) = 1 AS global_variable_registered
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='vector_default_library';
+global_variable_registered
+1
+SELECT COUNT(*) = 1 AS session_variable_registered
+FROM performance_schema.session_variables
+WHERE VARIABLE_NAME='vector_default_library';
+session_variable_registered
+1
+SELECT @@session.vector_default_library;
+ERROR HY000: Variable 'vector_default_library' is a GLOBAL variable
+SELECT vector_default_library;
+ERROR 42S22: Unknown column 'vector_default_library' in 'field list'
+SELECT @@global.vector_default_library = '' AS is_empty;
+is_empty
+1
+SET GLOBAL vector_default_library='invalid';
+ERROR 42000: Variable 'vector_default_library' can't be set to the value of 'invalid'
+SET GLOBAL vector_default_library=DEFAULT;
+SELECT @@global.vector_default_library IN
+('', 'diskann', 'hnsw', 'faiss') AS default_library_is_valid;
+default_library_is_valid
+1

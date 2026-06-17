@@ -45,6 +45,23 @@ class ScopedDebugFlag {
   ScopedDebugFlag &operator=(const ScopedDebugFlag &) = delete;
 };
 
+class NativeProviderGuard {
+ public:
+  explicit NativeProviderGuard(bool supported = true)
+      : m_original(vector_index::native_provider_supported_for_testing()) {
+    vector_index::set_native_provider_supported_for_testing(supported);
+  }
+  ~NativeProviderGuard() {
+    vector_index::set_native_provider_supported_for_testing(m_original);
+  }
+
+  NativeProviderGuard(const NativeProviderGuard &) = delete;
+  NativeProviderGuard &operator=(const NativeProviderGuard &) = delete;
+
+ private:
+  bool m_original;
+};
+
 inline Xa_state_list::instantiation_tuple make_xa_state_list_for_testing() {
   const ulong original_tc_log_page_size = tc_log_page_size;
   if (tc_log_page_size == 0) tc_log_page_size = my_getpagesize();

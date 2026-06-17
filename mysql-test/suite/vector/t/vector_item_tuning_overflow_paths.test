@@ -1,4 +1,4 @@
---source include/have_vector_index.inc
+--source include/have_vector_debug_native.inc
 
 --echo #
 --echo # WL#vector-v1: item_vectorfunc tuning overflow argument branches

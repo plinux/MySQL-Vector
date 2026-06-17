@@ -1,10 +1,11 @@
---source include/have_vector_index.inc
+--source include/have_vector_debug_native.inc
+--source include/have_vector_diskann.inc
 
 --echo #
 --echo # WL#vector-v1: staged vector index transaction semantics
 --echo #
 
-SELECT VEC_INDEX_CREATE('idx_txn', 2);
+SELECT VEC_INDEX_CREATE('idx_txn', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 
 SET @txn1 = VEC_INDEX_TXN_BEGIN();
 SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn1, 1, '[1,1]');

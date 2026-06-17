@@ -26,3 +26,23 @@
 ulong opt_vector_hnsw_build_threads = 0;
 ulong opt_vector_faiss_build_threads = 0;
 ulong opt_vector_diskann_build_threads = 0;
+ulong opt_vector_default_library =
+    static_cast<ulong>(vector_index::vector_default_library::kNone);
+
+namespace vector_index {
+
+vector_default_library global_vector_default_library() {
+  switch (static_cast<vector_default_library>(opt_vector_default_library)) {
+    case vector_default_library::kNone:
+      return vector_default_library::kNone;
+    case vector_default_library::kDiskAnn:
+      return vector_default_library::kDiskAnn;
+    case vector_default_library::kHnsw:
+      return vector_default_library::kHnsw;
+    case vector_default_library::kFaiss:
+      return vector_default_library::kFaiss;
+  }
+  return vector_default_library::kNone;
+}
+
+}  // namespace vector_index

@@ -1631,6 +1631,10 @@ The following options may be given as the first argument:
  Turns on additional validation of authentication plugins
  assigned to user accounts. 
  (Defaults to on; use --skip-validate-user-plugins to disable.)
+ --vector-default-library=name 
+ Default vector library used when CREATE VECTOR INDEX or
+ VEC_INDEX_CREATE() omits the provider. Empty means no
+ default provider is available.
  --vector-diskann-build-threads[=#] 
  Default worker count for DiskANN vector index bulk build
  and rebuild. Use 0 for automatic hardware-thread based
@@ -2085,6 +2089,7 @@ updatable-views-with-limit YES
 upgrade AUTO
 validate-config FALSE
 validate-user-plugins TRUE
+vector-default-library hnsw
 vector-diskann-build-threads 0
 vector-faiss-build-threads 0
 vector-hnsw-build-threads 0

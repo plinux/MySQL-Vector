@@ -1,5 +1,7 @@
---source include/have_vector_index.inc
---source include/have_debug.inc
+--source include/have_vector_debug_native.inc
+--source include/have_vector_faiss.inc
+--source include/have_vector_hnsw.inc
+--source include/have_vector_diskann.inc
 
 --echo #
 --echo # WL#vector-v1: tuning and debug function error branches

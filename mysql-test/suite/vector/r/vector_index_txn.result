@@ -1,8 +1,8 @@
 #
 # WL#vector-v1: staged vector index transaction semantics
 #
-SELECT VEC_INDEX_CREATE('idx_txn', 2);
-VEC_INDEX_CREATE('idx_txn', 2)
+SELECT VEC_INDEX_CREATE('idx_txn', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_txn', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
 1
 SET @txn1 = VEC_INDEX_TXN_BEGIN();
 SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn1, 1, '[1,1]');

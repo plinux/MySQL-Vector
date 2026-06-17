@@ -1,4 +1,7 @@
 --source include/have_vector_index.inc
+--source include/have_vector_faiss.inc
+--source include/have_vector_hnsw.inc
+--source include/have_vector_diskann.inc
 
 --source include/have_debug.inc
 

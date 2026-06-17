@@ -2300,8 +2300,6 @@ Sql_cmd *PT_create_vector_index_stmt::make_cmd([[maybe_unused]] THD *thd) {
   std::string mode = to_string(m_mode);
   std::string provider = to_string(m_provider);
   if (metric.empty()) metric = "euclidean";
-  if (mode.empty()) mode = "memory";
-  if (provider.empty()) provider = "native";
 
   return new (thd->mem_root) Sql_cmd_create_vector_index(
       m_if_not_exists, to_string(m_column_name), m_dimension, std::move(metric),

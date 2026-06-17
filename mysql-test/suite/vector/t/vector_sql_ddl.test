@@ -1,4 +1,5 @@
---source include/have_vector_index.inc
+--source include/have_vector_debug_native.inc
+--source include/have_vector_faiss.inc
 
 --echo #
 --echo # WL#vector-v1: SQL DDL for vector index lifecycle
@@ -11,9 +12,9 @@ CREATE TABLE t_vector_ddl (
 ) ENGINE=InnoDB;
 
 INSERT INTO t_vector_ddl VALUES (9, VEC_FROMTEXT('[9,9]'));
-CREATE VECTOR INDEX ON t_vector_ddl(v) WITH (2);
+CREATE VECTOR INDEX ON t_vector_ddl(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SHOW CREATE TABLE t_vector_ddl;
-CREATE VECTOR INDEX IF NOT EXISTS ON t_vector_ddl(v) WITH (2);
+CREATE VECTOR INDEX IF NOT EXISTS ON t_vector_ddl(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SELECT VEC_INDEX_SEARCH('test.t_vector_ddl.v', VEC_FROMTEXT('[9,9]'), 1);
 
 SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl.v'
@@ -97,7 +98,7 @@ CREATE TABLE t_vector_alter_dropcol (
   v VECTOR(2),
   c INT
 ) ENGINE=InnoDB;
-CREATE VECTOR INDEX ON t_vector_alter_dropcol(v) WITH (2);
+CREATE VECTOR INDEX ON t_vector_alter_dropcol(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SHOW VECTOR STATUS LIKE 'test.t_vector_alter_dropcol.v.%';
 ALTER TABLE t_vector_alter_dropcol DROP COLUMN v;
 SHOW VECTOR STATUS LIKE 'test.t_vector_alter_dropcol.v.%';

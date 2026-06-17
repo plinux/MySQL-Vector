@@ -1,0 +1,70 @@
+SELECT COUNT(*) AS libraries
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES;
+libraries
+3
+SELECT COUNT(*) AS known_libraries
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE LIBRARY IN ('diskann', 'faiss', 'hnsw');
+known_libraries
+3
+SELECT COUNT(*) AS invalid_support_values
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE SUPPORT NOT IN ('YES', 'NO');
+invalid_support_values
+0
+SELECT COUNT(*) AS invalid_offline_build_values
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE OFFLINE_BUILD NOT IN ('YES', 'NO', 'N/A');
+invalid_offline_build_values
+0
+SELECT COUNT(*) AS invalid_non_diskann_offline_build
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE LIBRARY <> 'diskann' AND OFFLINE_BUILD <> 'N/A';
+invalid_non_diskann_offline_build
+0
+SELECT COUNT(*) AS invalid_diskann_offline_build
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE LIBRARY = 'diskann' AND OFFLINE_BUILD NOT IN ('YES', 'NO');
+invalid_diskann_offline_build
+0
+SELECT COUNT(*) AS offline_build_without_provider
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE OFFLINE_BUILD = 'YES' AND SUPPORT <> 'YES';
+offline_build_without_provider
+0
+SELECT LIBRARY
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+ORDER BY LIBRARY;
+LIBRARY
+diskann
+faiss
+hnsw
+SHOW TABLES FROM INFORMATION_SCHEMA LIKE 'VECTOR_LIBRARIES';
+Tables_in_information_schema (VECTOR_LIBRARIES)
+VECTOR_LIBRARIES
+SELECT TABLE_NAME
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_SCHEMA = 'information_schema'
+  AND TABLE_NAME = 'VECTOR_LIBRARIES';
+TABLE_NAME
+VECTOR_LIBRARIES
+SELECT COLUMN_NAME, DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'information_schema'
+  AND TABLE_NAME = 'VECTOR_LIBRARIES'
+ORDER BY ORDINAL_POSITION;
+COLUMN_NAME	DATA_TYPE
+LIBRARY	varchar
+SUPPORT	varchar
+OFFLINE_BUILD	varchar
+COMMENT	varchar
+SELECT @@global.vector_default_library IN
+('', 'diskann', 'hnsw', 'faiss') AS valid_default_library;
+valid_default_library
+1
+CREATE TABLE t_vector_library_type_only (v VECTOR(2));
+INSERT INTO t_vector_library_type_only VALUES (VEC_FROMTEXT('[1,2]'));
+SELECT VEC_TOTEXT(v) FROM t_vector_library_type_only;
+VEC_TOTEXT(v)
+[1,2]
+DROP TABLE t_vector_library_type_only;

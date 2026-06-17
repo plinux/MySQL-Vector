@@ -6909,6 +6909,72 @@ static Sys_var_ulong Sys_vector_diskann_build_threads(
     VALID_RANGE(0, vector_index::k_max_build_threads), DEFAULT(0),
     BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
     ON_CHECK(check_vector_diskann_build_threads));
+
+static const char *vector_default_library_names[] = {
+    "", "diskann", "hnsw", "faiss", nullptr};
+
+static bool vector_default_library_supported(
+    vector_index::vector_default_library library) {
+  switch (library) {
+    case vector_index::vector_default_library::kNone:
+      return true;
+    case vector_index::vector_default_library::kDiskAnn:
+#ifdef HAVE_DISKANN
+      return true;
+#else
+      return false;
+#endif
+    case vector_index::vector_default_library::kHnsw:
+#ifdef HAVE_HNSWLIB
+      return true;
+#else
+      return false;
+#endif
+    case vector_index::vector_default_library::kFaiss:
+#ifdef HAVE_FAISS
+      return true;
+#else
+      return false;
+#endif
+  }
+  return false;
+}
+
+static bool check_vector_default_library(sys_var *self, THD *, set_var *var) {
+  const ulong value = static_cast<ulong>(var->save_result.ulonglong_value);
+  const auto library =
+      static_cast<vector_index::vector_default_library>(value);
+  if (vector_default_library_supported(library)) return false;
+
+  const char *value_name =
+      value < array_elements(vector_default_library_names) - 1
+          ? vector_default_library_names[value]
+          : "";
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value_name);
+  return true;
+}
+
+static constexpr ulong vector_default_library_compile_default() {
+#ifdef HAVE_DISKANN
+  return static_cast<ulong>(vector_index::vector_default_library::kDiskAnn);
+#elif defined(HAVE_HNSWLIB)
+  return static_cast<ulong>(vector_index::vector_default_library::kHnsw);
+#elif defined(HAVE_FAISS)
+  return static_cast<ulong>(vector_index::vector_default_library::kFaiss);
+#else
+  return static_cast<ulong>(vector_index::vector_default_library::kNone);
+#endif
+}
+
+static Sys_var_enum Sys_vector_default_library(
+    "vector_default_library",
+    "Default vector library used when CREATE VECTOR INDEX or "
+    "VEC_INDEX_CREATE() omits the provider. Empty means no default provider "
+    "is available.",
+    GLOBAL_VAR(opt_vector_default_library), CMD_LINE(REQUIRED_ARG),
+    vector_default_library_names,
+    DEFAULT(vector_default_library_compile_default()), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(check_vector_default_library));
 #endif
 
 static Sys_var_enum Sys_block_encryption_mode(

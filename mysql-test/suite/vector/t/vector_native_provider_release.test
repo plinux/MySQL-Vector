@@ -1,0 +1,9 @@
+--source include/have_vector_index.inc
+--source include/have_nodebug.inc
+
+--echo #
+--echo # WL#vector-v1: release builds reject the debug-only native provider
+--echo #
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_CREATE('idx_release_native', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');

@@ -1,4 +1,4 @@
---source include/have_vector_index.inc
+--source include/have_vector_diskann.inc
 
 --echo #
 --echo # WL#vector-v1: recover mutable DISKANN serving state from committed snapshot

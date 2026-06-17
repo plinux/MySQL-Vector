@@ -1,4 +1,5 @@
 --source include/have_vector_index.inc
+--source include/have_vector_faiss.inc
 
 --echo #
 --echo # WL#vector-v1: logical dump and restore preserves EXTERNAL vector indexes

@@ -1,4 +1,5 @@
---source include/have_vector_index.inc
+--source include/have_vector_debug_native.inc
+--source include/have_vector_hnsw.inc
 
 --echo #
 --echo # WL#vector-v1: bulk load and shadow rebuild path

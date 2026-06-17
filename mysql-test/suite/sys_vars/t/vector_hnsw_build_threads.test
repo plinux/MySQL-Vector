@@ -1,4 +1,4 @@
---source include/have_vector_index.inc
+--source include/have_vector_hnsw.inc
 
 --echo #
 --echo # WL#vector-v1: configure HNSWLIB build worker count

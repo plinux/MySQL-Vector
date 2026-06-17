@@ -395,6 +395,22 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
   const bool ok = g_index_service.register_index_from_strings(
       index_name, dimension, metric, mode, provider);
   if (!ok) return false;
+  vector_index::index_service::index_config registered_config;
+  bool supports_mutations = false;
+  size_t entry_count = 0;
+  size_t committed_entry_count = 0;
+  if (!g_index_service.describe_index(index_name, &registered_config,
+                                      &supports_mutations, &entry_count,
+                                      &committed_entry_count)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
+  const std::string effective_provider =
+      vector_index::backend_provider_to_string(registered_config.provider);
   if (!options.initial_lifecycle_state.empty() &&
       !g_index_service.set_lifecycle_state(index_name,
                                            options.initial_lifecycle_state)) {
@@ -406,7 +422,7 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
     return false;
   }
   const uint32_t hnsw_build_threads =
-      effective_hnsw_build_threads(provider, options);
+      effective_hnsw_build_threads(effective_provider, options);
   if (hnsw_build_threads != 0 &&
       !g_index_service.set_hnsw_build_threads(index_name, hnsw_build_threads)) {
     if (!rollback_runtime_state_locked(metadata_before, committed_before,
@@ -417,7 +433,7 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
     return false;
   }
   const uint32_t faiss_build_threads =
-      effective_faiss_build_threads(provider, options);
+      effective_faiss_build_threads(effective_provider, options);
   if (faiss_build_threads != 0 &&
       !g_index_service.set_faiss_build_threads(index_name,
                                                faiss_build_threads)) {
@@ -429,7 +445,7 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
     return false;
   }
   const uint32_t diskann_build_threads =
-      effective_diskann_build_threads(provider, options);
+      effective_diskann_build_threads(effective_provider, options);
   if (diskann_build_threads != 0 &&
       !g_index_service.set_diskann_build_threads(index_name,
                                                  diskann_build_threads)) {

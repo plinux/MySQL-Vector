@@ -40,6 +40,8 @@
 #include <string>
 #include <utility>
 
+#include "sql/vector/vector_index_build_options.h"
+
 #ifdef HAVE_FAISS
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexHNSW.h>
@@ -403,6 +405,58 @@ namespace vector_index {
 
 namespace {
 
+constexpr vector_library_status k_vector_library_statuses[] = {
+#ifdef HAVE_FAISS
+    {"faiss", true, false, false, "Faiss backend is compiled in"},
+#else
+    {"faiss", false, false, false, "Faiss backend is not compiled in"},
+#endif
+#ifdef HAVE_DISKANN
+#if defined(MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED) || \
+    defined(MYSQL_VECTOR_DISKANN_OFFLINE_DEFAULT_LIB)
+    {"diskann", true, true, true, "DiskANN backend is compiled in"},
+#else
+    {"diskann", true, true, false, "DiskANN backend is compiled in"},
+#endif
+#else
+    {"diskann", false, true, false, "DiskANN backend is not compiled in"},
+#endif
+#ifdef HAVE_HNSWLIB
+    {"hnsw", true, false, false, "hnswlib backend is compiled in"},
+#else
+    {"hnsw", false, false, false, "hnswlib backend is not compiled in"},
+#endif
+};
+
+constexpr bool any_vector_library_supported() {
+#if defined(HAVE_FAISS) || defined(HAVE_DISKANN) || defined(HAVE_HNSWLIB)
+  return true;
+#else
+  return false;
+#endif
+}
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+#ifndef NDEBUG
+bool g_native_provider_supported_for_testing = true;
+#else
+bool g_native_provider_supported_for_testing = false;
+#endif
+#endif
+
+bool debug_native_provider_supported() {
+#ifndef NDEBUG
+  return any_vector_library_supported();
+#else
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  return g_native_provider_supported_for_testing &&
+         any_vector_library_supported();
+#else
+  return false;
+#endif
+#endif
+}
+
 }  // namespace
 
 bool backend::load_committed_entries(
@@ -505,6 +559,8 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
                                        backend_mode mode,
                                        backend_provider provider,
                                        const std::string &index_name) {
+  if (!backend_provider_supported(provider)) return nullptr;
+
   (void)index_name;
   switch (provider) {
     case backend_provider::kNative:
@@ -528,6 +584,85 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
   }
 
   return nullptr;
+}
+
+const vector_library_status *vector_library_statuses(size_t *count) {
+  if (count != nullptr)
+    *count = sizeof(k_vector_library_statuses) /
+             sizeof(k_vector_library_statuses[0]);
+  return k_vector_library_statuses;
+}
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool native_provider_supported_for_testing() {
+  return g_native_provider_supported_for_testing;
+}
+
+void set_native_provider_supported_for_testing(bool supported) {
+  g_native_provider_supported_for_testing = supported;
+}
+#endif
+
+bool backend_provider_supported(backend_provider provider) {
+  switch (provider) {
+    case backend_provider::kNative:
+      return debug_native_provider_supported();
+    case backend_provider::kFaiss:
+#ifdef HAVE_FAISS
+      return true;
+#else
+      return false;
+#endif
+    case backend_provider::kDiskAnn:
+#ifdef HAVE_DISKANN
+      return true;
+#else
+      return false;
+#endif
+    case backend_provider::kHnswlib:
+#ifdef HAVE_HNSWLIB
+      return true;
+#else
+      return false;
+#endif
+  }
+  return false;
+}
+
+bool default_backend_provider(backend_provider *provider) {
+  if (provider == nullptr) return false;
+
+  switch (global_vector_default_library()) {
+    case vector_default_library::kNone:
+      return false;
+    case vector_default_library::kDiskAnn:
+      *provider = backend_provider::kDiskAnn;
+      return backend_provider_supported(*provider);
+    case vector_default_library::kHnsw:
+      *provider = backend_provider::kHnswlib;
+      return backend_provider_supported(*provider);
+    case vector_default_library::kFaiss:
+      *provider = backend_provider::kFaiss;
+      return backend_provider_supported(*provider);
+  }
+  return false;
+}
+
+bool default_backend_mode_for_provider(backend_provider provider,
+                                       backend_mode *mode) {
+  if (mode == nullptr) return false;
+
+  switch (provider) {
+    case backend_provider::kNative:
+    case backend_provider::kHnswlib:
+      *mode = backend_mode::kMemory;
+      return true;
+    case backend_provider::kFaiss:
+    case backend_provider::kDiskAnn:
+      *mode = backend_mode::kExternal;
+      return true;
+  }
+  return false;
 }
 
 bool parse_metric(const std::string &value, metric_type *metric) {

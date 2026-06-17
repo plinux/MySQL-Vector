@@ -9,7 +9,7 @@ id INT PRIMARY KEY,
 v VECTOR(2)
 ) ENGINE=InnoDB;
 INSERT INTO t_vector_ddl VALUES (9, VEC_FROMTEXT('[9,9]'));
-CREATE VECTOR INDEX ON t_vector_ddl(v) WITH (2);
+CREATE VECTOR INDEX ON t_vector_ddl(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SHOW CREATE TABLE t_vector_ddl;
 Table	Create Table
 t_vector_ddl	CREATE TABLE `t_vector_ddl` (
@@ -18,7 +18,7 @@ t_vector_ddl	CREATE TABLE `t_vector_ddl` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 CREATE VECTOR INDEX ON `t_vector_ddl`(`v`) WITH (2, 'euclidean', 'memory', 'native')
-CREATE VECTOR INDEX IF NOT EXISTS ON t_vector_ddl(v) WITH (2);
+CREATE VECTOR INDEX IF NOT EXISTS ON t_vector_ddl(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SELECT VEC_INDEX_SEARCH('test.t_vector_ddl.v', VEC_FROMTEXT('[9,9]'), 1);
 VEC_INDEX_SEARCH('test.t_vector_ddl.v', VEC_FROMTEXT('[9,9]'), 1)
 [9]
@@ -212,7 +212,7 @@ id INT PRIMARY KEY,
 v VECTOR(2),
 c INT
 ) ENGINE=InnoDB;
-CREATE VECTOR INDEX ON t_vector_alter_dropcol(v) WITH (2);
+CREATE VECTOR INDEX ON t_vector_alter_dropcol(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SHOW VECTOR STATUS LIKE 'test.t_vector_alter_dropcol.v.%';
 Section	Variable_name	Value
 INDEX_STATE	test.t_vector_alter_dropcol.v.dimension	2

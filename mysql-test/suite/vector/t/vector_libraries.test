@@ -1,0 +1,204 @@
+--source include/have_vector_index.inc
+
+SELECT COUNT(*) AS libraries
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES;
+
+SELECT COUNT(*) AS known_libraries
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE LIBRARY IN ('diskann', 'faiss', 'hnsw');
+
+SELECT COUNT(*) AS invalid_support_values
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE SUPPORT NOT IN ('YES', 'NO');
+
+SELECT COUNT(*) AS invalid_offline_build_values
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE OFFLINE_BUILD NOT IN ('YES', 'NO', 'N/A');
+
+SELECT COUNT(*) AS invalid_non_diskann_offline_build
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE LIBRARY <> 'diskann' AND OFFLINE_BUILD <> 'N/A';
+
+SELECT COUNT(*) AS invalid_diskann_offline_build
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE LIBRARY = 'diskann' AND OFFLINE_BUILD NOT IN ('YES', 'NO');
+
+SELECT COUNT(*) AS offline_build_without_provider
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+WHERE OFFLINE_BUILD = 'YES' AND SUPPORT <> 'YES';
+
+SELECT LIBRARY
+FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES
+ORDER BY LIBRARY;
+
+SHOW TABLES FROM INFORMATION_SCHEMA LIKE 'VECTOR_LIBRARIES';
+
+SELECT TABLE_NAME
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_SCHEMA = 'information_schema'
+  AND TABLE_NAME = 'VECTOR_LIBRARIES';
+
+SELECT COLUMN_NAME, DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'information_schema'
+  AND TABLE_NAME = 'VECTOR_LIBRARIES'
+ORDER BY ORDINAL_POSITION;
+
+SELECT @@global.vector_default_library IN
+       ('', 'diskann', 'hnsw', 'faiss') AS valid_default_library;
+
+CREATE TABLE t_vector_library_type_only (v VECTOR(2));
+INSERT INTO t_vector_library_type_only VALUES (VEC_FROMTEXT('[1,2]'));
+SELECT VEC_TOTEXT(v) FROM t_vector_library_type_only;
+DROP TABLE t_vector_library_type_only;
+
+--disable_query_log
+DELIMITER |;
+CREATE PROCEDURE try_vector_library_create(
+  IN provider_name VARCHAR(32),
+  IN backend_mode_name VARCHAR(32),
+  OUT create_ok INT
+)
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET create_ok = 0;
+  SET create_ok = 1;
+  SELECT VEC_INDEX_CREATE(CONCAT('idx_no_', LOWER(provider_name)), 2,
+                          'EUCLIDEAN', backend_mode_name, provider_name)
+    INTO @vector_library_create_result;
+END|
+
+CREATE PROCEDURE try_default_vector_library_create_omitted(
+  IN index_name VARCHAR(64),
+  OUT create_ok INT
+)
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET create_ok = 0;
+  SET create_ok = 1;
+  SELECT VEC_INDEX_CREATE(index_name, 2)
+    INTO @vector_library_create_result;
+END|
+DELIMITER ;|
+--let $faiss_support= query_get_value("SELECT SUPPORT FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES WHERE LIBRARY = 'faiss'", SUPPORT, 1)
+--let $diskann_support= query_get_value("SELECT SUPPORT FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES WHERE LIBRARY = 'diskann'", SUPPORT, 1)
+--let $hnsw_support= query_get_value("SELECT SUPPORT FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES WHERE LIBRARY = 'hnsw'", SUPPORT, 1)
+--let $supported_library_count= query_get_value("SELECT COUNT(*) AS supported FROM INFORMATION_SCHEMA.VECTOR_LIBRARIES WHERE SUPPORT = 'YES'", supported, 1)
+--enable_query_log
+
+--disable_query_log
+SET GLOBAL vector_default_library = '';
+CALL try_default_vector_library_create_omitted('idx_empty_default', @create_ok);
+--enable_query_log
+if (`SELECT @create_ok <> 0`)
+{
+  --die Empty vector_default_library accepted provider-omitted index creation
+}
+
+if (`SELECT '$faiss_support' = 'NO'`)
+{
+  --disable_query_log
+  --disable_result_log
+  CALL try_vector_library_create('FAISS', 'EXTERNAL', @create_ok);
+  --Error ER_WRONG_VALUE_FOR_VAR
+  SET GLOBAL vector_default_library = 'faiss';
+  --enable_result_log
+  --enable_query_log
+  if (`SELECT @create_ok <> 0`)
+  {
+    --die Disabled Faiss provider was accepted
+  }
+}
+
+if (`SELECT '$faiss_support' = 'YES'`)
+{
+  --disable_query_log
+  SET GLOBAL vector_default_library = 'faiss';
+  CALL try_default_vector_library_create_omitted('idx_default_faiss',
+                                                @create_ok);
+  --let $default_provider= query_get_value("SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_default_faiss'), '$.provider')) AS provider", provider, 1)
+  --let $default_mode= query_get_value("SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_default_faiss'), '$.mode')) AS mode", mode, 1)
+  SELECT VEC_INDEX_DROP('idx_default_faiss') INTO @drop_result;
+  --enable_query_log
+  if (`SELECT @create_ok <> 1 OR '$default_provider' <> 'faiss' OR '$default_mode' <> 'external'`)
+  {
+    --die vector_default_library=faiss did not create an external Faiss index
+  }
+}
+
+if (`SELECT '$diskann_support' = 'NO'`)
+{
+  --disable_query_log
+  --disable_result_log
+  CALL try_vector_library_create('DISKANN', 'EXTERNAL', @create_ok);
+  --Error ER_WRONG_VALUE_FOR_VAR
+  SET GLOBAL vector_default_library = 'diskann';
+  --enable_result_log
+  --enable_query_log
+  if (`SELECT @create_ok <> 0`)
+  {
+    --die Disabled DiskANN provider was accepted
+  }
+}
+
+if (`SELECT '$diskann_support' = 'YES'`)
+{
+  --disable_query_log
+  SET GLOBAL vector_default_library = 'diskann';
+  CALL try_default_vector_library_create_omitted('idx_default_diskann',
+                                                @create_ok);
+  --let $default_provider= query_get_value("SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_default_diskann'), '$.provider')) AS provider", provider, 1)
+  --let $default_mode= query_get_value("SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_default_diskann'), '$.mode')) AS mode", mode, 1)
+  SELECT VEC_INDEX_DROP('idx_default_diskann') INTO @drop_result;
+  --enable_query_log
+  if (`SELECT @create_ok <> 1 OR '$default_provider' <> 'diskann' OR '$default_mode' <> 'external'`)
+  {
+    --die vector_default_library=diskann did not create an external DiskANN index
+  }
+}
+
+if (`SELECT '$hnsw_support' = 'NO'`)
+{
+  --disable_query_log
+  --disable_result_log
+  CALL try_vector_library_create('HNSWLIB', 'MEMORY', @create_ok);
+  --Error ER_WRONG_VALUE_FOR_VAR
+  SET GLOBAL vector_default_library = 'hnsw';
+  --enable_result_log
+  --enable_query_log
+  if (`SELECT @create_ok <> 0`)
+  {
+    --die Disabled hnswlib provider was accepted
+  }
+}
+
+if (`SELECT '$hnsw_support' = 'YES'`)
+{
+  --disable_query_log
+  SET GLOBAL vector_default_library = 'hnsw';
+  CALL try_default_vector_library_create_omitted('idx_default_hnsw',
+                                                @create_ok);
+  --let $default_provider= query_get_value("SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_default_hnsw'), '$.provider')) AS provider", provider, 1)
+  --let $default_mode= query_get_value("SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_default_hnsw'), '$.mode')) AS mode", mode, 1)
+  SELECT VEC_INDEX_DROP('idx_default_hnsw') INTO @drop_result;
+  --enable_query_log
+  if (`SELECT @create_ok <> 1 OR '$default_provider' <> 'hnswlib' OR '$default_mode' <> 'memory'`)
+  {
+    --die vector_default_library=hnsw did not create a memory hnswlib index
+  }
+}
+
+if (`SELECT '$supported_library_count' = '0'`)
+{
+  --disable_query_log
+  CALL try_vector_library_create('NATIVE', 'MEMORY', @create_ok);
+  --enable_query_log
+  if (`SELECT @create_ok <> 0`)
+  {
+    --die Native debug provider was accepted without any compiled vector library
+  }
+}
+
+--disable_query_log
+SET GLOBAL vector_default_library = DEFAULT;
+DROP PROCEDURE try_default_vector_library_create_omitted;
+DROP PROCEDURE try_vector_library_create;
+--enable_query_log

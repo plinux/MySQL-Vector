@@ -1,5 +1,7 @@
 --source include/not_windows.inc
---source include/have_vector_index.inc
+--source include/have_vector_hnsw.inc
+
+let $MYSQLD_BOOTSTRAP_CMD = $MYSQLD_BOOTSTRAP_CMD --vector-default-library=hnsw;
 
 #
 # mysqld --help with vector variables

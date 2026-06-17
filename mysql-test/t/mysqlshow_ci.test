@@ -1,3 +1,4 @@
 --source include/have_case_insensitive_file_system.inc
+--source include/have_no_vector_index.inc
 --source include/mysqlshow.inc
 

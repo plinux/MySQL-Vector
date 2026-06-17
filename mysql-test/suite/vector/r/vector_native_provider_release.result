@@ -1,0 +1,5 @@
+#
+# WL#vector-v1: release builds reject the debug-only native provider
+#
+SELECT VEC_INDEX_CREATE('idx_release_native', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+ERROR HY000: Incorrect arguments to vec_index_create

@@ -2413,12 +2413,20 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest, CreateBackendFactoryReturnsExpectedImplementations) {
+#ifndef NDEBUG
   auto native_mem = vector_index::create_backend(
       2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kMemory,
       vector_index::backend_provider::kNative);
   ASSERT_NE(nullptr, native_mem);
   EXPECT_EQ(vector_index::backend_provider::kNative, native_mem->provider());
   EXPECT_TRUE(native_mem->supports_mutations());
+#else
+  vector_gunit::NativeProviderGuard native_provider_guard(false);
+  EXPECT_EQ(nullptr, vector_index::create_backend(
+                         2, vector_index::metric_type::kEuclidean,
+                         vector_index::backend_mode::kMemory,
+                         vector_index::backend_provider::kNative));
+#endif
 
   auto faiss_ext = vector_index::create_backend(
       2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,

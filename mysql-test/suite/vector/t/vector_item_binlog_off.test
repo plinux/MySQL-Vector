@@ -1,4 +1,7 @@
 --source include/have_vector_index.inc
+--source include/have_vector_faiss.inc
+--source include/have_vector_hnsw.inc
+--source include/have_vector_diskann.inc
 
 --echo #
 --echo # WL#vector-v1: item_vectorfunc direct writes with sql_log_bin disabled

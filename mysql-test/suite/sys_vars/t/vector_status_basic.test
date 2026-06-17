@@ -3,6 +3,7 @@
 --echo #
 
 --source include/have_vector_index.inc
+--source include/have_vector_faiss.inc
 
 SET @create_req_before = (
   SELECT CAST(VARIABLE_VALUE AS UNSIGNED)

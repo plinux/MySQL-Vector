@@ -1,5 +1,4 @@
---source include/have_vector_index.inc
---source include/have_debug.inc
+--source include/have_vector_debug_native.inc
 
 --echo #
 --echo # WL#vector-v1: backup and restore vector truth snapshot files

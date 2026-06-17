@@ -51,6 +51,14 @@ enum class backend_mode { kMemory, kExternal };
 enum class backend_provider { kNative, kFaiss, kDiskAnn, kHnswlib };
 enum class external_sidecar_profile { kFaiss, kDiskAnn };
 
+struct vector_library_status {
+  const char *library{nullptr};
+  bool supported{false};
+  bool offline_build_applicable{false};
+  bool offline_build_supported{false};
+  const char *comment{nullptr};
+};
+
 struct search_result {
   uint64_t doc_id{0};
   double distance{0.0};
@@ -554,6 +562,33 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
                                        backend_mode mode,
                                        backend_provider provider,
                                        const std::string &index_name = "");
+
+/** Return compiled vector-library support rows for INFORMATION_SCHEMA. */
+const vector_library_status *vector_library_statuses(size_t *count);
+
+/**
+  Check whether a provider can be selected by CREATE VECTOR INDEX.
+
+  The native provider is only selectable in debug builds and only when at least
+  one real vector-search library is compiled, so all-disabled binaries cannot
+  accidentally create debug-native indexes.
+*/
+bool backend_provider_supported(backend_provider provider);
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+/** Return whether unit-test processes may construct the exact native provider. */
+bool native_provider_supported_for_testing();
+
+/** Enable or disable the exact native provider for unit-test processes. */
+void set_native_provider_supported_for_testing(bool supported);
+#endif
+
+/** Return the global default provider for an omitted provider option. */
+bool default_backend_provider(backend_provider *provider);
+
+/** Return the default mode for an omitted mode option after provider choice. */
+bool default_backend_mode_for_provider(backend_provider provider,
+                                       backend_mode *mode);
 
 /**
   Parse metric option text into enum value.
