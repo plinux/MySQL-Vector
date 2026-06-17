@@ -438,6 +438,8 @@ class faiss_backend final : public backend {
       const override;
   bool load_committed_entries(
       const std::unordered_map<uint64_t, vector_data> &entries) override;
+  bool rebuild_from_committed_entries_from_reader(
+      const committed_entry_reader &reader) override;
   bool recover() override;
   bool last_recover_used_fallback() const override {
     return m_last_recover_used_fallback != 0;
@@ -478,6 +480,7 @@ class faiss_backend final : public backend {
                            uint32_t faiss_pq_bits) override;
   uint32_t faiss_pq_m() const override;
   uint32_t faiss_pq_bits() const override;
+  backend_build_diagnostics build_diagnostics() const override;
   bool supports_mutations() const override { return true; }
   bool external_manifest_present() const override;
   uint64_t external_manifest_generation() const override;
@@ -518,16 +521,24 @@ class faiss_backend final : public backend {
   uint32_t m_faiss_build_threads{0};
   size_t m_faiss_last_training_count{0};
   bool m_keep_loaded_external_index{true};
+  backend_build_diagnostics m_last_build_diagnostics;
 
   bool initialize_faiss_index(bool use_ivfpq = true);
+  bool train_faiss_ivf_index(const std::vector<float> &training_data,
+                             size_t training_rows, uint64_t *train_ms);
+  void record_build_diagnostics(const char *input_source, size_t row_count,
+                                size_t effective_threads);
   bool rebuild_external_faiss_index(
       const std::unordered_map<uint64_t, vector_data> &entries);
+  bool rebuild_external_faiss_index_from_reader(
+      const committed_entry_reader &reader);
   bool apply_faiss_mutation(uint64_t doc_id, const vector_data *vector);
   bool search_with_faiss(const vector_data &query, size_t top_k,
                        std::vector<search_result> *results) const;
   bool search_batch_with_faiss(
       const std::vector<vector_data> &queries, size_t top_k,
       std::vector<std::vector<search_result>> *results) const;
+  bool apply_faiss_ivf_nprobe(uint32_t faiss_nprobe);
   bool search_external_snapshot_entries(
       const vector_data &query, size_t top_k,
       std::vector<search_result> *results) const;

@@ -44,6 +44,7 @@ extern ulong opt_vector_search_batch_count;
 extern ulong opt_vector_search_batch_result_count;
 extern ulong opt_vector_batch_search_threads;
 extern ulong opt_vector_hnsw_search_threads;
+extern ulong opt_vector_faiss_search_threads;
 extern ulong opt_vector_default_library;
 extern ulong opt_vector_index_consistency_mode;
 extern ulonglong opt_vector_entry_cache_size;
@@ -52,6 +53,7 @@ extern ulonglong opt_vector_build_memory_size;
 extern ulonglong opt_vector_diskann_build_memory_size;
 extern ulonglong opt_vector_diskann_raw_segment_size;
 extern ulonglong opt_vector_faiss_train_size;
+extern bool opt_vector_faiss_keep_loaded;
 extern ulonglong opt_vector_hnsw_index_memory_size;
 extern bool opt_vector_lazy_external_runtime;
 
@@ -77,8 +79,15 @@ index_consistency_mode global_index_consistency_mode();
 size_t effective_build_scheduler_threads(size_t entry_count,
                                          ulong backend_override_threads);
 
+/** Return the effective OpenMP/BLAS build worker budget. */
+size_t effective_build_scheduler_thread_budget(
+    ulong backend_override_threads);
+
 /** Return the effective hnswlib batch search worker count. */
 size_t effective_hnsw_search_threads(size_t query_count);
+
+/** Return the effective FAISS batch search worker count. */
+size_t effective_faiss_search_threads(size_t query_count);
 
 }  // namespace vector_index
 

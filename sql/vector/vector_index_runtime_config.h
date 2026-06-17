@@ -96,12 +96,28 @@ faiss_runtime_index_kind faiss_runtime_kind_from_params(uint32_t nlist,
                                                         uint32_t pq_bits);
 
 /**
+  Validate FAISS IVF-PQ parameters against the configured vector dimension.
+*/
+bool valid_faiss_ivf_pq_config(size_t dimension, uint32_t nlist,
+                               uint32_t nprobe, uint32_t pq_m,
+                               uint32_t pq_bits);
+
+/**
   Resolve a statement-level thread value against the global value.
 
   Statement-level 0 means inherit the global value. Global 0 means automatic.
 */
 uint32_t resolve_runtime_threads(uint32_t statement_threads,
                                  uint32_t global_threads);
+
+/**
+  Return a deterministic uniform sample position.
+
+  @retval true The requested sample position was produced.
+  @retval false Invalid arguments.
+*/
+bool runtime_uniform_sample_position(size_t sample_index, size_t total_count,
+                                     size_t sample_count, size_t *position);
 
 }  // namespace vector_index
 

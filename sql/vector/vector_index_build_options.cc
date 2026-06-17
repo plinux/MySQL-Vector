@@ -38,6 +38,7 @@ ulong opt_vector_search_batch_result_count =
 ulong opt_vector_batch_search_threads =
     vector_index::k_default_batch_search_threads;
 ulong opt_vector_hnsw_search_threads = 0;
+ulong opt_vector_faiss_search_threads = 0;
 ulong opt_vector_default_library =
     static_cast<ulong>(vector_index::vector_default_library::kNone);
 ulong opt_vector_index_consistency_mode =
@@ -49,6 +50,7 @@ ulonglong opt_vector_diskann_build_memory_size =
     1024ULL * 1024ULL * 1024ULL;
 ulonglong opt_vector_diskann_raw_segment_size = 256ULL * 1024ULL * 1024ULL;
 ulonglong opt_vector_faiss_train_size = 0;
+bool opt_vector_faiss_keep_loaded = true;
 ulonglong opt_vector_hnsw_index_memory_size = 0;
 bool opt_vector_lazy_external_runtime = false;
 
@@ -97,12 +99,26 @@ size_t effective_build_scheduler_threads(size_t entry_count,
                                         backend_override_threads);
 }
 
+size_t effective_build_scheduler_thread_budget(ulong backend_override_threads) {
+  return effective_runtime_worker_count(k_max_build_threads,
+                                        backend_override_threads);
+}
+
 size_t effective_hnsw_search_threads(size_t query_count) {
   if (query_count == 0) return 0;
 
   const ulong configured = opt_vector_hnsw_search_threads == 0
                                ? opt_vector_batch_search_threads
                                : opt_vector_hnsw_search_threads;
+  return effective_runtime_worker_count(query_count, configured);
+}
+
+size_t effective_faiss_search_threads(size_t query_count) {
+  if (query_count == 0) return 0;
+
+  const ulong configured = opt_vector_faiss_search_threads == 0
+                               ? opt_vector_batch_search_threads
+                               : opt_vector_faiss_search_threads;
   return effective_runtime_worker_count(query_count, configured);
 }
 

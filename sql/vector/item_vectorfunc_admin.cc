@@ -284,7 +284,7 @@ longlong Item_func_vec_index_set_faiss_ivfpq_params::val_int() {
                        faiss_nprobe) ||
       !eval_uint32_arg(args[3], 1, std::numeric_limits<uint32_t>::max(),
                        faiss_pq_m) ||
-      !eval_uint32_arg(args[4], 1, std::numeric_limits<uint32_t>::max(),
+      !eval_uint32_arg(args[4], 1, vector_index::k_max_faiss_pq_bits,
                        faiss_pq_bits)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();

@@ -40,6 +40,7 @@
 #include "sql/parse_tree_helpers.h"
 #include "sql/sql_class.h"
 #include "sql/vector/vector_index_backend.h"
+#include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_utils.h"
@@ -1780,6 +1781,11 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsCoverAdditionalInvalidArguments) {
       POS(), make_item_list({make_string_item("idx_any"), new Item_int(2),
                              new Item_int(1), new Item_int(2),
                              new Item_int(0)})));
+  expect_wrong_arguments_int(new Item_func_vec_index_set_faiss_ivfpq_params(
+      POS(), make_item_list({make_string_item("idx_any"), new Item_int(2),
+                             new Item_int(1), new Item_int(2),
+                             new Item_int(static_cast<longlong>(
+                                 vector_index::k_max_faiss_pq_bits + 1))})));
 
   expect_wrong_arguments_int(new Item_func_vec_index_set_diskann_build_params(
       POS(), make_item_list({make_string_item("idx_any"), new Item_int(64),

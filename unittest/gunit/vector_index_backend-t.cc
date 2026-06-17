@@ -263,6 +263,20 @@ class UlonglongGuard {
   ulonglong m_original;
 };
 
+class BoolGuard {
+ public:
+  BoolGuard(bool *value, bool replacement)
+      : m_value(value), m_original(*value) {
+    *m_value = replacement;
+  }
+
+  ~BoolGuard() { *m_value = m_original; }
+
+ private:
+  bool *m_value;
+  bool m_original;
+};
+
 class StubBackend final : public vector_index::backend {
  public:
   bool upsert(uint64_t doc_id [[maybe_unused]],
@@ -414,6 +428,21 @@ TEST(VectorIndexRuntimeConfigTest, InfersFaissRuntimeKindFromParams) {
             vector_index::faiss_runtime_kind_from_params(16, 0, 0));
   EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfPq,
             vector_index::faiss_runtime_kind_from_params(16, 4, 8));
+}
+
+TEST(VectorIndexRuntimeConfigTest, ValidatesFaissIvfPqLibraryBoundaries) {
+  EXPECT_TRUE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 4, 8));
+  EXPECT_TRUE(vector_index::valid_faiss_ivf_pq_config(
+      24, 8, 4, 6, vector_index::k_max_faiss_pq_bits));
+
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(0, 8, 4, 4, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 0, 4, 4, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 8, 0, 4, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 0, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 4, 0));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(15, 8, 4, 4, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(
+      16, 8, 4, 4, vector_index::k_max_faiss_pq_bits + 1));
 }
 
 TEST(VectorIndexBackendTest, BackendHelperParseUint64RejectsMalformedInputs) {
@@ -1180,9 +1209,13 @@ TEST(VectorIndexBackendTest, ExactBackendsRejectNullSearchResults) {
       2, vector_index::metric_type::kEuclidean);
   vector_index::external_backend external(
       2, vector_index::metric_type::kEuclidean);
+  vector_index::faiss_backend faiss(2,
+                                    vector_index::metric_type::kEuclidean,
+                                    vector_index::backend_mode::kMemory);
 
   EXPECT_FALSE(memory.search({1.0F, 1.0F}, 1, nullptr));
   EXPECT_FALSE(external.search({1.0F, 1.0F}, 1, nullptr));
+  EXPECT_FALSE(faiss.search({1.0F, 1.0F}, 1, nullptr));
 }
 
 TEST(VectorIndexBackendTest, MemoryBackendCosineRejectsZeroNorm) {
@@ -1256,6 +1289,25 @@ TEST(VectorIndexBackendTest, FaissMemoryFallbackBehavesLikeMemoryBackend) {
   ASSERT_EQ(2U, result.size());
   EXPECT_EQ(1U, result[0].doc_id);
   EXPECT_TRUE(backend.erase(2));
+}
+
+TEST(VectorIndexBackendTest, FaissMemoryRejectsInvalidUpdatesBeforeMutation) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss native mutation validation requires HAVE_FAISS";
+#else
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kCosine,
+                                      vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+
+  EXPECT_FALSE(backend.upsert(1, {1.0F}));
+  EXPECT_FALSE(backend.upsert(1, {0.0F, 0.0F}));
+  EXPECT_EQ(1U, backend.entry_count());
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+#endif
 }
 
 TEST(VectorIndexBackendTest, FaissMemoryLoadCommittedAndRecoverStayInMemoryMode) {
@@ -1418,10 +1470,59 @@ TEST(VectorIndexBackendTest, FaissSearchBatchCoversGuardAndEdgePaths) {
   EXPECT_EQ(2U, batch_results[1][0].doc_id);
 }
 
+TEST(VectorIndexBackendTest,
+     FaissExternalSearchesSnapshotEntriesAfterNativeIndexRelease) {
+  BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, false);
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_released_search_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  vector_index::faiss_backend euclidean(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_released_l2");
+  ASSERT_TRUE(euclidean.upsert(2, {2.0F, 0.0F}));
+  ASSERT_TRUE(euclidean.upsert(1, {1.0F, 0.0F}));
+
+  std::vector<vector_index::search_result> result{{99, 99.0}};
+  EXPECT_TRUE(euclidean.search({1.0F, 0.0F}, 0, &result));
+  EXPECT_TRUE(result.empty());
+  EXPECT_FALSE(euclidean.search({1.0F}, 1, &result));
+  ASSERT_TRUE(euclidean.search({1.0F, 0.0F}, 2, &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+
+  vector_index::faiss_backend inner_product(
+      2, vector_index::metric_type::kInnerProduct,
+      vector_index::backend_mode::kExternal, "idx_faiss_released_ip");
+  ASSERT_TRUE(inner_product.upsert(1, {1.0F, 0.0F}));
+  ASSERT_TRUE(inner_product.upsert(2, {0.0F, 1.0F}));
+  ASSERT_TRUE(inner_product.search({1.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+
+  vector_index::faiss_backend cosine(
+      2, vector_index::metric_type::kCosine,
+      vector_index::backend_mode::kExternal, "idx_faiss_released_cos");
+  ASSERT_TRUE(cosine.upsert(1, {1.0F, 0.0F}));
+  ASSERT_TRUE(cosine.upsert(2, {0.0F, 1.0F}));
+  ASSERT_TRUE(cosine.search({1.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
 TEST(VectorIndexBackendTest, FaissExternalClearsSnapshotWhenNativeIndexStaysLoaded) {
 #ifndef HAVE_FAISS
   GTEST_SKIP() << "Faiss native snapshot dedup requires HAVE_FAISS";
 #else
+  BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, true);
+
   vector_index::faiss_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_faiss_snapshot_dedup");
@@ -1429,6 +1530,28 @@ TEST(VectorIndexBackendTest, FaissExternalClearsSnapshotWhenNativeIndexStaysLoad
   ASSERT_TRUE(backend.upsert(2, {2.0F, 0.0F}));
 
   EXPECT_TRUE(backend.external_snapshot_entries().empty());
+  EXPECT_EQ(2U, backend.entry_count());
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+#endif
+}
+
+TEST(VectorIndexBackendTest, FaissExternalKeepsSnapshotWhenNativeIndexIsReleased) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss native snapshot fallback requires HAVE_FAISS";
+#else
+  BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, false);
+
+  vector_index::faiss_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_snapshot_fallback");
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+  ASSERT_TRUE(backend.upsert(2, {2.0F, 0.0F}));
+
+  EXPECT_EQ(2U, backend.external_snapshot_entries().size());
   EXPECT_EQ(2U, backend.entry_count());
 
   std::vector<vector_index::search_result> result;
@@ -1484,6 +1607,38 @@ TEST(VectorIndexBackendTest, FaissExternalIvfParamsRejectPartialZeroConfigs) {
   EXPECT_FALSE(backend.set_faiss_ivf_params(1, 0));
 }
 
+TEST(VectorIndexBackendTest,
+     FaissLiveSearchTuningFailurePreservesPreviousParameters) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
+
+  vector_index::faiss_backend hnsw_backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_ef_atomicity");
+  ASSERT_TRUE(hnsw_backend.upsert(1, {1.0F, 0.0F}));
+  ASSERT_TRUE(hnsw_backend.set_search_ef(96));
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_faiss_live_search_ef");
+    EXPECT_FALSE(hnsw_backend.set_search_ef(128));
+  }
+  EXPECT_EQ(96U, hnsw_backend.search_ef());
+
+  vector_index::faiss_backend ivf_backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_nprobe_atomicity");
+  ASSERT_TRUE(ivf_backend.upsert(1, {1.0F, 0.0F}));
+  ASSERT_TRUE(ivf_backend.upsert(2, {0.0F, 1.0F}));
+  ASSERT_TRUE(ivf_backend.set_faiss_ivf_params(2, 1));
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_faiss_live_nprobe");
+    EXPECT_FALSE(ivf_backend.set_faiss_ivf_params(2, 2));
+  }
+  EXPECT_EQ(1U, ivf_backend.faiss_nprobe());
+}
+
 TEST(VectorIndexBackendTest, FaissExternalIvfParamsWithEntriesCanBeConfigured) {
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
                                      vector_index::backend_mode::kExternal,
@@ -1514,8 +1669,58 @@ TEST(VectorIndexBackendTest, FaissExternalIvfTrainingHonorsTrainSizeBudget) {
   EXPECT_EQ(2U, backend.faiss_last_training_count_for_testing());
 
   opt_vector_faiss_train_size = 0;
-  ASSERT_TRUE(backend.set_faiss_ivf_params(2, 1));
+  ASSERT_TRUE(backend.set_faiss_ivf_params(3, 1));
   EXPECT_EQ(4U, backend.faiss_last_training_count_for_testing());
+#endif
+}
+
+TEST(VectorIndexBackendTest,
+     FaissExternalReaderRebuildNonIvfUsesSingleReaderPass) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss reader rebuild requires HAVE_FAISS";
+#else
+  vector_index::faiss_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_reader_single_pass");
+
+  const std::vector<std::pair<uint64_t, vector_index::vector_data>> rows{
+      {1, {1.0F, 1.0F}},
+      {2, {2.0F, 2.0F}},
+      {3, {3.0F, 3.0F}}};
+  size_t reader_calls = 0;
+  ASSERT_TRUE(backend.rebuild_from_committed_entries_from_reader(
+      [&rows, &reader_calls](
+          const vector_index::committed_entry_visitor &visitor) {
+        ++reader_calls;
+        for (const auto &row : rows) {
+          if (!visitor(row.first, row.second)) return false;
+        }
+        return true;
+      }));
+  EXPECT_EQ(1U, reader_calls);
+  EXPECT_EQ(0U, backend.faiss_last_training_count_for_testing());
+  EXPECT_EQ(rows.size(), backend.entry_count());
+
+  std::vector<std::vector<vector_index::search_result>> batch_results;
+  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {3.0F, 3.0F}}, 1,
+                                   &batch_results));
+  ASSERT_EQ(2U, batch_results.size());
+  ASSERT_EQ(1U, batch_results[0].size());
+  ASSERT_EQ(1U, batch_results[1].size());
+
+  size_t bad_reader_calls = 0;
+  EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(
+      [&bad_reader_calls](
+          const vector_index::committed_entry_visitor &visitor) {
+        ++bad_reader_calls;
+        return visitor(9, {9.0F});
+      }));
+  EXPECT_EQ(1U, bad_reader_calls);
+  EXPECT_EQ(rows.size(), backend.entry_count());
+  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}}, 1, &batch_results));
+  ASSERT_EQ(1U, batch_results.size());
+  ASSERT_EQ(1U, batch_results[0].size());
+  EXPECT_EQ(1U, batch_results[0][0].doc_id);
 #endif
 }
 
@@ -1541,6 +1746,12 @@ TEST(VectorIndexBackendTest,
   EXPECT_FALSE(backend.set_faiss_ivf_pq_params(2, 0, 1, 1));
   EXPECT_FALSE(backend.set_faiss_ivf_pq_params(2, 1, 0, 1));
   EXPECT_FALSE(backend.set_faiss_ivf_pq_params(2, 1, 1, 0));
+  EXPECT_FALSE(backend.set_faiss_ivf_pq_params(2, 1, 3, 8));
+  EXPECT_FALSE(backend.set_faiss_ivf_pq_params(
+      2, 1, 1, vector_index::k_max_faiss_pq_bits + 1));
+  EXPECT_TRUE(backend.set_faiss_ivf_pq_params(
+      2, 1, 1, vector_index::k_max_faiss_pq_bits));
+  EXPECT_EQ(vector_index::k_max_faiss_pq_bits, backend.faiss_pq_bits());
 
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F, 0.0F, 0.0F}));
   EXPECT_TRUE(backend.set_faiss_ivf_pq_params(2, 1, 1, 8));
@@ -3617,7 +3828,7 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest,
-     FaissExternalEraseLastEntryRollbackWhenGeneratedSnapshotCleanupIsInjected) {
+     FaissExternalEraseLastEntryKeepsEmptyGenerationWhenCleanupIsInjected) {
   const std::string root =
       std::string(testing::TempDir()) + "/vector_faiss_erase_last_cleanup_fail_t";
   std::error_code ec;
@@ -3633,14 +3844,21 @@ TEST(VectorIndexBackendTest,
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_remove_generated_snapshots");
-    EXPECT_FALSE(backend.erase(1));
+    EXPECT_TRUE(backend.erase(1));
   }
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
-  EXPECT_EQ(1U, backend.entry_count());
+  EXPECT_TRUE(result.empty());
+  EXPECT_EQ(0U, backend.entry_count());
+  EXPECT_TRUE(find_faiss_manifest_file(root).empty());
+
+  vector_index::faiss_backend recovered(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal,
+      "idx_faiss_erase_last_cleanup_fail");
+  ASSERT_TRUE(recovered.recover());
+  EXPECT_EQ(0U, recovered.entry_count());
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -3683,7 +3901,7 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest,
-     FaissExternalSecondPersistRollsBackWhenOldGenerationRemovalIsInjected) {
+     FaissExternalSecondPersistKeepsPublishedGenerationWhenCleanupIsInjected) {
   const std::string root =
       std::string(testing::TempDir()) + "/vector_faiss_second_persist_remove_t";
   std::error_code ec;
@@ -3699,50 +3917,67 @@ TEST(VectorIndexBackendTest,
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_remove_if_exists");
-    EXPECT_FALSE(backend.upsert(2, {2.0F, 2.0F}));
+    EXPECT_TRUE(backend.upsert(2, {2.0F, 2.0F}));
   }
 
   std::vector<vector_index::search_result> result;
-  ASSERT_TRUE(backend.search({1.0F, 1.0F}, 2, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
   ASSERT_TRUE(backend.search({2.0F, 2.0F}, 2, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
-  EXPECT_EQ(1U, backend.entry_count());
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(2U, result[0].doc_id);
+  EXPECT_EQ(1U, result[1].doc_id);
+  EXPECT_EQ(2U, backend.entry_count());
+
+  vector_index::faiss_backend recovered(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal,
+      "idx_faiss_second_persist_remove");
+  ASSERT_TRUE(recovered.recover());
+  ASSERT_TRUE(recovered.search({2.0F, 2.0F}, 2, &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(2U, result[0].doc_id);
+  EXPECT_EQ(1U, result[1].doc_id);
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorIndexBackendTest,
-     DiskAnnExternalSecondPersistRollsBackWhenOldGenerationRemovalIsInjected) {
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_diskann_second_persist_remove_t";
+     DiskAnnExternalSecondPersistKeepsPublishedGenerationWhenCleanupIsInjected) {
+  const std::string root = std::string(testing::TempDir()) +
+                           "/vector_diskann_second_persist_remove_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::diskann_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal,
-                                       "idx_diskann_second_persist_remove");
+  vector_index::diskann_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal,
+                                        "idx_diskann_second_persist_remove");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_remove_if_exists");
-    EXPECT_FALSE(backend.upsert(2, {2.0F, 2.0F}));
+    EXPECT_TRUE(backend.upsert(2, {2.0F, 2.0F}));
   }
 
   std::vector<vector_index::search_result> result;
-  ASSERT_TRUE(backend.search({1.0F, 1.0F}, 2, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
   ASSERT_TRUE(backend.search({2.0F, 2.0F}, 2, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
-  EXPECT_EQ(1U, backend.entry_count());
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(2U, result[0].doc_id);
+  EXPECT_EQ(1U, result[1].doc_id);
+  EXPECT_EQ(2U, backend.entry_count());
+
+  vector_index::diskann_backend recovered(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal,
+      "idx_diskann_second_persist_remove");
+  ASSERT_TRUE(recovered.recover());
+  ASSERT_TRUE(recovered.search({2.0F, 2.0F}, 2, &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(2U, result[0].doc_id);
+  EXPECT_EQ(1U, result[1].doc_id);
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -3779,7 +4014,7 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest,
-     FaissExternalEraseLastEntryRollbackWhenDirectoryCleanupIsInjected) {
+     FaissExternalEraseLastEntryKeepsEmptyGenerationWhenDirCleanupIsInjected) {
   const std::string root =
       std::string(testing::TempDir()) + "/vector_faiss_erase_last_dir_fail_t";
   std::error_code ec;
@@ -3795,14 +4030,20 @@ TEST(VectorIndexBackendTest,
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_remove_dir_if_empty");
-    EXPECT_FALSE(backend.erase(1));
+    EXPECT_TRUE(backend.erase(1));
   }
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
-  EXPECT_EQ(1U, backend.entry_count());
+  EXPECT_TRUE(result.empty());
+  EXPECT_EQ(0U, backend.entry_count());
+  EXPECT_TRUE(find_faiss_manifest_file(root).empty());
+
+  vector_index::faiss_backend recovered(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_erase_last_dir_fail");
+  ASSERT_TRUE(recovered.recover());
+  EXPECT_EQ(0U, recovered.entry_count());
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);

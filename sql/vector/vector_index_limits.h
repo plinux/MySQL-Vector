@@ -31,6 +31,7 @@
 namespace vector_index {
 
 inline constexpr uint32_t k_max_build_threads = 65535;
+inline constexpr uint32_t k_max_faiss_pq_bits = 24;
 inline constexpr uint32_t k_max_diskann_search_beamwidth = 65535;
 inline constexpr uint32_t k_max_vector_dimension =
     std::numeric_limits<uint32_t>::max() / sizeof(float);
