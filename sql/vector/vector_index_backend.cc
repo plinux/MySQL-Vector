@@ -61,6 +61,8 @@
 
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
+#include "sql/vector/vector_index_runtime_config.h"
+#include "sql/vector/vector_load_file.h"
 #include "sql/mysqld.h"
 #include "sql/vector/vector_status.h"
 #include "my_dbug.h"
@@ -501,8 +503,60 @@ bool backend::rebuild_from_committed_entries_from_reader(
 }
 
 bool backend::rebuild_from_raw_segments(
-    const raw_vector_segment_reader &reader [[maybe_unused]]) {
-  return false;
+    const raw_vector_segment_reader &reader) {
+  if (!reader) return false;
+
+  const committed_entry_reader entry_reader =
+      [this, &reader](const committed_entry_visitor &visitor) {
+        return reader([this, &visitor](const raw_vector_segment &segment) {
+          if (segment.dimension != dimension()) return false;
+          vector_load_file_info info;
+          std::string error;
+          return read_fbin_vectors(
+                     segment.vector_path, segment.docid_path, dimension(),
+                     &info, &error,
+                     [&visitor](uint64_t doc_id, const float *values,
+                                size_t row_dimension) {
+                       return visitor(
+                           doc_id,
+                           vector_data(values, values + row_dimension));
+                     }) &&
+                 info.row_count == segment.row_count &&
+                 info.dimension == segment.dimension;
+        });
+      };
+  return rebuild_from_committed_entries_from_reader(entry_reader);
+}
+
+bool backend::build_segment_from_raw(const segment_build_input &input,
+                                     segment_build_result *result) {
+  if (result == nullptr || input.segment_id == 0 ||
+      input.segment.dimension != dimension()) {
+    return false;
+  }
+
+  const raw_vector_segment segment = input.segment;
+  const raw_vector_segment_reader reader =
+      [&segment](const raw_vector_segment_visitor &visitor) {
+        if (!visitor) return false;
+        return visitor(segment);
+      };
+  if (!rebuild_from_raw_segments(reader)) return false;
+
+  result->segment_id = input.segment_id;
+  result->generation = input.generation;
+  result->row_count = input.segment.row_count;
+  result->payload_size = input.segment.bytes;
+  result->vector_path = input.segment.vector_path;
+  result->docid_path = input.segment.docid_path;
+  result->artifact_prefix = input.artifact_prefix;
+  result->ready = true;
+  result->diagnostics = build_diagnostics();
+  return true;
+}
+
+bool backend::load_segment_handle(const segment_build_result &result) {
+  return result.ready && result.segment_id != 0;
 }
 
 bool backend::recover_committed_entries_from_reader(

@@ -33,6 +33,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sql/vector/vector_index_limits.h"
+
 #ifdef HAVE_FAISS
 namespace faiss {
 struct Index;
@@ -102,6 +104,25 @@ struct backend_build_diagnostics {
   uint64_t load_ms{0};
   uint64_t reader_passes{0};
   std::string fallback_reason;
+};
+
+struct segment_build_input {
+  raw_vector_segment segment;
+  uint64_t segment_id{0};
+  uint64_t generation{0};
+  std::string artifact_prefix;
+};
+
+struct segment_build_result {
+  uint64_t segment_id{0};
+  uint64_t generation{0};
+  size_t row_count{0};
+  size_t payload_size{0};
+  std::string vector_path;
+  std::string docid_path;
+  std::string artifact_prefix;
+  bool ready{false};
+  backend_build_diagnostics diagnostics;
 };
 
 /**
@@ -201,17 +222,39 @@ class backend {
   /**
     Rebuild serving state from standalone raw vector segments.
 
-    Early standalone mode only records the contract. Backends start returning
-    true after LOAD VECTOR support teaches the default implementation how to
-    stream rows from raw files, or after provider-specific overrides are added.
+    The default implementation streams rows from each segment and delegates to
+    rebuild_from_committed_entries_from_reader(). Backends with native file or
+    manifest build APIs should override this to avoid row materialization.
   */
   virtual bool rebuild_from_raw_segments(const raw_vector_segment_reader &reader);
 
   /**
-    recover backend serving state from persisted metadata or snapshots.
+    Build one segmented-pipeline serving handle from a raw segment.
 
-    v1 backends default to a no-op success path and may override this once
-    provider-specific recovery integration is implemented.
+    The default implementation is intentionally conservative: it rebuilds this
+    backend from the single segment through rebuild_from_raw_segments() and
+    reports a ready result. Segmented executors should call this on a fresh
+    backend instance per segment until a provider overrides it with a true
+    side-effect-free artifact build.
+  */
+  virtual bool build_segment_from_raw(const segment_build_input &input,
+                                      segment_build_result *result);
+
+  /**
+    Load a previously built segment handle.
+
+    Providers with durable segment artifacts should override this. The base
+    implementation accepts results produced by the default
+    build_segment_from_raw() path.
+  */
+  virtual bool load_segment_handle(const segment_build_result &result);
+
+  /**
+    Recover backend serving state from persisted metadata or snapshots.
+
+    Backends without provider-specific persisted state default to a no-op
+    success path and may rebuild from committed entries through
+    recover_committed_entries().
   */
   virtual bool recover() { return true; }
 

@@ -1055,6 +1055,8 @@ struct dict_sys_t {
   dict_table_t *vector_truth_changelog;
   /** Permanent handle to mysql.vector_index_truth_prepared */
   dict_table_t *vector_truth_prepared;
+  /** Permanent handle to mysql.vector_index_truth_segment_tasks */
+  dict_table_t *vector_truth_segment_tasks;
   /** Permanent handle to mysql.vector_index_truth_store_quarantine */
   dict_table_t *vector_truth_store_quarantine;
 #endif

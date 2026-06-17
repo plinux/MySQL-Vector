@@ -52,6 +52,7 @@ constexpr const char *kCommittedArtifactName = "committed";
 constexpr const char *kManifestArtifactName = "manifest";
 constexpr const char *kChangeLogArtifactName = "changelog";
 constexpr const char *kPreparedArtifactName = "prepared";
+constexpr const char *kSegmentTasksArtifactName = "segment_tasks";
 constexpr const char *kQuarantineStoreArtifactName = "quarantine_store";
 constexpr const char *kQuarantinePayloadHeaderV1 =
     "mysql-vector-quarantine-v1";
@@ -540,7 +541,8 @@ bool is_valid_artifact_name(const char *artifact_name) {
          std::strcmp(artifact_name, kCommittedArtifactName) == 0 ||
          std::strcmp(artifact_name, kManifestArtifactName) == 0 ||
          std::strcmp(artifact_name, kChangeLogArtifactName) == 0 ||
-         std::strcmp(artifact_name, kPreparedArtifactName) == 0);
+         std::strcmp(artifact_name, kPreparedArtifactName) == 0 ||
+         std::strcmp(artifact_name, kSegmentTasksArtifactName) == 0);
 }
 
 bool use_file_truth_store_backend() {
@@ -566,6 +568,8 @@ bool is_truth_store_table_name(const char *schema_name, const char *table_name) 
                        "vector_index_truth_changelog") == 0 ||
          my_strcasecmp(system_charset_info, table_name,
                        "vector_index_truth_prepared") == 0 ||
+         my_strcasecmp(system_charset_info, table_name,
+                       "vector_index_truth_segment_tasks") == 0 ||
          my_strcasecmp(system_charset_info, table_name,
                        "vector_index_truth_store_quarantine") == 0;
 }
@@ -857,6 +861,31 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     if (!row_artifact_exists(kPreparedArtifactName, &found)) return false;
     if (found) return quarantine_row_artifact(kPreparedArtifactName);
     return vector_index_metadata_store::quarantine_prepared_store();
+  }
+
+  bool load_segment_tasks(
+      std::vector<vector_index_metadata_store::segment_task_row> *rows)
+      override {
+    std::string payload;
+    if (!load_artifact(kSegmentTasksArtifactName, &payload)) return false;
+    return vector_index_metadata_store::deserialize_segment_task_rows(payload,
+                                                                     rows);
+  }
+
+  bool save_segment_tasks(
+      const std::vector<vector_index_metadata_store::segment_task_row> &rows)
+      override {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    std::string payload;
+    if (!vector_index_metadata_store::serialize_segment_task_rows(rows,
+                                                                  &payload)) {
+      return false;
+    }
+    return save_artifact(kSegmentTasksArtifactName, payload);
+  }
+
+  bool quarantine_segment_tasks() override {
+    return quarantine_artifact(kSegmentTasksArtifactName);
   }
 
   void shutdown() {
@@ -1229,6 +1258,23 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
 
   bool quarantine_prepared() override {
     return vector_index_metadata_store::quarantine_prepared_store();
+  }
+
+  bool load_segment_tasks(
+      std::vector<vector_index_metadata_store::segment_task_row> *rows)
+      override {
+    return vector_index_metadata_store::load_segment_tasks(rows);
+  }
+
+  bool save_segment_tasks(
+      const std::vector<vector_index_metadata_store::segment_task_row> &rows)
+      override {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
+    return vector_index_metadata_store::save_segment_tasks(rows);
+  }
+
+  bool quarantine_segment_tasks() override {
+    return vector_index_metadata_store::quarantine_segment_task_store();
   }
 };
 

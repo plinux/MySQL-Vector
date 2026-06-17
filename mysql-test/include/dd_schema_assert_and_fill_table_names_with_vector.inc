@@ -9,11 +9,11 @@ SET debug = '+d,skip_dd_table_access_check';
 --echo ########################################################################
 --echo # The number of hidden DD/DDSE tables must be as expected.
 --echo ########################################################################
-let $number_of_hidden_dd_tables = 38;
+let $number_of_hidden_dd_tables = 39;
 let $assert_cond = "[SELECT COUNT(*) from mysql.tables
                        WHERE schema_id = 1 AND hidden = \'System\']"
                     = $number_of_hidden_dd_tables;
---let $assert_text = There are 38 hidden DD/DDSE tables.
+--let $assert_text = There are 39 hidden DD/DDSE tables.
 --source include/assert.inc
 
 # Fill two help tables with the names of the DDSE and DD tables.
@@ -46,6 +46,7 @@ eval INSERT INTO $ddse_table_names (name) VALUES
                ('vector_index_truth_manifest'),
                ('vector_index_truth_metadata'),
                ('vector_index_truth_prepared'),
+               ('vector_index_truth_segment_tasks'),
                ('vector_index_truth_store_quarantine');
 
 eval INSERT INTO $dd_table_names (name) VALUES
@@ -85,7 +86,7 @@ eval INSERT INTO $dd_table_names (name) VALUES
 let $assert_cond = "[SELECT (SELECT COUNT(*) FROM $dd_table_names) +
                             (SELECT COUNT(*) FROM $ddse_table_names)]"
                     = $number_of_hidden_dd_tables + 2;
---let $assert_text = There are 40 DD/DDSE tables in total.
+--let $assert_text = There are 41 DD/DDSE tables in total.
 --source include/assert.inc
 
 --echo ########################################################################

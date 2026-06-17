@@ -137,6 +137,19 @@ class PreparedRowsTruthStore final : public vector_index_truth_store::truth_stor
     return allow_quarantine_prepared;
   }
 
+  bool load_segment_tasks(
+      std::vector<vector_index_metadata_store::segment_task_row> *out)
+      override {
+    if (out != nullptr) out->clear();
+    return true;
+  }
+  bool save_segment_tasks(
+      const std::vector<vector_index_metadata_store::segment_task_row> &)
+      override {
+    return true;
+  }
+  bool quarantine_segment_tasks() override { return true; }
+
   std::vector<vector_index_metadata_store::prepared_change_row> rows;
   int load_prepared_calls{0};
   bool fail_load_prepared{false};

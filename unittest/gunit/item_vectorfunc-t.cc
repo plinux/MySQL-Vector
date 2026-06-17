@@ -408,6 +408,19 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
   }
   bool quarantine_prepared() override { return true; }
 
+  bool load_segment_tasks(
+      std::vector<vector_index_metadata_store::segment_task_row> *rows)
+      override {
+    if (rows != nullptr) rows->clear();
+    return true;
+  }
+  bool save_segment_tasks(
+      const std::vector<vector_index_metadata_store::segment_task_row> &)
+      override {
+    return true;
+  }
+  bool quarantine_segment_tasks() override { return true; }
+
   bool fail_load_metadata{false};
   bool fail_quarantine_metadata{false};
 };

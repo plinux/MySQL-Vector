@@ -37,6 +37,7 @@ extern const char *const kCommittedHeaderV1;
 extern const char *const kPreparedHeaderV1;
 extern const char *const kManifestHeaderV1;
 extern const char *const kChangeLogHeaderV1;
+extern const char *const kSegmentTaskHeaderV1;
 
 bool split_tab_fields(const std::string &line, std::vector<std::string> *fields);
 std::string encode_hex(const std::string &input);
@@ -47,6 +48,7 @@ std::string committed_path();
 std::string manifest_path();
 std::string prepared_path();
 std::string change_log_path();
+std::string segment_task_path();
 bool ensure_parent_directory(const std::string &path);
 bool open_read_primary(const std::string &path, std::ifstream *file);
 bool remove_if_exists(const std::string &path);
@@ -73,6 +75,10 @@ bool deserialize_prepared_rows_impl(const std::string &payload,
                                     std::vector<prepared_change_row> *rows);
 bool serialize_prepared_rows_impl(const std::vector<prepared_change_row> &rows,
                                   std::string *payload);
+bool deserialize_segment_task_rows_impl(
+    const std::string &payload, std::vector<segment_task_row> *rows);
+bool serialize_segment_task_rows_impl(
+    const std::vector<segment_task_row> &rows, std::string *payload);
 
 }  // namespace vector_index_metadata_store::detail
 

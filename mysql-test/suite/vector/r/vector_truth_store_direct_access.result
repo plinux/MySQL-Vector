@@ -11,6 +11,8 @@ SELECT * FROM mysql.vector_index_truth_changelog;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_changelog' is rejected.
 SELECT * FROM mysql.vector_index_truth_prepared;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_prepared' is rejected.
+SELECT * FROM mysql.vector_index_truth_segment_tasks;
+ERROR HY000: Access to system table 'mysql.vector_index_truth_segment_tasks' is rejected.
 SELECT * FROM mysql.vector_index_truth_store_quarantine;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_store_quarantine' is rejected.
 SHOW CREATE TABLE mysql.vector_index_truth_metadata;
@@ -23,6 +25,8 @@ SHOW CREATE TABLE mysql.vector_index_truth_changelog;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_changelog' is rejected.
 SHOW CREATE TABLE mysql.vector_index_truth_prepared;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_prepared' is rejected.
+SHOW CREATE TABLE mysql.vector_index_truth_segment_tasks;
+ERROR HY000: Access to system table 'mysql.vector_index_truth_segment_tasks' is rejected.
 SHOW CREATE TABLE mysql.vector_index_truth_store_quarantine;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_store_quarantine' is rejected.
 CREATE TABLE test.vector_truth_copy LIKE mysql.vector_index_truth_metadata;
@@ -35,6 +39,8 @@ CREATE TABLE test.vector_truth_copy_changelog LIKE mysql.vector_index_truth_chan
 ERROR HY000: Access to system table 'mysql.vector_index_truth_changelog' is rejected.
 CREATE TABLE test.vector_truth_copy_prepared LIKE mysql.vector_index_truth_prepared;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_prepared' is rejected.
+CREATE TABLE test.vector_truth_copy_segment_tasks LIKE mysql.vector_index_truth_segment_tasks;
+ERROR HY000: Access to system table 'mysql.vector_index_truth_segment_tasks' is rejected.
 CREATE TABLE test.vector_truth_copy_quarantine LIKE mysql.vector_index_truth_store_quarantine;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_store_quarantine' is rejected.
 TRUNCATE TABLE mysql.vector_index_truth_metadata;
@@ -47,6 +53,8 @@ TRUNCATE TABLE mysql.vector_index_truth_changelog;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_changelog' is rejected.
 TRUNCATE TABLE mysql.vector_index_truth_prepared;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_prepared' is rejected.
+TRUNCATE TABLE mysql.vector_index_truth_segment_tasks;
+ERROR HY000: Access to system table 'mysql.vector_index_truth_segment_tasks' is rejected.
 TRUNCATE TABLE mysql.vector_index_truth_store_quarantine;
 ERROR HY000: Access to system table 'mysql.vector_index_truth_store_quarantine' is rejected.
 SELECT VEC_INDEX_CREATE('idx_truth_block', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');

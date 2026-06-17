@@ -721,6 +721,8 @@ bool is_vector_truth_table_name(const dd::String_type &schema_name,
          my_strcasecmp(system_charset_info, table_name.c_str(),
                        "vector_index_truth_prepared") == 0 ||
          my_strcasecmp(system_charset_info, table_name.c_str(),
+                       "vector_index_truth_segment_tasks") == 0 ||
+         my_strcasecmp(system_charset_info, table_name.c_str(),
                        "vector_index_truth_store") == 0 ||
          my_strcasecmp(system_charset_info, table_name.c_str(),
                        "vector_index_truth_store_quarantine") == 0;

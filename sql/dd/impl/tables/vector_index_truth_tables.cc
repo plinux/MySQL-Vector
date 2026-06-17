@@ -160,6 +160,17 @@ const Vector_index_truth_prepared &Vector_index_truth_prepared::instance() {
   return *s_instance;
 }
 
+Vector_index_truth_segment_tasks::Vector_index_truth_segment_tasks() {
+  init_singleton_payload_table(this, "vector_index_truth_segment_tasks");
+}
+
+const Vector_index_truth_segment_tasks &
+Vector_index_truth_segment_tasks::instance() {
+  static Vector_index_truth_segment_tasks *s_instance =
+      new Vector_index_truth_segment_tasks();
+  return *s_instance;
+}
+
 Vector_index_truth_store_quarantine::Vector_index_truth_store_quarantine() {
   init_singleton_payload_table(this, "vector_index_truth_store_quarantine");
 }

@@ -473,4 +473,82 @@ bool serialize_prepared_rows_impl(const std::vector<prepared_change_row> &rows,
   return true;
 }
 
+bool deserialize_segment_task_rows_impl(
+    const std::string &payload, std::vector<segment_task_row> *rows) {
+  if (rows == nullptr) return false;
+  rows->clear();
+  if (payload.empty()) return true;
+
+  std::string line;
+  bool header_checked = false;
+  std::istringstream stream(payload);
+  while (std::getline(stream, line)) {
+    if (line.empty()) continue;
+    if (!header_checked) {
+      if (line != kSegmentTaskHeaderV1) return false;
+      header_checked = true;
+      continue;
+    }
+
+    std::vector<std::string> fields;
+    split_tab_fields(line, &fields);
+    if (fields.size() != 12) return false;
+
+    segment_task_row row;
+    if (!decode_hex(fields[0], &row.index_name) || row.index_name.empty()) {
+      return false;
+    }
+    if (!parse_uint64(fields[1], &row.generation) || row.generation == 0) {
+      return false;
+    }
+    if (!parse_uint64(fields[2], &row.segment_id)) return false;
+    if (!parse_segment_task_state(fields[3], &row.state)) return false;
+    if (!parse_uint64(fields[4], &row.row_count)) return false;
+    if (!parse_uint64(fields[5], &row.payload_size)) return false;
+    if (!decode_hex(fields[6], &row.vector_path)) return false;
+    if (!decode_hex(fields[7], &row.docid_path)) return false;
+    if (!decode_hex(fields[8], &row.artifact_prefix)) return false;
+
+    uint64_t parsed = 0;
+    if (!parse_uint64(fields[9], &parsed) ||
+        parsed > std::numeric_limits<uint32_t>::max()) {
+      return false;
+    }
+    row.attempt = static_cast<uint32_t>(parsed);
+    if (!parse_uint64(fields[10], &parsed) ||
+        parsed > std::numeric_limits<uint32_t>::max()) {
+      return false;
+    }
+    row.last_error_code = static_cast<uint32_t>(parsed);
+    if (!parse_uint64(fields[11], &row.updated_ts)) return false;
+
+    rows->push_back(std::move(row));
+  }
+
+  return !stream.bad();
+}
+
+bool serialize_segment_task_rows_impl(
+    const std::vector<segment_task_row> &rows, std::string *payload) {
+  if (payload == nullptr) return false;
+  payload->clear();
+  std::ostringstream stream;
+  stream << kSegmentTaskHeaderV1 << "\n";
+  for (const segment_task_row &row : rows) {
+    if (row.index_name.empty() || row.generation == 0) return false;
+
+    stream << encode_hex(row.index_name) << "\t" << row.generation << "\t"
+           << row.segment_id << "\t"
+           << segment_task_state_to_string(row.state) << "\t"
+           << row.row_count << "\t" << row.payload_size << "\t"
+           << encode_hex(row.vector_path) << "\t"
+           << encode_hex(row.docid_path) << "\t"
+           << encode_hex(row.artifact_prefix) << "\t" << row.attempt << "\t"
+           << row.last_error_code << "\t" << row.updated_ts << "\n";
+  }
+  if (!stream) return false;
+  *payload = stream.str();
+  return true;
+}
+
 }  // namespace vector_index_metadata_store::detail

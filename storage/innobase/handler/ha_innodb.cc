@@ -4111,6 +4111,9 @@ static bool innobase_dict_recover(dict_recovery_mode_t dict_recovery_mode,
       dict_sys->vector_truth_prepared = dd_table_open_on_name(
           thd, nullptr, "mysql/vector_index_truth_prepared", false,
           DICT_ERR_IGNORE_NONE);
+      dict_sys->vector_truth_segment_tasks = dd_table_open_on_name(
+          thd, nullptr, "mysql/vector_index_truth_segment_tasks", false,
+          DICT_ERR_IGNORE_NONE);
       dict_sys->vector_truth_store_quarantine = dd_table_open_on_name(
           thd, nullptr, "mysql/vector_index_truth_store_quarantine", false,
           DICT_ERR_IGNORE_NONE);
@@ -13100,6 +13103,7 @@ static bool innobase_ddse_dict_init(
   tables->push_back(&dd::tables::Vector_index_truth_manifest::instance());
   tables->push_back(&dd::tables::Vector_index_truth_changelog::instance());
   tables->push_back(&dd::tables::Vector_index_truth_prepared::instance());
+  tables->push_back(&dd::tables::Vector_index_truth_segment_tasks::instance());
   tables->push_back(
       &dd::tables::Vector_index_truth_store_quarantine::instance());
 #endif

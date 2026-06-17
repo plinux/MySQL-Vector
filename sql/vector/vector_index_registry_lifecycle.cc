@@ -310,6 +310,27 @@ bool uses_standalone_source(const lifecycle_backend_plan &plan) {
          vector_index::index_consistency_mode::kStandalone;
 }
 
+void replace_segment_task_rows_for_index(
+    const std::string &index_name,
+    const std::vector<vector_index_metadata_store::segment_task_row> &new_rows) {
+  if (index_name.empty()) return;
+  g_segment_task_rows.erase(
+      std::remove_if(g_segment_task_rows.begin(), g_segment_task_rows.end(),
+                     [&index_name](const auto &row) {
+                       return row.index_name == index_name;
+                     }),
+      g_segment_task_rows.end());
+  g_segment_task_rows.insert(g_segment_task_rows.end(), new_rows.begin(),
+                             new_rows.end());
+}
+
+bool refresh_segment_tasks_from_service_locked(const std::string &index_name) {
+  std::vector<vector_index_metadata_store::segment_task_row> rows;
+  if (!g_index_service.snapshot_segment_tasks(index_name, &rows)) return false;
+  replace_segment_task_rows_for_index(index_name, rows);
+  return true;
+}
+
 bool snapshot_backend_plan_from_state_locked(
     const std::string &index_name,
     const vector_index::index_service::committed_state &committed_state,
@@ -437,6 +458,12 @@ bool rebuild_standalone_plan_locked(const lifecycle_backend_plan &plan) {
   runtime_state_snapshot snapshot;
   if (!capture_runtime_state_locked(&snapshot)) return false;
   if (!g_index_service.rebuild_index(plan.index_name)) {
+    const bool has_segment_tasks =
+        refresh_segment_tasks_from_service_locked(plan.index_name);
+    if (has_segment_tasks) (void)persist_segment_tasks_locked();
+    return rollback_runtime_state_and_fail_locked(snapshot);
+  }
+  if (!refresh_segment_tasks_from_service_locked(plan.index_name)) {
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
   if (!persist_registry_state_or_rollback_locked(snapshot, true)) return false;
@@ -1613,6 +1640,12 @@ bool rebuild_all_indexes(size_t *rebuilt_count) {
   }
   for (const lifecycle_backend_plan &plan : standalone_plans) {
     if (!g_index_service.rebuild_index(plan.index_name)) {
+      const bool has_segment_tasks =
+          refresh_segment_tasks_from_service_locked(plan.index_name);
+      if (has_segment_tasks) (void)persist_segment_tasks_locked();
+      return rollback_runtime_state_and_fail_locked(snapshot);
+    }
+    if (!refresh_segment_tasks_from_service_locked(plan.index_name)) {
       return rollback_runtime_state_and_fail_locked(snapshot);
     }
   }

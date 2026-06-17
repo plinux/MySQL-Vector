@@ -78,6 +78,7 @@ struct persisted_commit_artifacts_snapshot {
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
   std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
   std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows;
+  std::vector<vector_index_metadata_store::segment_task_row> segment_task_rows;
   vector_index_metadata_store::manifest_row manifest_row;
 };
 
@@ -148,6 +149,8 @@ extern std::vector<vector_index_metadata_store::change_log_row>
     g_change_log_rows;
 extern std::vector<vector_index_metadata_store::prepared_change_row>
     g_prepared_change_rows;
+extern std::vector<vector_index_metadata_store::segment_task_row>
+    g_segment_task_rows;
 extern std::vector<recovery_action> g_recovery_actions;
 extern std::unordered_map<uint64_t, thd_txn_context> g_thd_txn_contexts;
 extern std::unordered_map<std::string, index_binding> g_index_bindings;
@@ -178,6 +181,7 @@ bool capture_runtime_state_locked(runtime_state_snapshot *snapshot);
 bool evict_committed_cache_to_budget_locked();
 bool persist_registry_state_locked();
 bool persist_prepared_locked();
+bool persist_segment_tasks_locked();
 bool persist_index_config_manifest_locked(
     const std::string &index_name,
     const vector_index::index_service::index_config &config);

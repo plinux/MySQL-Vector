@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "sql/vector/vector_index_backend.h"
+#include "sql/vector/vector_segment_task.h"
 
 namespace vector_index_metadata_store {
 
@@ -244,6 +245,26 @@ bool serialize_prepared_rows(const std::vector<prepared_change_row> &rows,
                            std::string *payload);
 
 /**
+  Load all persisted segmented-build task rows.
+
+  @retval true Segment task rows loaded successfully.
+  @retval false Storage is unreadable or format is invalid.
+*/
+bool load_segment_tasks(std::vector<segment_task_row> *rows);
+bool deserialize_segment_task_rows(const std::string &payload,
+                                   std::vector<segment_task_row> *rows);
+
+/**
+  Persist all segmented-build task rows atomically.
+
+  @retval true Segment task rows saved successfully.
+  @retval false Write or rename failed.
+*/
+bool save_segment_tasks(const std::vector<segment_task_row> &rows);
+bool serialize_segment_task_rows(const std::vector<segment_task_row> &rows,
+                                 std::string *payload);
+
+/**
   Load raw persisted bytes for a file-backed artifact.
 
   This is used by debug injection helpers that need byte-exact overwrite
@@ -303,6 +324,15 @@ bool quarantine_change_log_store();
   @retval false Rename failed.
 */
 bool quarantine_prepared_store();
+
+/**
+  Move the current segmented-build task store file aside after detecting
+  corruption.
+
+  @retval true Store is absent or moved successfully.
+  @retval false Rename failed.
+*/
+bool quarantine_segment_task_store();
 
 /**
   Testing-only path override.

@@ -35,6 +35,7 @@
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_service.h"
+#include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_load_file.h"
 #include "unittest/gunit/vector_test_utils.h"
@@ -282,6 +283,26 @@ class committed_rows_truth_store final : public vector_index_truth_store::truth_
 
   bool quarantine_metadata() override { return true; }
 
+  bool load_segment_tasks(
+      std::vector<vector_index_metadata_store::segment_task_row> *rows)
+      override {
+    if (rows == nullptr) return false;
+    *rows = m_segment_tasks;
+    return true;
+  }
+
+  bool save_segment_tasks(
+      const std::vector<vector_index_metadata_store::segment_task_row> &rows)
+      override {
+    m_segment_tasks = rows;
+    return true;
+  }
+
+  bool quarantine_segment_tasks() override {
+    m_segment_tasks.clear();
+    return true;
+  }
+
   bool load_committed(
       std::vector<vector_index_metadata_store::committed_row> *rows) override {
     if (rows == nullptr) return false;
@@ -381,6 +402,7 @@ class committed_rows_truth_store final : public vector_index_truth_store::truth_
 
  private:
   std::vector<vector_index_metadata_store::committed_row> m_rows;
+  std::vector<vector_index_metadata_store::segment_task_row> m_segment_tasks;
   size_t m_load_committed_calls{0};
   size_t m_for_each_committed_calls{0};
   size_t m_for_each_committed_rows{0};
@@ -1116,8 +1138,7 @@ TEST(VectorIndexServiceTest, DirectMutationsRequireStandaloneBulkRebuild) {
 
 TEST(VectorIndexServiceTest, BuildPipelineRecordsDefaultDirectDecision) {
   build_pipeline_options_guard guard;
-  UlonglongGuard cache_guard(&opt_vector_entry_cache_size,
-                             2U * sizeof(float));
+  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
   const std::string root =
       std::string(testing::TempDir()) + "/pipeline_direct_t";
   std::error_code ec;
@@ -1141,15 +1162,14 @@ TEST(VectorIndexServiceTest, BuildPipelineRecordsDefaultDirectDecision) {
   ASSERT_TRUE(
       service.describe_build_pipeline("idx_pipeline_direct", &snapshot));
   expect_pipeline_snapshot(snapshot, "auto", "direct", "below_threshold", 1, 8,
-                           0);
+                           1);
 
   std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorIndexServiceTest, BuildPipelineHonorsForcedSegmentedMode) {
   build_pipeline_options_guard guard;
-  UlonglongGuard cache_guard(&opt_vector_entry_cache_size,
-                             2U * sizeof(float));
+  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
   const std::string root =
       std::string(testing::TempDir()) + "/pipeline_forced_t";
   std::error_code ec;
@@ -1175,15 +1195,20 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsForcedSegmentedMode) {
   ASSERT_TRUE(
       service.describe_build_pipeline("idx_pipeline_forced", &snapshot));
   expect_pipeline_snapshot(snapshot, "segmented", "segmented",
-                           "forced_segmented", 1, 8, 0);
+                           "forced_segmented", 1, 8, 1);
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search("idx_pipeline_forced", {1.0F, 0.0F}, 1,
+                             &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(11U, result[0].doc_id);
 
   std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorIndexServiceTest, BuildPipelineHonorsRowThreshold) {
   build_pipeline_options_guard guard;
-  UlonglongGuard cache_guard(&opt_vector_entry_cache_size,
-                             2U * sizeof(float));
+  UlonglongGuard entry_cache_guard(&opt_vector_entry_cache_size, 0);
   const std::string root =
       std::string(testing::TempDir()) + "/pipeline_rows_t";
   std::error_code ec;
@@ -1208,7 +1233,7 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsRowThreshold) {
   vector_index::index_service::build_pipeline_snapshot snapshot;
   ASSERT_TRUE(service.describe_build_pipeline("idx_pipeline_rows", &snapshot));
   expect_pipeline_snapshot(snapshot, "auto", "segmented", "row_count", 1, 8,
-                           0);
+                           1);
 
   std::filesystem::remove_all(root, ec);
 }
@@ -1259,7 +1284,55 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsMultipleRawSegments) {
   expect_pipeline_snapshot(snapshot, "auto", "segmented", "raw_segment_count",
                            2, 16, 2);
 
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search("idx_pipeline_raw", {1.0F, 0.0F}, 2, &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(11U, result[0].doc_id);
+  EXPECT_EQ(22U, result[1].doc_id);
+
+  std::vector<std::vector<vector_index::search_result>> batch_result;
+  ASSERT_TRUE(service.search_batch("idx_pipeline_raw",
+                                   {{1.0F, 0.0F}, {0.0F, 1.0F}}, 1,
+                                   &batch_result));
+  ASSERT_EQ(2U, batch_result.size());
+  ASSERT_EQ(1U, batch_result[0].size());
+  ASSERT_EQ(1U, batch_result[1].size());
+  EXPECT_EQ(11U, batch_result[0][0].doc_id);
+  EXPECT_EQ(22U, batch_result[1][0].doc_id);
+
   std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, RebuildAllIndexesHonorsSegmentedStandaloneSource) {
+  build_pipeline_options_guard guard;
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_all_first", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  ASSERT_TRUE(service.register_index_from_strings("idx_all_second", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_all_first", vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_all_second", vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.direct_upsert("idx_all_first", 101, {1.0F, 0.0F}));
+  ASSERT_TRUE(service.direct_upsert("idx_all_second", 202, {0.0F, 1.0F}));
+
+  size_t rebuilt_count = 0;
+  ASSERT_TRUE(service.rebuild_all_indexes(&rebuilt_count));
+  EXPECT_EQ(2U, rebuilt_count);
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search("idx_all_first", {1.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(101U, result[0].doc_id);
+  ASSERT_TRUE(service.search("idx_all_second", {0.0F, 1.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(202U, result[0].doc_id);
 }
 
 TEST(VectorIndexServiceTest, BulkLoadReaderFailureDoesNotPublishRows) {
@@ -1851,6 +1924,75 @@ TEST(VectorStandaloneEntryStoreTest, RawSegmentWithoutDocidsGeneratesDocIds) {
   std::filesystem::remove_all(root, ec);
 }
 
+TEST(VectorStandaloneEntryStoreTest, RawSegmentCanReuseValidatedDocIdSet) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_reuse_docids_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {3.0F, 0.0F, 1.0F, 0.0F});
+  write_raw_docid_file(docid_path, {30, 10});
+
+  std::unordered_set<uint64_t> validated_doc_ids{30, 10};
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_raw_reuse", 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_reuse", vector_path,
+                                          docid_path, 2, 2,
+                                          &validated_doc_ids));
+  EXPECT_TRUE(validated_doc_ids.empty());
+  EXPECT_EQ(2U, store.entry_count("idx_raw_reuse"));
+
+  RawSegmentCountingBackend backend;
+  ASSERT_TRUE(store.rebuild_backend_input("idx_raw_reuse", &backend));
+  EXPECT_EQ(1U, backend.raw_segment_reader_calls);
+  EXPECT_EQ(0U, backend.committed_reader_calls);
+
+  const auto entries = collect_entries(&store, "idx_raw_reuse");
+  ASSERT_EQ(2U, entries.size());
+  EXPECT_EQ((vector_index::vector_data{3.0F, 0.0F}), entries.at(30));
+  EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), entries.at(10));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     RebuildRejectsMaterializedFallbackOverCacheBudget) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_rebuild_budget_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {3.0F, 0.0F, 1.0F, 0.0F});
+  write_raw_docid_file(docid_path, {30, 10});
+
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, sizeof(float));
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_rebuild_budget", 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_rebuild_budget", vector_path,
+                                          docid_path, 2, 2));
+  ASSERT_TRUE(store.upsert("idx_rebuild_budget", 20, {2.0F, 0.0F},
+                           static_cast<size_t>(opt_vector_entry_cache_size)));
+
+  RawSegmentCountingBackend backend;
+  EXPECT_FALSE(store.rebuild_backend_input("idx_rebuild_budget", &backend));
+  EXPECT_EQ(0U, backend.raw_segment_reader_calls);
+  EXPECT_EQ(0U, backend.committed_reader_calls);
+  EXPECT_EQ("raw_segments_compacted",
+            store.build_source("idx_rebuild_budget"));
+
+  std::filesystem::remove_all(root, ec);
+}
+
 TEST(VectorStandaloneEntryStoreTest, BulkUpsertPersistsDeltaSegment) {
   const std::string root =
       std::string(testing::TempDir()) + "/standalone_bulk_upsert_t";
@@ -2106,6 +2248,11 @@ TEST(VectorStandaloneEntryStoreTest,
 }
 
 TEST(VectorIndexServiceTest, DiskAnnStandaloneMutationsWaitForRebuild) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    GTEST_SKIP() << "DiskANN provider is not compiled in";
+  }
+
   const std::string root =
       std::string(testing::TempDir()) + "/diskann_standalone_deferred_t";
   std::error_code ec;
@@ -2225,14 +2372,16 @@ TEST(VectorStandaloneEntryStoreTest, MemoryCacheOperationsAndInvalidInputs) {
                            std::numeric_limits<size_t>::max()));
   ASSERT_TRUE(store.upsert("idx_memory", 1, {1.0F, 1.0F},
                            std::numeric_limits<size_t>::max()));
+  ASSERT_TRUE(store.upsert("idx_memory", 1, {1.5F, 1.5F},
+                           std::numeric_limits<size_t>::max()));
   EXPECT_EQ(2U, store.entry_count("idx_memory"));
   EXPECT_EQ(4U * sizeof(float), store.memory_bytes("idx_memory"));
   EXPECT_EQ(0U, store.segment_count("idx_memory"));
-  EXPECT_EQ(2U, store.generation("idx_memory"));
+  EXPECT_EQ(3U, store.generation("idx_memory"));
 
   ASSERT_TRUE(store.find_entry("idx_memory", 1, &vector, &found));
   EXPECT_TRUE(found);
-  EXPECT_EQ(std::vector<float>({1.0F, 1.0F}), vector);
+  EXPECT_EQ(std::vector<float>({1.5F, 1.5F}), vector);
   ASSERT_TRUE(store.find_entry("idx_memory", 99, &vector, &found));
   EXPECT_FALSE(found);
 
@@ -2261,7 +2410,45 @@ TEST(VectorStandaloneEntryStoreTest, MemoryCacheOperationsAndInvalidInputs) {
   EXPECT_EQ(0U, store.memory_bytes("idx_memory"));
   EXPECT_EQ(0U, store.segment_count("idx_memory"));
   EXPECT_EQ(0U, store.segment_bytes("idx_memory"));
+  EXPECT_EQ(0U, store.raw_segment_count("idx_memory"));
+  EXPECT_EQ(0U, store.raw_segment_bytes("idx_memory"));
   EXPECT_EQ(0U, store.generation("idx_memory"));
+  EXPECT_EQ("", store.build_source("idx_memory"));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest, RawSegmentRejectsInvalidSourceFiles) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_invalid_source_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/valid.fbin";
+  const std::string truncated_docid_path = root + "/truncated.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 0.0F, 1.0F});
+  {
+    std::ofstream file(truncated_docid_path,
+                       std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(file.good());
+    write_binary_value<uint64_t>(&file, 2);
+    write_binary_value<uint64_t>(&file, 10);
+    ASSERT_TRUE(file.good());
+  }
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_raw_invalid", 2));
+
+  EXPECT_FALSE(store.bulk_upsert_raw_files("idx_raw_invalid",
+                                           root + "/missing.fbin", "", 2, 2));
+  EXPECT_FALSE(store.bulk_upsert_raw_files("idx_raw_invalid", vector_path,
+                                           truncated_docid_path, 2, 2));
+  EXPECT_EQ(0U, store.entry_count("idx_raw_invalid"));
+  EXPECT_EQ(0U, store.raw_segment_count("idx_raw_invalid"));
+  EXPECT_EQ(0U, store.raw_segment_bytes("idx_raw_invalid"));
 
   std::filesystem::remove_all(root, ec);
 }
@@ -3053,6 +3240,61 @@ TEST(VectorIndexServiceTest, SearchBackendSnapshotKeepsRuntimeAliveAfterSwap) {
   EXPECT_EQ(2U, result[0].doc_id);
 }
 
+TEST(VectorIndexServiceTest, InstallAndReplaceCommittedEntriesCoverGuards) {
+  vector_index::index_service service;
+  vector_index::index_service::committed_entries entries;
+  entries.emplace(7, vector_index::vector_data{7.0F, 7.0F});
+
+  EXPECT_FALSE(service.replace_committed_entries("missing", entries));
+  EXPECT_FALSE(
+      service.replace_committed_entries_preserve_lifecycle("missing", entries));
+  EXPECT_FALSE(service.install_rebuilt_index(
+      "missing", entries,
+      std::make_unique<vector_index::memory_backend>(
+          2, vector_index::metric_type::kEuclidean)));
+  EXPECT_FALSE(service.install_recovered_index(
+      "missing", entries,
+      std::make_unique<vector_index::memory_backend>(
+          2, vector_index::metric_type::kEuclidean),
+      true));
+
+  ASSERT_TRUE(service.register_index_from_strings("idx_install_entries", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  EXPECT_FALSE(service.replace_committed_entries(
+      "idx_install_entries", {{8, vector_index::vector_data{8.0F}}}));
+  EXPECT_FALSE(service.replace_committed_entries_preserve_lifecycle(
+      "idx_install_entries", {{8, vector_index::vector_data{8.0F}}}));
+  EXPECT_FALSE(
+      service.install_rebuilt_index("idx_install_entries", entries, nullptr));
+  EXPECT_FALSE(service.install_recovered_index("idx_install_entries", entries,
+                                               nullptr, true));
+
+  auto rebuilt_backend = std::make_unique<vector_index::memory_backend>(
+      2, vector_index::metric_type::kEuclidean);
+  ASSERT_TRUE(rebuilt_backend->rebuild_from_committed_entries(entries));
+  ASSERT_TRUE(service.install_rebuilt_index("idx_install_entries", entries,
+                                            std::move(rebuilt_backend)));
+
+  vector_index::index_service::committed_entries recovered_entries;
+  recovered_entries.emplace(9, vector_index::vector_data{9.0F, 9.0F});
+  auto recovered_backend = std::make_unique<vector_index::memory_backend>(
+      2, vector_index::metric_type::kEuclidean);
+  ASSERT_TRUE(
+      recovered_backend->rebuild_from_committed_entries(recovered_entries));
+  ASSERT_TRUE(service.install_recovered_index("idx_install_entries",
+                                              recovered_entries,
+                                              std::move(recovered_backend),
+                                              true));
+
+  vector_index::index_service::index_config config;
+  uint64_t recover_fallback_count = 0;
+  ASSERT_TRUE(service.describe_index(
+      "idx_install_entries", &config, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, &recover_fallback_count));
+  EXPECT_EQ(1U, recover_fallback_count);
+}
+
 TEST(VectorIndexServiceTest, SetHnswBuildParamsRejectsMissingOrPendingChanges) {
   vector_index::index_service service;
 
@@ -3426,6 +3668,84 @@ TEST(VectorIndexServiceTest,
   EXPECT_FALSE(service.set_lifecycle_info("idx_lifecycle", "", 1));
   EXPECT_FALSE(service.set_lifecycle_info("idx_lifecycle", "ready", 0));
   EXPECT_TRUE(service.set_lifecycle_info("idx_lifecycle", "failed", 9, 1006, 77));
+}
+
+TEST(VectorIndexServiceTest, TuningApiGuardsRejectInvalidTargetsAndStates) {
+  vector_index::index_service service;
+
+  EXPECT_FALSE(service.set_search_ef("missing", 16));
+  EXPECT_FALSE(service.set_hnsw_build_params("missing", 16, 64));
+  EXPECT_FALSE(service.set_hnsw_build_threads("missing", 2));
+  EXPECT_FALSE(service.set_faiss_ivf_params("missing", 8, 2));
+  EXPECT_FALSE(service.set_faiss_ivf_pq_params("missing", 8, 2, 2, 4));
+  EXPECT_FALSE(service.set_faiss_build_threads("missing", 2));
+  EXPECT_FALSE(service.set_diskann_build_params("missing", 32, 64, 2));
+  EXPECT_FALSE(service.set_diskann_build_threads("missing", 2));
+  EXPECT_FALSE(service.set_diskann_build_mode(
+      "missing", vector_index::diskann_build_mode::kSerial));
+  EXPECT_FALSE(service.set_diskann_search_complexity("missing", 64));
+  EXPECT_FALSE(service.set_diskann_search_beamwidth("missing", 8));
+  EXPECT_FALSE(service.set_diskann_pq_code_budget_size("missing", 1024));
+
+  ASSERT_TRUE(service.register_index_from_strings("idx_tuning_guard", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  EXPECT_FALSE(service.set_hnsw_build_params("idx_tuning_guard", 0, 64));
+  EXPECT_FALSE(service.set_hnsw_build_params("idx_tuning_guard", 16, 0));
+  EXPECT_FALSE(service.set_faiss_ivf_params("idx_tuning_guard", 8, 2));
+  EXPECT_FALSE(service.set_diskann_build_params("idx_tuning_guard", 0, 64, 2));
+  EXPECT_FALSE(service.set_diskann_build_params("idx_tuning_guard", 32, 0, 2));
+  EXPECT_TRUE(service.set_diskann_build_mode(
+      "idx_tuning_guard", vector_index::diskann_build_mode::kAuto));
+  EXPECT_FALSE(service.set_diskann_build_mode(
+      "idx_tuning_guard", vector_index::diskann_build_mode::kSerial));
+
+  ASSERT_TRUE(service.stage_upsert(9911, "idx_tuning_guard", 1,
+                                   {1.0F, 1.0F}));
+  EXPECT_FALSE(service.set_hnsw_build_params("idx_tuning_guard", 16, 64));
+  EXPECT_FALSE(service.set_hnsw_build_threads("idx_tuning_guard", 2));
+  EXPECT_FALSE(service.set_faiss_ivf_pq_params("idx_tuning_guard", 8, 2, 2, 4));
+  EXPECT_FALSE(service.set_faiss_build_threads("idx_tuning_guard", 2));
+  EXPECT_FALSE(service.set_diskann_build_params("idx_tuning_guard", 32, 64, 2));
+  EXPECT_FALSE(service.set_diskann_build_threads("idx_tuning_guard", 2));
+  EXPECT_FALSE(service.set_diskann_pq_code_budget_size("idx_tuning_guard",
+                                                       1024));
+  service.rollback(9911);
+}
+
+TEST(VectorIndexServiceTest, SetLifecycleStateRejectsInvalidAndClearsErrors) {
+  vector_index::index_service service;
+
+  EXPECT_FALSE(service.set_lifecycle_state("missing", "ready"));
+  ASSERT_TRUE(service.register_index_from_strings("idx_lifecycle_state", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  EXPECT_FALSE(service.set_lifecycle_state("idx_lifecycle_state", ""));
+  ASSERT_TRUE(
+      service.set_lifecycle_info("idx_lifecycle_state", "failed", 9, 1006, 77));
+  ASSERT_TRUE(service.set_lifecycle_state("idx_lifecycle_state", "ready"));
+
+  vector_index::index_service::index_config config;
+  std::string lifecycle_state;
+  uint64_t lifecycle_version = 0;
+  uint32_t last_error_code = 1006;
+  uint64_t last_error_ts = 77;
+  ASSERT_TRUE(service.describe_index(
+      "idx_lifecycle_state", &config, nullptr, nullptr, nullptr,
+      &lifecycle_state, &lifecycle_version, &last_error_code, &last_error_ts));
+  EXPECT_EQ("ready", lifecycle_state);
+  EXPECT_EQ(10U, lifecycle_version);
+  EXPECT_EQ(0U, last_error_code);
+  EXPECT_EQ(0U, last_error_ts);
+
+  ASSERT_TRUE(service.set_lifecycle_state("idx_lifecycle_state", "failed"));
+  ASSERT_TRUE(service.describe_index(
+      "idx_lifecycle_state", &config, nullptr, nullptr, nullptr,
+      &lifecycle_state, &lifecycle_version, &last_error_code, &last_error_ts));
+  EXPECT_EQ("failed", lifecycle_state);
+  EXPECT_EQ(11U, lifecycle_version);
+  EXPECT_EQ(0U, last_error_code);
+  EXPECT_EQ(0U, last_error_ts);
 }
 
 TEST(VectorIndexServiceTest, DescribeIndexReportsLastApplyLatencyMs) {
@@ -3902,23 +4222,26 @@ TEST(VectorIndexServiceTest,
   BoolGuard guard(&opt_vector_lazy_external_runtime, false);
 
   {
-    vector_index::index_service service;
-    ASSERT_TRUE(service.register_index_from_strings("idx_empty_env", 2,
-                                                 "euclidean", "external",
-                                                 "diskann"));
-    vector_index::index_service::committed_state snapshot;
-    snapshot["idx_empty_env"][1] = {1.0F, 1.0F};
-    ASSERT_TRUE(service.restore_committed_state(snapshot));
+    if (vector_index::backend_provider_supported(
+            vector_index::backend_provider::kDiskAnn)) {
+      vector_index::index_service service;
+      ASSERT_TRUE(service.register_index_from_strings("idx_empty_env", 2,
+                                                      "euclidean", "external",
+                                                      "diskann"));
+      vector_index::index_service::committed_state snapshot;
+      snapshot["idx_empty_env"][1] = {1.0F, 1.0F};
+      ASSERT_TRUE(service.restore_committed_state(snapshot));
 
-    vector_index::index_service::index_config config;
-    bool supports_mutations = false;
-    size_t entry_count = 0;
-    size_t committed_entry_count = 0;
-    ASSERT_TRUE(service.describe_index("idx_empty_env", &config,
-                                      &supports_mutations, &entry_count,
-                                      &committed_entry_count));
-    EXPECT_EQ(1U, entry_count);
-    EXPECT_EQ(1U, committed_entry_count);
+      vector_index::index_service::index_config config;
+      bool supports_mutations = false;
+      size_t entry_count = 0;
+      size_t committed_entry_count = 0;
+      ASSERT_TRUE(service.describe_index("idx_empty_env", &config,
+                                         &supports_mutations, &entry_count,
+                                         &committed_entry_count));
+      EXPECT_EQ(1U, entry_count);
+      EXPECT_EQ(1U, committed_entry_count);
+    }
   }
 
   opt_vector_lazy_external_runtime = true;
@@ -3934,7 +4257,8 @@ TEST(VectorIndexServiceTest,
     EXPECT_TRUE(service.rebuild_index("idx_lazy_memory"));
   }
 
-  {
+  if (vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
     vector_index::index_service service;
     ASSERT_TRUE(service.register_index_from_strings("idx_lazy_empty", 2,
                                                  "euclidean", "external",
@@ -3948,7 +4272,8 @@ TEST(VectorIndexServiceTest,
     EXPECT_TRUE(result.empty());
   }
 
-  {
+  if (vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
     vector_index::index_service service;
     ASSERT_TRUE(service.register_index_from_strings("idx_lazy_loaded", 2,
                                                  "euclidean", "external",
@@ -4150,23 +4475,26 @@ TEST(VectorIndexServiceTest, RegisterIndexConfigAppliesBackendSpecificTunings) {
   EXPECT_EQ(2U, described.faiss_build_threads);
   EXPECT_TRUE(supports_mutations);
 
-  vector_index::index_service::index_config diskann_config{
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal,
-      vector_index::backend_provider::kDiskAnn, ""};
-  diskann_config.diskann_build_threads = 2;
-  diskann_config.diskann_build_mode_value =
-      vector_index::diskann_build_mode::kOffline;
-  diskann_config.diskann_build_mode_specified = true;
-  ASSERT_TRUE(service.register_index("idx_diskann_config", diskann_config));
-  ASSERT_TRUE(service.describe_index("idx_diskann_config", &described,
-                                     &supports_mutations, &entry_count,
-                                     &committed_entry_count));
-  EXPECT_EQ(vector_index::backend_provider::kDiskAnn, described.provider);
-  EXPECT_EQ(2U, described.diskann_build_threads);
-  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
-            described.diskann_build_mode_value);
-  EXPECT_TRUE(described.diskann_build_mode_specified);
+  if (vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    vector_index::index_service::index_config diskann_config{
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal,
+        vector_index::backend_provider::kDiskAnn, ""};
+    diskann_config.diskann_build_threads = 2;
+    diskann_config.diskann_build_mode_value =
+        vector_index::diskann_build_mode::kOffline;
+    diskann_config.diskann_build_mode_specified = true;
+    ASSERT_TRUE(service.register_index("idx_diskann_config", diskann_config));
+    ASSERT_TRUE(service.describe_index("idx_diskann_config", &described,
+                                       &supports_mutations, &entry_count,
+                                       &committed_entry_count));
+    EXPECT_EQ(vector_index::backend_provider::kDiskAnn, described.provider);
+    EXPECT_EQ(2U, described.diskann_build_threads);
+    EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+              described.diskann_build_mode_value);
+    EXPECT_TRUE(described.diskann_build_mode_specified);
+  }
 }
 
 TEST(VectorIndexServiceTest, LoadedSearchApisRejectBulkLoadingAndMissingState) {
@@ -4377,6 +4705,28 @@ TEST(VectorIndexServiceTest, ServiceApiGuardBranchesRejectInvalidState) {
                              &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(7U, result[0].doc_id);
+}
+
+TEST(VectorIndexServiceTest, InternalRebuildGuardsCoverNegativeModes) {
+  using vector_index::backend_mode;
+  using vector_index::backend_provider;
+  using vector_index::detail::all_true;
+  using vector_index::detail::can_rebuild_after_search_failure;
+
+  EXPECT_TRUE(all_true(true, 1, "non-null"));
+  EXPECT_FALSE(all_true(true, 0, true));
+  EXPECT_FALSE(all_true(false, true, true));
+
+  vector_index::index_service::index_config config{
+      2, vector_index::metric_type::kEuclidean, backend_mode::kMemory,
+      backend_provider::kHnswlib, ""};
+  EXPECT_TRUE(can_rebuild_after_search_failure(config));
+
+  config.mode = backend_mode::kExternal;
+  EXPECT_FALSE(can_rebuild_after_search_failure(config));
+  config.mode = backend_mode::kMemory;
+  config.provider = backend_provider::kFaiss;
+  EXPECT_FALSE(can_rebuild_after_search_failure(config));
 }
 
 TEST(VectorIndexServiceTest, CommitAppliesStagedUpserts) {

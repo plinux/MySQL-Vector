@@ -26,6 +26,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -34,6 +36,7 @@
 
 #include "my_alloc.h"
 #include "sql/mysqld.h"
+#include "sql/vector/vector_build_pipeline_policy.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_ddl_formatter.h"
 #include "sql/vector/vector_index_identity.h"
@@ -500,6 +503,30 @@ class in_memory_truth_store final
     return true;
   }
 
+  bool load_segment_tasks(
+      std::vector<vector_index_metadata_store::segment_task_row> *rows)
+      override {
+    if (fail_load_segment_tasks) return false;
+    if (rows == nullptr) return false;
+    *rows = segment_task_rows;
+    return true;
+  }
+
+  bool save_segment_tasks(
+      const std::vector<vector_index_metadata_store::segment_task_row> &rows)
+      override {
+    ++save_segment_tasks_calls;
+    if (fail_save_segment_tasks) return false;
+    segment_task_rows = rows;
+    return true;
+  }
+
+  bool quarantine_segment_tasks() override {
+    if (fail_quarantine_segment_tasks) return false;
+    segment_task_rows.clear();
+    return true;
+  }
+
   bool fail_load_metadata{false};
   bool fail_save_metadata{false};
   uint64_t fail_save_metadata_at_call{0};
@@ -519,6 +546,9 @@ class in_memory_truth_store final
   bool fail_load_prepared{false};
   bool fail_save_prepared{false};
   bool fail_quarantine_prepared{false};
+  bool fail_load_segment_tasks{false};
+  bool fail_save_segment_tasks{false};
+  bool fail_quarantine_segment_tasks{false};
   bool fail_begin_persist{false};
   bool fail_commit_persist{false};
   bool transactional{true};
@@ -532,6 +562,7 @@ class in_memory_truth_store final
   uint64_t save_change_log_calls{0};
   uint64_t append_change_log_delta_calls{0};
   uint64_t save_prepared_calls{0};
+  uint64_t save_segment_tasks_calls{0};
   uint64_t save_manifest_calls{0};
 
   void ResetPersistCountersForTesting() {
@@ -541,6 +572,7 @@ class in_memory_truth_store final
     save_change_log_calls = 0;
     append_change_log_delta_calls = 0;
     save_prepared_calls = 0;
+    save_segment_tasks_calls = 0;
     save_manifest_calls = 0;
   }
 
@@ -575,12 +607,18 @@ class in_memory_truth_store final
     prepared_rows = rows;
   }
 
+  void SetSegmentTaskRowsForTesting(
+      const std::vector<vector_index_metadata_store::segment_task_row> &rows) {
+    segment_task_rows = rows;
+  }
+
  private:
   std::vector<vector_index_metadata_store::metadata_row> metadata_rows;
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
   vector_index_metadata_store::manifest_row manifest_row;
   std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
   std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows;
+  std::vector<vector_index_metadata_store::segment_task_row> segment_task_rows;
 };
 
 TEST(VectorIndexRegistryInternalTest,
@@ -667,6 +705,7 @@ void expect_metadata_only_persist(const in_memory_truth_store &store) {
   EXPECT_EQ(0U, store.save_committed_calls);
   EXPECT_EQ(0U, store.save_change_log_calls);
   EXPECT_EQ(0U, store.save_prepared_calls);
+  EXPECT_EQ(0U, store.save_segment_tasks_calls);
 }
 
 class ServerStartedGuard {
@@ -767,6 +806,7 @@ TEST_F(VectorIndexRegistryTest, RestoreRuntimeStateRestoresAndPersistsSnapshot) 
   EXPECT_EQ(0U, store_.save_committed_calls);
   EXPECT_EQ(0U, store_.save_change_log_calls);
   EXPECT_EQ(0U, store_.save_prepared_calls);
+  EXPECT_EQ(0U, store_.save_segment_tasks_calls);
   EXPECT_EQ(0U, store_.save_manifest_calls);
 
   std::vector<vector_index::search_result> result;
@@ -782,6 +822,7 @@ TEST_F(VectorIndexRegistryTest, RestoreRuntimeStateRestoresAndPersistsSnapshot) 
   EXPECT_EQ(1U, store_.save_committed_calls);
   EXPECT_EQ(1U, store_.save_change_log_calls);
   EXPECT_EQ(1U, store_.save_prepared_calls);
+  EXPECT_EQ(1U, store_.save_segment_tasks_calls);
   EXPECT_EQ(1U, store_.save_manifest_calls);
 
   result.clear();
@@ -1224,6 +1265,20 @@ TEST_F(VectorIndexRegistryTest,
           vector_index_metadata_store::change_op::kUpsert, backfilling_index, 8,
           {8.0F, 8.0F}},
   });
+  vector_index_metadata_store::segment_task_row ready_task;
+  ready_task.index_name = ready_index;
+  ready_task.generation = 1;
+  ready_task.segment_id = 1;
+  ready_task.state = vector_index_metadata_store::segment_task_state::kReady;
+  ready_task.vector_path = "/tmp/ready.fbin";
+  vector_index_metadata_store::segment_task_row creating_task = ready_task;
+  creating_task.index_name = creating_index;
+  creating_task.segment_id = 2;
+  vector_index_metadata_store::segment_task_row backfilling_task = ready_task;
+  backfilling_task.index_name = backfilling_index;
+  backfilling_task.segment_id = 3;
+  store_.SetSegmentTaskRowsForTesting(
+      {ready_task, creating_task, backfilling_task});
   store_.SetManifestCheckpointsForTesting(3, 3, 3);
 
   std::vector<std::string> index_names;
@@ -1253,6 +1308,11 @@ TEST_F(VectorIndexRegistryTest,
   ASSERT_EQ(1U, prepared_rows.size());
   EXPECT_EQ(ready_index, prepared_rows[0].index_name);
 
+  std::vector<vector_index_metadata_store::segment_task_row> segment_task_rows;
+  ASSERT_TRUE(store_.load_segment_tasks(&segment_task_rows));
+  ASSERT_EQ(1U, segment_task_rows.size());
+  EXPECT_EQ(ready_index, segment_task_rows[0].index_name);
+
   vector_index_metadata_store::manifest_row manifest;
   ASSERT_TRUE(store_.load_manifest(&manifest));
   EXPECT_EQ(1U, manifest.metadata_checkpoint);
@@ -1270,6 +1330,126 @@ TEST_F(VectorIndexRegistryTest,
   std::vector<std::string> index_names;
   EXPECT_FALSE(vector_index_registry::list_indexes(&index_names));
   EXPECT_FALSE(vector_index_registry::metadata_loaded());
+}
+
+TEST_F(VectorIndexRegistryTest, LazyLoadNormalizesSegmentTaskRecoveryState) {
+  const std::filesystem::path root =
+      std::filesystem::path(DATA_DIR) / "vector_segment_task_recovery";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  ASSERT_TRUE(std::filesystem::create_directories(root, ec));
+
+  const auto make_file = [](const std::filesystem::path &path) {
+    std::ofstream file(path, std::ios::out | std::ios::binary);
+    file << "x";
+    return file.good();
+  };
+  const auto path_string = [](const std::filesystem::path &path) {
+    return path.string();
+  };
+
+  const std::string ready_index = "test.t_segment_ready.v";
+  const std::string pending_index = "test.t_segment_pending.v";
+  const std::string building_index = "test.t_segment_building.v";
+  const std::string missing_index = "test.t_segment_missing.v";
+  const std::string stale_index = "test.t_segment_stale.v";
+  const std::string abandoned_index = "test.t_segment_abandoned.v";
+
+  store_.SetMetadataRowsForTesting({
+      make_metadata_row_for_testing(ready_index, "ready"),
+      make_metadata_row_for_testing(pending_index, "ready"),
+      make_metadata_row_for_testing(building_index, "ready"),
+      make_metadata_row_for_testing(missing_index, "ready"),
+  });
+
+  ASSERT_TRUE(make_file(root / "ready.fbin"));
+  ASSERT_TRUE(make_file(root / "ready.u64"));
+  ASSERT_TRUE(std::filesystem::create_directory(root / "ready_artifact", ec));
+  ASSERT_TRUE(make_file(root / "pending.fbin"));
+  ASSERT_TRUE(make_file(root / "pending.u64"));
+  ASSERT_TRUE(make_file(root / "pending_artifact.tmp"));
+  ASSERT_TRUE(make_file(root / "building.fbin"));
+  ASSERT_TRUE(make_file(root / "building.u64"));
+  ASSERT_TRUE(make_file(root / "building_artifact.tmp"));
+  ASSERT_TRUE(make_file(root / "missing.u64"));
+  ASSERT_TRUE(make_file(root / "stale_artifact.tmp"));
+  ASSERT_TRUE(make_file(root / "abandoned_artifact.tmp"));
+
+  auto make_task =
+      [&](const std::string &index_name,
+          vector_index_metadata_store::segment_task_state state,
+          const std::string &basename) {
+        vector_index_metadata_store::segment_task_row row;
+        row.index_name = index_name;
+        row.generation = 1;
+        row.segment_id = 1;
+        row.state = state;
+        row.row_count = 1;
+        row.payload_size = 8;
+        row.vector_path = path_string(root / (basename + ".fbin"));
+        row.docid_path = path_string(root / (basename + ".u64"));
+        row.artifact_prefix = path_string(root / (basename + "_artifact"));
+        return row;
+      };
+
+  store_.SetSegmentTaskRowsForTesting({
+      make_task(ready_index,
+                vector_index_metadata_store::segment_task_state::kReady,
+                "ready"),
+      make_task(pending_index,
+                vector_index_metadata_store::segment_task_state::kPending,
+                "pending"),
+      make_task(building_index,
+                vector_index_metadata_store::segment_task_state::kBuilding,
+                "building"),
+      make_task(missing_index,
+                vector_index_metadata_store::segment_task_state::kBuilding,
+                "missing"),
+      make_task(stale_index,
+                vector_index_metadata_store::segment_task_state::kPending,
+                "stale"),
+      make_task(abandoned_index,
+                vector_index_metadata_store::segment_task_state::kAbandoned,
+                "abandoned"),
+  });
+
+  std::vector<std::string> index_names;
+  ASSERT_TRUE(vector_index_registry::list_indexes(&index_names));
+
+  std::vector<vector_index_metadata_store::segment_task_row> rows;
+  ASSERT_TRUE(store_.load_segment_tasks(&rows));
+  ASSERT_EQ(4U, rows.size());
+
+  const auto find_task = [&rows](const std::string &index_name) {
+    return std::find_if(rows.begin(), rows.end(), [&index_name](const auto &row) {
+      return row.index_name == index_name;
+    });
+  };
+
+  ASSERT_NE(rows.end(), find_task(ready_index));
+  EXPECT_EQ(vector_index_metadata_store::segment_task_state::kReady,
+            find_task(ready_index)->state);
+  ASSERT_NE(rows.end(), find_task(pending_index));
+  EXPECT_EQ(vector_index_metadata_store::segment_task_state::kPending,
+            find_task(pending_index)->state);
+  ASSERT_NE(rows.end(), find_task(building_index));
+  EXPECT_EQ(vector_index_metadata_store::segment_task_state::kPending,
+            find_task(building_index)->state);
+  ASSERT_NE(rows.end(), find_task(missing_index));
+  EXPECT_EQ(vector_index_metadata_store::segment_task_state::kFailed,
+            find_task(missing_index)->state);
+  EXPECT_EQ(1U, find_task(missing_index)->last_error_code);
+  EXPECT_EQ(rows.end(), find_task(stale_index));
+  EXPECT_EQ(rows.end(), find_task(abandoned_index));
+
+  EXPECT_TRUE(std::filesystem::exists(root / "ready_artifact", ec));
+  EXPECT_FALSE(std::filesystem::exists(root / "pending_artifact.tmp", ec));
+  EXPECT_FALSE(std::filesystem::exists(root / "building_artifact.tmp", ec));
+  EXPECT_FALSE(std::filesystem::exists(root / "stale_artifact.tmp", ec));
+  EXPECT_FALSE(std::filesystem::exists(root / "abandoned_artifact.tmp", ec));
+  EXPECT_EQ(1U, store_.save_segment_tasks_calls);
+
+  std::filesystem::remove_all(root, ec);
 }
 
 TEST_F(VectorIndexRegistryTest, GetIndexInfoParsesMappedIndexName) {
@@ -2727,6 +2907,74 @@ TEST_F(VectorIndexRegistryTest,
   EXPECT_EQ(10U, result[0].doc_id);
 
   ASSERT_TRUE(vector_index_registry::drop_index("idx_registry_standalone_all"));
+}
+
+TEST_F(VectorIndexRegistryTest, SegmentedRebuildPersistsReadyTaskRows) {
+  UlongGuard pipeline_guard(
+      &opt_vector_build_pipeline_mode,
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented));
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+
+  const std::string index_name = "idx_registry_segment_task_ready";
+  ASSERT_TRUE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "memory", "native", options));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 10, {1.0F, 0.0F}));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 20, {0.0F, 1.0F}));
+
+  ASSERT_TRUE(vector_index_registry::rebuild_index(index_name));
+
+  std::vector<vector_index_metadata_store::segment_task_row> rows;
+  ASSERT_TRUE(store_.load_segment_tasks(&rows));
+  ASSERT_EQ(1U, rows.size());
+  EXPECT_EQ(index_name, rows[0].index_name);
+  EXPECT_NE(0U, rows[0].segment_id);
+  EXPECT_EQ(vector_index_metadata_store::segment_task_state::kReady,
+            rows[0].state);
+  EXPECT_EQ(2U, rows[0].row_count);
+  EXPECT_GE(rows[0].payload_size, 2U * 2U * sizeof(float));
+  EXPECT_FALSE(rows[0].vector_path.empty());
+  EXPECT_FALSE(rows[0].docid_path.empty());
+  EXPECT_EQ(1U, rows[0].attempt);
+  EXPECT_EQ(0U, rows[0].last_error_code);
+  EXPECT_NE(0U, rows[0].updated_ts);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       SegmentedRebuildPersistsTaskRowsBeforePublishFailure) {
+  UlongGuard pipeline_guard(
+      &opt_vector_build_pipeline_mode,
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented));
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+
+  const std::string index_name = "idx_registry_segment_task_fail";
+  ASSERT_TRUE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "memory", "native", options));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 30, {3.0F, 0.0F}));
+
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_segment_task_before_publish");
+    EXPECT_FALSE(vector_index_registry::rebuild_index(index_name));
+  }
+
+  std::vector<vector_index_metadata_store::segment_task_row> rows;
+  ASSERT_TRUE(store_.load_segment_tasks(&rows));
+  ASSERT_EQ(1U, rows.size());
+  EXPECT_EQ(index_name, rows[0].index_name);
+  EXPECT_EQ(vector_index_metadata_store::segment_task_state::kReady,
+            rows[0].state);
+  EXPECT_EQ(1U, rows[0].row_count);
+  EXPECT_EQ(1U, rows[0].attempt);
+  EXPECT_EQ(0U, rows[0].last_error_code);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
 }
 
 TEST_F(VectorIndexRegistryTest,

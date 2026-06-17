@@ -659,6 +659,8 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_runtime_config.cc
     vector/vector_index_runtime_thread_pool.cc
     vector/vector_index_status_fields.cc
+    vector/vector_segmented_search.cc
+    vector/vector_segment_task.cc
     vector/vector_status.cc
     vector/vector_index_metadata_store.cc
     vector/vector_index_metadata_store_codec.cc

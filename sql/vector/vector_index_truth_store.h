@@ -155,6 +155,12 @@ class truth_store {
   virtual bool save_prepared(
       const std::vector<vector_index_metadata_store::prepared_change_row> &rows) = 0;
   virtual bool quarantine_prepared() = 0;
+
+  virtual bool load_segment_tasks(
+      std::vector<vector_index_metadata_store::segment_task_row> *rows) = 0;
+  virtual bool save_segment_tasks(
+      const std::vector<vector_index_metadata_store::segment_task_row> &rows) = 0;
+  virtual bool quarantine_segment_tasks() = 0;
 };
 
 truth_store *get();

@@ -84,6 +84,7 @@ vector_index_truth_committed	mysql
 vector_index_truth_manifest	mysql
 vector_index_truth_metadata	mysql
 vector_index_truth_prepared	mysql
+vector_index_truth_segment_tasks	mysql
 vector_index_truth_store_quarantine	mysql
 view_routine_usage	mysql
 view_table_usage	mysql
@@ -161,6 +162,7 @@ vector_index_truth_committed
 vector_index_truth_manifest
 vector_index_truth_metadata
 vector_index_truth_prepared
+vector_index_truth_segment_tasks
 vector_index_truth_store_quarantine
 view_routine_usage
 view_table_usage

@@ -15,6 +15,8 @@ SELECT * FROM mysql.vector_index_truth_changelog;
 --error ER_NO_SYSTEM_TABLE_ACCESS
 SELECT * FROM mysql.vector_index_truth_prepared;
 --error ER_NO_SYSTEM_TABLE_ACCESS
+SELECT * FROM mysql.vector_index_truth_segment_tasks;
+--error ER_NO_SYSTEM_TABLE_ACCESS
 SELECT * FROM mysql.vector_index_truth_store_quarantine;
 
 --error ER_NO_SYSTEM_TABLE_ACCESS
@@ -27,6 +29,8 @@ SHOW CREATE TABLE mysql.vector_index_truth_manifest;
 SHOW CREATE TABLE mysql.vector_index_truth_changelog;
 --error ER_NO_SYSTEM_TABLE_ACCESS
 SHOW CREATE TABLE mysql.vector_index_truth_prepared;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+SHOW CREATE TABLE mysql.vector_index_truth_segment_tasks;
 --error ER_NO_SYSTEM_TABLE_ACCESS
 SHOW CREATE TABLE mysql.vector_index_truth_store_quarantine;
 
@@ -41,6 +45,8 @@ CREATE TABLE test.vector_truth_copy_changelog LIKE mysql.vector_index_truth_chan
 --error ER_NO_SYSTEM_TABLE_ACCESS
 CREATE TABLE test.vector_truth_copy_prepared LIKE mysql.vector_index_truth_prepared;
 --error ER_NO_SYSTEM_TABLE_ACCESS
+CREATE TABLE test.vector_truth_copy_segment_tasks LIKE mysql.vector_index_truth_segment_tasks;
+--error ER_NO_SYSTEM_TABLE_ACCESS
 CREATE TABLE test.vector_truth_copy_quarantine LIKE mysql.vector_index_truth_store_quarantine;
 
 --error ER_NO_SYSTEM_TABLE_ACCESS
@@ -53,6 +59,8 @@ TRUNCATE TABLE mysql.vector_index_truth_manifest;
 TRUNCATE TABLE mysql.vector_index_truth_changelog;
 --error ER_NO_SYSTEM_TABLE_ACCESS
 TRUNCATE TABLE mysql.vector_index_truth_prepared;
+--error ER_NO_SYSTEM_TABLE_ACCESS
+TRUNCATE TABLE mysql.vector_index_truth_segment_tasks;
 --error ER_NO_SYSTEM_TABLE_ACCESS
 TRUNCATE TABLE mysql.vector_index_truth_store_quarantine;
 

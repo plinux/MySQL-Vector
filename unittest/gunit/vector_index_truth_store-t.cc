@@ -137,6 +137,19 @@ class dummy_truth_store : public vector_index_truth_store::truth_store {
     return true;
   }
   bool quarantine_prepared() override { return true; }
+
+  bool load_segment_tasks(
+      std::vector<vector_index_metadata_store::segment_task_row> *rows)
+      override {
+    if (rows != nullptr) rows->clear();
+    return true;
+  }
+  bool save_segment_tasks(
+      const std::vector<vector_index_metadata_store::segment_task_row> &rows
+      [[maybe_unused]]) override {
+    return true;
+  }
+  bool quarantine_segment_tasks() override { return true; }
 };
 
 class NullNameTruthStore final : public dummy_truth_store {
@@ -316,6 +329,8 @@ TEST(VectorIndexTruthStoreTest, IsTruthStoreTableRecognizesKnownTables) {
   EXPECT_TRUE(vector_index_truth_store::is_truth_store_table(
       "mysql", "vector_index_truth_prepared"));
   EXPECT_TRUE(vector_index_truth_store::is_truth_store_table(
+      "mysql", "vector_index_truth_segment_tasks"));
+  EXPECT_TRUE(vector_index_truth_store::is_truth_store_table(
       "mysql", "vector_index_truth_store_quarantine"));
   EXPECT_FALSE(vector_index_truth_store::is_truth_store_table(
       "mysql", "vector_index_truth_store"));
@@ -405,6 +420,15 @@ TEST(VectorIndexTruthStoreTest, SingletonTruthTablesCarryLayoutVersion) {
             quarantine_ddl.find("layout_version INT UNSIGNED NOT NULL"));
   EXPECT_NE(std::string::npos,
             quarantine_ddl.find("PRIMARY KEY (singleton_id)"));
+
+  const auto segment_tasks_ddl =
+      dd::tables::Vector_index_truth_segment_tasks::instance()
+          .target_table_definition()
+          ->get_ddl();
+  EXPECT_NE(std::string::npos,
+            segment_tasks_ddl.find("layout_version INT UNSIGNED NOT NULL"));
+  EXPECT_NE(std::string::npos,
+            segment_tasks_ddl.find("PRIMARY KEY (singleton_id)"));
 }
 
 TEST(VectorIndexTruthStoreTest, SqlStringLiteralEscapesQuotesAndBackslashes) {

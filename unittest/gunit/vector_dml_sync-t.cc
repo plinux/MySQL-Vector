@@ -136,6 +136,19 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
     return true;
   }
 
+  bool load_segment_tasks(
+      std::vector<vector_index_metadata_store::segment_task_row> *rows)
+      override {
+    if (rows == nullptr) return false;
+    rows->clear();
+    return true;
+  }
+  bool save_segment_tasks(
+      const std::vector<vector_index_metadata_store::segment_task_row> &) override {
+    return true;
+  }
+  bool quarantine_segment_tasks() override { return true; }
+
   std::vector<vector_index_metadata_store::metadata_row> metadata_rows;
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
   std::vector<vector_index_metadata_store::change_log_row> change_log_rows;

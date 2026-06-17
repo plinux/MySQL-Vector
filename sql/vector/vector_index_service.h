@@ -35,6 +35,7 @@
 
 #include "sql/vector/vector_build_pipeline_policy.h"
 #include "sql/vector/vector_index_backend.h"
+#include "sql/vector/vector_segment_task.h"
 
 namespace vector_index {
 
@@ -113,9 +114,15 @@ class standalone_entry_store {
   bool bulk_upsert_raw_files(const std::string &index_name,
                              const std::string &vector_filename,
                              const std::string &docid_filename,
-                             uint64_t row_count, size_t dimension);
+                             uint64_t row_count, size_t dimension,
+                             std::unordered_set<uint64_t> *loaded_doc_ids =
+                                 nullptr);
   bool erase(const std::string &index_name, uint64_t doc_id,
              size_t cache_budget);
+  bool prepare_raw_segments_for_rebuild(const std::string &index_name);
+  bool read_rebuild_raw_segments(
+      const std::string &index_name,
+      const raw_vector_segment_visitor &visitor) const;
   bool rebuild_backend_input(const std::string &index_name, backend *target);
   bool for_each_entry(const std::string &index_name,
                       const entry_visitor &visitor) const;
@@ -384,9 +391,14 @@ class index_service {
                       uint64_t *recover_fallback_count = nullptr,
                       uint64_t *last_recover_fallback_ts = nullptr,
                       bool *external_manifest_present = nullptr,
-                      uint64_t *external_manifest_generation = nullptr) const;
+                      uint64_t *external_manifest_generation = nullptr,
+                      backend_build_diagnostics *build_diagnostics = nullptr)
+      const;
   bool describe_build_pipeline(const std::string &index_name,
                                build_pipeline_snapshot *snapshot) const;
+  bool snapshot_segment_tasks(
+      const std::string &index_name,
+      std::vector<vector_index_metadata_store::segment_task_row> *rows) const;
   bool set_last_apply_latency_ms(const std::string &index_name,
                                  uint64_t latency_ms);
   bool set_lifecycle_state(const std::string &index_name,
@@ -474,6 +486,9 @@ class index_service {
   std::unordered_map<std::string, lifecycle_info> m_lifecycle_infos;
   std::unordered_map<std::string, build_pipeline_snapshot>
       m_build_pipeline_snapshots;
+  std::unordered_map<
+      std::string, std::vector<vector_index_metadata_store::segment_task_row>>
+      m_segment_task_rows;
   std::unordered_map<uint64_t, std::vector<pending_change>> m_pending_changes;
   std::unordered_map<uint64_t, std::vector<savepoint_marker>> m_savepoints;
 
@@ -498,9 +513,13 @@ class index_service {
   void maybe_unload_runtime(const std::string &index_name);
   build_input_stats collect_build_input_stats(
       const std::string &index_name, const index_config &config) const;
-  void record_build_pipeline_decision(const std::string &index_name,
-                                      const index_config &config);
+  build_pipeline_decision record_build_pipeline_decision(
+      const std::string &index_name, const index_config &config);
 };
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool segmented_backend_contract_valid_for_testing();
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 }  // namespace vector_index
 

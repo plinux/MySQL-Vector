@@ -27,6 +27,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -63,6 +64,7 @@ uint64_t g_next_change_log_sequence = 1;
 std::vector<vector_index_metadata_store::change_log_row> g_change_log_rows;
 std::vector<vector_index_metadata_store::prepared_change_row>
     g_prepared_change_rows;
+std::vector<vector_index_metadata_store::segment_task_row> g_segment_task_rows;
 
 std::vector<recovery_action> g_recovery_actions;
 
@@ -75,6 +77,7 @@ namespace {
 constexpr size_t kVectorChangeLogCompactRows = 1000000;
 constexpr const char *kLifecycleCreating = "creating";
 constexpr const char *kLifecycleBackfilling = "backfilling";
+constexpr uint32_t kSegmentTaskMissingArtifactError = 1;
 
 bool is_incomplete_create_lifecycle(const std::string &state) {
   return state == kLifecycleCreating || state == kLifecycleBackfilling;
@@ -137,6 +140,161 @@ void remove_prepared_rows_for_indexes(
                                                      row.index_name);
                              }),
               rows->end());
+}
+
+void remove_segment_task_rows_for_indexes(
+    const std::unordered_set<std::string> &index_names,
+    std::vector<vector_index_metadata_store::segment_task_row> *rows) {
+  if (index_names.empty() || rows == nullptr) return;
+  rows->erase(std::remove_if(rows->begin(), rows->end(),
+                             [&index_names](const auto &row) {
+                               return has_index_name(index_names,
+                                                     row.index_name);
+                             }),
+              rows->end());
+}
+
+std::unordered_set<std::string> metadata_index_names(
+    const std::vector<vector_index_metadata_store::metadata_row> &rows) {
+  std::unordered_set<std::string> index_names;
+  for (const auto &row : rows) {
+    index_names.insert(row.index_name);
+  }
+  return index_names;
+}
+
+bool path_exists(const std::string &path) {
+  if (path.empty()) return true;
+  std::error_code ec;
+  return std::filesystem::exists(path, ec) && !ec;
+}
+
+bool artifact_prefix_exists(const std::string &prefix) {
+  if (prefix.empty()) return true;
+  std::error_code ec;
+  if (std::filesystem::exists(prefix, ec) && !ec) return true;
+  if (ec) return false;
+
+  const std::filesystem::path prefix_path(prefix);
+  const std::filesystem::path parent = prefix_path.parent_path();
+  const std::string filename_prefix = prefix_path.filename().string();
+  if (parent.empty() || filename_prefix.empty() ||
+      !std::filesystem::is_directory(parent, ec) || ec) {
+    return false;
+  }
+
+  for (const auto &entry : std::filesystem::directory_iterator(
+           parent, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
+    if (ec) return false;
+    const std::string filename = entry.path().filename().string();
+    if (filename.rfind(filename_prefix, 0) == 0) return true;
+  }
+  return false;
+}
+
+void remove_artifact_prefix_best_effort(const std::string &prefix) {
+  if (prefix.empty()) return;
+
+  std::error_code ec;
+  std::filesystem::remove_all(prefix, ec);
+  ec.clear();
+
+  const std::filesystem::path prefix_path(prefix);
+  const std::filesystem::path parent = prefix_path.parent_path();
+  const std::string filename_prefix = prefix_path.filename().string();
+  if (parent.empty() || filename_prefix.empty() ||
+      !std::filesystem::is_directory(parent, ec) || ec) {
+    return;
+  }
+
+  for (const auto &entry : std::filesystem::directory_iterator(
+           parent, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
+    if (ec) return;
+    const std::string filename = entry.path().filename().string();
+    if (filename.rfind(filename_prefix, 0) == 0) {
+      std::error_code remove_ec;
+      std::filesystem::remove_all(entry.path(), remove_ec);
+    }
+  }
+}
+
+bool segment_task_raw_input_complete(
+    const vector_index_metadata_store::segment_task_row &row) {
+  return path_exists(row.vector_path) && path_exists(row.docid_path);
+}
+
+bool segment_task_ready_artifacts_complete(
+    const vector_index_metadata_store::segment_task_row &row) {
+  return segment_task_raw_input_complete(row) &&
+         artifact_prefix_exists(row.artifact_prefix);
+}
+
+bool normalize_segment_tasks_for_recovery(
+    const std::vector<vector_index_metadata_store::metadata_row> &metadata_rows,
+    std::vector<vector_index_metadata_store::segment_task_row> *rows) {
+  if (rows == nullptr) return false;
+
+  bool changed = false;
+  const std::unordered_set<std::string> live_indexes =
+      metadata_index_names(metadata_rows);
+  rows->erase(std::remove_if(rows->begin(), rows->end(),
+                             [&live_indexes, &changed](const auto &row) {
+                               if (!has_index_name(live_indexes,
+                                                   row.index_name)) {
+                                 changed = true;
+                                 remove_artifact_prefix_best_effort(
+                                     row.artifact_prefix);
+                                 return true;
+                               }
+                               if (row.state == vector_index_metadata_store::
+                                                    segment_task_state::
+                                                        kAbandoned) {
+                                 changed = true;
+                                 remove_artifact_prefix_best_effort(
+                                     row.artifact_prefix);
+                                 return true;
+                               }
+                               return false;
+                             }),
+              rows->end());
+
+  for (auto &row : *rows) {
+    using vector_index_metadata_store::segment_task_state;
+    switch (row.state) {
+      case segment_task_state::kPending:
+        remove_artifact_prefix_best_effort(row.artifact_prefix);
+        if (!segment_task_raw_input_complete(row)) {
+          row.state = segment_task_state::kFailed;
+          row.last_error_code = kSegmentTaskMissingArtifactError;
+          changed = true;
+        }
+        break;
+      case segment_task_state::kBuilding:
+        remove_artifact_prefix_best_effort(row.artifact_prefix);
+        row.state = segment_task_raw_input_complete(row)
+                        ? segment_task_state::kPending
+                        : segment_task_state::kFailed;
+        if (row.state == segment_task_state::kFailed) {
+          row.last_error_code = kSegmentTaskMissingArtifactError;
+        }
+        changed = true;
+        break;
+      case segment_task_state::kReady:
+        if (!segment_task_ready_artifacts_complete(row)) {
+          row.state = segment_task_state::kFailed;
+          row.last_error_code = kSegmentTaskMissingArtifactError;
+          changed = true;
+        }
+        break;
+      case segment_task_state::kFailed:
+        break;
+      case segment_task_state::kAbandoned:
+        break;
+    }
+  }
+  return changed;
 }
 
 uint32_t effective_hnsw_build_threads(
@@ -1148,6 +1306,18 @@ bool ensure_metadata_loaded_locked() {
   remove_prepared_rows_for_indexes(incomplete_create_indexes, &prepared_rows);
   g_prepared_change_rows = std::move(prepared_rows);
 
+  std::vector<vector_index_metadata_store::segment_task_row> segment_task_rows;
+  if (!truth_store->load_segment_tasks(&segment_task_rows)) {
+    vector_status::record_metadata_load_failure();
+    if (!truth_store->quarantine_segment_tasks()) return false;
+    segment_task_rows.clear();
+  }
+  remove_segment_task_rows_for_indexes(incomplete_create_indexes,
+                                       &segment_task_rows);
+  const bool segment_task_recovery_changed =
+      normalize_segment_tasks_for_recovery(rows, &segment_task_rows);
+  g_segment_task_rows = std::move(segment_task_rows);
+
   if (mysqld_server_started && !g_recovery_actions.empty()) {
     const auto actions = g_recovery_actions;
     g_recovery_actions.clear();
@@ -1191,7 +1361,8 @@ bool ensure_metadata_loaded_locked() {
   refresh_manifest_status_locked();
   if (!evict_committed_cache_to_budget_locked()) return false;
   g_metadata_loaded = true;
-  if (cleanup_incomplete_create_state && !persist_registry_state_locked()) {
+  if ((cleanup_incomplete_create_state || segment_task_recovery_changed) &&
+      !persist_registry_state_locked()) {
     vector_status::record_truth_store_persist_failure();
     g_metadata_loaded = false;
     return false;
@@ -1269,6 +1440,15 @@ bool persist_prepared_locked() {
   return true;
 }
 
+bool persist_segment_tasks_locked() {
+  if (!vector_index_truth_store::get()->save_segment_tasks(
+          g_segment_task_rows)) {
+    vector_status::record_truth_store_persist_failure();
+    return false;
+  }
+  return true;
+}
+
 bool persist_manifest_locked() {
   vector_index_metadata_store::manifest_row row;
   row.state = "ready";
@@ -1300,6 +1480,9 @@ bool load_persisted_commit_artifacts_snapshot_locked(
   if (!truth_store->load_prepared(&snapshot->prepared_rows)) {
     return false;
   }
+  if (!truth_store->load_segment_tasks(&snapshot->segment_task_rows)) {
+    return false;
+  }
   if (!truth_store->load_manifest(&snapshot->manifest_row)) {
     return false;
   }
@@ -1314,6 +1497,7 @@ bool restore_persisted_commit_artifacts_snapshot_locked(
   bool ok = truth_store->save_committed(snapshot.committed_rows) &&
             truth_store->save_change_log(snapshot.change_log_rows) &&
             truth_store->save_prepared(snapshot.prepared_rows) &&
+            truth_store->save_segment_tasks(snapshot.segment_task_rows) &&
             truth_store->save_manifest(snapshot.manifest_row);
   if (!ok) {
     truth_store->rollback_persist();
@@ -1342,7 +1526,8 @@ bool persist_registry_state_locked() {
   if (!truth_store->begin_persist()) return false;
   bool ok = persist_metadata_locked(nullptr) &&
             persist_committed_locked(nullptr) && persist_change_log_locked() &&
-            persist_prepared_locked() && persist_manifest_locked();
+            persist_prepared_locked() && persist_segment_tasks_locked() &&
+            persist_manifest_locked();
   if (!ok) {
     truth_store->rollback_persist();
     return false;
@@ -1796,6 +1981,7 @@ void reset_for_testing() {
   g_next_change_log_sequence = 1;
   g_change_log_rows.clear();
   g_prepared_change_rows.clear();
+  g_segment_task_rows.clear();
   g_thd_txn_contexts.clear();
   g_index_bindings.clear();
   g_index_owner_schemas.clear();

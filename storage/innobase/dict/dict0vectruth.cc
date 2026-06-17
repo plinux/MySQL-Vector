@@ -66,6 +66,7 @@ constexpr const char *kCommittedArtifactName = "committed";
 constexpr const char *kManifestArtifactName = "manifest";
 constexpr const char *kChangeLogArtifactName = "changelog";
 constexpr const char *kPreparedArtifactName = "prepared";
+constexpr const char *kSegmentTasksArtifactName = "segment_tasks";
 constexpr const char *kQuarantineStoreArtifactName = "quarantine_store";
 
 constexpr const char *kMetadataTableName = "mysql/vector_index_truth_metadata";
@@ -76,6 +77,8 @@ constexpr const char *kChangeLogTableName =
     "mysql/vector_index_truth_changelog";
 constexpr const char *kPreparedTableName =
     "mysql/vector_index_truth_prepared";
+constexpr const char *kSegmentTasksTableName =
+    "mysql/vector_index_truth_segment_tasks";
 constexpr const char *kQuarantineTableName =
     "mysql/vector_index_truth_store_quarantine";
 
@@ -126,6 +129,13 @@ dict_table_t *hidden_table_for_artifact(const char *artifact_name) {
           kPreparedTableName, false, false, DICT_ERR_IGNORE_NONE);
     }
     return dict_sys->vector_truth_prepared;
+  }
+  if (strcmp(artifact_name, kSegmentTasksArtifactName) == 0) {
+    if (dict_sys->vector_truth_segment_tasks == nullptr) {
+      dict_sys->vector_truth_segment_tasks = dict_table_open_on_name(
+          kSegmentTasksTableName, false, false, DICT_ERR_IGNORE_NONE);
+    }
+    return dict_sys->vector_truth_segment_tasks;
   }
   if (strcmp(artifact_name, kQuarantineStoreArtifactName) == 0) {
     if (dict_sys->vector_truth_store_quarantine == nullptr) {
@@ -1190,6 +1200,7 @@ class Row_truth_table_buffer {
 
 Singleton_payload_table_buffer g_metadata_buffer;
 Singleton_payload_table_buffer g_manifest_buffer;
+Singleton_payload_table_buffer g_segment_tasks_buffer;
 Singleton_payload_table_buffer g_quarantine_buffer;
 
 Row_truth_table_buffer g_committed_row_buffer;
@@ -1203,6 +1214,9 @@ Singleton_payload_table_buffer *buffer_for_artifact(const char *artifact_name) {
   }
   if (strcmp(artifact_name, kManifestArtifactName) == 0) {
     return &g_manifest_buffer;
+  }
+  if (strcmp(artifact_name, kSegmentTasksArtifactName) == 0) {
+    return &g_segment_tasks_buffer;
   }
   if (strcmp(artifact_name, kQuarantineStoreArtifactName) == 0) {
     return &g_quarantine_buffer;

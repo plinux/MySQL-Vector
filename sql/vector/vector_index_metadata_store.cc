@@ -53,6 +53,8 @@ constexpr const char *kManifestHeaderV1 = "mysql-vector-manifest-v1";
 constexpr const char *kManifestFilename = "manifest.v1";
 constexpr const char *kChangeLogHeaderV1 = "mysql-vector-changelog-v1";
 constexpr const char *kChangeLogFilename = "changelog.v1";
+constexpr const char *kSegmentTaskHeaderV1 = "mysql-vector-segment-task-v1";
+constexpr const char *kSegmentTaskFilename = "segment_tasks.v1";
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 std::mutex g_path_mutex;
@@ -171,6 +173,21 @@ std::string change_log_path() {
   return store_path(kChangeLogFilename, ".changelog");
 }
 
+std::string segment_task_path() {
+  std::lock_guard<std::mutex> guard(g_path_mutex);
+  if (!g_path_override.empty()) return g_path_override + ".segment_tasks";
+
+  std::string path(mysql_real_data_home);
+  if (!path.empty()) {
+    const char tail = path.back();
+    if (tail != '/' && tail != '\\') path.push_back('/');
+  }
+  path.append(kStoreDirectory);
+  path.push_back('/');
+  path.append(kSegmentTaskFilename);
+  return path;
+}
+
 bool ensure_parent_directory(const std::string &path) {
   const std::filesystem::path file_path(path);
   const std::filesystem::path parent = file_path.parent_path();
@@ -220,6 +237,10 @@ bool raw_path_for_artifact(const std::string &artifact_name, std::string *path) 
   }
   if (artifact_name == "prepared") {
     *path = prepared_path();
+    return true;
+  }
+  if (artifact_name == "segment_tasks") {
+    *path = segment_task_path();
     return true;
   }
   return false;
@@ -491,6 +512,54 @@ bool save_prepared(const std::vector<prepared_change_row> &rows) {
   return true;
 }
 
+bool deserialize_segment_task_rows(const std::string &payload,
+                                   std::vector<segment_task_row> *rows) {
+  return detail::deserialize_segment_task_rows_impl(payload, rows);
+}
+
+bool serialize_segment_task_rows(const std::vector<segment_task_row> &rows,
+                                 std::string *payload) {
+  return detail::serialize_segment_task_rows_impl(rows, payload);
+}
+
+bool load_segment_tasks(std::vector<segment_task_row> *rows) {
+  if (rows == nullptr) return false;
+  rows->clear();
+
+  const std::string primary_path = segment_task_path();
+  std::ifstream file;
+  if (!open_read_primary(primary_path, &file)) return true;
+  std::string payload((std::istreambuf_iterator<char>(file)),
+                      std::istreambuf_iterator<char>());
+  if (file.bad()) return false;
+  return deserialize_segment_task_rows(payload, rows);
+}
+
+bool save_segment_tasks(const std::vector<segment_task_row> &rows) {
+  const std::string path = segment_task_path();
+  const std::string temp_path = path + ".tmp";
+  if (rows.empty()) {
+    std::remove(temp_path.c_str());
+    if (!remove_if_exists(path)) return false;
+    return true;
+  }
+
+  std::string payload;
+  if (!serialize_segment_task_rows(rows, &payload)) return false;
+  if (!ensure_parent_directory(path)) return false;
+  std::ofstream file(temp_path, std::ios::out | std::ios::binary | std::ios::trunc);
+  if (!file.good()) return false;
+  file << payload;
+  file.close();
+  if (!file) return false;
+
+  if (std::rename(temp_path.c_str(), path.c_str()) != 0) {
+    std::remove(temp_path.c_str());
+    return false;
+  }
+  return true;
+}
+
 bool load_raw_artifact(const std::string &artifact_name, std::string *payload,
                      bool *found) {
   if (payload == nullptr || found == nullptr) return false;
@@ -558,6 +627,10 @@ bool quarantine_change_log_store() {
 
 bool quarantine_prepared_store() {
   return quarantine_file_if_exists(prepared_path());
+}
+
+bool quarantine_segment_task_store() {
+  return quarantine_file_if_exists(segment_task_path());
 }
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
