@@ -661,6 +661,7 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_status_fields.cc
     vector/vector_segmented_search.cc
     vector/vector_segment_task.cc
+    vector/vector_segment_runtime_scheduler.cc
     vector/vector_status.cc
     vector/vector_index_metadata_store.cc
     vector/vector_index_metadata_store_codec.cc
@@ -696,6 +697,7 @@ IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
     vector/vector_index_metadata_store.cc
     vector/vector_index_registry.cc
     vector/vector_index_registry_lifecycle.cc
+    vector/vector_index_runtime_thread_pool.cc
     vector/vector_mapped_search.cc
     vector/vector_index_truth_store.cc
     vector/vector_index_truth_store_api.cc

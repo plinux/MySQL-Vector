@@ -317,6 +317,7 @@ IF(HAVE_VECTOR_INDEX)
     vector_index_metadata_store
     vector_index_registry
     vector_index_service
+    vector_segment_runtime_scheduler
     vector_segmented_search
     vector_load_file
     vector_dml_sync
