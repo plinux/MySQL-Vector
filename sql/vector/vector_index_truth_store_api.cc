@@ -41,8 +41,6 @@ void set_for_testing(truth_store *store) {
 void reset_for_testing() { detail::reset_override_store_for_testing(); }
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
-bool initialize_selected_backend() { return true; }
-
 bool bootstrap_initialize_selected_backend(THD *thd) {
   return detail::bootstrap_initialize_mysql_store(thd);
 }

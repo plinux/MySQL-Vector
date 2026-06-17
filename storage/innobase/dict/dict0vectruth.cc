@@ -513,18 +513,94 @@ class Row_truth_table_buffer {
     rows->clear();
     if (!scan_rows_locked([&](const rec_t *rec) {
           innodb_vector_truth_store::committed_row row;
-          if (!read_string_field(rec, 0, &row.index_name) ||
-              !read_uint64_field(rec, 1, &row.doc_id) ||
-              !read_uint32_field(rec, 2, &row.dimension) ||
-              !read_blob_field(rec, 3, &row.vector_payload)) {
-            return false;
-          }
+          if (!read_committed_row_fields(rec, &row)) return false;
           rows->push_back(std::move(row));
           return true;
         })) {
       return false;
     }
     *found = !rows->empty();
+    return true;
+  }
+
+  bool get_committed_for_index(
+      dict_table_t *table, const std::string &index_name,
+      std::vector<innodb_vector_truth_store::committed_row> *rows,
+      bool *found) {
+    if (!init(table, 4, 2) || index_name.empty() || rows == nullptr ||
+        found == nullptr) {
+      return false;
+    }
+    std::lock_guard<std::mutex> guard(m_mutex);
+    rows->clear();
+    if (!scan_committed_index_rows_locked(
+            index_name, [&](const rec_t *rec) {
+              innodb_vector_truth_store::committed_row row;
+              if (!read_committed_row_fields(rec, &row)) return false;
+              rows->push_back(std::move(row));
+              return true;
+            })) {
+      return false;
+    }
+    *found = !rows->empty();
+    return true;
+  }
+
+  bool visit_committed_for_index(
+      dict_table_t *table, const std::string &index_name,
+      const std::function<bool(
+          const innodb_vector_truth_store::committed_row &row)> &visitor,
+      bool *found) {
+    if (!init(table, 4, 2) || index_name.empty() || !visitor ||
+        found == nullptr) {
+      return false;
+    }
+    std::lock_guard<std::mutex> guard(m_mutex);
+    *found = false;
+    return scan_committed_index_rows_locked(
+        index_name, [&](const rec_t *rec) {
+          innodb_vector_truth_store::committed_row row;
+          if (!read_committed_row_fields(rec, &row)) return false;
+          *found = true;
+          return visitor(row);
+        });
+  }
+
+  bool find_committed(dict_table_t *table, const std::string &index_name,
+                      uint64_t doc_id,
+                      innodb_vector_truth_store::committed_row *row,
+                      bool *found) {
+    if (!init(table, 4, 2) || index_name.empty() || row == nullptr ||
+        found == nullptr) {
+      return false;
+    }
+    std::lock_guard<std::mutex> guard(m_mutex);
+    *found = false;
+    set_search_field(0, index_name);
+    set_search_uint64(1, doc_id);
+
+    btr_pcur_t pcur;
+    mtr_t mtr;
+    mtr.start();
+    pcur.open(m_index, 0, m_search_tuple, PAGE_CUR_LE, BTR_SEARCH_LEAF, &mtr,
+              UT_LOCATION_HERE);
+    bool matched = pcur.is_on_user_rec() &&
+                   current_matches_search_key_locked(pcur.get_rec());
+    while (matched && pcur.is_on_user_rec() &&
+           rec_get_deleted_flag(pcur.get_rec(), true)) {
+      matched = pcur.move_to_next_user_rec(&mtr) == DB_SUCCESS &&
+                current_matches_search_key_locked(pcur.get_rec());
+    }
+    if (matched) {
+      *found = true;
+      if (!read_committed_row_fields(pcur.get_rec(), row)) {
+        pcur.close();
+        mtr.commit();
+        return false;
+      }
+    }
+    pcur.close();
+    mtr.commit();
     return true;
   }
 
@@ -860,6 +936,50 @@ class Row_truth_table_buffer {
     return error == DB_SUCCESS || error == DB_END_OF_INDEX;
   }
 
+  template <typename Fn>
+  bool scan_committed_index_rows_locked(const std::string &index_name,
+                                        Fn &&read_row) {
+    set_search_field(0, index_name);
+    set_search_uint64(1, 0);
+
+    btr_pcur_t pcur;
+    mtr_t mtr;
+    dberr_t error = DB_SUCCESS;
+
+    mtr.start();
+    pcur.open(m_index, 0, m_search_tuple, PAGE_CUR_GE, BTR_SEARCH_LEAF, &mtr,
+              UT_LOCATION_HERE);
+    while (error == DB_SUCCESS && pcur.is_on_user_rec()) {
+      if (!rec_get_deleted_flag(pcur.get_rec(), true)) {
+        std::string current_index_name;
+        if (!read_string_field(pcur.get_rec(), 0, &current_index_name)) {
+          pcur.close();
+          mtr.commit();
+          return false;
+        }
+        if (current_index_name != index_name) break;
+        if (!read_row(pcur.get_rec())) {
+          pcur.close();
+          mtr.commit();
+          return false;
+        }
+      }
+      error = pcur.move_to_next_user_rec(&mtr);
+    }
+
+    pcur.close();
+    mtr.commit();
+    return error == DB_SUCCESS || error == DB_END_OF_INDEX;
+  }
+
+  bool read_committed_row_fields(
+      const rec_t *rec, innodb_vector_truth_store::committed_row *row) {
+    return row != nullptr && read_string_field(rec, 0, &row->index_name) &&
+           read_uint64_field(rec, 1, &row->doc_id) &&
+           read_uint32_field(rec, 2, &row->dimension) &&
+           read_blob_field(rec, 3, &row->vector_payload);
+  }
+
   bool read_field(const rec_t *rec, ulint col_no, const byte **field,
                   ulint *len) {
     if (field == nullptr || len == nullptr || col_no >= m_field_nos.size()) {
@@ -1034,6 +1154,17 @@ class Row_truth_table_buffer {
     return error == DB_SUCCESS;
   }
 
+  bool current_matches_search_key_locked(const rec_t *rec) {
+    if (rec == nullptr || page_rec_is_infimum(rec) || page_rec_is_supremum(rec))
+      return false;
+    ulint *offsets = rec_get_offsets(rec, m_index, nullptr, ULINT_UNDEFINED,
+                                     UT_LOCATION_HERE, &m_dynamic_heap);
+    const bool matches =
+        cmp_dtuple_rec(m_search_tuple, rec, m_index, offsets) == 0;
+    mem_heap_empty(m_dynamic_heap);
+    return matches;
+  }
+
   bool remove_all_locked(innodb_vector_truth_store::Session *session) {
     std::vector<std::vector<std::string>> keys;
     if (!load_keys_locked(&keys)) return false;
@@ -1159,6 +1290,41 @@ bool do_load_committed_rows(
   dict_table_t *table = hidden_table_for_artifact(kCommittedArtifactName);
   if (table == nullptr) return false;
   return g_committed_row_buffer.get_committed(table, rows, found);
+}
+
+bool do_load_committed_rows_for_index(
+    const std::string &index_name,
+    std::vector<innodb_vector_truth_store::committed_row> *rows, bool *found,
+    innodb_vector_truth_store::Session *session [[maybe_unused]]) {
+  if (index_name.empty() || rows == nullptr || found == nullptr) return false;
+  dict_table_t *table = hidden_table_for_artifact(kCommittedArtifactName);
+  if (table == nullptr) return false;
+  return g_committed_row_buffer.get_committed_for_index(table, index_name, rows,
+                                                       found);
+}
+
+bool do_visit_committed_rows_for_index(
+    const std::string &index_name,
+    const std::function<bool(
+        const innodb_vector_truth_store::committed_row &row)> &visitor,
+    bool *found, innodb_vector_truth_store::Session *session [[maybe_unused]]) {
+  if (index_name.empty() || !visitor || found == nullptr) return false;
+  dict_table_t *table = hidden_table_for_artifact(kCommittedArtifactName);
+  if (table == nullptr) return false;
+  return g_committed_row_buffer.visit_committed_for_index(table, index_name,
+                                                         visitor, found);
+}
+
+bool do_find_committed_row(const std::string &index_name, uint64_t doc_id,
+                           innodb_vector_truth_store::committed_row *row,
+                           bool *found,
+                           innodb_vector_truth_store::Session *session
+                               [[maybe_unused]]) {
+  if (index_name.empty() || row == nullptr || found == nullptr) return false;
+  dict_table_t *table = hidden_table_for_artifact(kCommittedArtifactName);
+  if (table == nullptr) return false;
+  return g_committed_row_buffer.find_committed(table, index_name, doc_id, row,
+                                              found);
 }
 
 bool do_save_committed_rows(
@@ -1371,6 +1537,24 @@ bool save_artifact(const char *artifact_name, const std::string &payload,
 bool load_committed_rows(std::vector<committed_row> *rows, bool *found,
                          Session *session) {
   return do_load_committed_rows(rows, found, session);
+}
+
+bool load_committed_rows_for_index(const std::string &index_name,
+                                   std::vector<committed_row> *rows,
+                                   bool *found, Session *session) {
+  return do_load_committed_rows_for_index(index_name, rows, found, session);
+}
+
+bool visit_committed_rows_for_index(
+    const std::string &index_name,
+    const std::function<bool(const committed_row &row)> &visitor, bool *found,
+    Session *session) {
+  return do_visit_committed_rows_for_index(index_name, visitor, found, session);
+}
+
+bool find_committed_row(const std::string &index_name, uint64_t doc_id,
+                        committed_row *row, bool *found, Session *session) {
+  return do_find_committed_row(index_name, doc_id, row, found, session);
 }
 
 bool save_committed_rows(const std::vector<committed_row> &rows,

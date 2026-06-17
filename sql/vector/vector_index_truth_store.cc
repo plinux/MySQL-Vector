@@ -235,6 +235,22 @@ bool to_innodb_committed_rows(
   return true;
 }
 
+bool from_innodb_committed_row(
+    const innodb_vector_truth_store::committed_row &row,
+    vector_index_metadata_store::committed_row *out) {
+  if (out == nullptr) return false;
+  vector_index_metadata_store::committed_row loaded;
+  loaded.index_name = row.index_name;
+  loaded.doc_id = row.doc_id;
+  if (loaded.index_name.empty() ||
+      !truth_payload_to_vector(row.dimension, row.vector_payload,
+                               &loaded.vector)) {
+    return false;
+  }
+  *out = std::move(loaded);
+  return true;
+}
+
 bool from_innodb_committed_rows(
     const std::vector<innodb_vector_truth_store::committed_row> &rows,
     std::vector<vector_index_metadata_store::committed_row> *out) {
@@ -243,13 +259,7 @@ bool from_innodb_committed_rows(
   out->reserve(rows.size());
   for (const auto &row : rows) {
     vector_index_metadata_store::committed_row loaded;
-    loaded.index_name = row.index_name;
-    loaded.doc_id = row.doc_id;
-    if (loaded.index_name.empty() ||
-        !truth_payload_to_vector(row.dimension, row.vector_payload,
-                                 &loaded.vector)) {
-      return false;
-    }
+    if (!from_innodb_committed_row(row, &loaded)) return false;
     out->push_back(std::move(loaded));
   }
   return true;
@@ -718,18 +728,14 @@ class internal_sql_session {
 
 class mysql_truth_store final : public vector_index_truth_store::truth_store {
  public:
+  using vector_index_truth_store::truth_store::for_each_committed;
+
   const char *backend_name() const override { return "mysql"; }
 
   bool is_transactional() const override { return true; }
   bool supports_delta_persist() const override { return true; }
 
-  bool bootstrap_initialize(THD *thd) {
-    std::lock_guard<std::mutex> guard(m_mutex);
-    if (m_tables_initialized) return true;
-    if (thd == nullptr) return false;
-    m_tables_initialized = true;
-    return true;
-  }
+  bool bootstrap_initialize(THD *thd) { return thd != nullptr; }
 
   bool begin_persist() override {
     std::lock_guard<std::mutex> guard(m_mutex);
@@ -788,6 +794,38 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       return true;
     }
     return from_innodb_committed_rows(stored_rows, rows);
+  }
+
+  bool for_each_committed(
+      const std::string &index_name,
+      const std::function<bool(
+          const vector_index_metadata_store::committed_row &row)> &visitor)
+      override {
+    if (visitor == nullptr || index_name.empty()) return false;
+    bool found = false;
+    return innodb_vector_truth_store::visit_committed_rows_for_index(
+        index_name,
+        [&](const innodb_vector_truth_store::committed_row &stored_row) {
+          vector_index_metadata_store::committed_row row;
+          return from_innodb_committed_row(stored_row, &row) && visitor(row);
+        },
+        &found, m_persist_session);
+  }
+
+  bool find_committed(const std::string &index_name, uint64_t doc_id,
+                      vector_index_metadata_store::committed_row *row,
+                      bool *found) override {
+    if (index_name.empty() || row == nullptr || found == nullptr) return false;
+    innodb_vector_truth_store::committed_row stored_row;
+    if (!innodb_vector_truth_store::find_committed_row(
+            index_name, doc_id, &stored_row, found, m_persist_session)) {
+      return false;
+    }
+    if (!*found) {
+      *row = vector_index_metadata_store::committed_row();
+      return true;
+    }
+    return from_innodb_committed_row(stored_row, row);
   }
 
   bool save_committed(
@@ -984,7 +1022,6 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       innodb_vector_truth_store::close_session(m_persist_session);
       m_persist_session = nullptr;
     }
-    m_tables_initialized = false;
   }
 
   bool debug_get_artifact(const char *artifact_name, std::string *payload) {
@@ -1159,8 +1196,6 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   }
 
   bool quarantine_row_artifact(const char *artifact_name) {
-    if (!ensure_tables()) return false;
-
     std::string payload;
     bool found = false;
     if (!load_row_artifact_payload(artifact_name, &payload, &found)) return false;
@@ -1169,12 +1204,8 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
            clear_row_artifact(artifact_name);
   }
 
-  bool ensure_tables() {
-    return true;
-  }
-
   bool load_structured_artifact(const char *artifact_name,
-                              std::string *payload, bool *found) {
+                                std::string *payload, bool *found) {
     DBUG_EXECUTE_IF("vector_truth_store_fail_load_structured_artifact",
                     return false;);
     DBUG_EXECUTE_IF("vector_truth_store_force_structured_artifact_missing", {
@@ -1202,7 +1233,6 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
 
   bool load_artifact(const char *artifact_name, std::string *payload) {
     if (payload == nullptr) return false;
-    if (!ensure_tables()) return false;
 
     bool found = false;
     if (!load_structured_artifact(artifact_name, payload, &found))
@@ -1214,13 +1244,10 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
 
   bool save_artifact(const char *artifact_name, const std::string &payload) {
     DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
-    if (!ensure_tables()) return false;
     return save_structured_artifact(artifact_name, payload);
   }
 
   bool quarantine_artifact(const char *artifact_name) {
-    if (!ensure_tables()) return false;
-
     std::string payload;
     bool found = false;
     if (!load_structured_artifact(artifact_name, &payload, &found)) return false;
@@ -1232,7 +1259,6 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
 
   mutable std::mutex m_mutex;
   innodb_vector_truth_store::Session *m_persist_session{nullptr};
-  bool m_tables_initialized{false};
 };
 
 class file_truth_store final : public vector_index_truth_store::truth_store {
@@ -1364,14 +1390,18 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
 
 file_truth_store g_file_store;
 mysql_truth_store g_mysql_store;
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 vector_index_truth_store::truth_store *g_override_store = nullptr;
+#endif
 
 }  // namespace
 
 namespace vector_index_truth_store::detail {
 
 truth_store *selected_backend() {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
   if (g_override_store != nullptr) return g_override_store;
+#endif
   if (current_thd != nullptr &&
       current_thd->system_thread == SYSTEM_THREAD_SERVER_INITIALIZE) {
     return &g_file_store;
@@ -1394,13 +1424,17 @@ void reset_override_store_for_testing() { g_override_store = nullptr; }
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 bool bootstrap_initialize_mysql_store(THD *thd) {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
   if (g_override_store != nullptr) return true;
+#endif
   if (use_file_truth_store_backend()) return true;
   return g_mysql_store.bootstrap_initialize(thd);
 }
 
 void shutdown_mysql_store() {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
   if (g_override_store != nullptr) return;
+#endif
   if (use_file_truth_store_backend()) return;
   g_mysql_store.shutdown();
 }
@@ -1594,5 +1628,48 @@ bool from_innodb_prepared_rows_impl(
 }  // namespace vector_index_truth_store::detail
 
 namespace vector_index_truth_store {
+
+bool truth_store::for_each_committed(
+    const std::function<bool(
+        const vector_index_metadata_store::committed_row &row)> &visitor) {
+  if (!visitor) return false;
+
+  std::vector<vector_index_metadata_store::committed_row> rows;
+  if (!load_committed(&rows)) return false;
+
+  for (const auto &row : rows) {
+    if (!visitor(row)) return false;
+  }
+
+  return true;
+}
+
+bool truth_store::for_each_committed(
+    const std::string &index_name,
+    const std::function<bool(
+        const vector_index_metadata_store::committed_row &row)> &visitor) {
+  if (index_name.empty() || !visitor) return false;
+  return for_each_committed(
+      [&](const vector_index_metadata_store::committed_row &row) {
+        if (row.index_name != index_name) return true;
+        return visitor(row);
+      });
+}
+
+bool truth_store::find_committed(
+    const std::string &index_name, uint64_t doc_id,
+    vector_index_metadata_store::committed_row *row, bool *found) {
+  if (index_name.empty() || row == nullptr || found == nullptr) return false;
+  *row = vector_index_metadata_store::committed_row();
+  *found = false;
+  const bool scan_ok = for_each_committed(
+      index_name, [&](const vector_index_metadata_store::committed_row &entry) {
+        if (entry.doc_id != doc_id) return true;
+        *row = entry;
+        *found = true;
+        return false;
+      });
+  return scan_ok || *found;
+}
 
 }  // namespace vector_index_truth_store

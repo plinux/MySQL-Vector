@@ -457,6 +457,18 @@ bool debug_native_provider_supported() {
 #endif
 }
 
+bool read_committed_entries(
+    const committed_entry_reader &reader,
+    std::unordered_map<uint64_t, vector_data> *entries) {
+  if (!reader || entries == nullptr) return false;
+
+  entries->clear();
+  return reader([&](uint64_t doc_id, const vector_data &vector) {
+    (*entries)[doc_id] = vector;
+    return true;
+  });
+}
+
 }  // namespace
 
 bool backend::load_committed_entries(
@@ -466,6 +478,30 @@ bool backend::load_committed_entries(
     if (!upsert(entry.first, entry.second)) return false;
   }
   return true;
+}
+
+bool backend::load_committed_entries_from_reader(
+    const committed_entry_reader &reader) {
+  std::unordered_map<uint64_t, vector_data> entries;
+  if (!read_committed_entries(reader, &entries)) return false;
+
+  return load_committed_entries(entries);
+}
+
+bool backend::rebuild_from_committed_entries_from_reader(
+    const committed_entry_reader &reader) {
+  std::unordered_map<uint64_t, vector_data> entries;
+  if (!read_committed_entries(reader, &entries)) return false;
+
+  return rebuild_from_committed_entries(entries);
+}
+
+bool backend::recover_committed_entries_from_reader(
+    const committed_entry_reader &reader) {
+  std::unordered_map<uint64_t, vector_data> entries;
+  if (!read_committed_entries(reader, &entries)) return false;
+
+  return recover_committed_entries(entries);
 }
 
 bool backend::search_batch(

@@ -231,10 +231,10 @@ class UlonglongGuard {
 
 class StubBackend final : public vector_index::backend {
  public:
-  bool upsert(uint64_t doc_id [[maybe_unused]],
-              const vector_index::vector_data &vector) override {
+  bool upsert(uint64_t doc_id, const vector_index::vector_data &vector) override {
     ++upsert_calls;
     if (!allow_upsert) return false;
+    upserted_entries[doc_id] = vector;
     last_vector = vector;
     return true;
   }
@@ -263,6 +263,7 @@ class StubBackend final : public vector_index::backend {
   bool m_supports_mutations{true};
   bool allow_upsert{true};
   size_t upsert_calls{0};
+  std::unordered_map<uint64_t, vector_index::vector_data> upserted_entries;
   vector_index::vector_data last_vector;
 };
 
@@ -903,6 +904,38 @@ TEST(VectorIndexBackendTest, BaseLoadCommittedEntriesUsesMutationContract) {
   backend.m_supports_mutations = false;
   EXPECT_TRUE(backend.load_committed_entries({}));
   EXPECT_FALSE(backend.load_committed_entries(entries));
+}
+
+TEST(VectorIndexBackendTest,
+     BaseLoadCommittedEntriesFromReaderUsesMutationContract) {
+  StubBackend backend;
+  size_t reader_calls = 0;
+
+  auto reader = [&](const vector_index::committed_entry_visitor &visitor) {
+    ++reader_calls;
+    return visitor(1, {1.0F, 1.0F}) && visitor(2, {2.0F, 2.0F});
+  };
+
+  EXPECT_TRUE(backend.load_committed_entries_from_reader(reader));
+  EXPECT_EQ(1U, reader_calls);
+  EXPECT_EQ(2U, backend.upsert_calls);
+  EXPECT_EQ((vector_index::vector_data{1.0F, 1.0F}),
+            backend.upserted_entries[1]);
+  EXPECT_EQ((vector_index::vector_data{2.0F, 2.0F}),
+            backend.upserted_entries[2]);
+
+  EXPECT_FALSE(backend.load_committed_entries_from_reader(nullptr));
+
+  backend.allow_upsert = false;
+  EXPECT_FALSE(backend.load_committed_entries_from_reader(reader));
+
+  StubBackend rebuild_backend;
+  EXPECT_TRUE(rebuild_backend.rebuild_from_committed_entries_from_reader(reader));
+  EXPECT_EQ(2U, rebuild_backend.upsert_calls);
+
+  StubBackend recover_backend;
+  EXPECT_TRUE(recover_backend.recover_committed_entries_from_reader(reader));
+  EXPECT_EQ(2U, recover_backend.upsert_calls);
 }
 
 TEST(VectorIndexBackendTest, BaseBackendDefaultsRejectUnsupportedTunings) {

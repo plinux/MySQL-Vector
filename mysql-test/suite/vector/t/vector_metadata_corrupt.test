@@ -8,12 +8,7 @@ SELECT VEC_INDEX_CREATE('idx_metadata_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIV
 SELECT VEC_INDEX_UPSERT('idx_metadata_corrupt', 1, VEC_FROMTEXT('[1,2]'));
 SELECT VEC_INDEX_SEARCH('idx_metadata_corrupt', VEC_FROMTEXT('[1,2]'), 1);
 
---disable_query_log
---disable_result_log
---let $truth_store_backend= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_backend'", Value, 1)
---let $is_mysql_truth_store= `SELECT '$truth_store_backend' = 'mysql'`
---enable_result_log
---enable_query_log
+--source suite/vector/include/vector_truth_store_backend.inc
 
 --let $datadir=`SELECT @@datadir`
 if ($is_mysql_truth_store)

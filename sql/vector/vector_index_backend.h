@@ -26,6 +26,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -45,6 +46,10 @@ class diskann_native_state;
 class hnswlib_native_state;
 
 using vector_data = std::vector<float>;
+using committed_entry_visitor =
+    std::function<bool(uint64_t doc_id, const vector_data &vector)>;
+using committed_entry_reader =
+    std::function<bool(const committed_entry_visitor &visitor)>;
 
 enum class metric_type { kEuclidean, kCosine, kInnerProduct };
 enum class backend_mode { kMemory, kExternal };
@@ -122,6 +127,16 @@ class backend {
       const std::unordered_map<uint64_t, vector_data> &entries);
 
   /**
+    Load serving state from a committed-entry reader.
+
+    The default implementation materializes a snapshot and then delegates to
+    load_committed_entries(). Streaming backends can override this method to
+    consume truth-store rows without building a full map in SQL memory.
+  */
+  virtual bool load_committed_entries_from_reader(
+      const committed_entry_reader &reader);
+
+  /**
     Rebuild serving state from committed entries snapshot.
 
     Default behavior reuses load_committed_entries(). Backends that distinguish
@@ -135,6 +150,12 @@ class backend {
       const std::unordered_map<uint64_t, vector_data> &entries) {
     return load_committed_entries(entries);
   }
+
+  /**
+    Rebuild serving state from a committed-entry reader.
+  */
+  virtual bool rebuild_from_committed_entries_from_reader(
+      const committed_entry_reader &reader);
 
   /**
     recover backend serving state from persisted metadata or snapshots.
@@ -159,6 +180,12 @@ class backend {
     if (!recover()) return false;
     return load_committed_entries(entries);
   }
+
+  /**
+    Recover serving state while consuming committed entries through a reader.
+  */
+  virtual bool recover_committed_entries_from_reader(
+      const committed_entry_reader &reader);
 
   /**
     Whether the last recover() call had to use a fallback path.

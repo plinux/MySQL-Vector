@@ -29,6 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #define dict0vectruth_h
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -87,6 +88,17 @@ bool save_artifact(const char *artifact_name, const std::string &payload,
                    Session *session = nullptr);
 bool load_committed_rows(std::vector<committed_row> *rows, bool *found,
                          Session *session = nullptr);
+bool load_committed_rows_for_index(const std::string &index_name,
+                                   std::vector<committed_row> *rows,
+                                   bool *found,
+                                   Session *session = nullptr);
+bool visit_committed_rows_for_index(
+    const std::string &index_name,
+    const std::function<bool(const committed_row &row)> &visitor, bool *found,
+    Session *session = nullptr);
+bool find_committed_row(const std::string &index_name, uint64_t doc_id,
+                        committed_row *row, bool *found,
+                        Session *session = nullptr);
 bool save_committed_rows(const std::vector<committed_row> &rows,
                          Session *session = nullptr);
 bool apply_committed_delta(const std::vector<change_log_row> &rows,

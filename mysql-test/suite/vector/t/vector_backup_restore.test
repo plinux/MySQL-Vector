@@ -8,12 +8,7 @@ SELECT VEC_INDEX_CREATE('idx_backup_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SELECT VEC_INDEX_UPSERT('idx_backup_mem', 11, VEC_FROMTEXT('[1,1]'));
 SELECT VEC_INDEX_SEARCH('idx_backup_mem', VEC_FROMTEXT('[1,1]'), 1);
 
---disable_query_log
---disable_result_log
---let $truth_store_backend= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_backend'", Value, 1)
---let $is_mysql_truth_store= `SELECT '$truth_store_backend' = 'mysql'`
---enable_result_log
---enable_query_log
+--source suite/vector/include/vector_truth_store_backend.inc
 
 --let $datadir=`SELECT @@datadir`
 --let $backup_dir=$MYSQLTEST_VARDIR/tmp/vector_backup

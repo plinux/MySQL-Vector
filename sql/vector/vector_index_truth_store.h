@@ -25,6 +25,7 @@
 #define SQL_VECTOR_INDEX_TRUTH_STORE_INCLUDED
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,30 @@ class truth_store {
 
   virtual bool load_committed(
       std::vector<vector_index_metadata_store::committed_row> *rows) = 0;
+  /**
+    Visit committed rows without exposing the caller to the storage shape.
+
+    The default implementation is load-backed so existing truth-store backends
+    keep their behavior. Row-store backends can override this method later to
+    stream rows directly from the durable store.
+  */
+  virtual bool for_each_committed(
+      const std::function<bool(
+          const vector_index_metadata_store::committed_row &row)> &visitor);
+  virtual bool for_each_committed(
+      const std::string &index_name,
+      const std::function<bool(
+          const vector_index_metadata_store::committed_row &row)> &visitor);
+  /**
+    Find a single committed row by its stable vector index key.
+
+    The default implementation scans only until the key is found. Row-store
+    backends should override this with an indexed lookup to avoid materializing
+    full committed snapshots when the committed entry cache has been evicted.
+  */
+  virtual bool find_committed(
+      const std::string &index_name, uint64_t doc_id,
+      vector_index_metadata_store::committed_row *row, bool *found);
   virtual bool save_committed(
       const std::vector<vector_index_metadata_store::committed_row> &rows) = 0;
   /**
@@ -137,7 +162,6 @@ truth_store *get();
 void set_for_testing(truth_store *store);
 void reset_for_testing();
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
-bool initialize_selected_backend();
 bool bootstrap_initialize_selected_backend(THD *thd);
 void shutdown_selected_backend();
 bool internal_sql_active();

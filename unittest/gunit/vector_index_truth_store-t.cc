@@ -144,6 +144,31 @@ class NullNameTruthStore final : public dummy_truth_store {
   const char *backend_name() const override { return nullptr; }
 };
 
+class CommittedRowsTruthStore final : public dummy_truth_store {
+ public:
+  explicit CommittedRowsTruthStore(
+      std::vector<vector_index_metadata_store::committed_row> rows)
+      : m_rows(std::move(rows)) {}
+
+  bool load_committed(
+      std::vector<vector_index_metadata_store::committed_row> *rows) override {
+    if (rows == nullptr) return false;
+    *rows = m_rows;
+    return true;
+  }
+
+ private:
+  std::vector<vector_index_metadata_store::committed_row> m_rows;
+};
+
+class FailingCommittedRowsTruthStore final : public dummy_truth_store {
+ public:
+  bool load_committed(
+      std::vector<vector_index_metadata_store::committed_row> *) override {
+    return false;
+  }
+};
+
 TEST(VectorIndexTruthStoreTest, DefaultStoreIsAvailable) {
   EXPECT_NE(nullptr, vector_index_truth_store::get());
   EXPECT_STREQ("mysql", vector_index_truth_store::active_backend_name());
@@ -169,6 +194,63 @@ TEST(VectorIndexTruthStoreTest, ActiveBackendNameFallsBackToUnknown) {
   vector_index_truth_store::reset_for_testing();
 }
 
+TEST(VectorIndexTruthStoreTest, DefaultCommittedIteratorVisitsLoadedRows) {
+  CommittedRowsTruthStore store({
+      {"idx", 2, {2.0F, 3.0F}},
+      {"idx", 1, {1.0F, 0.0F}},
+  });
+
+  std::vector<uint64_t> visited;
+  ASSERT_TRUE(store.for_each_committed(
+      [&](const vector_index_metadata_store::committed_row &row) {
+        visited.push_back(row.doc_id);
+        return true;
+      }));
+
+  EXPECT_EQ((std::vector<uint64_t>{2, 1}), visited);
+}
+
+TEST(VectorIndexTruthStoreTest, DefaultCommittedIteratorStopsOnVisitorFailure) {
+  CommittedRowsTruthStore store({
+      {"idx", 2, {2.0F, 3.0F}},
+      {"idx", 1, {1.0F, 0.0F}},
+  });
+
+  std::vector<uint64_t> visited;
+  EXPECT_FALSE(store.for_each_committed(
+      [&](const vector_index_metadata_store::committed_row &row) {
+        visited.push_back(row.doc_id);
+        return false;
+      }));
+
+  EXPECT_EQ((std::vector<uint64_t>{2}), visited);
+}
+
+TEST(VectorIndexTruthStoreTest, DefaultFindCommittedStopsWhenRowIsFound) {
+  CommittedRowsTruthStore store({
+      {"idx", 2, {2.0F, 3.0F}},
+      {"idx", 1, {1.0F, 0.0F}},
+      {"other", 1, {9.0F, 9.0F}},
+  });
+
+  vector_index_metadata_store::committed_row row;
+  bool found = false;
+  ASSERT_TRUE(store.find_committed("idx", 1, &row, &found));
+  EXPECT_TRUE(found);
+  EXPECT_EQ(1U, row.doc_id);
+  EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), row.vector);
+
+  ASSERT_TRUE(store.find_committed("idx", 9, &row, &found));
+  EXPECT_FALSE(found);
+  EXPECT_TRUE(row.index_name.empty());
+}
+
+TEST(VectorIndexTruthStoreTest, DefaultCommittedIteratorRejectsEmptyVisitor) {
+  CommittedRowsTruthStore store({{"idx", 1, {1.0F, 0.0F}}});
+
+  EXPECT_FALSE(store.for_each_committed(nullptr));
+}
+
 TEST(VectorIndexTruthStoreTest, MysqlBackendCanBeSelectedFromEnvironment) {
   EnvVarGuard guard("MYSQL_VECTOR_TRUTH_STORE");
   setenv("MYSQL_VECTOR_TRUTH_STORE", "mysql", 1);
@@ -185,22 +267,31 @@ TEST(VectorIndexTruthStoreTest, UnknownBackendUsesMysqlStore) {
   EXPECT_TRUE(vector_index_truth_store::active_backend_transactional());
 }
 
-TEST(VectorIndexTruthStoreTest, InitializeAndShutdownSelectedBackendNoop) {
+TEST(VectorIndexTruthStoreTest, FileBackendBootstrapAndShutdownAreNoops) {
   EnvVarGuard guard("MYSQL_VECTOR_TRUTH_STORE");
   setenv("MYSQL_VECTOR_TRUTH_STORE", "file", 1);
   vector_index_truth_store::reset_for_testing();
-  EXPECT_TRUE(vector_index_truth_store::initialize_selected_backend());
-  EXPECT_TRUE(vector_index_truth_store::bootstrap_initialize_selected_backend(nullptr));
+  EXPECT_TRUE(
+      vector_index_truth_store::bootstrap_initialize_selected_backend(nullptr));
   vector_index_truth_store::shutdown_selected_backend();
 }
 
 TEST(VectorIndexTruthStoreTest, OverrideStoreShortCircuitsInitHooks) {
   dummy_truth_store dummy_store;
   vector_index_truth_store::set_for_testing(&dummy_store);
-  EXPECT_TRUE(vector_index_truth_store::initialize_selected_backend());
-  EXPECT_TRUE(vector_index_truth_store::bootstrap_initialize_selected_backend(nullptr));
+  EXPECT_TRUE(
+      vector_index_truth_store::bootstrap_initialize_selected_backend(nullptr));
   vector_index_truth_store::shutdown_selected_backend();
   vector_index_truth_store::reset_for_testing();
+}
+
+TEST(VectorIndexTruthStoreTest, MysqlBootstrapRejectsNullThread) {
+  EnvVarGuard guard("MYSQL_VECTOR_TRUTH_STORE");
+  setenv("MYSQL_VECTOR_TRUTH_STORE", "mysql", 1);
+  vector_index_truth_store::reset_for_testing();
+  EXPECT_FALSE(
+      vector_index_truth_store::bootstrap_initialize_selected_backend(nullptr));
+  vector_index_truth_store::shutdown_selected_backend();
 }
 
 TEST(VectorIndexTruthStoreTest, IsTruthStoreTableRecognizesKnownTables) {
@@ -380,6 +471,14 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
                                               &committed_rows));
   ASSERT_EQ(1U, committed_rows.size());
   EXPECT_EQ(1U, committed_rows[0].doc_id);
+  auto multiple_stored_committed = valid_stored_committed;
+  multiple_stored_committed.push_back(
+      {"idx", 2, 4096, fp32_payload(4096)});
+  EXPECT_TRUE(detail::from_innodb_committed_rows_impl(
+      multiple_stored_committed, &committed_rows));
+  ASSERT_EQ(2U, committed_rows.size());
+  EXPECT_EQ(2U, committed_rows[1].doc_id);
+  EXPECT_EQ(4096U, committed_rows[1].vector.size());
   EXPECT_FALSE(detail::from_innodb_committed_rows_impl(
       {{"", 1, 1, fp32_payload(1)}}, &committed_rows));
   EXPECT_FALSE(detail::from_innodb_committed_rows_impl(
@@ -797,6 +896,56 @@ TEST(VectorIndexTruthStoreTest,
   EXPECT_TRUE(innodb_vector_truth_store::load_prepared_rows(&rows, &found));
   EXPECT_FALSE(found);
   EXPECT_TRUE(rows.empty());
+}
+
+TEST(VectorIndexTruthStoreTest, ForEachCommittedCoversIteratorEdges) {
+  vector_index_metadata_store::committed_row row;
+  row.index_name = "idx_iter";
+  row.doc_id = 10;
+  row.vector = {1.0F, 2.0F};
+  vector_index_metadata_store::committed_row other_row;
+  other_row.index_name = "idx_other";
+  other_row.doc_id = 20;
+  other_row.vector = {2.0F, 3.0F};
+
+  CommittedRowsTruthStore rows_store({row, other_row});
+  EXPECT_FALSE(rows_store.for_each_committed(nullptr));
+
+  std::vector<uint64_t> visited;
+  EXPECT_TRUE(rows_store.for_each_committed(
+      [&visited](const vector_index_metadata_store::committed_row &current) {
+        visited.push_back(current.doc_id);
+        return true;
+      }));
+  EXPECT_EQ(std::vector<uint64_t>({10, 20}), visited);
+
+  visited.clear();
+  EXPECT_FALSE(rows_store.for_each_committed(
+      "", [](const vector_index_metadata_store::committed_row &) {
+        return true;
+      }));
+  EXPECT_FALSE(rows_store.for_each_committed(
+      "idx_iter",
+      std::function<bool(
+          const vector_index_metadata_store::committed_row &)>()));
+  EXPECT_TRUE(rows_store.for_each_committed(
+      "idx_iter",
+      [&visited](const vector_index_metadata_store::committed_row &current) {
+        visited.push_back(current.doc_id);
+        return true;
+      }));
+  EXPECT_EQ(std::vector<uint64_t>({10}), visited);
+
+  EXPECT_FALSE(rows_store.for_each_committed(
+      [](const vector_index_metadata_store::committed_row &) {
+        return false;
+      }));
+
+  FailingCommittedRowsTruthStore failing_store;
+  EXPECT_FALSE(failing_store.for_each_committed(
+      [](const vector_index_metadata_store::committed_row &) {
+        return true;
+      }));
 }
 
 TEST(VectorIndexTruthStoreTest, InnodbFacadeRejectsInvalidArguments) {

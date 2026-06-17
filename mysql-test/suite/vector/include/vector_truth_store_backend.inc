@@ -1,0 +1,6 @@
+--disable_query_log
+--disable_result_log
+--let $truth_store_backend= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_backend'", Value, 1)
+--let $is_mysql_truth_store= `SELECT '$truth_store_backend' = 'mysql'`
+--enable_result_log
+--enable_query_log
