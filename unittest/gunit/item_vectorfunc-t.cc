@@ -58,6 +58,7 @@ class ItemVectorFuncFixture : public ::testing::Test {
  protected:
   void SetUp() override {
     initializer.SetUp();
+    ASSERT_FALSE(thd()->set_db({STRING_WITH_LEN("test")}));
     vector_index_registry::reset_for_testing();
   }
   void TearDown() override {
@@ -1063,6 +1064,31 @@ TEST_F(ItemVectorFuncFixture, IndexAdminItemsCoverSuccessAndErrorPaths) {
   fix_item(thd(), drop_item);
   EXPECT_EQ(1, drop_item->val_int());
   EXPECT_FALSE(drop_item->null_value);
+}
+
+TEST_F(ItemVectorFuncFixture,
+       StandaloneIndexAdminItemsRequireCurrentDatabaseForDdlPrivilege) {
+  ASSERT_FALSE(thd()->set_db({nullptr, 0}));
+
+  auto expect_no_database = [this](Item *item) {
+    Server_initializer::set_expected_error(ER_NO_DB_ERROR);
+    fix_item(thd(), item);
+    EXPECT_EQ(0, item->val_int());
+    EXPECT_FALSE(item->null_value);
+    thd()->clear_error();
+    Server_initializer::set_expected_error(0);
+  };
+
+  expect_no_database(new Item_func_vec_index_create(
+      POS(), make_item_list({make_string_item("idx_no_db_create"),
+                             new Item_int(2),
+                             make_string_item("euclidean"),
+                             make_string_item("memory"),
+                             make_string_item("native")})));
+  expect_no_database(new Item_func_vec_index_drop(
+      POS(), make_item_list({make_string_item("idx_no_db_drop")})));
+
+  ASSERT_FALSE(thd()->set_db({STRING_WITH_LEN("test")}));
 }
 
 TEST_F(ItemVectorFuncFixture,

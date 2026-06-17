@@ -1,0 +1,56 @@
+#
+# WL#vector-v1: table-bound vector index DDL privilege checks
+#
+DROP USER IF EXISTS 'vec_table_acl_user'@'localhost';
+Warnings:
+Note	3162	Authorization ID 'vec_table_acl_user'@'localhost' does not exist.
+DROP DATABASE IF EXISTS vector_acl_db;
+Warnings:
+Note	1008	Can't drop database 'vector_acl_db'; database doesn't exist
+CREATE USER 'vec_table_acl_user'@'localhost';
+CREATE DATABASE vector_acl_db;
+CREATE TABLE vector_acl_db.t_vec_table_acl (
+id BIGINT NOT NULL PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO vector_acl_db.t_vec_table_acl VALUES (1, VEC_FROMTEXT('[1,1]'));
+CREATE VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+Got one of the listed errors
+GRANT CREATE ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+CREATE VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+Got one of the listed errors
+GRANT INDEX ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+CREATE VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_SET_SEARCH_EF('vector_acl_db.t_vec_table_acl.v', 16);
+Got one of the listed errors
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(),
+JSON_QUOTE('vector_acl_db.t_vec_table_acl.v'))
+AS listed_without_select;
+listed_without_select
+0
+GRANT ALTER ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+SELECT VEC_INDEX_SET_SEARCH_EF('vector_acl_db.t_vec_table_acl.v', 16);
+VEC_INDEX_SET_SEARCH_EF('vector_acl_db.t_vec_table_acl.v', 16)
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('vector_acl_db.t_vec_table_acl.v'), '$.search_ef');
+Got one of the listed errors
+GRANT SELECT ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('vector_acl_db.t_vec_table_acl.v'), '$.search_ef');
+JSON_EXTRACT(VEC_INDEX_INFO('vector_acl_db.t_vec_table_acl.v'), '$.search_ef')
+16
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(),
+JSON_QUOTE('vector_acl_db.t_vec_table_acl.v'))
+AS listed_with_select;
+listed_with_select
+1
+REVOKE INDEX ON vector_acl_db.t_vec_table_acl FROM 'vec_table_acl_user'@'localhost';
+GRANT DROP ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+DROP VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v);
+Got one of the listed errors
+GRANT INDEX ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+DROP VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v);
+DROP DATABASE vector_acl_db;
+DROP USER 'vec_table_acl_user'@'localhost';

@@ -28,11 +28,14 @@
 #include <string>
 
 #include "sql/mysqld.h"
+#include "sql/sql_class.h"
 #include "mysqld_error.h"
 #include "sql/vector/item_vectorfunc_internal.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_limits.h"
+
+using namespace vector_itemfunc_internal;
 
 longlong Item_func_vec_index_create::val_int() {
   assert(fixed && arg_count >= 2 && arg_count <= 6);
@@ -49,6 +52,9 @@ longlong Item_func_vec_index_create::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_current_db_ddl_access(current_thd, CREATE_ACL))
+    return error_int();
+
   std::string metric = "euclidean";
   std::string mode;
   std::string provider;
@@ -126,6 +132,9 @@ longlong Item_func_vec_index_set_search_ef::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::set_search_ef(
           index_name, static_cast<uint32_t>(search_ef_ll))) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
@@ -162,6 +171,9 @@ longlong Item_func_vec_index_set_hnsw_build_params::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::set_hnsw_build_params(
           index_name, static_cast<uint32_t>(hnsw_m_ll),
           static_cast<uint32_t>(hnsw_ef_construction_ll))) {
@@ -199,6 +211,9 @@ longlong Item_func_vec_index_set_faiss_ivf_params::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::set_faiss_ivf_params(
           index_name, static_cast<uint32_t>(faiss_nlist_ll),
           static_cast<uint32_t>(faiss_nprobe_ll))) {
@@ -244,6 +259,9 @@ longlong Item_func_vec_index_set_faiss_ivfpq_params::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::set_faiss_ivf_pq_params(
           index_name, static_cast<uint32_t>(faiss_nlist_ll),
           static_cast<uint32_t>(faiss_nprobe_ll),
@@ -290,6 +308,9 @@ longlong Item_func_vec_index_set_diskann_build_params::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   const uint32_t diskann_build_threads =
       arg_count >= 4 && diskann_build_threads_ll != 0
           ? static_cast<uint32_t>(diskann_build_threads_ll)
@@ -329,6 +350,9 @@ longlong Item_func_vec_index_set_diskann_search_complexity::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::set_diskann_search_complexity(
           index_name, static_cast<uint32_t>(diskann_search_complexity_ll))) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
@@ -355,6 +379,9 @@ longlong Item_func_vec_index_drop::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, DROP_ACL, func_name(), true))
+    return error_int();
   const bool dropped = vector_index_registry::drop_index(index_name);
   if (dropped && !maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
@@ -380,6 +407,9 @@ longlong Item_func_vec_index_rebuild::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::rebuild_index(index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -409,6 +439,9 @@ longlong Item_func_vec_index_bulk_load_begin::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::begin_bulk_load(index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -438,6 +471,9 @@ longlong Item_func_vec_index_bulk_build::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::bulk_build_index(index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -467,6 +503,9 @@ longlong Item_func_vec_index_recover::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::recover_index(index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -488,6 +527,8 @@ longlong Item_func_vec_index_rebuild_all::val_int() {
   null_value = true;
 
   size_t rebuilt_count = 0;
+  if (check_vector_all_indexes_ddl_access(current_thd, ALTER_ACL, func_name()))
+    return error_int();
   if (!vector_index_registry::rebuild_all_indexes(&rebuilt_count)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -509,6 +550,8 @@ longlong Item_func_vec_index_recover_all::val_int() {
   null_value = true;
 
   size_t recovered_count = 0;
+  if (check_vector_all_indexes_ddl_access(current_thd, ALTER_ACL, func_name()))
+    return error_int();
   if (!vector_index_registry::recover_all_indexes(&recovered_count)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -547,6 +590,9 @@ longlong Item_func_vec_index_upsert::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::upsert(index_name, static_cast<uint64_t>(doc_id_ll),
                                      vector)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
@@ -579,6 +625,9 @@ longlong Item_func_vec_index_erase::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::erase(index_name, static_cast<uint64_t>(doc_id_ll))) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();

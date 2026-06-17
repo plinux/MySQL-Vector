@@ -670,6 +670,7 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_mapped_search.cc
     vector/vector_utils.cc
     vector/item_vectorfunc.cc
+    vector/item_vectorfunc_internal.cc
     vector/item_vectorfunc_scalar.cc
     vector/item_vectorfunc_query.cc
     vector/item_vectorfunc_admin.cc

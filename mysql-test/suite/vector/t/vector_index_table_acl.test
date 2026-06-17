@@ -1,0 +1,84 @@
+--source include/have_vector_index.inc
+--source include/have_vector_hnsw.inc
+
+--echo #
+--echo # WL#vector-v1: table-bound vector index DDL privilege checks
+--echo #
+
+DROP USER IF EXISTS 'vec_table_acl_user'@'localhost';
+DROP DATABASE IF EXISTS vector_acl_db;
+
+CREATE USER 'vec_table_acl_user'@'localhost';
+CREATE DATABASE vector_acl_db;
+CREATE TABLE vector_acl_db.t_vec_table_acl (
+  id BIGINT NOT NULL PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO vector_acl_db.t_vec_table_acl VALUES (1, VEC_FROMTEXT('[1,1]'));
+
+--connect (con_acl,localhost,vec_table_acl_user,,)
+--error ER_TABLEACCESS_DENIED_ERROR,ER_DBACCESS_DENIED_ERROR
+CREATE VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+--disconnect con_acl
+
+--connection default
+GRANT CREATE ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+
+--connect (con_acl,localhost,vec_table_acl_user,,)
+--error ER_TABLEACCESS_DENIED_ERROR,ER_DBACCESS_DENIED_ERROR
+CREATE VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+--disconnect con_acl
+
+--connection default
+GRANT INDEX ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+
+--connect (con_acl,localhost,vec_table_acl_user,,)
+CREATE VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+--error ER_TABLEACCESS_DENIED_ERROR,ER_DBACCESS_DENIED_ERROR
+SELECT VEC_INDEX_SET_SEARCH_EF('vector_acl_db.t_vec_table_acl.v', 16);
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(),
+                     JSON_QUOTE('vector_acl_db.t_vec_table_acl.v'))
+  AS listed_without_select;
+--disconnect con_acl
+
+--connection default
+GRANT ALTER ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+
+--connect (con_acl,localhost,vec_table_acl_user,,)
+SELECT VEC_INDEX_SET_SEARCH_EF('vector_acl_db.t_vec_table_acl.v', 16);
+--error ER_TABLEACCESS_DENIED_ERROR,ER_DBACCESS_DENIED_ERROR
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('vector_acl_db.t_vec_table_acl.v'), '$.search_ef');
+--disconnect con_acl
+
+--connection default
+GRANT SELECT ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+
+--connect (con_acl,localhost,vec_table_acl_user,,)
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('vector_acl_db.t_vec_table_acl.v'), '$.search_ef');
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(),
+                     JSON_QUOTE('vector_acl_db.t_vec_table_acl.v'))
+  AS listed_with_select;
+--disconnect con_acl
+
+--connection default
+REVOKE INDEX ON vector_acl_db.t_vec_table_acl FROM 'vec_table_acl_user'@'localhost';
+GRANT DROP ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+
+--connect (con_acl,localhost,vec_table_acl_user,,)
+--error ER_TABLEACCESS_DENIED_ERROR,ER_DBACCESS_DENIED_ERROR
+DROP VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v);
+--disconnect con_acl
+
+--connection default
+GRANT INDEX ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost';
+
+--connect (con_acl,localhost,vec_table_acl_user,,)
+DROP VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v);
+--disconnect con_acl
+
+--connection default
+DROP DATABASE vector_acl_db;
+DROP USER 'vec_table_acl_user'@'localhost';

@@ -28,10 +28,15 @@
 #include <utility>
 #include <vector>
 
+#include "my_byteorder.h"
 #include "mysqld_error.h"
+#include "sql/sql_class.h"
 #include "sql/vector/item_vectorfunc_internal.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry.h"
+#include "sql/vector/vector_utils.h"
+
+using namespace vector_itemfunc_internal;
 
 namespace {
 
@@ -127,6 +132,9 @@ String *Item_func_vec_index_info::val_str(String *str [[maybe_unused]]) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_str();
   }
+  if (check_vector_table_ddl_access(current_thd, info, SELECT_ACL)) {
+    return error_str();
+  }
 
   m_value.set_charset(default_charset());
   if (!format_vector_index_info_json(info, &m_value, &m_number_buf)) {
@@ -156,8 +164,18 @@ String *Item_func_vec_index_list::val_str(String *str [[maybe_unused]]) {
     return error_str();
   }
 
+  std::vector<std::string> visible_index_names;
+  visible_index_names.reserve(index_names.size());
+  for (const std::string &index_name : index_names) {
+    vector_index_registry::index_info info;
+    if (vector_index_registry::get_index_info(index_name, &info) &&
+        has_vector_index_access(current_thd, info, SELECT_ACL)) {
+      visible_index_names.push_back(index_name);
+    }
+  }
+
   m_value.set_charset(default_charset());
-  if (!format_vector_index_list_json(index_names, &m_value)) {
+  if (!format_vector_index_list_json(visible_index_names, &m_value)) {
     return error_str();
   }
   null_value = false;
@@ -196,6 +214,10 @@ String *Item_func_vec_index_search::val_str(String *str [[maybe_unused]]) {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, SELECT_ACL, func_name(), false)) {
+    return error_str();
+  }
 
   std::vector<vector_index::search_result> results;
   if (!vector_index_registry::search_for_thd_txn(
@@ -251,6 +273,10 @@ String *Item_func_vec_index_search_batch::val_str(
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, SELECT_ACL, func_name(), false)) {
+    return error_str();
+  }
 
   std::vector<std::vector<vector_index::search_result>> batches;
   if (!vector_index_registry::search_batch_for_thd_txn(
@@ -301,6 +327,10 @@ String *Item_func_vec_index_search_with_distance::val_str(
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, SELECT_ACL, func_name(), false)) {
+    return error_str();
+  }
 
   std::vector<vector_index::search_result> results;
   if (!vector_index_registry::search_for_thd_txn(

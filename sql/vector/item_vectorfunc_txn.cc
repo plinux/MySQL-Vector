@@ -27,10 +27,13 @@
 #include <string>
 
 #include "mysqld_error.h"
+#include "sql/sql_class.h"
 #include "sql/vector/item_vectorfunc_internal.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql_string.h"
+
+using namespace vector_itemfunc_internal;
 
 bool Item_func_vec_index_txn_begin::resolve_type(THD *thd) {
   if (param_type_is_default(thd, 0, 0)) return true;
@@ -95,6 +98,9 @@ longlong Item_func_vec_index_stage_upsert::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::stage_upsert(static_cast<uint64_t>(txn_id_ll),
                                            index_name,
                                            static_cast<uint64_t>(doc_id_ll),
@@ -129,6 +135,9 @@ longlong Item_func_vec_index_stage_erase::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  if (check_vector_existing_index_ddl_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
   if (!vector_index_registry::stage_erase(static_cast<uint64_t>(txn_id_ll),
                                           index_name,
                                           static_cast<uint64_t>(doc_id_ll))) {
@@ -356,7 +365,7 @@ longlong Item_func_vec_debug_truth_store_set_hex::val_int() {
       return error_int();
     }
     std::string payload;
-    if (!decode_hex_bytes(payload_hex, &payload)) {
+    if (!decode_hex_bytes(payload_hex, payload)) {
       my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
       return error_int();
     }
