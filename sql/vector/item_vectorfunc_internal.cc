@@ -23,6 +23,7 @@
 
 #include "sql/vector/item_vectorfunc_internal.h"
 
+#include <cassert>
 #include <cstddef>
 
 #include "my_byteorder.h"
@@ -36,15 +37,39 @@
 
 namespace vector_itemfunc_internal {
 
+void assert_fixed_arg_count(bool fixed [[maybe_unused]],
+                            size_t arg_count [[maybe_unused]],
+                            size_t expected [[maybe_unused]]) {
+  assert(fixed);
+  assert(arg_count == expected);
+}
+
+void assert_fixed_arg_count_between(bool fixed [[maybe_unused]],
+                                    size_t arg_count [[maybe_unused]],
+                                    size_t min_expected [[maybe_unused]],
+                                    size_t max_expected [[maybe_unused]]) {
+  assert(fixed);
+  assert(arg_count >= min_expected);
+  assert(arg_count <= max_expected);
+}
+
+void assert_fixed_arg_count_is_one_of(bool fixed [[maybe_unused]],
+                                      size_t arg_count [[maybe_unused]],
+                                      size_t first_expected [[maybe_unused]],
+                                      size_t second_expected
+                                          [[maybe_unused]]) {
+  assert(fixed);
+  assert(arg_count == first_expected || arg_count == second_expected);
+}
+
 bool eval_vector_arg(Item *arg, String *buf, const String **value) {
   *value = arg->val_str(buf);
   if (*value == nullptr || arg->null_value) return false;
   return true;
 }
 
-bool to_std_string(const String *value, std::string *out) {
+void to_std_string(const String *value, std::string *out) {
   out->assign(value->ptr(), value->length());
-  return true;
 }
 
 bool eval_uint_arg(Item *arg, ulonglong &value) {

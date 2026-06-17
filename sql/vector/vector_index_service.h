@@ -256,6 +256,11 @@ class index_service {
   static void remove_pending_change_spills(
       const std::vector<pending_change> &changes, size_t first_change);
 
+  bool register_index_impl(const std::string &index_name, index_config config,
+                           std::unique_ptr<backend> backend);
+  bool replace_committed_entries_impl(const std::string &index_name,
+                                      const committed_entries &entries,
+                                      bool preserve_lifecycle);
   bool ensure_runtime_loaded(const std::string &index_name);
   void maybe_unload_runtime(const std::string &index_name);
 };

@@ -47,6 +47,9 @@
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_backend_internal.h"
+#include "sql/vector/vector_index_limits.h"
+#include "sql/vector/vector_index_runtime_config.h"
+#include "sql/vector/vector_index_runtime_thread_pool.h"
 #include "sql/vector/vector_status.h"
 #include "unittest/gunit/vector_test_utils.h"
 
@@ -268,6 +271,118 @@ class StubBackend final : public vector_index::backend {
 };
 
 }  // namespace
+
+TEST(VectorIndexRuntimeThreadPoolTest,
+     EffectiveRuntimeWorkerCountUsesConfiguredAutoAndCaps) {
+  EXPECT_EQ(0U, vector_index::effective_runtime_worker_count(0, 4));
+  EXPECT_EQ(1U, vector_index::effective_runtime_worker_count(1, 4));
+  EXPECT_EQ(4U, vector_index::effective_runtime_worker_count(64, 4));
+  EXPECT_EQ(vector_index::k_max_build_threads,
+            vector_index::effective_runtime_worker_count(
+                vector_index::k_max_build_threads + 8U,
+                vector_index::k_max_build_threads + 8U));
+
+  const size_t auto_threads =
+      vector_index::effective_runtime_worker_count(64, 0);
+  EXPECT_GE(auto_threads, 1U);
+  EXPECT_LE(auto_threads, 64U);
+}
+
+TEST(VectorIndexRuntimeThreadPoolTest,
+     ParallelForQueriesVisitsRangesAndPropagatesFailure) {
+  std::vector<int> seen(7, 0);
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      seen.size(), 3, [&](size_t begin, size_t end, size_t) {
+        EXPECT_LT(begin, end);
+        for (size_t i = begin; i < end; ++i) ++seen[i];
+        return true;
+      }));
+  for (int value : seen) EXPECT_EQ(1, value);
+
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      0, 3, [](size_t, size_t, size_t) { return false; }));
+  EXPECT_FALSE(vector_index::parallel_for_queries(
+      4, 2, [](size_t begin, size_t, size_t) { return begin == 0; }));
+  EXPECT_FALSE(vector_index::parallel_for_queries(
+      1, 1, vector_index::query_range_visitor{}));
+  EXPECT_TRUE(vector_index::parallel_for_queries(
+      3, 1, [](size_t begin, size_t end, size_t worker_id) {
+        EXPECT_EQ(0U, begin);
+        EXPECT_EQ(3U, end);
+        EXPECT_EQ(0U, worker_id);
+        return true;
+      }));
+}
+
+TEST(VectorIndexRuntimeConfigTest,
+     ValidatesCommonProviderModeAndThreadSemantics) {
+  vector_index::runtime_common_config config;
+  config.dimension = 4;
+  config.provider = vector_index::backend_provider::kDiskAnn;
+  config.mode = vector_index::backend_mode::kExternal;
+  EXPECT_TRUE(vector_index::runtime_common_config_valid(config));
+
+  config.dimension = 0;
+  EXPECT_FALSE(vector_index::runtime_common_config_valid(config));
+
+  config.dimension = 4;
+  config.mode = vector_index::backend_mode::kMemory;
+  EXPECT_FALSE(vector_index::runtime_common_config_valid(config));
+
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kFaiss,
+      vector_index::backend_mode::kMemory));
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kFaiss,
+      vector_index::backend_mode::kExternal));
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kNative,
+      vector_index::backend_mode::kMemory));
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kNative,
+      vector_index::backend_mode::kExternal));
+  EXPECT_TRUE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kHnswlib,
+      vector_index::backend_mode::kMemory));
+  EXPECT_FALSE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kHnswlib,
+      vector_index::backend_mode::kExternal));
+  EXPECT_FALSE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kFaiss,
+      static_cast<vector_index::backend_mode>(999)));
+  EXPECT_FALSE(vector_index::runtime_provider_accepts_mode(
+      vector_index::backend_provider::kNative,
+      static_cast<vector_index::backend_mode>(999)));
+  EXPECT_FALSE(vector_index::backend_provider_supported(
+      static_cast<vector_index::backend_provider>(999)));
+  EXPECT_FALSE(vector_index::default_backend_provider(nullptr));
+  vector_index::backend_mode default_mode =
+      vector_index::backend_mode::kExternal;
+  EXPECT_FALSE(vector_index::default_backend_mode_for_provider(
+      vector_index::backend_provider::kFaiss, nullptr));
+  EXPECT_FALSE(vector_index::default_backend_mode_for_provider(
+      static_cast<vector_index::backend_provider>(999), &default_mode));
+
+  EXPECT_EQ(0U, vector_index::resolve_runtime_threads(0, 0));
+  EXPECT_EQ(8U, vector_index::resolve_runtime_threads(0, 8));
+  EXPECT_EQ(4U, vector_index::resolve_runtime_threads(4, 8));
+  EXPECT_EQ(vector_index::k_max_build_threads,
+            vector_index::resolve_runtime_threads(
+                vector_index::k_max_build_threads + 1U, 8));
+}
+
+TEST(VectorIndexRuntimeConfigTest, InfersFaissRuntimeKindFromParams) {
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kHnsw,
+            vector_index::faiss_runtime_kind_from_params(0, 0, 0));
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfFlat,
+            vector_index::faiss_runtime_kind_from_params(16, 4, 0));
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfFlat,
+            vector_index::faiss_runtime_kind_from_params(16, 0, 8));
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfFlat,
+            vector_index::faiss_runtime_kind_from_params(16, 0, 0));
+  EXPECT_EQ(vector_index::faiss_runtime_index_kind::kIvfPq,
+            vector_index::faiss_runtime_kind_from_params(16, 4, 8));
+}
 
 TEST(VectorIndexBackendTest, BackendHelperParseUint64RejectsMalformedInputs) {
   uint64_t value = 0;
@@ -1028,6 +1143,16 @@ TEST(VectorIndexBackendTest, MemoryBackendEraseAndZeroTopK) {
   EXPECT_EQ(2U, result[0].doc_id);
 }
 
+TEST(VectorIndexBackendTest, ExactBackendsRejectNullSearchResults) {
+  vector_index::memory_backend memory(
+      2, vector_index::metric_type::kEuclidean);
+  vector_index::external_backend external(
+      2, vector_index::metric_type::kEuclidean);
+
+  EXPECT_FALSE(memory.search({1.0F, 1.0F}, 1, nullptr));
+  EXPECT_FALSE(external.search({1.0F, 1.0F}, 1, nullptr));
+}
+
 TEST(VectorIndexBackendTest, MemoryBackendCosineRejectsZeroNorm) {
   vector_index::memory_backend backend(2, vector_index::metric_type::kCosine);
   std::vector<vector_index::search_result> result;
@@ -1145,7 +1270,7 @@ TEST(VectorIndexBackendTest, FaissMemoryInnerProductUsesFlatIpIndex) {
   EXPECT_EQ(1U, result[0].doc_id);
 }
 
-TEST(VectorIndexBackendTest, FaissExternalEnvOptionsParseAcceptedAndFallbacks) {
+TEST(VectorIndexBackendTest, FaissExternalIgnoresRuntimeEnvironmentOptions) {
   unsetenv("MYSQL_VECTOR_FAISS_HNSW_M");
   unsetenv("MYSQL_VECTOR_FAISS_HNSW_EF_CONSTRUCTION");
   unsetenv("MYSQL_VECTOR_FAISS_SEARCH_EF");
@@ -1174,9 +1299,9 @@ TEST(VectorIndexBackendTest, FaissExternalEnvOptionsParseAcceptedAndFallbacks) {
   setenv("MYSQL_VECTOR_FAISS_KEEP_LOADED", "1", 1);
   vector_index::faiss_backend tuned(2, vector_index::metric_type::kEuclidean,
                                    vector_index::backend_mode::kExternal);
-  EXPECT_EQ(24U, tuned.hnsw_m());
-  EXPECT_EQ(120U, tuned.hnsw_ef_construction());
-  EXPECT_EQ(96U, tuned.search_ef());
+  EXPECT_EQ(32U, tuned.hnsw_m());
+  EXPECT_EQ(40U, tuned.hnsw_ef_construction());
+  EXPECT_EQ(64U, tuned.search_ef());
 
   setenv("MYSQL_VECTOR_FAISS_HNSW_M", "0", 1);
   setenv("MYSQL_VECTOR_FAISS_HNSW_EF_CONSTRUCTION", "bad", 1);

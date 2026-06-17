@@ -28,7 +28,6 @@
 #include <unordered_set>
 #include <utility>
 
-#include "sql/vector/vector_env.h"
 #include "sql/vector/vector_index_service_internal.h"
 
 namespace vector_index {
@@ -190,7 +189,7 @@ bool all_true(Bools... values) {
 }
 
 bool lazy_external_runtime_enabled() {
-  return vector_env::read_bool_or("MYSQL_VECTOR_LAZY_EXTERNAL_RUNTIME", false);
+  return false;
 }
 }  // namespace
 
@@ -250,28 +249,35 @@ bool index_service::register_index(const std::string &index_name,
                                    std::unique_ptr<backend> backend) {
   if (backend == nullptr || index_name.empty()) return false;
 
-  const index_config config{backend->dimension(),
-                            backend->metric(),
-                            backend->mode(),
-                            backend->provider(),
-                            backend->backend_variant(),
-                            backend->search_ef(),
-                            backend->hnsw_m(),
-                            backend->hnsw_ef_construction(),
-                            backend->hnsw_build_threads(),
-                            backend->faiss_nlist(),
-                            backend->faiss_nprobe(),
-                            backend->faiss_pq_m(),
-                            backend->faiss_pq_bits(),
-                            backend->faiss_build_threads(),
-                            backend->diskann_max_degree(),
-                            backend->diskann_build_complexity(),
-                            backend->diskann_build_threads(),
-                            backend->diskann_search_complexity()};
+  index_config config{backend->dimension(),
+                      backend->metric(),
+                      backend->mode(),
+                      backend->provider(),
+                      backend->backend_variant(),
+                      backend->search_ef(),
+                      backend->hnsw_m(),
+                      backend->hnsw_ef_construction(),
+                      backend->hnsw_build_threads(),
+                      backend->faiss_nlist(),
+                      backend->faiss_nprobe(),
+                      backend->faiss_pq_m(),
+                      backend->faiss_pq_bits(),
+                      backend->faiss_build_threads(),
+                      backend->diskann_max_degree(),
+                      backend->diskann_build_complexity(),
+                      backend->diskann_build_threads(),
+                      backend->diskann_search_complexity()};
+  return register_index_impl(index_name, std::move(config), std::move(backend));
+}
+
+bool index_service::register_index_impl(const std::string &index_name,
+                                        index_config config,
+                                        std::unique_ptr<backend> backend) {
   auto [it, inserted] = m_indexes.emplace(index_name, std::move(backend));
   if (!inserted || it->second == nullptr) return false;
 
-  m_index_configs[index_name] = config;
+  config.backend_variant = it->second->backend_variant();
+  m_index_configs[index_name] = std::move(config);
   m_committed_entries[index_name].clear();
   m_lifecycle_infos[index_name] =
       lifecycle_info{LIFECYCLE_READY, 1, ERROR_NONE, 0, 0, 0, 0};
@@ -286,7 +292,7 @@ bool index_service::register_index(const std::string &index_name,
       build_backend_from_config(index_name, config);
   if (backend == nullptr) return false;
 
-  return register_index(index_name, std::move(backend));
+  return register_index_impl(index_name, config, std::move(backend));
 }
 
 bool index_service::register_index_from_strings(const std::string &index_name,
@@ -1012,40 +1018,17 @@ bool index_service::restore_index_config(const std::string &index_name,
 
 bool index_service::replace_committed_entries(
     const std::string &index_name, const committed_entries &entries) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  auto state_it = m_committed_entries.find(index_name);
-  auto lifecycle_it = m_lifecycle_infos.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(), index_it != m_indexes.end(),
-                state_it != m_committed_entries.end(),
-                lifecycle_it != m_lifecycle_infos.end())) {
-    return false;
-  }
-
-  for (const auto &doc_entry : entries) {
-    if (doc_entry.second.size() != config_it->second.dimension) return false;
-  }
-
-  std::unique_ptr<backend> rebuilt =
-      build_backend_from_config(index_name, config_it->second);
-  if (rebuilt == nullptr) {
-    mark_lifecycle_failure(&lifecycle_it->second, ERROR_BACKEND_CREATE_FAILED);
-    return false;
-  }
-  if (!rebuilt->rebuild_from_committed_entries(entries)) {
-    mark_lifecycle_failure(&lifecycle_it->second, ERROR_REPLAY_STATE_FAILED);
-    return false;
-  }
-
-  index_it->second = std::move(rebuilt);
-  state_it->second = entries;
-  mark_lifecycle_ready(&lifecycle_it->second);
-  maybe_unload_runtime(index_name);
-  return true;
+  return replace_committed_entries_impl(index_name, entries, false);
 }
 
 bool index_service::replace_committed_entries_preserve_lifecycle(
     const std::string &index_name, const committed_entries &entries) {
+  return replace_committed_entries_impl(index_name, entries, true);
+}
+
+bool index_service::replace_committed_entries_impl(
+    const std::string &index_name, const committed_entries &entries,
+    bool preserve_lifecycle) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   auto state_it = m_committed_entries.find(index_name);
@@ -1073,6 +1056,7 @@ bool index_service::replace_committed_entries_preserve_lifecycle(
 
   index_it->second = std::move(rebuilt);
   state_it->second = entries;
+  if (!preserve_lifecycle) mark_lifecycle_ready(&lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;
 }

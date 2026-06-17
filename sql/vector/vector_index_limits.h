@@ -25,6 +25,7 @@
 #define SQL_VECTOR_INDEX_LIMITS_INCLUDED
 
 #include <cstdint>
+#include <limits>
 
 namespace vector_index {
 
@@ -32,6 +33,19 @@ inline constexpr uint32_t k_max_build_threads = 65535;
 inline constexpr uint32_t k_max_search_top_k = 10000;
 inline constexpr uint32_t k_max_search_batch_count = 1024;
 inline constexpr uint32_t k_max_search_batch_results = 65536;
+inline constexpr uint32_t k_default_diskann_max_degree = 32;
+inline constexpr uint32_t k_default_diskann_build_complexity = 64;
+inline constexpr uint32_t k_default_diskann_search_complexity = 64;
+inline constexpr uint32_t k_default_diskann_search_beamwidth = 16;
+inline constexpr uint32_t k_default_hnsw_search_ef = 64;
+inline constexpr uint32_t k_default_hnsw_m = 16;
+inline constexpr uint32_t k_default_hnsw_ef_construction = 200;
+
+inline size_t saturated_add_size(size_t left, size_t right) {
+  const size_t max_value = std::numeric_limits<size_t>::max();
+  if (right > max_value - left) return max_value;
+  return left + right;
+}
 
 }  // namespace vector_index
 

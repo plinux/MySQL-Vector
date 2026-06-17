@@ -654,6 +654,8 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_ddl_formatter.cc
     vector/vector_index_diagnostics.cc
     vector/vector_index_identity.cc
+    vector/vector_index_runtime_config.cc
+    vector/vector_index_runtime_thread_pool.cc
     vector/vector_index_status_fields.cc
     vector/vector_status.cc
     vector/vector_index_metadata_store.cc

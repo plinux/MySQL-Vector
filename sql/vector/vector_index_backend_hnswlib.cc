@@ -47,6 +47,7 @@
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_limits.h"
+#include "sql/vector/vector_index_runtime_thread_pool.h"
 
 namespace {
 using vector_index::detail::check_dimension;
@@ -58,10 +59,9 @@ constexpr size_t k_max_hnsw_build_threads = vector_index::k_max_build_threads;
 
 #ifdef HAVE_HNSWLIB
 size_t read_batch_search_threads(size_t query_count) {
-  return vector_env::read_thread_count(
-      "MYSQL_VECTOR_HNSWLIB_BATCH_SEARCH_THREADS",
-      k_default_batch_search_threads, k_max_batch_search_threads, query_count,
-      false);
+  return vector_env::limit_thread_count(k_default_batch_search_threads,
+                                        k_max_batch_search_threads,
+                                        query_count);
 }
 #endif
 
@@ -200,26 +200,16 @@ class hnswlib_native_state {
       return true;
     }
 
-    std::vector<std::thread> workers;
-    std::vector<unsigned char> worker_ok(thread_count, 1);
-    const size_t chunk_size = (queries.size() + thread_count - 1) / thread_count;
-    workers.reserve(thread_count);
-    for (size_t worker_id = 0; worker_id < thread_count; ++worker_id) {
-      const size_t begin = worker_id * chunk_size;
-      const size_t end = std::min(queries.size(), begin + chunk_size);
-      if (begin >= end) break;
-      workers.emplace_back([&, begin, end, worker_id]() {
-        for (size_t i = begin; i < end; ++i) {
-          if (!search_with_current_ef(queries[i], top_k, &(*results)[i])) {
-            worker_ok[worker_id] = 0;
-            return;
+    return vector_index::parallel_for_queries(
+        queries.size(), thread_count,
+        [&](size_t begin, size_t end, size_t) {
+          for (size_t i = begin; i < end; ++i) {
+            if (!search_with_current_ef(queries[i], top_k, &(*results)[i])) {
+              return false;
+            }
           }
-        }
-      });
-    }
-    for (std::thread &worker : workers) worker.join();
-    return std::all_of(worker_ok.begin(), worker_ok.end(),
-                       [](unsigned char ok) { return ok != 0; });
+          return true;
+        });
 #else
     (void)queries;
     (void)top_k;

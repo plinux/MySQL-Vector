@@ -24,11 +24,10 @@
 #include "sql/vector/vector_mapped_search.h"
 
 #include <algorithm>
-#include <cerrno>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <unordered_set>
@@ -106,39 +105,36 @@ bool decode_binary_vector(const String *value, vector_index::vector_data *vector
 bool parse_doc_id_column(const Ed_column *column, uint64_t *value) {
   if (column == nullptr || value == nullptr || column->str == nullptr) return false;
 
-  std::string text(column->str, column->length);
-  char *end = nullptr;
-  errno = 0;
-  unsigned long long parsed = std::strtoull(text.c_str(), &end, 10);
-  if (errno == 0 && end != text.c_str() && *end == '\0') {
-    *value = static_cast<uint64_t>(parsed);
-    return true;
-  }
-
+  // Protocol_local stores integer result columns as host-order binary values.
   const uchar *ptr = reinterpret_cast<const uchar *>(column->str);
-  longlong signed_value = -1;
   switch (column->length) {
     case 1:
-      signed_value = static_cast<signed char>(*ptr);
-      break;
-    case 2:
-      signed_value = static_cast<longlong>(sint2korr(ptr));
-      break;
+      *value = *ptr;
+      return true;
+    case 2: {
+      uint16_t decoded = 0;
+      std::memcpy(&decoded, ptr, sizeof(decoded));
+      *value = decoded;
+      return true;
+    }
     case 3:
-      signed_value = static_cast<longlong>(sint3korr(ptr));
-      break;
-    case 4:
-      signed_value = static_cast<longlong>(sint4korr(ptr));
-      break;
-    case 8:
-      signed_value = static_cast<longlong>(sint8korr(ptr));
-      break;
+      *value = uint3korr(ptr);
+      return true;
+    case 4: {
+      uint32_t decoded = 0;
+      std::memcpy(&decoded, ptr, sizeof(decoded));
+      *value = decoded;
+      return true;
+    }
+    case 8: {
+      uint64_t decoded = 0;
+      std::memcpy(&decoded, ptr, sizeof(decoded));
+      *value = decoded;
+      return true;
+    }
     default:
       return false;
   }
-  if (signed_value < 0) return false;
-  *value = static_cast<uint64_t>(signed_value);
-  return true;
 }
 
 std::string quote_identifier(const std::string &identifier) {

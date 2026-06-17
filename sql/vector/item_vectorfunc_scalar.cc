@@ -33,13 +33,40 @@
 #include "my_byteorder.h"
 #include "mysqld_error.h"
 #include "sql/item.h"
+#include "sql/vector/item_vectorfunc_internal.h"
 #include "sql/vector/vector_utils.h"
+
+using namespace vector_itemfunc_internal;
 
 namespace {
 
 bool eval_scalar_vector_arg(Item *arg, String *buf, const String **value) {
   *value = arg->val_str(buf);
   if (*value == nullptr || arg->null_value) return false;
+  return true;
+}
+
+template <typename Operation>
+bool eval_binary_vector_function(Item_real_func *item, Item *lhs_arg,
+                                 Item *rhs_arg, Operation operation,
+                                 double *result) {
+  item->null_value = true;
+
+  String lhs_buf;
+  String rhs_buf;
+  const String *lhs = nullptr;
+  const String *rhs = nullptr;
+  if (!eval_scalar_vector_arg(lhs_arg, &lhs_buf, &lhs) ||
+      !eval_scalar_vector_arg(rhs_arg, &rhs_buf, &rhs)) {
+    return false;
+  }
+
+  if (!operation(lhs, rhs, result)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), item->func_name());
+    return false;
+  }
+
+  item->null_value = false;
   return true;
 }
 
@@ -54,7 +81,7 @@ bool Item_func_vec_fromtext::resolve_type(THD *thd) {
 }
 
 String *Item_func_vec_fromtext::val_str(String *str [[maybe_unused]]) {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String input_buf;
@@ -91,7 +118,7 @@ bool Item_func_vec_totext::resolve_type(THD *thd) {
 }
 
 String *Item_func_vec_totext::val_str(String *str [[maybe_unused]]) {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String input_buf;
@@ -134,7 +161,7 @@ bool Item_func_vec_normalize::resolve_type(THD *thd) {
 }
 
 String *Item_func_vec_normalize::val_str(String *str [[maybe_unused]]) {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String input_buf;
@@ -186,7 +213,7 @@ bool Item_func_vector_dim::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vector_dim::val_int() {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String input_buf;
@@ -211,25 +238,13 @@ bool Item_func_vec_dot_product::resolve_type(THD *thd) {
 
 double Item_func_vec_dot_product::val_real() {
   assert(fixed && arg_count == 2);
-  null_value = true;
-
-  String lhs_buf;
-  String rhs_buf;
-  const String *lhs = nullptr;
-  const String *rhs = nullptr;
-  if (!eval_scalar_vector_arg(args[0], &lhs_buf, &lhs) ||
-      !eval_scalar_vector_arg(args[1], &rhs_buf, &rhs)) {
-    return 0.0;
-  }
-
-  double dot_product = 0.0;
-  if (!vector_utils::compute_dot_product(lhs, rhs, &dot_product)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  double result = 0.0;
+  if (!eval_binary_vector_function(this, args[0], args[1],
+                                   vector_utils::compute_dot_product,
+                                   &result)) {
     return error_real();
   }
-
-  null_value = false;
-  return dot_product;
+  return result;
 }
 
 bool Item_func_vec_inner_product::resolve_type(THD *thd) {
@@ -240,25 +255,13 @@ bool Item_func_vec_inner_product::resolve_type(THD *thd) {
 
 double Item_func_vec_inner_product::val_real() {
   assert(fixed && arg_count == 2);
-  null_value = true;
-
-  String lhs_buf;
-  String rhs_buf;
-  const String *lhs = nullptr;
-  const String *rhs = nullptr;
-  if (!eval_scalar_vector_arg(args[0], &lhs_buf, &lhs) ||
-      !eval_scalar_vector_arg(args[1], &rhs_buf, &rhs)) {
-    return 0.0;
-  }
-
-  double dot_product = 0.0;
-  if (!vector_utils::compute_dot_product(lhs, rhs, &dot_product)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  double result = 0.0;
+  if (!eval_binary_vector_function(this, args[0], args[1],
+                                   vector_utils::compute_dot_product,
+                                   &result)) {
     return error_real();
   }
-
-  null_value = false;
-  return dot_product;
+  return result;
 }
 
 bool Item_func_vec_distance_euclidean::resolve_type(THD *thd) {
@@ -269,26 +272,18 @@ bool Item_func_vec_distance_euclidean::resolve_type(THD *thd) {
 
 double Item_func_vec_distance_euclidean::val_real() {
   assert(fixed && arg_count == 2);
-  null_value = true;
-
-  String lhs_buf;
-  String rhs_buf;
-  const String *lhs = nullptr;
-  const String *rhs = nullptr;
-  if (!eval_scalar_vector_arg(args[0], &lhs_buf, &lhs) ||
-      !eval_scalar_vector_arg(args[1], &rhs_buf, &rhs)) {
-    return 0.0;
-  }
-
-  double distance = 0.0;
-  if (!vector_utils::compute_distance(vector_utils::distance_metric::kEuclidean,
-                                      lhs, rhs, &distance)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  double result = 0.0;
+  if (!eval_binary_vector_function(
+          this, args[0], args[1],
+          [](const String *lhs, const String *rhs, double *distance) {
+            return vector_utils::compute_distance(
+                vector_utils::distance_metric::kEuclidean, lhs, rhs,
+                distance);
+          },
+          &result)) {
     return error_real();
   }
-
-  null_value = false;
-  return distance;
+  return result;
 }
 
 bool Item_func_vec_distance_cosine::resolve_type(THD *thd) {
@@ -299,26 +294,17 @@ bool Item_func_vec_distance_cosine::resolve_type(THD *thd) {
 
 double Item_func_vec_distance_cosine::val_real() {
   assert(fixed && arg_count == 2);
-  null_value = true;
-
-  String lhs_buf;
-  String rhs_buf;
-  const String *lhs = nullptr;
-  const String *rhs = nullptr;
-  if (!eval_scalar_vector_arg(args[0], &lhs_buf, &lhs) ||
-      !eval_scalar_vector_arg(args[1], &rhs_buf, &rhs)) {
-    return 0.0;
-  }
-
-  double distance = 0.0;
-  if (!vector_utils::compute_distance(vector_utils::distance_metric::kCosine,
-                                      lhs, rhs, &distance)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  double result = 0.0;
+  if (!eval_binary_vector_function(
+          this, args[0], args[1],
+          [](const String *lhs, const String *rhs, double *distance) {
+            return vector_utils::compute_distance(
+                vector_utils::distance_metric::kCosine, lhs, rhs, distance);
+          },
+          &result)) {
     return error_real();
   }
-
-  null_value = false;
-  return distance;
+  return result;
 }
 
 bool Item_func_vec_distance::resolve_type(THD *thd) {
@@ -328,7 +314,7 @@ bool Item_func_vec_distance::resolve_type(THD *thd) {
 }
 
 double Item_func_vec_distance::val_real() {
-  assert(fixed && (arg_count == 2 || arg_count == 3));
+  assert_fixed_arg_count_is_one_of(fixed, arg_count, 2, 3);
   null_value = true;
 
   String lhs_buf;

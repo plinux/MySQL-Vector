@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -161,12 +162,6 @@ TEST(VectorMappedSearchTest, TestingWrappersParseDocIdColumnShapes) {
       "42", 2, nullptr));
   EXPECT_FALSE(vector_mapped_search::parse_doc_id_column_for_testing(
       "", 0, &doc_id));
-  EXPECT_FALSE(vector_mapped_search::parse_doc_id_column_for_testing(
-      "abcde", 5, &doc_id));
-
-  ASSERT_TRUE(vector_mapped_search::parse_doc_id_column_for_testing(
-      "42", 2, &doc_id));
-  EXPECT_EQ(42U, doc_id);
 
   std::array<uchar, 8> bytes{};
   bytes[0] = 7;
@@ -175,8 +170,9 @@ TEST(VectorMappedSearchTest, TestingWrappersParseDocIdColumnShapes) {
   EXPECT_EQ(7U, doc_id);
 
   bytes[0] = 0xFF;
-  EXPECT_FALSE(vector_mapped_search::parse_doc_id_column_for_testing(
+  ASSERT_TRUE(vector_mapped_search::parse_doc_id_column_for_testing(
       pointer_cast<const char *>(bytes.data()), 1, &doc_id));
+  EXPECT_EQ(255U, doc_id);
 
   int2store(bytes.data(), 300);
   ASSERT_TRUE(vector_mapped_search::parse_doc_id_column_for_testing(
@@ -193,10 +189,20 @@ TEST(VectorMappedSearchTest, TestingWrappersParseDocIdColumnShapes) {
       pointer_cast<const char *>(bytes.data()), 4, &doc_id));
   EXPECT_EQ(700000U, doc_id);
 
+  int4store(bytes.data(), 51);
+  ASSERT_TRUE(vector_mapped_search::parse_doc_id_column_for_testing(
+      pointer_cast<const char *>(bytes.data()), 4, &doc_id));
+  EXPECT_EQ(51U, doc_id);
+
   int8store(bytes.data(), 7000000000LL);
   ASSERT_TRUE(vector_mapped_search::parse_doc_id_column_for_testing(
       pointer_cast<const char *>(bytes.data()), 8, &doc_id));
   EXPECT_EQ(7000000000ULL, doc_id);
+
+  int8store(bytes.data(), std::numeric_limits<uint64_t>::max());
+  ASSERT_TRUE(vector_mapped_search::parse_doc_id_column_for_testing(
+      pointer_cast<const char *>(bytes.data()), 8, &doc_id));
+  EXPECT_EQ(std::numeric_limits<uint64_t>::max(), doc_id);
 
   EXPECT_FALSE(vector_mapped_search::parse_doc_id_column_for_testing(
       pointer_cast<const char *>(bytes.data()), 5, &doc_id));

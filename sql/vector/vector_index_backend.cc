@@ -86,8 +86,10 @@ const char *kDiskAnnExternalSnapshotPrefix =
     "diskann_external.snapshot.";
 const char *kFaissExternalSnapshotSuffix = ".v1";
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 std::mutex g_faiss_external_snapshot_root_mutex;
 std::string g_faiss_external_snapshot_root_override;
+#endif
 
 bool ensure_parent_directory(const std::string &path);
 
@@ -157,10 +159,12 @@ bool save_external_manifest_generation_to_file(const std::string &path,
 }
 
 std::string vector_index_root_path() {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
   std::lock_guard<std::mutex> guard(g_faiss_external_snapshot_root_mutex);
   if (!g_faiss_external_snapshot_root_override.empty()) {
     return g_faiss_external_snapshot_root_override;
   }
+#endif
 
   if (mysql_real_data_home[0] == '\0') {
     return "";
@@ -534,6 +538,7 @@ void memory_backend::reset() { m_entries.clear(); }
 
 bool memory_backend::search(const vector_data &query, size_t top_k,
                            std::vector<search_result> *results) const {
+  if (results == nullptr) return false;
   results->clear();
   if (top_k == 0) return true;
   if (!check_dimension(query, m_dimension)) return false;
@@ -568,6 +573,7 @@ bool external_backend::erase(uint64_t doc_id) {
 
 bool external_backend::search(const vector_data &query, size_t top_k,
                              std::vector<search_result> *results) const {
+  if (results == nullptr) return false;
   results->clear();
   if (top_k == 0) return true;
   if (!check_dimension(query, m_dimension)) return false;

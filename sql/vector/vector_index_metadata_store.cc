@@ -54,8 +54,10 @@ constexpr const char *kManifestFilename = "manifest.v1";
 constexpr const char *kChangeLogHeaderV1 = "mysql-vector-changelog-v1";
 constexpr const char *kChangeLogFilename = "changelog.v1";
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 std::mutex g_path_mutex;
 std::string g_path_override;
+#endif
 
 bool split_tab_fields(const std::string &line, std::vector<std::string> *fields) {
   fields->clear();
@@ -132,9 +134,13 @@ bool parse_uint64(const std::string &text, uint64_t *value) {
   return true;
 }
 
-std::string metadata_path() {
+std::string store_path(const char *filename, const char *override_suffix) {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
   std::lock_guard<std::mutex> guard(g_path_mutex);
-  if (!g_path_override.empty()) return g_path_override;
+  if (!g_path_override.empty()) return g_path_override + override_suffix;
+#else
+  (void)override_suffix;
+#endif
 
   std::string path(mysql_real_data_home);
   if (!path.empty()) {
@@ -143,68 +149,26 @@ std::string metadata_path() {
   }
   path.append(kStoreDirectory);
   path.push_back('/');
-  path.append(kMetadataFilename);
+  path.append(filename);
   return path;
 }
 
-std::string committed_path() {
-  std::lock_guard<std::mutex> guard(g_path_mutex);
-  if (!g_path_override.empty()) return g_path_override + ".committed";
+std::string metadata_path() { return store_path(kMetadataFilename, ""); }
 
-  std::string path(mysql_real_data_home);
-  if (!path.empty()) {
-    const char tail = path.back();
-    if (tail != '/' && tail != '\\') path.push_back('/');
-  }
-  path.append(kStoreDirectory);
-  path.push_back('/');
-  path.append(kCommittedFilename);
-  return path;
+std::string committed_path() {
+  return store_path(kCommittedFilename, ".committed");
 }
 
 std::string manifest_path() {
-  std::lock_guard<std::mutex> guard(g_path_mutex);
-  if (!g_path_override.empty()) return g_path_override + ".manifest";
-
-  std::string path(mysql_real_data_home);
-  if (!path.empty()) {
-    const char tail = path.back();
-    if (tail != '/' && tail != '\\') path.push_back('/');
-  }
-  path.append(kStoreDirectory);
-  path.push_back('/');
-  path.append(kManifestFilename);
-  return path;
+  return store_path(kManifestFilename, ".manifest");
 }
 
 std::string prepared_path() {
-  std::lock_guard<std::mutex> guard(g_path_mutex);
-  if (!g_path_override.empty()) return g_path_override + ".prepared";
-
-  std::string path(mysql_real_data_home);
-  if (!path.empty()) {
-    const char tail = path.back();
-    if (tail != '/' && tail != '\\') path.push_back('/');
-  }
-  path.append(kStoreDirectory);
-  path.push_back('/');
-  path.append(kPreparedFilename);
-  return path;
+  return store_path(kPreparedFilename, ".prepared");
 }
 
 std::string change_log_path() {
-  std::lock_guard<std::mutex> guard(g_path_mutex);
-  if (!g_path_override.empty()) return g_path_override + ".changelog";
-
-  std::string path(mysql_real_data_home);
-  if (!path.empty()) {
-    const char tail = path.back();
-    if (tail != '/' && tail != '\\') path.push_back('/');
-  }
-  path.append(kStoreDirectory);
-  path.push_back('/');
-  path.append(kChangeLogFilename);
-  return path;
+  return store_path(kChangeLogFilename, ".changelog");
 }
 
 bool ensure_parent_directory(const std::string &path) {

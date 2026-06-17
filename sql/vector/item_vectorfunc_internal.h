@@ -36,8 +36,15 @@
 
 namespace vector_itemfunc_internal {
 
+void assert_fixed_arg_count(bool fixed, size_t arg_count, size_t expected);
+void assert_fixed_arg_count_between(bool fixed, size_t arg_count,
+                                    size_t min_expected,
+                                    size_t max_expected);
+void assert_fixed_arg_count_is_one_of(bool fixed, size_t arg_count,
+                                      size_t first_expected,
+                                      size_t second_expected);
 bool eval_vector_arg(Item *arg, String *buf, const String **value);
-bool to_std_string(const String *value, std::string *out);
+void to_std_string(const String *value, std::string *out);
 bool eval_uint_arg(Item *arg, ulonglong &value);
 bool eval_uint32_arg(Item *arg, uint32_t min_value, uint32_t max_value,
                      uint32_t &value);

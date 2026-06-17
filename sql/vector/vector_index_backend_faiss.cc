@@ -53,7 +53,6 @@
 #endif
 
 #include "my_dbug.h"
-#include "sql/vector/vector_env.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
@@ -163,15 +162,6 @@ faiss_backend::faiss_backend(size_t dimension, metric_type metric, backend_mode 
           external_manifest_path(index_name, sidecar_profile)),
       m_memory_fallback(dimension, metric),
       m_external_fallback(dimension, metric) {
-  if (m_mode == backend_mode::kExternal) {
-    m_hnsw_m = vector_env::read_u32_or("MYSQL_VECTOR_FAISS_HNSW_M", m_hnsw_m);
-    m_hnsw_ef_construction = vector_env::read_u32_or(
-        "MYSQL_VECTOR_FAISS_HNSW_EF_CONSTRUCTION", m_hnsw_ef_construction);
-    m_search_ef =
-        vector_env::read_u32_or("MYSQL_VECTOR_FAISS_SEARCH_EF", m_search_ef);
-    m_keep_loaded_external_index = vector_env::read_bool_or(
-        "MYSQL_VECTOR_FAISS_KEEP_LOADED", m_keep_loaded_external_index);
-  }
 #ifdef HAVE_FAISS
   (void)initialize_faiss_index();
 #endif

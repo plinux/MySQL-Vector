@@ -55,6 +55,8 @@ enum class metric_type { kEuclidean, kCosine, kInnerProduct };
 enum class backend_mode { kMemory, kExternal };
 enum class backend_provider { kNative, kFaiss, kDiskAnn, kHnswlib };
 enum class external_sidecar_profile { kFaiss, kDiskAnn };
+enum class diskann_build_mode { kAuto, kSerial, kOffline };
+enum class index_consistency_mode { kTransactional, kStandalone };
 
 struct vector_library_status {
   const char *library{nullptr};

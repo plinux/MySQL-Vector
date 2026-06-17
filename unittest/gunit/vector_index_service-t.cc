@@ -1215,7 +1215,7 @@ TEST(VectorIndexServiceTest,
 }
 
 TEST(VectorIndexServiceTest,
-     LazyExternalRuntimeEnvParserAcceptsBooleanSpellings) {
+     ExternalRuntimeIgnoresRemovedLazyEnvironmentOption) {
   const EnvVarGuard guard("MYSQL_VECTOR_LAZY_EXTERNAL_RUNTIME");
   const std::string root =
       std::string(testing::TempDir()) + "/vector_service_lazy_env_t";
@@ -1225,13 +1225,12 @@ TEST(VectorIndexServiceTest,
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  const char *true_values[] = {"1", "true", "TRUE", "yes",
-                               "YES", "on",   "ON"};
-  const char *false_values[] = {"0", "false", "FALSE", "no",
-                                "NO", "off",   "OFF",   "invalid"};
+  const char *values[] = {"1",     "true",  "TRUE", "yes", "YES",
+                          "on",    "ON",    "0",    "false", "FALSE",
+                          "no",    "NO",    "off",  "OFF",   "invalid"};
   size_t suffix = 0;
 
-  auto exercise_value = [&](const char *value, bool expect_lazy) {
+  auto exercise_value = [&](const char *value) {
     setenv("MYSQL_VECTOR_LAZY_EXTERNAL_RUNTIME", value, 1);
 
     vector_index::index_service service;
@@ -1250,22 +1249,10 @@ TEST(VectorIndexServiceTest,
     size_t committed_entry_count = 99;
     ASSERT_TRUE(service.describe_index(index_name, &config, &supports_mutations,
                                       &entry_count, &committed_entry_count));
-    EXPECT_EQ(expect_lazy ? 0U : 1U, entry_count) << value;
+    EXPECT_EQ(1U, entry_count) << value;
     EXPECT_EQ(1U, committed_entry_count) << value;
 
     std::vector<vector_index::search_result> result;
-    if (expect_lazy) {
-      ASSERT_TRUE(service.search_loaded(
-          index_name, {static_cast<float>(suffix), 1.0F}, 1, &result))
-          << value;
-      EXPECT_TRUE(result.empty()) << value;
-      ASSERT_TRUE(service.describe_index(index_name, &config, &supports_mutations,
-                                         &entry_count,
-                                         &committed_entry_count));
-      EXPECT_EQ(0U, entry_count) << value;
-      result.clear();
-      ASSERT_TRUE(service.ensure_runtime_loaded_for_search(index_name)) << value;
-    }
     ASSERT_TRUE(service.search_loaded(index_name,
                                       {static_cast<float>(suffix), 1.0F}, 1,
                                       &result));
@@ -1273,11 +1260,8 @@ TEST(VectorIndexServiceTest,
     EXPECT_EQ(suffix, result[0].doc_id) << value;
   };
 
-  for (const char *value : true_values) {
-    exercise_value(value, true);
-  }
-  for (const char *value : false_values) {
-    exercise_value(value, false);
+  for (const char *value : values) {
+    exercise_value(value);
   }
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
@@ -1285,9 +1269,9 @@ TEST(VectorIndexServiceTest,
 }
 
 TEST(VectorIndexServiceTest,
-     LazyExternalRuntimeCoversEmptyEnvAndAlreadyLoadedBranches) {
+     ExternalRuntimeCoversEmptyAndAlreadyLoadedBranches) {
   const EnvVarGuard guard("MYSQL_VECTOR_LAZY_EXTERNAL_RUNTIME");
-  setenv("MYSQL_VECTOR_LAZY_EXTERNAL_RUNTIME", "", 1);
+  setenv("MYSQL_VECTOR_LAZY_EXTERNAL_RUNTIME", "1", 1);
 
   {
     vector_index::index_service service;
@@ -1308,8 +1292,6 @@ TEST(VectorIndexServiceTest,
     EXPECT_EQ(1U, entry_count);
     EXPECT_EQ(1U, committed_entry_count);
   }
-
-  setenv("MYSQL_VECTOR_LAZY_EXTERNAL_RUNTIME", "1", 1);
 
   {
     vector_index::index_service service;
