@@ -313,7 +313,9 @@ IF(HAVE_VECTOR_INDEX)
     item_vectorfunc
     vector_build_pipeline_policy
     vector_diskann_artifact_layout
+    vector_diskann_graph_cache_bridge
     vector_diskann_pq_runtime
+    vector_diskann_scheduler
     vector_elkan_kmeans
     vector_pq_centroid_scan
     vector_simd_distance

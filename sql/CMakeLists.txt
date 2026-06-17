@@ -652,7 +652,9 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_backend_diskann.cc
     vector/vector_index_backend_faiss.cc
     vector/vector_diskann_artifact_layout.cc
+    vector/vector_diskann_graph_cache_bridge.cc
     vector/vector_diskann_pq_runtime.cc
+    vector/vector_diskann_scheduler.cc
     vector/vector_elkan_kmeans.cc
     vector/vector_pq_centroid_scan.cc
     vector/vector_simd_distance.cc
