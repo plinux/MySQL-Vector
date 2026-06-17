@@ -155,12 +155,30 @@ VEC_INDEX_CREATE('idx_status', 2)
 SELECT VEC_INDEX_UPSERT('idx_status', 1, '[1,2]');
 VEC_INDEX_UPSERT('idx_status', 1, '[1,2]')
 1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_committed_vector_memory_bytes') >= 8;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_committed_vector_memory_bytes') >= 8
+1
 SET @txn1 = VEC_INDEX_TXN_BEGIN();
 SELECT VEC_INDEX_STAGE_UPSERT('idx_status', @txn1, 2, '[2,2]');
 VEC_INDEX_STAGE_UPSERT('idx_status', @txn1, 2, '[2,2]')
 1
 SELECT VEC_INDEX_STAGE_ERASE('idx_status', @txn1, 1);
 VEC_INDEX_STAGE_ERASE('idx_status', @txn1, 1)
+1
+SELECT (
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_pending_vector_memory_bytes') >= 8;
+(
+SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_pending_vector_memory_bytes') >= 8
 1
 SELECT VEC_INDEX_TXN_PENDING(@txn1);
 VEC_INDEX_TXN_PENDING(@txn1)

@@ -1,0 +1,90 @@
+#
+# Variable family : vector *_size memory limits
+# Persistence     : SET PERSIST / RESET PERSIST
+#
+# Vector size variables are registered.
+SELECT VARIABLE_NAME
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME IN (
+'vector_entry_cache_size',
+'vector_pending_cache_size',
+'vector_build_memory_size',
+'vector_diskann_build_memory_size',
+'vector_diskann_raw_segment_size',
+'vector_faiss_train_size',
+'vector_hnsw_index_memory_size')
+ORDER BY VARIABLE_NAME;
+VARIABLE_NAME
+vector_build_memory_size
+vector_diskann_build_memory_size
+vector_diskann_raw_segment_size
+vector_entry_cache_size
+vector_faiss_train_size
+vector_hnsw_index_memory_size
+vector_pending_cache_size
+include/assert.inc [Expect all vector size variables to be registered.]
+include/assert.inc [Expect vector size variables not to be persisted before SET PERSIST.]
+# Persist vector size variables.
+SET PERSIST vector_entry_cache_size=1048576;
+SET PERSIST vector_pending_cache_size=2097152;
+SET PERSIST vector_build_memory_size=3145728;
+SET PERSIST vector_diskann_build_memory_size=4194304;
+SET PERSIST vector_diskann_raw_segment_size=5242880;
+SET PERSIST vector_faiss_train_size=6291456;
+SET PERSIST vector_hnsw_index_memory_size=7340032;
+include/assert.inc [Expect vector size variables to be persisted before restart.]
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME IN (
+'vector_entry_cache_size',
+'vector_pending_cache_size',
+'vector_build_memory_size',
+'vector_diskann_build_memory_size',
+'vector_diskann_raw_segment_size',
+'vector_faiss_train_size',
+'vector_hnsw_index_memory_size')
+ORDER BY VARIABLE_NAME;
+VARIABLE_NAME	VARIABLE_VALUE
+vector_build_memory_size	3145728
+vector_diskann_build_memory_size	4194304
+vector_diskann_raw_segment_size	5242880
+vector_entry_cache_size	1048576
+vector_faiss_train_size	6291456
+vector_hnsw_index_memory_size	7340032
+vector_pending_cache_size	2097152
+# Restart and verify vector size variables survive.
+# restart
+include/assert.inc [Expect vector size variables to be persisted after restart.]
+SELECT vi.VARIABLE_NAME, vi.VARIABLE_SOURCE, pv.VARIABLE_VALUE, gv.VARIABLE_VALUE
+FROM performance_schema.variables_info vi
+JOIN performance_schema.persisted_variables pv
+ON vi.VARIABLE_NAME=pv.VARIABLE_NAME
+JOIN performance_schema.global_variables gv
+ON vi.VARIABLE_NAME=gv.VARIABLE_NAME
+WHERE vi.VARIABLE_NAME IN (
+'vector_entry_cache_size',
+'vector_pending_cache_size',
+'vector_build_memory_size',
+'vector_diskann_build_memory_size',
+'vector_diskann_raw_segment_size',
+'vector_faiss_train_size',
+'vector_hnsw_index_memory_size')
+ORDER BY vi.VARIABLE_NAME;
+VARIABLE_NAME	VARIABLE_SOURCE	VARIABLE_VALUE	VARIABLE_VALUE
+vector_build_memory_size	PERSISTED	3145728	3145728
+vector_diskann_build_memory_size	PERSISTED	4194304	4194304
+vector_diskann_raw_segment_size	PERSISTED	5242880	5242880
+vector_entry_cache_size	PERSISTED	1048576	1048576
+vector_faiss_train_size	PERSISTED	6291456	6291456
+vector_hnsw_index_memory_size	PERSISTED	7340032	7340032
+vector_pending_cache_size	PERSISTED	2097152	2097152
+# Reset persisted vector size variables.
+RESET PERSIST IF EXISTS vector_entry_cache_size;
+RESET PERSIST IF EXISTS vector_pending_cache_size;
+RESET PERSIST IF EXISTS vector_build_memory_size;
+RESET PERSIST IF EXISTS vector_diskann_build_memory_size;
+RESET PERSIST IF EXISTS vector_diskann_raw_segment_size;
+RESET PERSIST IF EXISTS vector_faiss_train_size;
+RESET PERSIST IF EXISTS vector_hnsw_index_memory_size;
+include/assert.inc [Expect vector size variable persistence to be reset.]
+# restart

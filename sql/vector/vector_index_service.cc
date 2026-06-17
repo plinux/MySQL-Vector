@@ -889,6 +889,37 @@ size_t index_service::committed_entry_count() const {
   return count;
 }
 
+size_t index_service::committed_vector_memory_bytes() const {
+  size_t bytes = 0;
+  for (const auto &index_entry : m_committed_entries) {
+    for (const auto &doc_entry : index_entry.second) {
+      bytes += doc_entry.second.size() * sizeof(float);
+    }
+  }
+  return bytes;
+}
+
+size_t index_service::pending_vector_memory_bytes(uint64_t txn_id) const {
+  auto pending_it = m_pending_changes.find(txn_id);
+  if (pending_it == m_pending_changes.end()) return 0;
+
+  size_t bytes = 0;
+  for (const pending_change &change : pending_it->second) {
+    bytes += pending_change_memory_bytes(change);
+  }
+  return bytes;
+}
+
+size_t index_service::total_pending_vector_memory_bytes() const {
+  size_t bytes = 0;
+  for (const auto &txn_entry : m_pending_changes) {
+    for (const pending_change &change : txn_entry.second) {
+      bytes += pending_change_memory_bytes(change);
+    }
+  }
+  return bytes;
+}
+
 bool index_service::restore_committed_state(const committed_state &state) {
   std::unordered_map<std::string, std::unique_ptr<backend>> restored_backends;
   restored_backends.reserve(m_index_configs.size());

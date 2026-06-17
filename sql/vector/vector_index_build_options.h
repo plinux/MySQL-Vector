@@ -37,6 +37,13 @@ extern ulong opt_vector_hnsw_build_threads;
 extern ulong opt_vector_faiss_build_threads;
 extern ulong opt_vector_diskann_build_threads;
 extern ulong opt_vector_default_library;
+extern ulonglong opt_vector_entry_cache_size;
+extern ulonglong opt_vector_pending_cache_size;
+extern ulonglong opt_vector_build_memory_size;
+extern ulonglong opt_vector_diskann_build_memory_size;
+extern ulonglong opt_vector_diskann_raw_segment_size;
+extern ulonglong opt_vector_faiss_train_size;
+extern ulonglong opt_vector_hnsw_index_memory_size;
 
 namespace vector_index {
 

@@ -1635,17 +1635,39 @@ The following options may be given as the first argument:
  Default vector library used when CREATE VECTOR INDEX or
  VEC_INDEX_CREATE() omits the provider. Empty means no
  default provider is available.
+ --vector-build-memory-size=# 
+ Generic vector index build scratch memory budget in
+ bytes. Use 0 for no MySQL-layer build buffer limit.
+ --vector-diskann-build-memory-size=# 
+ DiskANN offline build memory budget in bytes. The backend
+ maps this budget to DiskANN's build-time memory limit.
  --vector-diskann-build-threads[=#] 
  Default worker count for DiskANN vector index bulk build
  and rebuild. Use 0 for automatic hardware-thread based
  sizing.
+ --vector-diskann-raw-segment-size=# 
+ Maximum DiskANN offline raw segment size in bytes before
+ the vector builder rolls over to another segment.
+ --vector-entry-cache-size=# 
+ SQL-layer committed vector cache budget in bytes. Use 0
+ to disable committed vector payload caching and read from
+ the truth store when needed.
  --vector-faiss-build-threads[=#] 
  Default OpenMP worker count for FAISS vector index build
  and rebuild. Use 0 for FAISS/OpenMP automatic sizing.
+ --vector-faiss-train-size=# 
+ FAISS IVF/PQ training sample budget in bytes. Use 0 to
+ train from the full vector set.
  --vector-hnsw-build-threads[=#] 
  Default worker count for hnswlib vector index bulk build
  and rebuild. Use 0 for automatic hardware-thread based
  sizing.
+ --vector-hnsw-index-memory-size=# 
+ Estimated hnswlib native index memory limit in bytes. Use
+ 0 to disable the pre-build memory estimate limit.
+ --vector-pending-cache-size=# 
+ Total in-memory budget in bytes for uncommitted vector
+ payloads before transaction-local spill files are used.
  -v, --verbose       Used with --help option for detailed help.
  -V, --version       Output version information and exit.
  --wait-timeout=#    The number of seconds the server waits for activity on a
@@ -2089,10 +2111,17 @@ updatable-views-with-limit YES
 upgrade AUTO
 validate-config FALSE
 validate-user-plugins TRUE
+vector-build-memory-size 1073741824
 vector-default-library hnsw
+vector-diskann-build-memory-size 1073741824
 vector-diskann-build-threads 0
+vector-diskann-raw-segment-size 268435456
+vector-entry-cache-size 268435456
 vector-faiss-build-threads 0
+vector-faiss-train-size 0
 vector-hnsw-build-threads 0
+vector-hnsw-index-memory-size 0
+vector-pending-cache-size 67108864
 verbose TRUE
 wait-timeout 28800
 windowing-use-high-precision TRUE

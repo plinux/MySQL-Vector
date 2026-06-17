@@ -172,6 +172,8 @@ bool recover_all_indexes(size_t *recovered_count);
 bool get_index_info(const std::string &index_name, index_info *info);
 bool list_indexes(std::vector<std::string> *index_names);
 bool metadata_loaded();
+size_t committed_vector_memory_bytes();
+size_t total_pending_vector_memory_bytes();
 
 uint64_t begin_txn();
 bool commit_txn(uint64_t txn_id);

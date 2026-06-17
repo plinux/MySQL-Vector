@@ -1,0 +1,98 @@
+--echo #
+--echo # Variable family : vector *_size memory limits
+--echo # Persistence     : SET PERSIST / RESET PERSIST
+--echo #
+
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+--source include/not_windows.inc
+--source include/have_binlog_format_row.inc
+
+--let $MYSQLD_DATADIR= `select @@datadir;`
+--let $assert_escape= 1
+
+--echo # Vector size variables are registered.
+SELECT VARIABLE_NAME
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME IN (
+  'vector_entry_cache_size',
+  'vector_pending_cache_size',
+  'vector_build_memory_size',
+  'vector_diskann_build_memory_size',
+  'vector_diskann_raw_segment_size',
+  'vector_faiss_train_size',
+  'vector_hnsw_index_memory_size')
+ORDER BY VARIABLE_NAME;
+
+--let $assert_text= Expect all vector size variables to be registered.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 7
+--source include/assert.inc
+
+--let $assert_text= Expect vector size variables not to be persisted before SET PERSIST.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 0
+--source include/assert.inc
+
+--echo # Persist vector size variables.
+SET PERSIST vector_entry_cache_size=1048576;
+SET PERSIST vector_pending_cache_size=2097152;
+SET PERSIST vector_build_memory_size=3145728;
+SET PERSIST vector_diskann_build_memory_size=4194304;
+SET PERSIST vector_diskann_raw_segment_size=5242880;
+SET PERSIST vector_faiss_train_size=6291456;
+SET PERSIST vector_hnsw_index_memory_size=7340032;
+
+--let $assert_text= Expect vector size variables to be persisted before restart.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 7
+--source include/assert.inc
+
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME IN (
+  'vector_entry_cache_size',
+  'vector_pending_cache_size',
+  'vector_build_memory_size',
+  'vector_diskann_build_memory_size',
+  'vector_diskann_raw_segment_size',
+  'vector_faiss_train_size',
+  'vector_hnsw_index_memory_size')
+ORDER BY VARIABLE_NAME;
+
+--echo # Restart and verify vector size variables survive.
+--source include/restart_mysqld.inc
+--source include/wait_until_connected_again.inc
+
+--let $assert_text= Expect vector size variables to be persisted after restart.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 7
+--source include/assert.inc
+
+SELECT vi.VARIABLE_NAME, vi.VARIABLE_SOURCE, pv.VARIABLE_VALUE, gv.VARIABLE_VALUE
+FROM performance_schema.variables_info vi
+JOIN performance_schema.persisted_variables pv
+  ON vi.VARIABLE_NAME=pv.VARIABLE_NAME
+JOIN performance_schema.global_variables gv
+  ON vi.VARIABLE_NAME=gv.VARIABLE_NAME
+WHERE vi.VARIABLE_NAME IN (
+  'vector_entry_cache_size',
+  'vector_pending_cache_size',
+  'vector_build_memory_size',
+  'vector_diskann_build_memory_size',
+  'vector_diskann_raw_segment_size',
+  'vector_faiss_train_size',
+  'vector_hnsw_index_memory_size')
+ORDER BY vi.VARIABLE_NAME;
+
+--echo # Reset persisted vector size variables.
+RESET PERSIST IF EXISTS vector_entry_cache_size;
+RESET PERSIST IF EXISTS vector_pending_cache_size;
+RESET PERSIST IF EXISTS vector_build_memory_size;
+RESET PERSIST IF EXISTS vector_diskann_build_memory_size;
+RESET PERSIST IF EXISTS vector_diskann_raw_segment_size;
+RESET PERSIST IF EXISTS vector_faiss_train_size;
+RESET PERSIST IF EXISTS vector_hnsw_index_memory_size;
+
+--let $assert_text= Expect vector size variable persistence to be reset.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 0
+--source include/assert.inc
+
+--remove_file $MYSQLD_DATADIR/mysqld-auto.cnf
+--source include/restart_mysqld.inc

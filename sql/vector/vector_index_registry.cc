@@ -1583,6 +1583,18 @@ bool restore_runtime_state(const registry_state_snapshot &snapshot,
   return true;
 }
 
+size_t committed_vector_memory_bytes() {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return 0;
+  return g_index_service.committed_vector_memory_bytes();
+}
+
+size_t total_pending_vector_memory_bytes() {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return 0;
+  return g_index_service.total_pending_vector_memory_bytes();
+}
+
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 bool parse_mapped_index_name_for_testing(const std::string &index_name,
                                          std::string *schema_name,

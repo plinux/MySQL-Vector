@@ -12,6 +12,9 @@ SHOW VECTOR STATUS;
 --replace_regex /[0-9]+/<num>/
 SHOW VECTOR STATUS LIKE 'Vector_pending%';
 --replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_GAUGES'
+  AND Variable_name LIKE 'Vector_%vector_memory_bytes';
+--replace_regex /[0-9]+/<num>/
 SHOW VECTOR STATUS LIKE 'Vector_search_%';
 --replace_regex /[0-9]+/<num>/
 SHOW VECTOR STATUS WHERE Variable_name = 'Vector_search_requests';

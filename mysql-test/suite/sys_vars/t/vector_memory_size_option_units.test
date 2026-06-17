@@ -1,0 +1,16 @@
+--echo #
+--echo # Variable family : vector *_size option unit suffixes
+--echo # Scope           : Global startup options
+--echo #
+
+--source include/have_vector_index.inc
+
+SELECT @@global.vector_entry_cache_size;
+SELECT @@global.vector_pending_cache_size;
+SELECT @@global.vector_build_memory_size;
+SELECT @@global.vector_diskann_build_memory_size;
+SELECT @@global.vector_diskann_raw_segment_size;
+SELECT @@global.vector_faiss_train_size;
+SELECT @@global.vector_hnsw_index_memory_size;
+
+--echo # End of tests.

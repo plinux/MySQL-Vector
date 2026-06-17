@@ -1,0 +1,132 @@
+#
+# Variable family : vector *_size memory limits
+# Scope           : Global dynamic
+#
+# Global defaults
+SELECT @@global.vector_entry_cache_size;
+@@global.vector_entry_cache_size
+268435456
+SELECT @@global.vector_pending_cache_size;
+@@global.vector_pending_cache_size
+67108864
+SELECT @@global.vector_build_memory_size;
+@@global.vector_build_memory_size
+1073741824
+SELECT @@global.vector_diskann_build_memory_size;
+@@global.vector_diskann_build_memory_size
+1073741824
+SELECT @@global.vector_diskann_raw_segment_size;
+@@global.vector_diskann_raw_segment_size
+268435456
+SELECT @@global.vector_faiss_train_size;
+@@global.vector_faiss_train_size
+0
+SELECT @@global.vector_hnsw_index_memory_size;
+@@global.vector_hnsw_index_memory_size
+0
+# Visible through SHOW VARIABLES and performance_schema.
+SHOW GLOBAL VARIABLES LIKE 'vector\\_%\\_size';
+Variable_name	Value
+vector_build_memory_size	1073741824
+vector_diskann_build_memory_size	1073741824
+vector_diskann_raw_segment_size	268435456
+vector_entry_cache_size	268435456
+vector_faiss_train_size	0
+vector_hnsw_index_memory_size	0
+vector_pending_cache_size	67108864
+SHOW SESSION VARIABLES LIKE 'vector\\_%\\_size';
+Variable_name	Value
+vector_build_memory_size	1073741824
+vector_diskann_build_memory_size	1073741824
+vector_diskann_raw_segment_size	268435456
+vector_entry_cache_size	268435456
+vector_faiss_train_size	0
+vector_hnsw_index_memory_size	0
+vector_pending_cache_size	67108864
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME IN (
+'vector_entry_cache_size',
+'vector_pending_cache_size',
+'vector_build_memory_size',
+'vector_diskann_build_memory_size',
+'vector_diskann_raw_segment_size',
+'vector_faiss_train_size',
+'vector_hnsw_index_memory_size')
+ORDER BY VARIABLE_NAME;
+VARIABLE_NAME	VARIABLE_VALUE
+vector_build_memory_size	1073741824
+vector_diskann_build_memory_size	1073741824
+vector_diskann_raw_segment_size	268435456
+vector_entry_cache_size	268435456
+vector_faiss_train_size	0
+vector_hnsw_index_memory_size	0
+vector_pending_cache_size	67108864
+SELECT @@session.vector_entry_cache_size;
+ERROR HY000: Variable 'vector_entry_cache_size' is a GLOBAL variable
+SELECT vector_entry_cache_size;
+ERROR 42S22: Unknown column 'vector_entry_cache_size' in 'field list'
+# Runtime SET accepts byte counts.
+SET GLOBAL vector_entry_cache_size=1048576;
+SET GLOBAL vector_pending_cache_size=2097152;
+SET GLOBAL vector_build_memory_size=3145728;
+SET GLOBAL vector_diskann_build_memory_size=4194304;
+SET GLOBAL vector_diskann_raw_segment_size=5242880;
+SET GLOBAL vector_faiss_train_size=6291456;
+SET GLOBAL vector_hnsw_index_memory_size=7340032;
+SELECT @@global.vector_entry_cache_size;
+@@global.vector_entry_cache_size
+1048576
+SELECT @@global.vector_pending_cache_size;
+@@global.vector_pending_cache_size
+2097152
+SELECT @@global.vector_build_memory_size;
+@@global.vector_build_memory_size
+3145728
+SELECT @@global.vector_diskann_build_memory_size;
+@@global.vector_diskann_build_memory_size
+4194304
+SELECT @@global.vector_diskann_raw_segment_size;
+@@global.vector_diskann_raw_segment_size
+5242880
+SELECT @@global.vector_faiss_train_size;
+@@global.vector_faiss_train_size
+6291456
+SELECT @@global.vector_hnsw_index_memory_size;
+@@global.vector_hnsw_index_memory_size
+7340032
+# Online SET uses numeric byte values; negative values are rejected.
+SET GLOBAL vector_entry_cache_size=-1;
+ERROR 42000: Variable 'vector_entry_cache_size' can't be set to the value of '-1'
+SET GLOBAL vector_pending_cache_size=-1;
+ERROR 42000: Variable 'vector_pending_cache_size' can't be set to the value of '-1'
+SET GLOBAL vector_entry_cache_size=DEFAULT;
+SET GLOBAL vector_pending_cache_size=DEFAULT;
+SET GLOBAL vector_build_memory_size=DEFAULT;
+SET GLOBAL vector_diskann_build_memory_size=DEFAULT;
+SET GLOBAL vector_diskann_raw_segment_size=DEFAULT;
+SET GLOBAL vector_faiss_train_size=DEFAULT;
+SET GLOBAL vector_hnsw_index_memory_size=DEFAULT;
+# Defaults after reset
+SELECT @@global.vector_entry_cache_size;
+@@global.vector_entry_cache_size
+268435456
+SELECT @@global.vector_pending_cache_size;
+@@global.vector_pending_cache_size
+67108864
+SELECT @@global.vector_build_memory_size;
+@@global.vector_build_memory_size
+1073741824
+SELECT @@global.vector_diskann_build_memory_size;
+@@global.vector_diskann_build_memory_size
+1073741824
+SELECT @@global.vector_diskann_raw_segment_size;
+@@global.vector_diskann_raw_segment_size
+268435456
+SELECT @@global.vector_faiss_train_size;
+@@global.vector_faiss_train_size
+0
+SELECT @@global.vector_hnsw_index_memory_size;
+@@global.vector_hnsw_index_memory_size
+0
+# End of tests.

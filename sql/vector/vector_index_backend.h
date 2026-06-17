@@ -376,6 +376,11 @@ class faiss_backend final : public backend {
   const std::unordered_map<uint64_t, vector_data> &external_snapshot_entries() const {
     return m_external_snapshot_entries;
   }
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  size_t faiss_last_training_count_for_testing() const {
+    return m_faiss_last_training_count;
+  }
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
  private:
   size_t m_dimension{0};
@@ -403,6 +408,7 @@ class faiss_backend final : public backend {
   uint32_t m_faiss_pq_m{0};
   uint32_t m_faiss_pq_bits{0};
   uint32_t m_faiss_build_threads{0};
+  size_t m_faiss_last_training_count{0};
   bool m_keep_loaded_external_index{true};
 
   bool initialize_faiss_index(bool use_ivfpq = true);

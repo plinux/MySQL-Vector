@@ -6843,6 +6843,81 @@ static Sys_var_bool Sys_validate_user_plugins(
     DEFAULT(true), NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 #ifdef HAVE_VECTOR_INDEX
+static constexpr ulonglong VECTOR_ONE_MB = 1024ULL * 1024ULL;
+static constexpr ulonglong VECTOR_64_MB = 64ULL * VECTOR_ONE_MB;
+static constexpr ulonglong VECTOR_256_MB = 256ULL * VECTOR_ONE_MB;
+static constexpr ulonglong VECTOR_1_GB = 1024ULL * VECTOR_ONE_MB;
+
+static bool check_vector_size(sys_var *self, THD *, set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const longlong signed_value = var->value->val_int();
+  if (!var->value->unsigned_flag && signed_value < 0) {
+    const std::string value = std::to_string(signed_value);
+    my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value.c_str());
+    return true;
+  }
+
+  return false;
+}
+
+static Sys_var_ulonglong Sys_vector_entry_cache_size(
+    "vector_entry_cache_size",
+    "SQL-layer committed vector cache budget in bytes. Use 0 to disable "
+    "committed vector payload caching and read from the truth store when "
+    "needed.",
+    GLOBAL_VAR(opt_vector_entry_cache_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, max_mem_sz), DEFAULT(VECTOR_256_MB), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulonglong Sys_vector_pending_cache_size(
+    "vector_pending_cache_size",
+    "Total in-memory budget in bytes for uncommitted vector payloads before "
+    "transaction-local spill files are used.",
+    GLOBAL_VAR(opt_vector_pending_cache_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(VECTOR_ONE_MB, max_mem_sz), DEFAULT(VECTOR_64_MB),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulonglong Sys_vector_build_memory_size(
+    "vector_build_memory_size",
+    "Generic vector index build scratch memory budget in bytes. Use 0 for no "
+    "MySQL-layer build buffer limit.",
+    GLOBAL_VAR(opt_vector_build_memory_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, max_mem_sz), DEFAULT(VECTOR_1_GB), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulonglong Sys_vector_diskann_build_memory_size(
+    "vector_diskann_build_memory_size",
+    "DiskANN offline build memory budget in bytes. The backend maps this "
+    "budget to DiskANN's build-time memory limit.",
+    GLOBAL_VAR(opt_vector_diskann_build_memory_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(VECTOR_ONE_MB, max_mem_sz), DEFAULT(VECTOR_1_GB),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulonglong Sys_vector_diskann_raw_segment_size(
+    "vector_diskann_raw_segment_size",
+    "Maximum DiskANN offline raw segment size in bytes before the vector "
+    "builder rolls over to another segment.",
+    GLOBAL_VAR(opt_vector_diskann_raw_segment_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(VECTOR_ONE_MB, max_mem_sz), DEFAULT(VECTOR_256_MB),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulonglong Sys_vector_faiss_train_size(
+    "vector_faiss_train_size",
+    "FAISS IVF/PQ training sample budget in bytes. Use 0 to train from the "
+    "full vector set.",
+    GLOBAL_VAR(opt_vector_faiss_train_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, max_mem_sz), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulonglong Sys_vector_hnsw_index_memory_size(
+    "vector_hnsw_index_memory_size",
+    "Estimated hnswlib native index memory limit in bytes. Use 0 to disable "
+    "the pre-build memory estimate limit.",
+    GLOBAL_VAR(opt_vector_hnsw_index_memory_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, max_mem_sz), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
 static bool check_vector_build_threads(sys_var *self, THD *, set_var *var) {
   if (var->value == nullptr) return false;
 

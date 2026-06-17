@@ -28,6 +28,14 @@ ulong opt_vector_faiss_build_threads = 0;
 ulong opt_vector_diskann_build_threads = 0;
 ulong opt_vector_default_library =
     static_cast<ulong>(vector_index::vector_default_library::kNone);
+ulonglong opt_vector_entry_cache_size = 256ULL * 1024ULL * 1024ULL;
+ulonglong opt_vector_pending_cache_size = 64ULL * 1024ULL * 1024ULL;
+ulonglong opt_vector_build_memory_size = 1024ULL * 1024ULL * 1024ULL;
+ulonglong opt_vector_diskann_build_memory_size =
+    1024ULL * 1024ULL * 1024ULL;
+ulonglong opt_vector_diskann_raw_segment_size = 256ULL * 1024ULL * 1024ULL;
+ulonglong opt_vector_faiss_train_size = 0;
+ulonglong opt_vector_hnsw_index_memory_size = 0;
 
 namespace vector_index {
 

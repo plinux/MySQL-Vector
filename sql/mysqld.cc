@@ -9886,6 +9886,18 @@ static int show_vector_pending_txn_changes(THD *, SHOW_VAR *var, char *buf) {
   return show_vector_status_value(vector_status::pending_txn_changes(), var, buf);
 }
 
+static int show_vector_committed_vector_memory_bytes(THD *, SHOW_VAR *var,
+                                                     char *buf) {
+  return show_vector_status_value(
+      vector_index_registry::committed_vector_memory_bytes(), var, buf);
+}
+
+static int show_vector_pending_vector_memory_bytes(THD *, SHOW_VAR *var,
+                                                   char *buf) {
+  return show_vector_status_value(
+      vector_index_registry::total_pending_vector_memory_bytes(), var, buf);
+}
+
 static int show_vector_apply_latency_ms(THD *, SHOW_VAR *var, char *buf) {
   return show_vector_status_value(vector_status::apply_latency_ms(), var, buf);
 }
@@ -10371,6 +10383,12 @@ SHOW_VAR status_vars[] = {
      SHOW_SCOPE_GLOBAL},
     {"Vector_pending_txn_changes", (char *)&show_vector_pending_txn_changes,
      SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_committed_vector_memory_bytes",
+     (char *)&show_vector_committed_vector_memory_bytes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_pending_vector_memory_bytes",
+     (char *)&show_vector_pending_vector_memory_bytes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
     {"Vector_apply_latency_ms", (char *)&show_vector_apply_latency_ms, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
     {"Vector_truth_store_backend", (char *)&show_vector_truth_store_backend,

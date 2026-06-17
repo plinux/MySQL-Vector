@@ -189,6 +189,9 @@ class index_service {
   bool list_indexes(std::vector<std::string> *index_names) const;
   bool snapshot_committed_state(committed_state *state) const;
   size_t committed_entry_count() const;
+  size_t committed_vector_memory_bytes() const;
+  size_t pending_vector_memory_bytes(uint64_t txn_id) const;
+  size_t total_pending_vector_memory_bytes() const;
   bool restore_committed_state(const committed_state &state);
   bool replace_committed_entries(const std::string &index_name,
                                  const committed_entries &entries);
@@ -225,6 +228,7 @@ class index_service {
     change_type type{change_type::kUpsert};
     uint64_t doc_id{0};
     vector_data vector;
+    std::string vector_spill_path;
   };
 
   struct savepoint_marker {
@@ -239,6 +243,18 @@ class index_service {
   std::unordered_map<std::string, lifecycle_info> m_lifecycle_infos;
   std::unordered_map<uint64_t, std::vector<pending_change>> m_pending_changes;
   std::unordered_map<uint64_t, std::vector<savepoint_marker>> m_savepoints;
+
+  static size_t pending_change_memory_bytes(const pending_change &change);
+  static bool read_pending_change_vector(const pending_change &change,
+                                         vector_data *vector);
+  static bool write_pending_change_spill(uint64_t txn_id,
+                                         const std::string &index_name,
+                                         uint64_t doc_id,
+                                         const vector_data &vector,
+                                         std::string *path);
+  static void remove_pending_change_spill(const pending_change &change);
+  static void remove_pending_change_spills(
+      const std::vector<pending_change> &changes, size_t first_change);
 
   bool ensure_runtime_loaded(const std::string &index_name);
   void maybe_unload_runtime(const std::string &index_name);

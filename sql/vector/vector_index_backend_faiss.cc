@@ -54,6 +54,7 @@
 
 #include "my_dbug.h"
 #include "sql/vector/vector_env.h"
+#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_index_limits.h"
@@ -82,6 +83,22 @@ using vector_index::detail::remove_if_exists;
 using vector_index::detail::save_external_manifest_generation_to_file;
 
 constexpr size_t k_faiss_rebuild_add_batch_size = 16384;
+
+size_t faiss_training_sample_count(size_t total_rows, size_t dimension,
+                                   ulonglong train_size,
+                                   size_t min_required_rows) {
+  if (train_size == 0 || dimension == 0 || total_rows <= min_required_rows) {
+    return total_rows;
+  }
+
+  const ulonglong row_bytes =
+      static_cast<ulonglong>(dimension) * sizeof(float);
+  if (row_bytes == 0) return total_rows;
+
+  size_t sample_rows = static_cast<size_t>(train_size / row_bytes);
+  sample_rows = std::max(sample_rows, min_required_rows);
+  return std::min(sample_rows, total_rows);
+}
 
 #ifdef HAVE_FAISS
 class faiss_build_thread_scope {
@@ -255,21 +272,40 @@ bool faiss_backend::rebuild_external_faiss_index(
           (static_cast<size_t>(1)
            << std::min<uint32_t>(m_faiss_pq_bits, 20U));
   if (!initialize_faiss_index(pq_trainable)) return false;
+  m_faiss_last_training_count = 0;
   if (m_faiss_nlist != 0 && !entries.empty()) {
+    const size_t total_rows = entries.size();
+    const size_t min_training_rows =
+        std::max<size_t>(1, std::min<size_t>(m_faiss_nlist, total_rows));
+    const size_t sample_rows =
+        faiss_training_sample_count(total_rows, m_dimension,
+                                    opt_vector_faiss_train_size,
+                                    min_training_rows);
     const faiss::idx_t training_count =
-        static_cast<faiss::idx_t>(entries.size());
-    const faiss::idx_t effective_nlist = std::max<faiss::idx_t>(
-        1, std::min<faiss::idx_t>(static_cast<faiss::idx_t>(m_faiss_nlist),
-                                  training_count));
+        static_cast<faiss::idx_t>(sample_rows);
+    const faiss::idx_t effective_nlist =
+        std::max<faiss::idx_t>(1, std::min<faiss::idx_t>(
+                                      static_cast<faiss::idx_t>(m_faiss_nlist),
+                                      training_count));
     std::vector<float> training_data;
-    training_data.reserve(entries.size() * m_dimension);
+    training_data.reserve(sample_rows * m_dimension);
+    std::vector<uint64_t> training_doc_ids;
+    training_doc_ids.reserve(total_rows);
     for (const auto &entry : entries) {
-      vector_data prepared = normalize_for_faiss(entry.second);
+      training_doc_ids.push_back(entry.first);
+    }
+    std::sort(training_doc_ids.begin(), training_doc_ids.end());
+    for (size_t sample_index = 0; sample_index < sample_rows; ++sample_index) {
+      const size_t position = (sample_index * total_rows) / sample_rows;
+      const auto entry = entries.find(training_doc_ids[position]);
+      if (entry == entries.end()) return false;
+      vector_data prepared = normalize_for_faiss(entry->second);
       if (!check_dimension(prepared, m_dimension) || prepared.empty())
         return false;
       training_data.insert(training_data.end(), prepared.begin(),
                            prepared.end());
     }
+    m_faiss_last_training_count = sample_rows;
     auto *id_map = dynamic_cast<faiss::IndexIDMap2 *>(m_faiss_index.get());
     if (id_map == nullptr) return false;
     auto *ivf = dynamic_cast<faiss::IndexIVF *>(id_map->index);

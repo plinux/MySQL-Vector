@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <queue>
 #include <string>
@@ -43,6 +44,7 @@
 
 #include "my_dbug.h"
 #include "sql/vector/vector_env.h"
+#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_limits.h"
 
@@ -74,6 +76,40 @@ size_t read_build_threads(size_t entry_count, uint32_t configured_threads) {
       hardware_threads > 0 ? hardware_threads : k_default_build_threads;
   return vector_env::limit_thread_count(configured, k_max_hnsw_build_threads,
                                         entry_count);
+}
+
+size_t saturated_mul(size_t left, size_t right) {
+  if (left == 0 || right == 0) return 0;
+  if (left > std::numeric_limits<size_t>::max() / right)
+    return std::numeric_limits<size_t>::max();
+  return left * right;
+}
+
+size_t saturated_add(size_t left, size_t right) {
+  if (left > std::numeric_limits<size_t>::max() - right)
+    return std::numeric_limits<size_t>::max();
+  return left + right;
+}
+
+size_t estimate_hnsw_index_memory_bytes(size_t entry_count, size_t dimension,
+                                        uint32_t hnsw_m) {
+  if (entry_count == 0) return 0;
+
+  const size_t vector_bytes =
+      saturated_mul(saturated_mul(entry_count, dimension), sizeof(float));
+  const size_t edge_bytes =
+      saturated_mul(saturated_mul(entry_count, hnsw_m), sizeof(uint32_t) * 2);
+  const size_t label_and_overhead_bytes =
+      saturated_mul(entry_count, sizeof(uint64_t) + 64);
+  return saturated_add(saturated_add(vector_bytes, edge_bytes),
+                       label_and_overhead_bytes);
+}
+
+bool hnsw_index_memory_budget_allows(size_t entry_count, size_t dimension,
+                                     uint32_t hnsw_m) {
+  if (opt_vector_hnsw_index_memory_size == 0) return true;
+  return estimate_hnsw_index_memory_bytes(entry_count, dimension, hnsw_m) <=
+         opt_vector_hnsw_index_memory_size;
 }
 
 }  // namespace
@@ -413,13 +449,17 @@ hnswlib_backend::~hnswlib_backend() = default;
 bool hnswlib_backend::upsert(uint64_t doc_id, const vector_data &vector) {
   if (m_mode != backend_mode::kMemory) return false;
   if (!check_dimension(vector, m_dimension)) return false;
+  const bool replacing_existing = m_entries.find(doc_id) != m_entries.end();
+  const size_t target_count =
+      replacing_existing ? m_entries.size() : m_entries.size() + 1;
+  if (!hnsw_index_memory_budget_allows(target_count, m_dimension, m_hnsw_m))
+    return false;
   if (m_native_state == nullptr || !m_native_state->available()) {
     if (!m_memory_fallback.upsert(doc_id, vector)) return false;
     m_entries[doc_id] = vector;
     return true;
   }
 
-  const bool replacing_existing = m_entries.find(doc_id) != m_entries.end();
   if (!replacing_existing && m_native_state->upsert(doc_id, vector)) {
     if (!m_memory_fallback.upsert(doc_id, vector)) return false;
     m_entries[doc_id] = vector;
@@ -439,6 +479,8 @@ bool hnswlib_backend::upsert(uint64_t doc_id, const vector_data &vector) {
 bool hnswlib_backend::rebuild_native_from_entries(
     const std::unordered_map<uint64_t, vector_data> &entries) {
   if (m_mode != backend_mode::kMemory) return false;
+  if (!hnsw_index_memory_budget_allows(entries.size(), m_dimension, m_hnsw_m))
+    return false;
   auto rebuilt = std::make_unique<hnswlib_native_state>(
       m_dimension, m_metric, m_hnsw_m, m_hnsw_ef_construction,
       std::max<size_t>(1, entries.size()));
@@ -554,6 +596,8 @@ bool hnswlib_backend::set_hnsw_build_params(uint32_t hnsw_m,
       hnsw_ef_construction == 0) {
     return false;
   }
+  if (!hnsw_index_memory_budget_allows(m_entries.size(), m_dimension, hnsw_m))
+    return false;
   auto rebuilt = std::make_unique<hnswlib_native_state>(
       m_dimension, m_metric, hnsw_m, hnsw_ef_construction,
       std::max<size_t>(1, m_entries.size()));

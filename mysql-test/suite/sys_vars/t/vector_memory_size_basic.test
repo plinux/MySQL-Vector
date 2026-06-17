@@ -1,0 +1,79 @@
+--echo #
+--echo # Variable family : vector *_size memory limits
+--echo # Scope           : Global dynamic
+--echo #
+
+--source include/have_vector_index.inc
+
+--echo # Global defaults
+SELECT @@global.vector_entry_cache_size;
+SELECT @@global.vector_pending_cache_size;
+SELECT @@global.vector_build_memory_size;
+SELECT @@global.vector_diskann_build_memory_size;
+SELECT @@global.vector_diskann_raw_segment_size;
+SELECT @@global.vector_faiss_train_size;
+SELECT @@global.vector_hnsw_index_memory_size;
+
+--echo # Visible through SHOW VARIABLES and performance_schema.
+SHOW GLOBAL VARIABLES LIKE 'vector\\_%\\_size';
+SHOW SESSION VARIABLES LIKE 'vector\\_%\\_size';
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME IN (
+  'vector_entry_cache_size',
+  'vector_pending_cache_size',
+  'vector_build_memory_size',
+  'vector_diskann_build_memory_size',
+  'vector_diskann_raw_segment_size',
+  'vector_faiss_train_size',
+  'vector_hnsw_index_memory_size')
+ORDER BY VARIABLE_NAME;
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_entry_cache_size;
+
+--Error ER_BAD_FIELD_ERROR
+SELECT vector_entry_cache_size;
+
+--echo # Runtime SET accepts byte counts.
+SET GLOBAL vector_entry_cache_size=1048576;
+SET GLOBAL vector_pending_cache_size=2097152;
+SET GLOBAL vector_build_memory_size=3145728;
+SET GLOBAL vector_diskann_build_memory_size=4194304;
+SET GLOBAL vector_diskann_raw_segment_size=5242880;
+SET GLOBAL vector_faiss_train_size=6291456;
+SET GLOBAL vector_hnsw_index_memory_size=7340032;
+
+SELECT @@global.vector_entry_cache_size;
+SELECT @@global.vector_pending_cache_size;
+SELECT @@global.vector_build_memory_size;
+SELECT @@global.vector_diskann_build_memory_size;
+SELECT @@global.vector_diskann_raw_segment_size;
+SELECT @@global.vector_faiss_train_size;
+SELECT @@global.vector_hnsw_index_memory_size;
+
+--echo # Online SET uses numeric byte values; negative values are rejected.
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_entry_cache_size=-1;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_pending_cache_size=-1;
+
+SET GLOBAL vector_entry_cache_size=DEFAULT;
+SET GLOBAL vector_pending_cache_size=DEFAULT;
+SET GLOBAL vector_build_memory_size=DEFAULT;
+SET GLOBAL vector_diskann_build_memory_size=DEFAULT;
+SET GLOBAL vector_diskann_raw_segment_size=DEFAULT;
+SET GLOBAL vector_faiss_train_size=DEFAULT;
+SET GLOBAL vector_hnsw_index_memory_size=DEFAULT;
+
+--echo # Defaults after reset
+SELECT @@global.vector_entry_cache_size;
+SELECT @@global.vector_pending_cache_size;
+SELECT @@global.vector_build_memory_size;
+SELECT @@global.vector_diskann_build_memory_size;
+SELECT @@global.vector_diskann_raw_segment_size;
+SELECT @@global.vector_faiss_train_size;
+SELECT @@global.vector_hnsw_index_memory_size;
+
+--echo # End of tests.

@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "sql/vector/vector_index_backend.h"
+#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_service.h"
 #include "unittest/gunit/vector_test_utils.h"
 
@@ -121,6 +122,20 @@ class EnvVarGuard {
   std::string m_name;
   bool m_had_value{false};
   std::string m_value;
+};
+
+class UlonglongGuard {
+ public:
+  UlonglongGuard(ulonglong *value, ulonglong replacement)
+      : m_value(value), m_original(*value) {
+    *m_value = replacement;
+  }
+
+  ~UlonglongGuard() { *m_value = m_original; }
+
+ private:
+  ulonglong *m_value;
+  ulonglong m_original;
 };
 
 }  // namespace
@@ -255,6 +270,68 @@ TEST(VectorIndexServiceTest, RenameIndexMovesPendingChangesToNewName) {
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(8U, result[0].doc_id);
   EXPECT_FALSE(service.search("idx_old", {8.0F, 8.0F}, 1, &result));
+}
+
+TEST(VectorIndexServiceTest, ReportsEntryStorePayloadMemoryBytes) {
+  vector_index::index_service service;
+
+  ASSERT_TRUE(service.register_index_from_strings("idx_mem", 2, "euclidean",
+                                                  "memory", "native"));
+  EXPECT_EQ(0U, service.committed_vector_memory_bytes());
+  EXPECT_EQ(0U, service.pending_vector_memory_bytes(10));
+  EXPECT_EQ(0U, service.total_pending_vector_memory_bytes());
+
+  ASSERT_TRUE(service.stage_upsert(10, "idx_mem", 1, {1.0F, 1.0F}));
+  EXPECT_EQ(0U, service.committed_vector_memory_bytes());
+  EXPECT_EQ(2U * sizeof(float), service.pending_vector_memory_bytes(10));
+  EXPECT_EQ(2U * sizeof(float), service.total_pending_vector_memory_bytes());
+
+  ASSERT_TRUE(service.commit(10));
+  EXPECT_EQ(2U * sizeof(float), service.committed_vector_memory_bytes());
+  EXPECT_EQ(0U, service.pending_vector_memory_bytes(10));
+  EXPECT_EQ(0U, service.total_pending_vector_memory_bytes());
+}
+
+TEST(VectorIndexServiceTest, EntryStorePayloadMemoryTracksReplaceAndErase) {
+  vector_index::index_service service;
+
+  ASSERT_TRUE(service.register_index_from_strings("idx_mem", 2, "euclidean",
+                                                  "memory", "native"));
+  ASSERT_TRUE(service.stage_upsert(11, "idx_mem", 1, {1.0F, 1.0F}));
+  ASSERT_TRUE(service.commit(11));
+
+  ASSERT_TRUE(service.stage_upsert(12, "idx_mem", 1, {2.0F, 2.0F}));
+  ASSERT_TRUE(service.stage_upsert(12, "idx_mem", 2, {3.0F, 3.0F}));
+  EXPECT_EQ(4U * sizeof(float), service.total_pending_vector_memory_bytes());
+  ASSERT_TRUE(service.commit(12));
+  EXPECT_EQ(4U * sizeof(float), service.committed_vector_memory_bytes());
+
+  ASSERT_TRUE(service.stage_erase(13, "idx_mem", 1));
+  EXPECT_EQ(0U, service.pending_vector_memory_bytes(13));
+  ASSERT_TRUE(service.commit(13));
+  EXPECT_EQ(2U * sizeof(float), service.committed_vector_memory_bytes());
+}
+
+TEST(VectorIndexServiceTest, StageUpsertSpillsPendingPayloadOverBudget) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kNative)) {
+    GTEST_SKIP() << "pending spill coverage requires debug native provider";
+  }
+  UlonglongGuard guard(&opt_vector_pending_cache_size, 2U * sizeof(float));
+  vector_index::index_service service;
+  std::vector<vector_index::search_result> result;
+
+  ASSERT_TRUE(service.register_index_from_strings("idx_mem", 2, "euclidean",
+                                                  "memory", "native"));
+  EXPECT_TRUE(service.stage_upsert(14, "idx_mem", 1, {1.0F, 1.0F}));
+  EXPECT_TRUE(service.stage_upsert(14, "idx_mem", 2, {2.0F, 2.0F}));
+  EXPECT_EQ(2U * sizeof(float), service.pending_vector_memory_bytes(14));
+  ASSERT_TRUE(service.search_with_pending(14, "idx_mem", {2.0F, 2.0F}, 2,
+                                          &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(2U, result[0].doc_id);
+  ASSERT_TRUE(service.commit(14));
+  EXPECT_EQ(4U * sizeof(float), service.committed_vector_memory_bytes());
 }
 
 TEST(VectorIndexServiceTest, DropIndexCleansFaissExternalSnapshotArtifacts) {

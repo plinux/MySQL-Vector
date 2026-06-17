@@ -24,15 +24,23 @@
 #include "sql/vector/vector_index_service.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <limits>
 #include <map>
+#include <sstream>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_mapped_search.h"
 
@@ -80,7 +88,116 @@ bool lifecycle_is_bulk_loading(const index_service::lifecycle_info &lifecycle) {
   return lifecycle.state == LIFECYCLE_BULK_LOADING;
 }
 
+bool pending_budget_allows(size_t current_bytes, size_t additional_bytes) {
+  if (opt_vector_pending_cache_size == 0) return true;
+  if (current_bytes > opt_vector_pending_cache_size) return false;
+  return additional_bytes <= opt_vector_pending_cache_size - current_bytes;
+}
+
 }  // namespace
+
+size_t index_service::pending_change_memory_bytes(
+    const pending_change &change) {
+  if (change.type != change_type::kUpsert || !change.vector_spill_path.empty()) {
+    return 0;
+  }
+  return change.vector.size() * sizeof(float);
+}
+
+bool index_service::read_pending_change_vector(const pending_change &change,
+                                               vector_data *vector) {
+  if (vector == nullptr || change.type != change_type::kUpsert) return false;
+  if (change.vector_spill_path.empty()) {
+    *vector = change.vector;
+    return true;
+  }
+
+  std::error_code error;
+  const uintmax_t file_bytes =
+      std::filesystem::file_size(change.vector_spill_path, error);
+  if (error || file_bytes < sizeof(uint64_t)) return false;
+
+  std::ifstream input(change.vector_spill_path, std::ios::binary);
+  uint64_t element_count = 0;
+  if (!input.read(reinterpret_cast<char *>(&element_count),
+                  sizeof(element_count))) {
+    return false;
+  }
+  if (element_count >
+      static_cast<uint64_t>(std::numeric_limits<size_t>::max() /
+                            sizeof(float))) {
+    return false;
+  }
+
+  const uintmax_t payload_bytes =
+      static_cast<uintmax_t>(element_count) * sizeof(float);
+  if (file_bytes != sizeof(element_count) + payload_bytes) return false;
+
+  vector->resize(static_cast<size_t>(element_count));
+  if (payload_bytes == 0) return true;
+  return static_cast<bool>(
+      input.read(reinterpret_cast<char *>(vector->data()), payload_bytes));
+}
+
+bool index_service::write_pending_change_spill(
+    uint64_t txn_id, const std::string &index_name, uint64_t doc_id,
+    const vector_data &vector, std::string *path) {
+  if (path == nullptr) return false;
+  static std::atomic<uint64_t> spill_sequence{0};
+
+  std::error_code error;
+  const std::filesystem::path directory =
+      std::filesystem::temp_directory_path(error);
+  if (error) return false;
+
+  const uint64_t sequence =
+      spill_sequence.fetch_add(1, std::memory_order_relaxed);
+  const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+  const size_t index_hash = std::hash<std::string>{}(index_name);
+  std::ostringstream file_name;
+  file_name << "mysql-vector-pending-spill-" << now << "-" << sequence << "-"
+            << txn_id << "-" << index_hash << "-" << doc_id << ".bin";
+
+  const std::filesystem::path spill_path = directory / file_name.str();
+  std::ofstream output(spill_path, std::ios::binary | std::ios::trunc);
+  if (!output) return false;
+
+  const uint64_t element_count = static_cast<uint64_t>(vector.size());
+  if (!output.write(reinterpret_cast<const char *>(&element_count),
+                    sizeof(element_count))) {
+    std::filesystem::remove(spill_path, error);
+    return false;
+  }
+  if (!vector.empty() &&
+      !output.write(reinterpret_cast<const char *>(vector.data()),
+                    vector.size() * sizeof(float))) {
+    std::filesystem::remove(spill_path, error);
+    return false;
+  }
+  output.close();
+  if (!output) {
+    std::filesystem::remove(spill_path, error);
+    return false;
+  }
+
+  *path = spill_path.string();
+  return true;
+}
+
+void index_service::remove_pending_change_spill(const pending_change &change) {
+  if (change.vector_spill_path.empty()) return;
+  std::error_code ignored;
+  std::filesystem::remove(change.vector_spill_path, ignored);
+}
+
+void index_service::remove_pending_change_spills(
+    const std::vector<pending_change> &changes, size_t first_change) {
+  if (first_change >= changes.size()) return;
+  for (auto change_it = changes.begin() + first_change;
+       change_it != changes.end(); ++change_it) {
+    remove_pending_change_spill(*change_it);
+  }
+}
 
 bool index_service::stage_upsert(uint64_t txn_id, const std::string &index_name,
                                uint64_t doc_id, const vector_data &vector) {
@@ -88,8 +205,21 @@ bool index_service::stage_upsert(uint64_t txn_id, const std::string &index_name,
   if (index_it == m_indexes.end()) return false;
   if (index_it->second->dimension() != vector.size()) return false;
 
-  m_pending_changes[txn_id].push_back(
-      pending_change{index_name, change_type::kUpsert, doc_id, vector});
+  const size_t vector_bytes = vector.size() * sizeof(float);
+  pending_change change{index_name, change_type::kUpsert, doc_id, vector, {}};
+  if (!pending_budget_allows(pending_vector_memory_bytes(txn_id),
+                             vector_bytes)) {
+    std::string spill_path;
+    if (!write_pending_change_spill(txn_id, index_name, doc_id, vector,
+                                    &spill_path)) {
+      return false;
+    }
+    change.vector.clear();
+    change.vector.shrink_to_fit();
+    change.vector_spill_path = std::move(spill_path);
+  }
+
+  m_pending_changes[txn_id].push_back(std::move(change));
   return true;
 }
 
@@ -98,7 +228,7 @@ bool index_service::stage_erase(uint64_t txn_id, const std::string &index_name,
   if (m_indexes.find(index_name) == m_indexes.end()) return false;
 
   m_pending_changes[txn_id].push_back(
-      pending_change{index_name, change_type::kErase, doc_id, {}});
+      pending_change{index_name, change_type::kErase, doc_id, {}, {}});
   return true;
 }
 
@@ -118,10 +248,13 @@ bool index_service::commit(uint64_t txn_id) {
     auto index_it = m_indexes.find(change.index_name);
     auto lifecycle_it = m_lifecycle_infos.find(change.index_name);
     if (index_it == m_indexes.end()) return false;
-    if (change.type == change_type::kUpsert &&
-        index_it->second->dimension() != change.vector.size()) {
-      mark_failure_for_index(change.index_name, ERROR_BACKEND_APPLY_FAILED);
-      return false;
+    if (change.type == change_type::kUpsert) {
+      vector_data vector;
+      if (!read_pending_change_vector(change, &vector) ||
+          index_it->second->dimension() != vector.size()) {
+        mark_failure_for_index(change.index_name, ERROR_BACKEND_APPLY_FAILED);
+        return false;
+      }
     }
     const bool bulk_loading =
         lifecycle_it != m_lifecycle_infos.end() &&
@@ -169,7 +302,12 @@ bool index_service::commit(uint64_t txn_id) {
     committed_entries next_entries = state_it->second;
     for (const pending_change *change : entry.second) {
       if (change->type == change_type::kUpsert) {
-        next_entries[change->doc_id] = change->vector;
+        vector_data vector;
+        if (!read_pending_change_vector(*change, &vector)) {
+          mark_failure_for_index(entry.first, ERROR_BACKEND_APPLY_FAILED);
+          return false;
+        }
+        next_entries[change->doc_id] = std::move(vector);
       } else {
         next_entries.erase(change->doc_id);
       }
@@ -201,7 +339,9 @@ bool index_service::commit(uint64_t txn_id) {
 
     bool ok = false;
     if (change.type == change_type::kUpsert) {
-      ok = index_it->second->upsert(change.doc_id, change.vector);
+      vector_data vector;
+      ok = read_pending_change_vector(change, &vector) &&
+           index_it->second->upsert(change.doc_id, vector);
     } else {
       ok = index_it->second->erase(change.doc_id);
     }
@@ -229,19 +369,26 @@ bool index_service::commit(uint64_t txn_id) {
     auto state_it = m_committed_entries.find(change.index_name);
     if (state_it == m_committed_entries.end()) return false;
     if (change.type == change_type::kUpsert) {
-      state_it->second[change.doc_id] = change.vector;
+      vector_data vector;
+      if (!read_pending_change_vector(change, &vector)) return false;
+      state_it->second[change.doc_id] = std::move(vector);
     } else {
       state_it->second.erase(change.doc_id);
     }
   }
 
+  remove_pending_change_spills(pending_it->second, 0);
   m_pending_changes.erase(pending_it);
   m_savepoints.erase(txn_id);
   return true;
 }
 
 void index_service::rollback(uint64_t txn_id) {
-  m_pending_changes.erase(txn_id);
+  auto pending_it = m_pending_changes.find(txn_id);
+  if (pending_it != m_pending_changes.end()) {
+    remove_pending_change_spills(pending_it->second, 0);
+    m_pending_changes.erase(pending_it);
+  }
   m_savepoints.erase(txn_id);
 }
 
@@ -272,6 +419,7 @@ bool index_service::rollback_to_savepoint(uint64_t txn_id, const std::string &na
 
   std::vector<pending_change> &changes = m_pending_changes[txn_id];
   if (changes.size() < marker_it->change_count) return false;
+  remove_pending_change_spills(changes, marker_it->change_count);
   changes.resize(marker_it->change_count);
 
   savepoints.erase(marker_it + 1, savepoints.end());
@@ -375,7 +523,9 @@ bool index_service::search_with_pending_loaded(
     if (change.index_name != index_name) continue;
     bool ok = false;
     if (change.type == change_type::kUpsert) {
-      ok = backend->upsert(change.doc_id, change.vector);
+      vector_data vector;
+      ok = read_pending_change_vector(change, &vector) &&
+           backend->upsert(change.doc_id, vector);
     } else {
       ok = backend->erase(change.doc_id);
     }
@@ -433,9 +583,15 @@ bool index_service::snapshot_pending_changes(
 
   changes->reserve(pending_it->second.size());
   for (const pending_change &change : pending_it->second) {
+    vector_data vector;
+    if (change.type == change_type::kUpsert &&
+        !read_pending_change_vector(change, &vector)) {
+      changes->clear();
+      return false;
+    }
     changes->push_back(pending_change_snapshot{
         change.index_name, change.type == change_type::kErase, change.doc_id,
-        change.vector});
+        std::move(vector)});
   }
   return true;
 }
@@ -459,11 +615,13 @@ bool index_service::snapshot_pending_change_delta(
     const bool existed_before = doc_before_it != committed_it->second.end();
 
     if (change.type == change_type::kUpsert) {
-      if (existed_before && doc_before_it->second == change.vector) {
+      vector_data vector;
+      if (!read_pending_change_vector(change, &vector)) return false;
+      if (existed_before && doc_before_it->second == vector) {
         deltas.erase(key);
       } else {
         deltas[key] = pending_change_snapshot{
-            change.index_name, false, change.doc_id, change.vector};
+            change.index_name, false, change.doc_id, std::move(vector)};
       }
       continue;
     }
@@ -486,25 +644,56 @@ bool index_service::snapshot_pending_change_delta(
 bool index_service::restore_pending_changes(
     uint64_t txn_id, const std::vector<pending_change_snapshot> &changes) {
   if (changes.empty()) {
-    m_pending_changes.erase(txn_id);
+    auto pending_it = m_pending_changes.find(txn_id);
+    if (pending_it != m_pending_changes.end()) {
+      remove_pending_change_spills(pending_it->second, 0);
+      m_pending_changes.erase(pending_it);
+    }
     m_savepoints.erase(txn_id);
     return true;
   }
 
   std::vector<pending_change> restored;
   restored.reserve(changes.size());
+  size_t restored_memory_bytes = 0;
   for (const pending_change_snapshot &change : changes) {
     auto index_it = m_indexes.find(change.index_name);
-    if (index_it == m_indexes.end()) return false;
-    if (!change.erase && index_it->second->dimension() != change.vector.size()) {
+    if (index_it == m_indexes.end()) {
+      remove_pending_change_spills(restored, 0);
       return false;
     }
-    restored.push_back(pending_change{change.index_name,
-                                     change.erase ? change_type::kErase
-                                                  : change_type::kUpsert,
-                                     change.doc_id, change.vector});
+    if (!change.erase && index_it->second->dimension() != change.vector.size()) {
+      remove_pending_change_spills(restored, 0);
+      return false;
+    }
+    pending_change restored_change{change.index_name,
+                                   change.erase ? change_type::kErase
+                                                : change_type::kUpsert,
+                                   change.doc_id, change.vector, {}};
+    if (!change.erase) {
+      const size_t vector_bytes = change.vector.size() * sizeof(float);
+      if (pending_budget_allows(restored_memory_bytes, vector_bytes)) {
+        restored_memory_bytes += vector_bytes;
+      } else {
+        std::string spill_path;
+        if (!write_pending_change_spill(txn_id, change.index_name,
+                                        change.doc_id, change.vector,
+                                        &spill_path)) {
+          remove_pending_change_spills(restored, 0);
+          return false;
+        }
+        restored_change.vector.clear();
+        restored_change.vector.shrink_to_fit();
+        restored_change.vector_spill_path = std::move(spill_path);
+      }
+    }
+    restored.push_back(std::move(restored_change));
   }
 
+  auto pending_it = m_pending_changes.find(txn_id);
+  if (pending_it != m_pending_changes.end()) {
+    remove_pending_change_spills(pending_it->second, 0);
+  }
   m_pending_changes[txn_id] = std::move(restored);
   m_savepoints.erase(txn_id);
   return true;

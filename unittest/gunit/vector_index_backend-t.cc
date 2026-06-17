@@ -28,6 +28,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -44,6 +45,7 @@
 #include "my_io.h"
 #include "sql/mysqld.h"
 #include "sql/vector/vector_index_backend.h"
+#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_status.h"
 #include "unittest/gunit/vector_test_utils.h"
@@ -211,6 +213,20 @@ class EnvVarGuard {
   std::string m_name;
   bool m_had_value{false};
   std::string m_value;
+};
+
+class UlonglongGuard {
+ public:
+  UlonglongGuard(ulonglong *value, ulonglong replacement)
+      : m_value(value), m_original(*value) {
+    *m_value = replacement;
+  }
+
+  ~UlonglongGuard() { *m_value = m_original; }
+
+ private:
+  ulonglong *m_value;
+  ulonglong m_original;
 };
 
 class StubBackend final : public vector_index::backend {
@@ -1317,6 +1333,28 @@ TEST(VectorIndexBackendTest, FaissExternalIvfParamsWithEntriesCanBeConfigured) {
   EXPECT_EQ("ivf_flat", backend.backend_variant());
   EXPECT_EQ(2U, backend.faiss_nlist());
   EXPECT_EQ(1U, backend.faiss_nprobe());
+}
+
+TEST(VectorIndexBackendTest, FaissExternalIvfTrainingHonorsTrainSizeBudget) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss native training budget requires HAVE_FAISS";
+#else
+  UlonglongGuard guard(&opt_vector_faiss_train_size, 2U * 2U * sizeof(float));
+  vector_index::faiss_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_ivf_train_budget");
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
+  ASSERT_TRUE(backend.upsert(2, {2.0F, 2.0F}));
+  ASSERT_TRUE(backend.upsert(3, {3.0F, 3.0F}));
+  ASSERT_TRUE(backend.upsert(4, {4.0F, 4.0F}));
+
+  ASSERT_TRUE(backend.set_faiss_ivf_params(2, 1));
+  EXPECT_EQ(2U, backend.faiss_last_training_count_for_testing());
+
+  opt_vector_faiss_train_size = 0;
+  ASSERT_TRUE(backend.set_faiss_ivf_params(2, 1));
+  EXPECT_EQ(4U, backend.faiss_last_training_count_for_testing());
+#endif
 }
 
 TEST(VectorIndexBackendTest, FaissExternalIvfPqParamsCanBeConfigured) {
@@ -2581,6 +2619,20 @@ TEST(VectorIndexBackendTest, HnswlibMemoryBuildParamRebuildKeepsEntries) {
   ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(10U, result[0].doc_id);
+}
+
+TEST(VectorIndexBackendTest, HnswlibMemoryRejectsIndexMemoryLimit) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
+  }
+  UlonglongGuard guard(&opt_vector_hnsw_index_memory_size, 1);
+  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kMemory);
+
+  EXPECT_FALSE(backend.upsert(1, {1.0F, 0.0F}));
+  EXPECT_EQ(0U, backend.entry_count());
+  EXPECT_FALSE(backend.rebuild_from_committed_entries(
+      {{1, vector_index::vector_data{1.0F, 0.0F}}}));
 }
 
 TEST(VectorIndexBackendTest,

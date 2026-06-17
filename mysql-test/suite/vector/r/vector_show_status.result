@@ -47,6 +47,8 @@ GLOBAL_GAUGES	Vector_manifest_metadata_checkpoint	<num>
 GLOBAL_GAUGES	Vector_manifest_committed_checkpoint	<num>
 GLOBAL_GAUGES	Vector_manifest_change_log_checkpoint	<num>
 GLOBAL_GAUGES	Vector_pending_txn_changes	<num>
+GLOBAL_GAUGES	Vector_committed_vector_memory_bytes	<num>
+GLOBAL_GAUGES	Vector_pending_vector_memory_bytes	<num>
 SYNC_PIPELINE	Vector_pending_apply_count	<num>
 SYNC_PIPELINE	Vector_apply_latency_ms	<num>
 GLOBAL_GAUGES	Vector_truth_store_backend	mysql
@@ -74,8 +76,14 @@ SYNC_PIPELINE	Vector_backlog_indexes	<num>
 SHOW VECTOR STATUS LIKE 'Vector_pending%';
 Section	Variable_name	Value
 GLOBAL_GAUGES	Vector_pending_txn_changes	<num>
+GLOBAL_GAUGES	Vector_pending_vector_memory_bytes	<num>
 SYNC_PIPELINE	Vector_pending_apply_count	<num>
 SYNC_PIPELINE	Vector_pending_apply_total	<num>
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_GAUGES'
+  AND Variable_name LIKE 'Vector_%vector_memory_bytes';
+Section	Variable_name	Value
+GLOBAL_GAUGES	Vector_committed_vector_memory_bytes	<num>
+GLOBAL_GAUGES	Vector_pending_vector_memory_bytes	<num>
 SHOW VECTOR STATUS LIKE 'Vector_search_%';
 Section	Variable_name	Value
 GLOBAL_COUNTERS	Vector_search_requests	<num>
