@@ -1,0 +1,2 @@
+--copy_file $MYSQL_TEST_DIR/suite/vector/std_data/vector_load_data.fbin $vector_std_fbin_target
+--copy_file $MYSQL_TEST_DIR/suite/vector/std_data/vector_load_data.u64 $vector_std_docid_target

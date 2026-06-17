@@ -1,0 +1,80 @@
+--source include/have_vector_debug_native.inc
+
+--echo #
+--echo # WL#Vector: LOAD VECTOR DATA for transactional indexes
+--echo #
+
+--disable_query_log
+--let $vector_csv=$MYSQLTEST_VARDIR/vector_transactional_load.csv
+--let $vector_csv_bad_dim=$MYSQLTEST_VARDIR/vector_transactional_bad_dim.csv
+--let $vector_fbin=$MYSQLTEST_VARDIR/vector_transactional_load.fbin
+--let $vector_docid=$MYSQLTEST_VARDIR/vector_transactional_load.u64
+--let vector_csv=$vector_csv
+--let vector_csv_bad_dim=$vector_csv_bad_dim
+--let vector_fbin=$vector_fbin
+--let vector_docid=$vector_docid
+--write_file $vector_csv
+doc_id,vector
+301,"[1,0]"
+302,"[0,1]"
+EOF
+--write_file $vector_csv_bad_dim
+doc_id,vector
+303,"[1,2,3]"
+EOF
+--let $vector_std_fbin_target=$vector_fbin
+--let $vector_std_docid_target=$vector_docid
+--source suite/vector/include/vector_copy_std_load_data_files.inc
+--enable_query_log
+
+SELECT VEC_INDEX_CREATE('idx_txn_load_csv', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE');
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_transactional_load.csv'
+  INTO VECTOR INDEX idx_txn_load_csv
+  FORMAT CSV
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_txn_load_csv', VEC_FROMTEXT('[1,0]'), 1),
+  CAST(301 AS JSON)) AS csv_doc_visible;
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_load_csv'),
+                                 '$.consistency_mode')) AS consistency_mode,
+       JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_load_csv'),
+                                 '$.lifecycle_state')) AS lifecycle_state;
+
+SELECT VEC_INDEX_CREATE('idx_txn_load_fbin', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE');
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_transactional_load.fbin'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_transactional_load.u64'
+  INTO VECTOR INDEX idx_txn_load_fbin
+  FORMAT FBIN
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_txn_load_fbin', VEC_FROMTEXT('[1,0]'), 2),
+  CAST(101 AS JSON)) AS fbin_doc_visible;
+
+--disable_query_log
+--error ER_WRONG_ARGUMENTS
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_transactional_load.csv'
+  INTO VECTOR INDEX idx_txn_load_csv
+  FORMAT CSV;
+--error ER_WRONG_ARGUMENTS
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_transactional_bad_dim.csv'
+  INTO VECTOR INDEX idx_txn_load_csv
+  FORMAT CSV
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_txn_load_csv', VEC_FROMTEXT('[1,0]'), 1),
+  CAST(301 AS JSON)) AS duplicate_rejected_keeps_original;
+
+SELECT VEC_INDEX_DROP('idx_txn_load_csv');
+SELECT VEC_INDEX_DROP('idx_txn_load_fbin');
+
+--remove_file $vector_csv
+--remove_file $vector_csv_bad_dim
+--remove_file $vector_fbin
+--remove_file $vector_docid

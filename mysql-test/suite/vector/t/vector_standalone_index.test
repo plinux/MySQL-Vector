@@ -72,6 +72,12 @@ SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_global'),
 SELECT VEC_INDEX_CREATE('idx_bad_consistency', 2, 'EUCLIDEAN', 'MEMORY',
                         'NATIVE', 0, 'durable');
 
+CREATE TABLE t_standalone_reject(id BIGINT PRIMARY KEY, v VECTOR(2));
+--error ER_WRONG_ARGUMENTS
+CREATE VECTOR INDEX ON t_standalone_reject(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE', 0, 'standalone');
+DROP TABLE t_standalone_reject;
+
 SET GLOBAL vector_index_consistency_mode = @old_vector_index_consistency_mode;
 SET GLOBAL vector_entry_cache_size = @old_vector_entry_cache_size;
 

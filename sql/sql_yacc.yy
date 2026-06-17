@@ -1473,6 +1473,8 @@ void warn_on_deprecated_user_defined_collation(
         engine_or_all
         opt_binlog_in
         persisted_variable_ident
+        opt_vector_load_docid
+        vector_load_format
 
 %type <lex_cstr>
         key_cache_name
@@ -1538,6 +1540,8 @@ void warn_on_deprecated_user_defined_collation(
         profile_def
         factor
         opt_source_count
+        opt_vector_load_replace
+        opt_vector_load_rebuild
 
 %type <ulonglong_number>
         ulonglong_num real_ulonglong_num size_number
@@ -3677,7 +3681,7 @@ create_vector_index_stmt:
           {
             $$= NEW_PTN PT_create_vector_index_stmt(
               YYMEM_ROOT, $4, $6, $8, $12, NULL_STR, NULL_STR, NULL_STR,
-              false, 0);
+              false, 0, false, NULL_STR);
           }
         | CREATE VECTOR_SYM INDEX_SYM opt_if_not_exists
           ON_SYM table_ident '(' ident ')'
@@ -3685,7 +3689,17 @@ create_vector_index_stmt:
                    TEXT_STRING_sys ',' TEXT_STRING_sys ')'
           {
             $$= NEW_PTN PT_create_vector_index_stmt(
-              YYMEM_ROOT, $4, $6, $8, $12, $14, $16, $18, false, 0);
+              YYMEM_ROOT, $4, $6, $8, $12, $14, $16, $18, false, 0,
+              false, NULL_STR);
+          }
+        | CREATE VECTOR_SYM INDEX_SYM opt_if_not_exists
+          ON_SYM table_ident '(' ident ')'
+          WITH '(' ulong_num ',' TEXT_STRING_sys ','
+                   TEXT_STRING_sys ',' TEXT_STRING_sys ',' TEXT_STRING_sys ')'
+          {
+            $$= NEW_PTN PT_create_vector_index_stmt(
+              YYMEM_ROOT, $4, $6, $8, $12, $14, $16, $18, false, 0,
+              true, $20);
           }
         | CREATE VECTOR_SYM INDEX_SYM opt_if_not_exists
           ON_SYM table_ident '(' ident ')'
@@ -3694,7 +3708,17 @@ create_vector_index_stmt:
           {
             $$= NEW_PTN PT_create_vector_index_stmt(
               YYMEM_ROOT, $4, $6, $8, $12, $14, $16, $18,
-              true, static_cast<uint32_t>($20));
+              true, $20, false, NULL_STR);
+          }
+        | CREATE VECTOR_SYM INDEX_SYM opt_if_not_exists
+          ON_SYM table_ident '(' ident ')'
+          WITH '(' ulong_num ',' TEXT_STRING_sys ','
+                   TEXT_STRING_sys ',' TEXT_STRING_sys ',' ulong_num ','
+                   TEXT_STRING_sys ')'
+          {
+            $$= NEW_PTN PT_create_vector_index_stmt(
+              YYMEM_ROOT, $4, $6, $8, $12, $14, $16, $18,
+              true, $20, true, $22);
           }
         ;
 
@@ -14425,7 +14449,29 @@ use:
 /* import, export of files */
 
 load_stmt:
-          LOAD                          /*  1 */
+          LOAD VECTOR_SYM DATA_SYM      /*  1  2  3 */
+          opt_local                     /*  4 */
+          INFILE_SYM                    /*  5 */
+          TEXT_STRING_filesystem        /*  6 */
+          opt_vector_load_docid         /*  7 */
+          INTO                          /*  8 */
+          VECTOR_SYM                    /*  9 */
+          INDEX_SYM                     /* 10 */
+          ident                         /* 11 */
+          FORMAT_SYM                    /* 12 */
+          vector_load_format            /* 13 */
+          opt_vector_load_replace       /* 14 */
+          opt_vector_load_rebuild       /* 15 */
+          {
+            $$= NEW_PTN PT_load_vector_index($4,  // opt_local
+                                             $6,  // vector file
+                                             $7,  // optional docid file
+                                             $11, // index name
+                                             $13, // format
+                                             $14, // replace duplicates
+                                             $15); // rebuild after load
+          }
+        | LOAD                          /*  1 */
           data_or_xml                   /*  2 */
           load_data_lock                /*  3 */
           opt_from_keyword              /*  4 */
@@ -14479,6 +14525,37 @@ data_or_xml:
 opt_local:
           %empty      { $$= false; }
         | LOCAL_SYM   { $$= true; }
+        ;
+
+opt_vector_load_docid:
+          %empty
+          {
+            $$.str= nullptr;
+            $$.length= 0;
+          }
+        | ident INFILE_SYM TEXT_STRING_filesystem
+          {
+            if (my_strcasecmp(system_charset_info, $1.str, "docid") != 0)
+            {
+              YYTHD->syntax_error_at(@1, "DOCID expected");
+              YYABORT;
+            }
+            $$= $3;
+          }
+        ;
+
+vector_load_format:
+          ident { $$= $1; }
+        ;
+
+opt_vector_load_replace:
+          %empty      { $$= false; }
+        | REPLACE_SYM { $$= true; }
+        ;
+
+opt_vector_load_rebuild:
+          %empty      { $$= false; }
+        | REBUILD_SYM { $$= true; }
         ;
 
 opt_from_keyword:

@@ -110,6 +110,11 @@ standalone
 SELECT VEC_INDEX_CREATE('idx_bad_consistency', 2, 'EUCLIDEAN', 'MEMORY',
 'NATIVE', 0, 'durable');
 ERROR HY000: Incorrect arguments to vec_index_create
+CREATE TABLE t_standalone_reject(id BIGINT PRIMARY KEY, v VECTOR(2));
+CREATE VECTOR INDEX ON t_standalone_reject(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE', 0, 'standalone');
+ERROR HY000: Incorrect arguments to CREATE VECTOR INDEX
+DROP TABLE t_standalone_reject;
 SET GLOBAL vector_index_consistency_mode = @old_vector_index_consistency_mode;
 SET GLOBAL vector_entry_cache_size = @old_vector_entry_cache_size;
 SELECT VEC_INDEX_DROP('idx_txn_default');

@@ -39,6 +39,8 @@
 extern ulong opt_vector_hnsw_build_threads;
 extern ulong opt_vector_faiss_build_threads;
 extern ulong opt_vector_diskann_build_threads;
+extern ulong opt_vector_diskann_max_degree;
+extern ulong opt_vector_diskann_build_complexity;
 extern ulong opt_vector_diskann_build_mode;
 extern ulong opt_vector_search_batch_count;
 extern ulong opt_vector_search_batch_result_count;

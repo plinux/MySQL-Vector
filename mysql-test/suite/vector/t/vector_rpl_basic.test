@@ -26,6 +26,82 @@ SELECT JSON_CONTAINS(
 SELECT JSON_CONTAINS(
   VEC_INDEX_SEARCH('test.t_vec_rpl.v', '[2,2]', 8), CAST(2 AS JSON));
 
+--disable_query_log
+--let $vector_rpl_load_csv=$MYSQLTEST_VARDIR/vector_rpl_load.csv
+--let $vector_rpl_load_fbin=$MYSQLTEST_VARDIR/vector_rpl_load.fbin
+--let $vector_rpl_load_docid=$MYSQLTEST_VARDIR/vector_rpl_load.u64
+--write_file $vector_rpl_load_csv
+doc_id,vector
+401,"[4,1]"
+402,"[4,2]"
+EOF
+--let $vector_std_fbin_target=$vector_rpl_load_fbin
+--let $vector_std_docid_target=$vector_rpl_load_docid
+--source suite/vector/include/vector_copy_std_load_data_files.inc
+--enable_query_log
+
+SELECT VEC_INDEX_CREATE('idx_vec_rpl_load', 2, 'EUCLIDEAN', 'MEMORY',
+                        'HNSWLIB');
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_rpl_load.csv'
+  INTO VECTOR INDEX idx_vec_rpl_load
+  FORMAT CSV
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_vec_rpl_load', '[4,1]', 2), CAST(401 AS JSON));
+save_master_pos;
+
+SELECT VEC_INDEX_CREATE('idx_vec_rpl_load_fbin', 2, 'EUCLIDEAN', 'MEMORY',
+                        'HNSWLIB');
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_rpl_load.fbin'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_rpl_load.u64'
+  INTO VECTOR INDEX idx_vec_rpl_load_fbin
+  FORMAT FBIN
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_vec_rpl_load_fbin', '[1,0]', 2), CAST(101 AS JSON));
+save_master_pos;
+
+SELECT VEC_INDEX_CREATE('idx_vec_rpl_load_standalone', 2, 'EUCLIDEAN', 'MEMORY',
+                        'HNSWLIB', 0, 'standalone');
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_rpl_load.csv'
+  INTO VECTOR INDEX idx_vec_rpl_load_standalone
+  FORMAT CSV
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_vec_rpl_load_standalone', '[4,2]', 2),
+  CAST(402 AS JSON));
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_vec_rpl_load', '[4,1]', 2), CAST(401 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_vec_rpl_load_fbin', '[1,0]', 2), CAST(101 AS JSON));
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_vec_rpl_load_standalone', '[4,2]', 2),
+  CAST(402 AS JSON));
+
+--connection master
+SELECT VEC_INDEX_DROP('idx_vec_rpl_load');
+SELECT VEC_INDEX_DROP('idx_vec_rpl_load_fbin');
+SELECT VEC_INDEX_DROP('idx_vec_rpl_load_standalone');
+--remove_file $vector_rpl_load_csv
+--remove_file $vector_rpl_load_fbin
+--remove_file $vector_rpl_load_docid
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT VEC_INDEX_LIST();
+
+--connection master
 DROP TABLE IF EXISTS t_vec_rpl_like;
 CREATE TABLE t_vec_rpl_like LIKE t_vec_rpl;
 INSERT INTO t_vec_rpl_like VALUES (9, VEC_FROMTEXT('[9,9]'));

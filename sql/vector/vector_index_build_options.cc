@@ -29,6 +29,10 @@
 ulong opt_vector_hnsw_build_threads = 0;
 ulong opt_vector_faiss_build_threads = 0;
 ulong opt_vector_diskann_build_threads = 0;
+ulong opt_vector_diskann_max_degree =
+    vector_index::k_default_diskann_max_degree;
+ulong opt_vector_diskann_build_complexity =
+    vector_index::k_default_diskann_build_complexity;
 ulong opt_vector_diskann_build_mode =
     static_cast<ulong>(vector_index::diskann_build_mode::kAuto);
 ulong opt_vector_search_batch_count =

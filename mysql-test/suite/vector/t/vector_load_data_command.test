@@ -1,0 +1,253 @@
+--source include/have_vector_debug_native.inc
+
+--echo #
+--echo # WL#Vector: LOAD VECTOR DATA command and standalone import
+--echo #
+
+--disable_query_log
+--let $vector_fbin=$MYSQLTEST_VARDIR/vector_load_data.fbin
+--let $vector_docid=$MYSQLTEST_VARDIR/vector_load_data.u64
+--let $vector_replace_fbin=$MYSQLTEST_VARDIR/vector_load_data_replace.fbin
+--let $vector_replace_docid=$MYSQLTEST_VARDIR/vector_load_data_replace.u64
+--let $vector_csv=$MYSQLTEST_VARDIR/vector_load_data.csv
+--let $vector_csv_replace=$MYSQLTEST_VARDIR/vector_load_data_replace.csv
+--let $vector_csv_bad_dim=$MYSQLTEST_VARDIR/vector_load_data_bad_dim.csv
+--let $vector_csv_crlf=$MYSQLTEST_VARDIR/vector_load_data_crlf.csv
+--let vector_fbin=$vector_fbin
+--let vector_docid=$vector_docid
+--let vector_replace_fbin=$vector_replace_fbin
+--let vector_replace_docid=$vector_replace_docid
+--let vector_csv=$vector_csv
+--let vector_csv_replace=$vector_csv_replace
+--let vector_csv_bad_dim=$vector_csv_bad_dim
+--let vector_csv_crlf=$vector_csv_crlf
+--let $vector_std_fbin_target=$vector_fbin
+--let $vector_std_docid_target=$vector_docid
+--source suite/vector/include/vector_copy_std_load_data_files.inc
+--copy_file $MYSQL_TEST_DIR/suite/vector/std_data/vector_load_data_replace.fbin $vector_replace_fbin
+--copy_file $MYSQL_TEST_DIR/suite/vector/std_data/vector_load_data_replace.u64 $vector_replace_docid
+--write_file $vector_csv
+doc_id,vector
+201,"[1,0]"
+
+202,"[0,1]"
+EOF
+--write_file $vector_csv_replace
+doc_id,vector
+202,"[0,2]"
+EOF
+--write_file $vector_csv_bad_dim
+doc_id,vector
+203,"[1,2,3]"
+EOF
+--exec printf 'doc_id,vector\r\n204,"[2,0]"\r\n' > $vector_csv_crlf
+--enable_query_log
+
+--error ER_WRONG_ARGUMENTS
+LOAD VECTOR DATA INFILE 'vectors.fbin'
+  INTO VECTOR INDEX idx_load_missing
+  FORMAT FBIN;
+
+--error ER_WRONG_ARGUMENTS
+LOAD VECTOR DATA INFILE 'vectors.fbin'
+  INTO VECTOR INDEX ``
+  FORMAT FBIN;
+
+SELECT VEC_INDEX_CREATE('idx_load_transactional', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE');
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.csv'
+  INTO VECTOR INDEX idx_load_transactional
+  FORMAT CSV
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_transactional', VEC_FROMTEXT('[1,0]'), 1),
+  CAST(201 AS JSON)) AS transactional_csv_visible;
+
+DROP USER IF EXISTS 'vec_load_acl'@'localhost';
+DROP DATABASE IF EXISTS vector_load_acl_db;
+CREATE USER 'vec_load_acl'@'localhost';
+CREATE DATABASE vector_load_acl_db;
+USE vector_load_acl_db;
+SELECT VEC_INDEX_CREATE('idx_load_acl_transactional', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE');
+SELECT VEC_INDEX_CREATE('idx_load_acl_standalone', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'standalone');
+GRANT FILE ON *.* TO 'vec_load_acl'@'localhost';
+GRANT SELECT ON vector_load_acl_db.* TO 'vec_load_acl'@'localhost';
+
+--connect (con_load_acl,localhost,vec_load_acl,,vector_load_acl_db)
+--disable_query_log
+--error ER_TABLEACCESS_DENIED_ERROR,ER_DBACCESS_DENIED_ERROR,ER_ACCESS_DENIED_ERROR
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.csv'
+  INTO VECTOR INDEX idx_load_acl_transactional
+  FORMAT CSV
+  REBUILD;
+--error ER_TABLEACCESS_DENIED_ERROR,ER_DBACCESS_DENIED_ERROR,ER_ACCESS_DENIED_ERROR
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.csv'
+  INTO VECTOR INDEX idx_load_acl_standalone
+  FORMAT CSV
+  REBUILD;
+--enable_query_log
+--disconnect con_load_acl
+
+--connection default
+GRANT ALTER ON *.* TO 'vec_load_acl'@'localhost';
+
+--connect (con_load_acl,localhost,vec_load_acl,,vector_load_acl_db)
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.csv'
+  INTO VECTOR INDEX idx_load_acl_transactional
+  FORMAT CSV
+  REBUILD;
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.csv'
+  INTO VECTOR INDEX idx_load_acl_standalone
+  FORMAT CSV
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_acl_transactional', VEC_FROMTEXT('[1,0]'), 1),
+  CAST(201 AS JSON)) AS transactional_acl_visible;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_acl_standalone', VEC_FROMTEXT('[0,1]'), 1),
+  CAST(202 AS JSON)) AS standalone_acl_visible;
+--disconnect con_load_acl
+
+--connection default
+SELECT VEC_INDEX_DROP('idx_load_acl_transactional');
+SELECT VEC_INDEX_DROP('idx_load_acl_standalone');
+USE test;
+DROP DATABASE vector_load_acl_db;
+DROP USER 'vec_load_acl'@'localhost';
+
+SELECT VEC_INDEX_CREATE('idx_load_standalone', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'standalone');
+SET @old_local_infile = @@GLOBAL.local_infile;
+SET GLOBAL local_infile = ON;
+--error ER_NOT_SUPPORTED_YET
+LOAD VECTOR DATA LOCAL INFILE 'vectors.fbin'
+  DOCID INFILE 'docids.u64'
+  INTO VECTOR INDEX idx_load_standalone
+  FORMAT FBIN
+  REBUILD;
+
+SET GLOBAL local_infile = OFF;
+--error ER_CLIENT_LOCAL_FILES_DISABLED
+LOAD VECTOR DATA LOCAL INFILE 'vectors.fbin'
+  INTO VECTOR INDEX idx_load_standalone
+  FORMAT FBIN;
+SET GLOBAL local_infile = @old_local_infile;
+
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.csv'
+  INTO VECTOR INDEX idx_load_standalone
+  FORMAT CSV
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_standalone', VEC_FROMTEXT('[0,1]'), 1),
+  CAST(202 AS JSON)) AS standalone_csv_visible;
+--disable_query_log
+--error ER_WRONG_ARGUMENTS
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data_replace.csv'
+  INTO VECTOR INDEX idx_load_standalone
+  FORMAT CSV
+  REBUILD;
+--error ER_WRONG_ARGUMENTS
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data_bad_dim.csv'
+  INTO VECTOR INDEX idx_load_standalone
+  FORMAT CSV
+  REBUILD;
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data_replace.csv'
+  INTO VECTOR INDEX idx_load_standalone
+  FORMAT CSV
+  REPLACE
+  REBUILD;
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data_crlf.csv'
+  INTO VECTOR INDEX idx_load_standalone
+  FORMAT CSV
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_standalone', VEC_FROMTEXT('[0,2]'), 1),
+  CAST(202 AS JSON)) AS standalone_csv_replace_visible;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_standalone', VEC_FROMTEXT('[2,0]'), 1),
+  CAST(204 AS JSON)) AS standalone_csv_crlf_visible;
+
+SELECT VEC_INDEX_CREATE('idx_load_pending', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'standalone');
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.fbin'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_load_data.u64'
+  INTO VECTOR INDEX idx_load_pending
+  FORMAT FBIN;
+--enable_query_log
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_load_pending'),
+                                 '$.lifecycle_state')) AS lifecycle_state;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_load_pending'),
+                    '$.standalone_raw_segment_count') AS raw_segment_count,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_load_pending'),
+                    '$.standalone_raw_segment_bytes') > 0 AS has_raw_bytes;
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[1,0]'), 1);
+SELECT VEC_INDEX_BULK_BUILD('idx_load_pending');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_load_pending'),
+                                 '$.build_source')) AS build_source;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[1,0]'), 2),
+  CAST(101 AS JSON)) AS has_doc_101,
+  JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[1,0]'), 2),
+  CAST(103 AS JSON)) AS has_doc_103;
+--disable_query_log
+--error ER_WRONG_ARGUMENTS
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data_replace.fbin'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_load_data_replace.u64'
+  INTO VECTOR INDEX idx_load_pending
+  FORMAT FBIN
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[1,0]'), 1),
+  CAST(101 AS JSON)) AS original_doc_still_visible;
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data_replace.fbin'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_load_data_replace.u64'
+  INTO VECTOR INDEX idx_load_pending
+  FORMAT FBIN
+  REPLACE
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[0,2]'), 1),
+  CAST(101 AS JSON)) AS replaced_doc_visible;
+
+SELECT VEC_INDEX_CREATE('idx_load_generated_docid', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'standalone');
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.fbin'
+  INTO VECTOR INDEX idx_load_generated_docid
+  FORMAT FBIN
+  REBUILD;
+--enable_query_log
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_generated_docid', VEC_FROMTEXT('[1,0]'), 2),
+  CAST(0 AS JSON)) AS generated_doc_0_visible,
+  JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_load_generated_docid', VEC_FROMTEXT('[2,0]'), 3),
+  CAST(2 AS JSON)) AS generated_doc_2_visible;
+
+SELECT VEC_INDEX_DROP('idx_load_transactional');
+SELECT VEC_INDEX_DROP('idx_load_standalone');
+SELECT VEC_INDEX_DROP('idx_load_pending');
+SELECT VEC_INDEX_DROP('idx_load_generated_docid');
+--remove_file $vector_fbin
+--remove_file $vector_docid
+--remove_file $vector_replace_fbin
+--remove_file $vector_replace_docid
+--remove_file $vector_csv
+--remove_file $vector_csv_replace
+--remove_file $vector_csv_bad_dim
+--remove_file $vector_csv_crlf

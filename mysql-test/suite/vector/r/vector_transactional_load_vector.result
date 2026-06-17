@@ -1,0 +1,42 @@
+#
+# WL#Vector: LOAD VECTOR DATA for transactional indexes
+#
+SELECT VEC_INDEX_CREATE('idx_txn_load_csv', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE');
+VEC_INDEX_CREATE('idx_txn_load_csv', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_txn_load_csv', VEC_FROMTEXT('[1,0]'), 1),
+CAST(301 AS JSON)) AS csv_doc_visible;
+csv_doc_visible
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_load_csv'),
+'$.consistency_mode')) AS consistency_mode,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_load_csv'),
+'$.lifecycle_state')) AS lifecycle_state;
+consistency_mode	lifecycle_state
+transactional	ready
+SELECT VEC_INDEX_CREATE('idx_txn_load_fbin', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE');
+VEC_INDEX_CREATE('idx_txn_load_fbin', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_txn_load_fbin', VEC_FROMTEXT('[1,0]'), 2),
+CAST(101 AS JSON)) AS fbin_doc_visible;
+fbin_doc_visible
+1
+ERROR HY000: Incorrect arguments to LOAD VECTOR DATA duplicate doc_id in index
+ERROR HY000: Incorrect arguments to LOAD VECTOR DATA dimension mismatch
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_txn_load_csv', VEC_FROMTEXT('[1,0]'), 1),
+CAST(301 AS JSON)) AS duplicate_rejected_keeps_original;
+duplicate_rejected_keeps_original
+1
+SELECT VEC_INDEX_DROP('idx_txn_load_csv');
+VEC_INDEX_DROP('idx_txn_load_csv')
+1
+SELECT VEC_INDEX_DROP('idx_txn_load_fbin');
+VEC_INDEX_DROP('idx_txn_load_fbin')
+1

@@ -1,0 +1,168 @@
+#
+# WL#Vector: LOAD VECTOR DATA command and standalone import
+#
+LOAD VECTOR DATA INFILE 'vectors.fbin'
+  INTO VECTOR INDEX idx_load_missing
+FORMAT FBIN;
+ERROR HY000: Incorrect arguments to load vector data
+LOAD VECTOR DATA INFILE 'vectors.fbin'
+  INTO VECTOR INDEX ``
+  FORMAT FBIN;
+ERROR HY000: Incorrect arguments to load vector data
+SELECT VEC_INDEX_CREATE('idx_load_transactional', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE');
+VEC_INDEX_CREATE('idx_load_transactional', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_transactional', VEC_FROMTEXT('[1,0]'), 1),
+CAST(201 AS JSON)) AS transactional_csv_visible;
+transactional_csv_visible
+1
+DROP USER IF EXISTS 'vec_load_acl'@'localhost';
+Warnings:
+Note	3162	Authorization ID 'vec_load_acl'@'localhost' does not exist.
+DROP DATABASE IF EXISTS vector_load_acl_db;
+Warnings:
+Note	1008	Can't drop database 'vector_load_acl_db'; database doesn't exist
+CREATE USER 'vec_load_acl'@'localhost';
+CREATE DATABASE vector_load_acl_db;
+USE vector_load_acl_db;
+SELECT VEC_INDEX_CREATE('idx_load_acl_transactional', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE');
+VEC_INDEX_CREATE('idx_load_acl_transactional', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE')
+1
+SELECT VEC_INDEX_CREATE('idx_load_acl_standalone', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone');
+VEC_INDEX_CREATE('idx_load_acl_standalone', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone')
+1
+GRANT FILE ON *.* TO 'vec_load_acl'@'localhost';
+GRANT SELECT ON vector_load_acl_db.* TO 'vec_load_acl'@'localhost';
+Got one of the listed errors
+Got one of the listed errors
+GRANT ALTER ON *.* TO 'vec_load_acl'@'localhost';
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_acl_transactional', VEC_FROMTEXT('[1,0]'), 1),
+CAST(201 AS JSON)) AS transactional_acl_visible;
+transactional_acl_visible
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_acl_standalone', VEC_FROMTEXT('[0,1]'), 1),
+CAST(202 AS JSON)) AS standalone_acl_visible;
+standalone_acl_visible
+1
+SELECT VEC_INDEX_DROP('idx_load_acl_transactional');
+VEC_INDEX_DROP('idx_load_acl_transactional')
+1
+SELECT VEC_INDEX_DROP('idx_load_acl_standalone');
+VEC_INDEX_DROP('idx_load_acl_standalone')
+1
+USE test;
+DROP DATABASE vector_load_acl_db;
+DROP USER 'vec_load_acl'@'localhost';
+SELECT VEC_INDEX_CREATE('idx_load_standalone', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone');
+VEC_INDEX_CREATE('idx_load_standalone', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone')
+1
+SET @old_local_infile = @@GLOBAL.local_infile;
+SET GLOBAL local_infile = ON;
+LOAD VECTOR DATA LOCAL INFILE 'vectors.fbin'
+  DOCID INFILE 'docids.u64'
+  INTO VECTOR INDEX idx_load_standalone
+FORMAT FBIN
+REBUILD;
+ERROR 42000: This version of MySQL doesn't yet support 'LOAD VECTOR DATA LOCAL'
+SET GLOBAL local_infile = OFF;
+LOAD VECTOR DATA LOCAL INFILE 'vectors.fbin'
+  INTO VECTOR INDEX idx_load_standalone
+FORMAT FBIN;
+ERROR 42000: Loading local data is disabled; this must be enabled on both the client and server sides
+SET GLOBAL local_infile = @old_local_infile;
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_standalone', VEC_FROMTEXT('[0,1]'), 1),
+CAST(202 AS JSON)) AS standalone_csv_visible;
+standalone_csv_visible
+1
+ERROR HY000: Incorrect arguments to LOAD VECTOR DATA duplicate doc_id in index
+ERROR HY000: Incorrect arguments to LOAD VECTOR DATA dimension mismatch
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_standalone', VEC_FROMTEXT('[0,2]'), 1),
+CAST(202 AS JSON)) AS standalone_csv_replace_visible;
+standalone_csv_replace_visible
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_standalone', VEC_FROMTEXT('[2,0]'), 1),
+CAST(204 AS JSON)) AS standalone_csv_crlf_visible;
+standalone_csv_crlf_visible
+1
+SELECT VEC_INDEX_CREATE('idx_load_pending', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone');
+VEC_INDEX_CREATE('idx_load_pending', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_load_pending'),
+'$.lifecycle_state')) AS lifecycle_state;
+lifecycle_state
+bulk_loading
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_load_pending'),
+'$.standalone_raw_segment_count') AS raw_segment_count,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_load_pending'),
+'$.standalone_raw_segment_bytes') > 0 AS has_raw_bytes;
+raw_segment_count	has_raw_bytes
+1	1
+SELECT VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[1,0]'), 1);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_BULK_BUILD('idx_load_pending');
+VEC_INDEX_BULK_BUILD('idx_load_pending')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_load_pending'),
+'$.build_source')) AS build_source;
+build_source
+raw_segments_direct
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[1,0]'), 2),
+CAST(101 AS JSON)) AS has_doc_101,
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[1,0]'), 2),
+CAST(103 AS JSON)) AS has_doc_103;
+has_doc_101	has_doc_103
+1	1
+ERROR HY000: Incorrect arguments to LOAD VECTOR DATA duplicate doc_id in index
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[1,0]'), 1),
+CAST(101 AS JSON)) AS original_doc_still_visible;
+original_doc_still_visible
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_pending', VEC_FROMTEXT('[0,2]'), 1),
+CAST(101 AS JSON)) AS replaced_doc_visible;
+replaced_doc_visible
+1
+SELECT VEC_INDEX_CREATE('idx_load_generated_docid', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone');
+VEC_INDEX_CREATE('idx_load_generated_docid', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_generated_docid', VEC_FROMTEXT('[1,0]'), 2),
+CAST(0 AS JSON)) AS generated_doc_0_visible,
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_generated_docid', VEC_FROMTEXT('[2,0]'), 3),
+CAST(2 AS JSON)) AS generated_doc_2_visible;
+generated_doc_0_visible	generated_doc_2_visible
+1	1
+SELECT VEC_INDEX_DROP('idx_load_transactional');
+VEC_INDEX_DROP('idx_load_transactional')
+1
+SELECT VEC_INDEX_DROP('idx_load_standalone');
+VEC_INDEX_DROP('idx_load_standalone')
+1
+SELECT VEC_INDEX_DROP('idx_load_pending');
+VEC_INDEX_DROP('idx_load_pending')
+1
+SELECT VEC_INDEX_DROP('idx_load_generated_docid');
+VEC_INDEX_DROP('idx_load_generated_docid')
+1

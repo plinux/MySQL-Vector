@@ -26,6 +26,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -37,8 +39,10 @@
 #include "sql/auth/auth_acls.h"
 #include "sql/item.h"
 #include "sql/vector/item_vectorfunc.h"
+#include "sql/vector/item_vectorfunc_internal.h"
 #include "sql/parse_tree_helpers.h"
 #include "sql/sql_class.h"
+#include "sql/vector/sql_vector_load.h"
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry.h"
@@ -270,6 +274,69 @@ class ProcessAccessGuard {
   Access_bitmask m_original;
 };
 
+class FileAccessGuard {
+ public:
+  explicit FileAccessGuard(THD *thd)
+      : m_thd(thd),
+        m_original(thd->security_context()->master_access()) {
+    m_thd->security_context()->set_master_access(m_original | FILE_ACL |
+                                                 SELECT_ACL);
+  }
+
+  ~FileAccessGuard() { m_thd->security_context()->set_master_access(m_original); }
+
+  FileAccessGuard(const FileAccessGuard &) = delete;
+  FileAccessGuard &operator=(const FileAccessGuard &) = delete;
+
+ private:
+  THD *m_thd;
+  Access_bitmask m_original;
+};
+
+class SecureFilePrivGuard {
+ public:
+  explicit SecureFilePrivGuard(const char *value)
+      : m_original(opt_secure_file_priv) {
+    opt_secure_file_priv = value;
+  }
+
+  ~SecureFilePrivGuard() { opt_secure_file_priv = m_original; }
+
+  SecureFilePrivGuard(const SecureFilePrivGuard &) = delete;
+  SecureFilePrivGuard &operator=(const SecureFilePrivGuard &) = delete;
+
+ private:
+  const char *m_original;
+};
+
+template <typename T>
+void write_binary_value(std::ofstream *file, T value) {
+  file->write(reinterpret_cast<const char *>(&value), sizeof(value));
+}
+
+void write_raw_fbin_file(const std::string &path, uint32_t rows,
+                         uint32_t dimension,
+                         const std::vector<float> &values) {
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(file.good());
+  write_binary_value(&file, rows);
+  write_binary_value(&file, dimension);
+  file.write(reinterpret_cast<const char *>(values.data()),
+             static_cast<std::streamsize>(values.size() * sizeof(float)));
+  ASSERT_TRUE(file.good());
+}
+
+void write_raw_docid_file(const std::string &path,
+                          const std::vector<uint64_t> &doc_ids) {
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(file.good());
+  write_binary_value<uint64_t>(&file, doc_ids.size());
+  file.write(reinterpret_cast<const char *>(doc_ids.data()),
+             static_cast<std::streamsize>(doc_ids.size() *
+                                          sizeof(uint64_t)));
+  ASSERT_TRUE(file.good());
+}
+
 bool hnswlib_tuning_supported() {
   std::unique_ptr<vector_index::backend> backend =
       vector_index::create_backend(2, vector_index::metric_type::kEuclidean,
@@ -365,6 +432,10 @@ std::string as_std_string(const String &value) {
   return std::string(value.ptr(), value.length());
 }
 
+LEX_STRING make_lex_string(const char *value) {
+  return {const_cast<char *>(value), static_cast<size_t>(std::strlen(value))};
+}
+
 vector_index_registry::index_info make_base_info() {
   vector_index_registry::index_info info;
   info.dimension = 2;
@@ -397,6 +468,24 @@ Item_string *make_binary_vector_item(std::initializer_list<float> values) {
   const std::string payload = binary_vector_payload(values);
   char *stable_payload = new char[payload.size()];
   std::memcpy(stable_payload, payload.data(), payload.size());
+  return new Item_string(stable_payload, payload.size(), &my_charset_bin);
+}
+
+std::string binary_docid_payload(std::initializer_list<uint64_t> values) {
+  std::string payload(values.size() * sizeof(uint64_t), '\0');
+  size_t idx = 0;
+  for (uint64_t value : values) {
+    int8store(reinterpret_cast<uchar *>(payload.data() +
+                                        idx * sizeof(uint64_t)),
+              value);
+    ++idx;
+  }
+  return payload;
+}
+
+Item_string *make_binary_blob_item(const std::string &payload) {
+  char *stable_payload = new char[payload.size()];
+  if (!payload.empty()) std::memcpy(stable_payload, payload.data(), payload.size());
   return new Item_string(stable_payload, payload.size(), &my_charset_bin);
 }
 
@@ -672,6 +761,10 @@ TEST_F(ItemVectorFuncFixture,
       "vec_index_rebuild", arg);
   expect_list_unary_propagate_failure<Item_func_vec_index_recover>(
       "vec_index_recover", arg);
+  expect_list_unary_propagate_failure<Item_func_vec_index_bulk_load_begin>(
+      "vec_index_bulk_load_begin", arg);
+  expect_list_unary_propagate_failure<Item_func_vec_index_bulk_build>(
+      "vec_index_bulk_build", arg);
   expect_list_unary_propagate_failure<Item_func_vec_index_info>(
       "vec_index_info", arg);
   expect_list_unary_propagate_failure<Item_func_vec_index_txn_pending>(
@@ -693,6 +786,8 @@ TEST_F(ItemVectorFuncFixture,
       "vec_distance_cosine", lhs, rhs);
   expect_binary_propagate_failure<Item_func_vec_index_set_search_ef>(
       "vec_index_set_search_ef", lhs, rhs);
+  expect_binary_propagate_failure<Item_func_vec_index_set_diskann_build_mode>(
+      "vec_index_set_diskann_build_mode", lhs, rhs);
   expect_list_binary_propagate_failure<Item_func_vec_index_txn_savepoint>(
       "vec_index_txn_savepoint", lhs, rhs);
   expect_list_binary_propagate_failure<Item_func_vec_index_txn_rollback_to>(
@@ -718,6 +813,9 @@ TEST_F(ItemVectorFuncFixture,
       "vec_index_set_diskann_build_params", arg, ok_int, ok_int);
   expect_binary_propagate_failure<Item_func_vec_index_set_diskann_search_complexity>(
       "vec_index_set_diskann_search_complexity", arg, ok_int);
+  expect_binary_propagate_failure<
+      Item_func_vec_index_set_diskann_pq_code_budget_size>(
+      "vec_index_set_diskann_pq_code_budget_size", arg, ok_int);
   expect_list_ternary_propagate_failure<Item_func_vec_index_upsert>(
       "vec_index_upsert", arg, ok_int, ok_int);
   expect_list_binary_propagate_failure<Item_func_vec_index_erase>(
@@ -744,6 +842,10 @@ TEST_F(ItemVectorFuncFixture,
       "vec_index_rebuild");
   expect_list_unary_dynamic_params<Item_func_vec_index_recover>(
       "vec_index_recover");
+  expect_list_unary_dynamic_params<Item_func_vec_index_bulk_load_begin>(
+      "vec_index_bulk_load_begin");
+  expect_list_unary_dynamic_params<Item_func_vec_index_bulk_build>(
+      "vec_index_bulk_build");
   expect_list_unary_dynamic_params<Item_func_vec_index_info>("vec_index_info");
   expect_list_unary_dynamic_params<Item_func_vec_index_txn_pending>(
       "vec_index_txn_pending");
@@ -763,6 +865,8 @@ TEST_F(ItemVectorFuncFixture,
       "vec_distance_cosine");
   expect_binary_dynamic_params<Item_func_vec_index_set_search_ef>(
       "vec_index_set_search_ef");
+  expect_binary_dynamic_params<Item_func_vec_index_set_diskann_build_mode>(
+      "vec_index_set_diskann_build_mode");
   expect_list_binary_dynamic_params<Item_func_vec_index_txn_savepoint>(
       "vec_index_txn_savepoint");
   expect_list_binary_dynamic_params<Item_func_vec_index_txn_rollback_to>(
@@ -787,6 +891,9 @@ TEST_F(ItemVectorFuncFixture,
       "vec_index_set_diskann_build_params");
   expect_binary_dynamic_params<Item_func_vec_index_set_diskann_search_complexity>(
       "vec_index_set_diskann_search_complexity");
+  expect_binary_dynamic_params<
+      Item_func_vec_index_set_diskann_pq_code_budget_size>(
+      "vec_index_set_diskann_pq_code_budget_size");
   expect_list_ternary_dynamic_params<Item_func_vec_index_upsert>(
       "vec_index_upsert");
   expect_list_binary_dynamic_params<Item_func_vec_index_erase>(
@@ -859,9 +966,29 @@ TEST_F(ItemVectorFuncFixture, TxnItemHelpersRejectInvalidArguments) {
   }
 }
 
+TEST_F(ItemVectorFuncFixture, InternalItemHelpersCoverNoThreadFallbacks) {
+  using namespace vector_itemfunc_internal;
+
+  EXPECT_FALSE(require_process_access(nullptr));
+  EXPECT_TRUE(check_vector_current_db_ddl_access(nullptr, CREATE_ACL));
+
+  vector_index_registry::index_info info;
+  info.owner_schema = "test";
+  EXPECT_FALSE(check_vector_index_access(thd(), info, CREATE_ACL));
+  EXPECT_TRUE(check_vector_index_access(nullptr, info, CREATE_ACL));
+
+  EXPECT_FALSE(maybe_binlog_vector_write_query(nullptr));
+
+  std::string decoded = "sentinel";
+  EXPECT_FALSE(decode_hex_bytes(nullptr, decoded));
+  String invalid_high("zz", &my_charset_latin1);
+  EXPECT_FALSE(decode_hex_bytes(&invalid_high, decoded));
+}
+
 TEST_F(ItemVectorFuncFixture, TxnItemHelpersCoverSuccessPaths) {
   auto *begin_item = new Item_func_vec_index_txn_begin(POS());
   fix_item(thd(), begin_item);
+  EXPECT_STREQ("vec_index_txn_begin", begin_item->func_name());
   const longlong txn_id_ll = begin_item->val_int();
   ASSERT_FALSE(begin_item->null_value);
   ASSERT_GT(txn_id_ll, 0);
@@ -1069,6 +1196,28 @@ TEST_F(ItemVectorFuncFixture, IndexAdminItemsCoverSuccessAndErrorPaths) {
     Server_initializer::set_expected_error(0);
   }
 
+  {
+    Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
+    auto *bulk_begin_missing = new Item_func_vec_index_bulk_load_begin(
+        POS(), make_item_list({make_string_item("idx_missing_bulk_begin")}));
+    fix_item(thd(), bulk_begin_missing);
+    EXPECT_EQ(0, bulk_begin_missing->val_int());
+    EXPECT_FALSE(bulk_begin_missing->null_value);
+    thd()->clear_error();
+    Server_initializer::set_expected_error(0);
+  }
+
+  {
+    Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
+    auto *bulk_build_missing = new Item_func_vec_index_bulk_build(
+        POS(), make_item_list({make_string_item("idx_missing_bulk_build")}));
+    fix_item(thd(), bulk_build_missing);
+    EXPECT_EQ(0, bulk_build_missing->val_int());
+    EXPECT_FALSE(bulk_build_missing->null_value);
+    thd()->clear_error();
+    Server_initializer::set_expected_error(0);
+  }
+
   auto *rebuild_item = new Item_func_vec_index_rebuild(
       POS(), make_item_list({make_string_item(index_name.c_str())}));
   fix_item(thd(), rebuild_item);
@@ -1080,6 +1229,18 @@ TEST_F(ItemVectorFuncFixture, IndexAdminItemsCoverSuccessAndErrorPaths) {
   fix_item(thd(), recover_item);
   EXPECT_EQ(1, recover_item->val_int());
   EXPECT_FALSE(recover_item->null_value);
+
+  auto *bulk_begin_item = new Item_func_vec_index_bulk_load_begin(
+      POS(), make_item_list({make_string_item(index_name.c_str())}));
+  fix_item(thd(), bulk_begin_item);
+  EXPECT_EQ(1, bulk_begin_item->val_int());
+  EXPECT_FALSE(bulk_begin_item->null_value);
+
+  auto *bulk_build_item = new Item_func_vec_index_bulk_build(
+      POS(), make_item_list({make_string_item(index_name.c_str())}));
+  fix_item(thd(), bulk_build_item);
+  EXPECT_EQ(1, bulk_build_item->val_int());
+  EXPECT_FALSE(bulk_build_item->null_value);
 
   auto *drop_item = new Item_func_vec_index_drop(
       POS(), make_item_list({make_string_item(index_name.c_str())}));
@@ -1102,8 +1263,7 @@ TEST_F(ItemVectorFuncFixture,
   };
 
   expect_no_database(new Item_func_vec_index_create(
-      POS(), make_item_list({make_string_item("idx_no_db_create"),
-                             new Item_int(2),
+      POS(), make_item_list({make_string_item("idx_no_db_create"), new Item_int(2),
                              make_string_item("euclidean"),
                              make_string_item("memory"),
                              make_string_item("native")})));
@@ -1218,6 +1378,12 @@ TEST_F(ItemVectorFuncFixture,
     EXPECT_EQ(0, set_diskann_search->val_int());
     EXPECT_FALSE(set_diskann_search->null_value);
 
+    auto *set_diskann_pq = new Item_func_vec_index_set_diskann_pq_code_budget_size(
+        POS(), make_string_item(diskann_index.c_str()), new Item_int(1048576));
+    fix_item(thd(), set_diskann_pq);
+    EXPECT_EQ(0, set_diskann_pq->val_int());
+    EXPECT_FALSE(set_diskann_pq->null_value);
+
     auto *rebuild_item = new Item_func_vec_index_rebuild(
         POS(), make_item_list({make_string_item(native_index.c_str())}));
     fix_item(thd(), rebuild_item);
@@ -1229,6 +1395,18 @@ TEST_F(ItemVectorFuncFixture,
     fix_item(thd(), recover_item);
     EXPECT_EQ(0, recover_item->val_int());
     EXPECT_FALSE(recover_item->null_value);
+
+    auto *bulk_begin_item = new Item_func_vec_index_bulk_load_begin(
+        POS(), make_item_list({make_string_item(native_index.c_str())}));
+    fix_item(thd(), bulk_begin_item);
+    EXPECT_EQ(0, bulk_begin_item->val_int());
+    EXPECT_FALSE(bulk_begin_item->null_value);
+
+    auto *bulk_build_item = new Item_func_vec_index_bulk_build(
+        POS(), make_item_list({make_string_item(native_index.c_str())}));
+    fix_item(thd(), bulk_build_item);
+    EXPECT_EQ(0, bulk_build_item->val_int());
+    EXPECT_FALSE(bulk_build_item->null_value);
 
     auto *drop_mem = new Item_func_vec_index_drop(
         POS(), make_item_list({make_string_item(native_index.c_str())}));
@@ -1311,6 +1489,10 @@ TEST_F(ItemVectorFuncFixture,
        ItemAdminAndMutationItemsRejectNullOrNegativeArguments) {
   const longlong uint32_overflow =
       static_cast<longlong>(std::numeric_limits<uint32_t>::max()) + 1LL;
+  const longlong dimension_overflow =
+      static_cast<longlong>(vector_index::k_max_vector_dimension) + 1LL;
+  const longlong build_threads_overflow =
+      static_cast<longlong>(vector_index::k_max_build_threads) + 1LL;
   auto expect_wrong_arguments_int = [this](Item *item) {
     Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
     fix_item(thd(), item);
@@ -1324,6 +1506,43 @@ TEST_F(ItemVectorFuncFixture,
     auto *item = new Item_func_vec_index_create(
         POS(), make_item_list({make_string_item("idx_create_null_dimension"),
                                make_null_marked_int(2)}));
+    expect_wrong_arguments_int(item);
+  }
+
+  {
+    auto *item = new Item_func_vec_index_create(
+        POS(), make_item_list({make_string_item("idx_create_dimension_overflow"),
+                               new Item_int(dimension_overflow)}));
+    expect_wrong_arguments_int(item);
+  }
+
+  {
+    auto *item = new Item_func_vec_index_create(
+        POS(), make_item_list({make_string_item("idx_create_null_threads"),
+                               new Item_int(2), make_string_item("euclidean"),
+                               make_string_item("memory"),
+                               make_string_item("native"),
+                               make_null_marked_int(0)}));
+    expect_wrong_arguments_int(item);
+  }
+
+  {
+    auto *item = new Item_func_vec_index_create(
+        POS(), make_item_list({make_string_item("idx_create_neg_threads"),
+                               new Item_int(2), make_string_item("euclidean"),
+                               make_string_item("memory"),
+                               make_string_item("native"),
+                               new Item_int(-1)}));
+    expect_wrong_arguments_int(item);
+  }
+
+  {
+    auto *item = new Item_func_vec_index_create(
+        POS(), make_item_list({make_string_item("idx_create_threads_overflow"),
+                               new Item_int(2), make_string_item("euclidean"),
+                               make_string_item("memory"),
+                               make_string_item("native"),
+                               new Item_int(build_threads_overflow)}));
     expect_wrong_arguments_int(item);
   }
 
@@ -1553,6 +1772,18 @@ TEST_F(ItemVectorFuncFixture,
   }
 
   {
+    auto *item = new Item_func_vec_index_set_diskann_pq_code_budget_size(
+        POS(), make_null_marked_string_item("idx_any"), new Item_int(1048576));
+    expect_wrong_arguments_int(item);
+  }
+
+  {
+    auto *item = new Item_func_vec_index_set_diskann_pq_code_budget_size(
+        POS(), make_string_item("idx_any"), make_null_marked_int(1048576));
+    expect_wrong_arguments_int(item);
+  }
+
+  {
     Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
     auto *item = new Item_func_vec_index_upsert(
         POS(), make_item_list({new Item_null(), new Item_int(1),
@@ -1665,6 +1896,9 @@ TEST_F(ItemVectorFuncFixture, ItemTuningItemsRejectMissingIndexes) {
       new Item_func_vec_index_set_diskann_search_complexity(
           POS(), make_string_item("idx_missing_diskann_search"),
           new Item_int(100)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_pq_code_budget_size(
+          POS(), make_string_item("idx_missing_diskann_pq"), new Item_int(0)));
 }
 
 TEST_F(ItemVectorFuncFixture, ItemAdminItemsRejectNullStringValues) {
@@ -1708,6 +1942,9 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsRejectNullStringValues) {
   expect_wrong_arguments_int(
       new Item_func_vec_index_set_diskann_search_complexity(
           POS(), make_null_string_value_item(), new Item_int(100)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_pq_code_budget_size(
+          POS(), make_null_string_value_item(), new Item_int(0)));
 
   expect_wrong_arguments_int(new Item_func_vec_index_drop(
       POS(), make_item_list({make_null_string_value_item()})));
@@ -1731,6 +1968,8 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsRejectNullStringValues) {
 TEST_F(ItemVectorFuncFixture, ItemAdminItemsCoverAdditionalInvalidArguments) {
   const longlong uint32_overflow =
       static_cast<longlong>(std::numeric_limits<uint32_t>::max()) + 1LL;
+  const longlong build_threads_overflow =
+      static_cast<longlong>(vector_index::k_max_build_threads) + 1LL;
   auto expect_wrong_arguments_int = [this](Item *item) {
     Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
     fix_item(thd(), item);
@@ -1794,6 +2033,250 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsCoverAdditionalInvalidArguments) {
       POS(), make_item_list({make_string_item("idx_any"),
                              new Item_int(uint32_overflow),
                              new Item_int(100)})));
+
+  expect_wrong_arguments_int(new Item_func_vec_index_set_diskann_build_params(
+      POS(), make_item_list({make_string_item("idx_any"), new Item_int(64),
+                             new Item_int(100), make_null_marked_int(1)})));
+  expect_wrong_arguments_int(new Item_func_vec_index_set_diskann_build_params(
+      POS(), make_item_list({make_string_item("idx_any"), new Item_int(64),
+                             new Item_int(100), new Item_int(-1)})));
+  expect_wrong_arguments_int(new Item_func_vec_index_set_diskann_build_params(
+      POS(), make_item_list({make_string_item("idx_any"), new Item_int(64),
+                             new Item_int(100),
+                             new Item_int(build_threads_overflow)})));
+
+  expect_wrong_arguments_int(new Item_func_vec_index_set_diskann_build_mode(
+      POS(), make_null_marked_string_item("idx_any"),
+      make_string_item("auto")));
+  expect_wrong_arguments_int(new Item_func_vec_index_set_diskann_build_mode(
+      POS(), make_string_item("idx_any"), make_null_marked_string_item("auto")));
+  expect_wrong_arguments_int(new Item_func_vec_index_set_diskann_build_mode(
+      POS(), make_string_item("idx_any"), make_string_item("bad_mode")));
+}
+
+TEST_F(ItemVectorFuncFixture, LoadVectorCommandRejectsInvalidUserInputs) {
+  const std::string unique_suffix =
+      "_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+  const std::string transactional_index =
+      "idx_load_transactional_cmd" + unique_suffix;
+  const std::string standalone_index = "idx_load_standalone_cmd" + unique_suffix;
+  auto expect_load_vector_error = [this](bool is_local_file,
+                                         const char *vector_file,
+                                         const char *docid_file,
+                                         const char *index_name,
+                                         const char *format,
+                                         uint expected_error) {
+    auto *command = new (thd()->mem_root) Sql_cmd_load_vector_index(
+        is_local_file, make_lex_string(vector_file), make_lex_string(docid_file),
+        make_lex_string(index_name), make_lex_string(format), false, false);
+    EXPECT_EQ(SQLCOM_LOAD_VECTOR, command->sql_command_code());
+    Server_initializer::set_expected_error(expected_error);
+    EXPECT_TRUE(command->execute(thd()));
+    thd()->clear_error();
+    Server_initializer::set_expected_error(0);
+  };
+
+  expect_load_vector_error(false, "", "", "idx_load_cmd", "FBIN",
+                           ER_WRONG_ARGUMENTS);
+  expect_load_vector_error(false, "vectors.fbin", "", "", "FBIN",
+                           ER_WRONG_ARGUMENTS);
+  expect_load_vector_error(false, "vectors.fbin", "", "idx_load_cmd", "",
+                           ER_WRONG_ARGUMENTS);
+  expect_load_vector_error(false, "vectors.csv", "", "idx_load_cmd", "CSV",
+                           ER_WRONG_ARGUMENTS);
+  expect_load_vector_error(false, "vectors.fbin", "", "idx_load_missing",
+                           "FBIN", ER_WRONG_ARGUMENTS);
+
+  ASSERT_TRUE(vector_index_registry::create_index(
+      transactional_index, 2, "euclidean", "memory", "native"));
+  {
+    FileAccessGuard file_access(thd());
+    SecureFilePrivGuard secure_file_priv("");
+    expect_load_vector_error(false, "vectors.fbin", "",
+                             transactional_index.c_str(), "FBIN",
+                             ER_WRONG_ARGUMENTS);
+  }
+
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+  ASSERT_TRUE(vector_index_registry::create_index(standalone_index, 2,
+                                                  "euclidean", "memory",
+                                                  "native", options));
+  const bool saved_local_infile = opt_local_infile;
+  opt_local_infile = false;
+  expect_load_vector_error(true, "vectors.fbin", "", standalone_index.c_str(),
+                           "FBIN", ER_CLIENT_LOCAL_FILES_DISABLED);
+  opt_local_infile = saved_local_infile;
+}
+
+TEST_F(ItemVectorFuncFixture, LoadVectorCommandImportsRawFiles) {
+  const std::string unique_suffix =
+      "_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+  const std::string index_name = "idx_load_success_cmd" + unique_suffix;
+  const std::string root =
+      std::string(testing::TempDir()) + "/load_vector_command_success" +
+      unique_suffix;
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+
+  const std::string vector_path = root + "/vectors.fbin";
+  const std::string docid_path = root + "/vectors.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 0.0F, 1.0F});
+  write_raw_docid_file(docid_path, {101, 202});
+
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+  ASSERT_TRUE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "memory", "native", options));
+
+  FileAccessGuard file_access(thd());
+  SecureFilePrivGuard secure_file_priv("");
+  auto *command = new (thd()->mem_root) Sql_cmd_load_vector_index(
+      false, make_lex_string(vector_path.c_str()),
+      make_lex_string(docid_path.c_str()), make_lex_string(index_name.c_str()),
+      make_lex_string("FBIN"), false, true);
+  EXPECT_EQ(SQLCOM_LOAD_VECTOR, command->sql_command_code());
+  EXPECT_FALSE(command->execute(thd()));
+  EXPECT_FALSE(thd()->is_error());
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(vector_index_registry::search(index_name, {1.0F, 0.0F}, 2,
+                                           &results));
+  ASSERT_EQ(2U, results.size());
+  EXPECT_EQ(101U, results[0].doc_id);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(ItemVectorFuncFixture, UpsertBatchCoversStandaloneReaderEdges) {
+  const std::string index_name =
+      "idx_upsert_batch_item_" +
+      std::to_string(reinterpret_cast<uintptr_t>(this));
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+  ASSERT_TRUE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "memory", "native", options));
+
+  const std::string docids = binary_docid_payload({11, 22});
+  const std::string vectors = binary_vector_payload({1.0F, 0.0F, 0.0F, 1.0F});
+  auto *success_item = new Item_func_vec_index_upsert_batch(
+      POS(), make_item_list({make_string_item(index_name.c_str()),
+                             make_binary_blob_item(docids),
+                             make_binary_blob_item(vectors), new Item_uint(2)}));
+  fix_item(thd(), success_item);
+  EXPECT_EQ(2, success_item->val_int());
+  EXPECT_FALSE(success_item->null_value);
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(vector_index_registry::rebuild_index(index_name));
+  ASSERT_TRUE(vector_index_registry::search(index_name, {1.0F, 0.0F}, 2,
+                                           &results));
+  ASSERT_EQ(2U, results.size());
+  EXPECT_EQ(11U, results[0].doc_id);
+
+  auto expect_wrong_arguments = [this](Item *item) {
+    Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
+    fix_item(thd(), item);
+    EXPECT_EQ(0, item->val_int());
+    thd()->clear_error();
+    Server_initializer::set_expected_error(0);
+  };
+
+  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
+      POS(), make_item_list({make_string_item(index_name.c_str()),
+                             make_binary_blob_item(docids),
+                             make_binary_blob_item(vectors), new Item_uint(0)})));
+  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
+      POS(), make_item_list({make_string_item(index_name.c_str()),
+                             make_binary_blob_item(docids),
+                             make_binary_blob_item(vectors), new Item_uint(3)})));
+  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
+      POS(), make_item_list({make_string_item(index_name.c_str()),
+                             make_null_marked_string_item("docids"),
+                             make_binary_blob_item(vectors), new Item_uint(2)})));
+
+  const std::string non_finite_vectors = binary_vector_payload(
+      {std::numeric_limits<float>::quiet_NaN(), 0.0F});
+  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
+      POS(), make_item_list({make_string_item(index_name.c_str()),
+                             make_binary_blob_item(binary_docid_payload({33})),
+                             make_binary_blob_item(non_finite_vectors),
+                             new Item_uint(1)})));
+
+  thd()->killed = THD::KILL_QUERY;
+  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
+      POS(), make_item_list({make_string_item(index_name.c_str()),
+                             make_binary_blob_item(binary_docid_payload({44})),
+                             make_binary_blob_item(binary_vector_payload(
+                                 {4.0F, 4.0F})),
+                             new Item_uint(1)})));
+  thd()->killed = THD::NOT_KILLED;
+}
+
+TEST_F(ItemVectorFuncFixture, ItemTuningItemsRejectUnsupportedBackends) {
+  const std::string native_index =
+      "idx_item_tuning_native_" +
+      std::to_string(reinterpret_cast<uintptr_t>(this));
+  const std::string diskann_index = native_index + "_diskann";
+  ASSERT_TRUE(vector_index_registry::create_index(native_index, 2, "euclidean",
+                                                 "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_index(diskann_index, 2, "euclidean",
+                                                 "external", "diskann"));
+
+  auto expect_wrong_arguments_int = [this](Item *item) {
+    Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
+    fix_item(thd(), item);
+    EXPECT_EQ(0, item->val_int());
+    EXPECT_FALSE(item->null_value);
+    thd()->clear_error();
+    Server_initializer::set_expected_error(0);
+  };
+
+  expect_wrong_arguments_int(new Item_func_vec_index_set_search_ef(
+      POS(), make_string_item(native_index.c_str()), new Item_int(16)));
+  expect_wrong_arguments_int(new Item_func_vec_index_set_hnsw_build_params(
+      POS(), make_item_list({make_string_item(native_index.c_str()),
+                             new Item_int(16), new Item_int(200)})));
+  expect_wrong_arguments_int(new Item_func_vec_index_set_faiss_ivf_params(
+      POS(), make_item_list({make_string_item(native_index.c_str()),
+                             new Item_int(2), new Item_int(1)})));
+  expect_wrong_arguments_int(new Item_func_vec_index_set_faiss_ivfpq_params(
+      POS(), make_item_list({make_string_item(native_index.c_str()),
+                             new Item_int(2), new Item_int(1),
+                             new Item_int(2), new Item_int(8)})));
+  expect_wrong_arguments_int(new Item_func_vec_index_set_diskann_build_params(
+      POS(), make_item_list({make_string_item(native_index.c_str()),
+                             new Item_int(64), new Item_int(100)})));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_search_complexity(
+          POS(), make_string_item(native_index.c_str()), new Item_int(100)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_pq_code_budget_size(
+          POS(), make_string_item(native_index.c_str()), new Item_int(1048576)));
+
+  auto *native_auto_mode = new Item_func_vec_index_set_diskann_build_mode(
+      POS(), make_string_item(native_index.c_str()), make_string_item("auto"));
+  fix_item(thd(), native_auto_mode);
+  EXPECT_EQ(1, native_auto_mode->val_int());
+  EXPECT_FALSE(native_auto_mode->null_value);
+
+  auto *native_serial_mode = new Item_func_vec_index_set_diskann_build_mode(
+      POS(), make_string_item(native_index.c_str()), make_string_item("serial"));
+  fix_item(thd(), native_serial_mode);
+  EXPECT_EQ(0, native_serial_mode->val_int());
+  EXPECT_FALSE(native_serial_mode->null_value);
+
+  auto *diskann_serial_mode = new Item_func_vec_index_set_diskann_build_mode(
+      POS(), make_string_item(diskann_index.c_str()),
+      make_string_item("serial"));
+  fix_item(thd(), diskann_serial_mode);
+  EXPECT_EQ(1, diskann_serial_mode->val_int());
+  EXPECT_FALSE(diskann_serial_mode->null_value);
 }
 
 TEST_F(ItemVectorFuncFixture, VectorBinaryItemsCoverSuccessAndErrorPaths) {

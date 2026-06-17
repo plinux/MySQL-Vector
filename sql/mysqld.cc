@@ -4216,6 +4216,11 @@ SHOW_VAR com_status_vars[] = {
      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
     {"load", (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_LOAD]),
      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
+#ifdef HAVE_VECTOR_INDEX
+    {"load_vector",
+     (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_LOAD_VECTOR]),
+     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
+#endif
     {"lock_instance",
      (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_LOCK_INSTANCE]),
      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},

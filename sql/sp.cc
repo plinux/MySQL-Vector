@@ -2360,6 +2360,9 @@ uint sp_get_flags_for_command(LEX *lex) {
     case SQLCOM_COMMIT:
     case SQLCOM_ROLLBACK:
     case SQLCOM_LOAD:
+#ifdef HAVE_VECTOR_INDEX
+    case SQLCOM_LOAD_VECTOR:
+#endif
     case SQLCOM_LOCK_TABLES:
     case SQLCOM_CREATE_PROCEDURE:
     case SQLCOM_CREATE_SPFUNCTION:

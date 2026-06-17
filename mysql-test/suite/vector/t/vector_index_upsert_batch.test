@@ -1,0 +1,84 @@
+--source include/have_vector_debug_native.inc
+
+--echo #
+--echo # WL#Vector: VEC_INDEX_UPSERT_BATCH client bulk API
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_upsert_batch', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'standalone');
+SELECT VEC_INDEX_UPSERT_BATCH(
+  'idx_upsert_batch',
+  X'01000000000000000200000000000000',
+  X'0000803f00000000000000000000803f',
+  2) AS inserted_rows;
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_upsert_batch'),
+                                 '$.lifecycle_state')) AS lifecycle_state;
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH('idx_upsert_batch', VEC_FROMTEXT('[1,0]'), 1);
+SELECT VEC_INDEX_BULK_BUILD('idx_upsert_batch');
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_upsert_batch', VEC_FROMTEXT('[1,0]'), 2),
+  CAST(1 AS JSON)) AS has_doc_1,
+  JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_upsert_batch', VEC_FROMTEXT('[0,1]'), 2),
+  CAST(2 AS JSON)) AS has_doc_2;
+
+SELECT VEC_INDEX_UPSERT_BATCH(
+  'idx_upsert_batch',
+  X'0100000000000000',
+  X'0000000000000040',
+  1) AS replaced_rows;
+SELECT VEC_INDEX_BULK_BUILD('idx_upsert_batch');
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_upsert_batch', VEC_FROMTEXT('[0,2]'), 1),
+  CAST(1 AS JSON)) AS replaced_doc_visible;
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT_BATCH('idx_upsert_batch', X'', X'', 0);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT_BATCH(NULL,
+                              X'0100000000000000',
+                              X'0000803f00000000',
+                              1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT_BATCH('idx_upsert_batch',
+                              NULL,
+                              X'0000803f00000000',
+                              1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT_BATCH('idx_upsert_batch',
+                              X'0100000000000000',
+                              NULL,
+                              1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT_BATCH('idx_upsert_batch',
+                              X'0100000000000000',
+                              X'0000803f00000000',
+                              NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT_BATCH('idx_upsert_batch',
+                              X'0100000000000000', X'0000803f', 1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT_BATCH('idx_upsert_batch',
+                              X'0100000000000000', X'0000803f00000000', 2);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT_BATCH('idx_upsert_batch',
+                              X'0100000000000000', X'0000c07f00000000', 1);
+
+SELECT VEC_INDEX_CREATE('idx_upsert_batch_txn', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE');
+SELECT VEC_INDEX_UPSERT_BATCH(
+  'idx_upsert_batch_txn',
+  X'0100000000000000',
+  X'0000803f00000000',
+  1) AS txn_inserted_rows;
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_upsert_batch_txn'),
+                                 '$.lifecycle_state')) AS txn_lifecycle_state,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_upsert_batch_txn'),
+                    '$.committed_entry_count') AS txn_committed_count;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_upsert_batch_txn', VEC_FROMTEXT('[1,0]'), 1),
+  CAST(1 AS JSON)) AS txn_has_doc_1;
+
+SELECT VEC_INDEX_DROP('idx_upsert_batch_txn');
+SELECT VEC_INDEX_DROP('idx_upsert_batch');

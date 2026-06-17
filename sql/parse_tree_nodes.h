@@ -69,6 +69,7 @@
 #include "sql/sql_restart_server.h"  // Sql_cmd_restart_server
 #include "sql/sql_tablespace.h"      // Tablespace_options
 #include "sql/sql_truncate.h"        // Sql_cmd_truncate_table
+#include "sql/vector/sql_vector_load.h"  // Sql_cmd_load_vector_index
 #include "sql/table.h"               // Common_table_expr
 #include "sql/window_lex.h"
 #include "thr_lock.h"
@@ -2272,7 +2273,9 @@ class PT_create_vector_index_stmt final : public PT_table_ddl_stmt_base {
                               const LEX_STRING &mode,
                               const LEX_STRING &provider,
                               bool build_threads_specified,
-                              uint32_t build_threads)
+                              ulonglong build_threads,
+                              bool consistency_mode_specified,
+                              const LEX_STRING &consistency_mode)
       : PT_table_ddl_stmt_base(mem_root),
         m_if_not_exists(if_not_exists),
         m_table_ident(table_ident),
@@ -2282,7 +2285,9 @@ class PT_create_vector_index_stmt final : public PT_table_ddl_stmt_base {
         m_mode(mode),
         m_provider(provider),
         m_build_threads_specified(build_threads_specified),
-        m_build_threads(build_threads) {}
+        m_build_threads(build_threads),
+        m_consistency_mode_specified(consistency_mode_specified),
+        m_consistency_mode(consistency_mode) {}
 
   Sql_cmd *make_cmd(THD *thd) override;
 
@@ -2295,7 +2300,9 @@ class PT_create_vector_index_stmt final : public PT_table_ddl_stmt_base {
   LEX_STRING m_mode;
   LEX_STRING m_provider;
   bool m_build_threads_specified;
-  uint32_t m_build_threads;
+  ulonglong m_build_threads;
+  bool m_consistency_mode_specified;
+  LEX_STRING m_consistency_mode;
 };
 
 /**
@@ -5278,6 +5285,22 @@ class PT_load_table final : public Parse_tree_root {
   Sql_cmd_load_table m_cmd;
 
   const thr_lock_type m_lock_type;
+};
+
+class PT_load_vector_index final : public Parse_tree_root {
+ public:
+  PT_load_vector_index(bool is_local_file, const LEX_STRING &vector_filename,
+                       const LEX_STRING &docid_filename,
+                       const LEX_STRING &index_name,
+                       const LEX_STRING &format, bool replace_duplicates,
+                       bool rebuild_after_load)
+      : m_cmd(is_local_file, vector_filename, docid_filename, index_name,
+              format, replace_duplicates, rebuild_after_load) {}
+
+  Sql_cmd *make_cmd(THD *thd) override;
+
+ private:
+  Sql_cmd_load_vector_index m_cmd;
 };
 
 /**

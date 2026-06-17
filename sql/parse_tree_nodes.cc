@@ -114,6 +114,8 @@
 #include "sql/trigger_def.h"
 #ifdef HAVE_VECTOR_INDEX
 #include "sql/vector/vector_dml_sync.h"
+#include "sql/vector/vector_index_build_options.h"
+#include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
 #endif
@@ -383,7 +385,7 @@ bool backfill_vector_index(THD *thd, Table_ref *table_ref,
 
   if (!failed) {
     for (const auto &entry : backfill_entries) {
-      if (!vector_index_registry::replace_committed_entries_preserve_lifecycle(
+      if (!vector_index_registry::replace_committed_entries_for_backfill(
               entry.first, entry.second)) {
         my_error(ER_INTERNAL_ERROR, MYF(0), "vector index backfill failed");
         failed = true;
@@ -408,7 +410,9 @@ class Sql_cmd_create_vector_index final : public Sql_cmd {
                               std::string metric, std::string mode,
                               std::string provider,
                               bool build_threads_specified,
-                              uint32_t build_threads)
+                              ulonglong build_threads,
+                              bool consistency_mode_specified,
+                              std::string consistency_mode)
       : m_if_not_exists(if_not_exists),
         m_column_name(std::move(column_name)),
         m_dimension(dimension),
@@ -416,7 +420,9 @@ class Sql_cmd_create_vector_index final : public Sql_cmd {
         m_mode(std::move(mode)),
         m_provider(std::move(provider)),
         m_build_threads_specified(build_threads_specified),
-        m_build_threads(build_threads) {}
+        m_build_threads(build_threads),
+        m_consistency_mode_specified(consistency_mode_specified),
+        m_consistency_mode(std::move(consistency_mode)) {}
 
   enum_sql_command sql_command_code() const override {
     return SQLCOM_CREATE_INDEX;
@@ -465,10 +471,29 @@ class Sql_cmd_create_vector_index final : public Sql_cmd {
                                               &doc_id_column_name)) {
       return true;
     }
+    if (m_build_threads_specified &&
+        m_build_threads > vector_index::k_max_build_threads) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), "CREATE VECTOR INDEX");
+      return true;
+    }
 
     vector_index_registry::create_index_options options;
     options.build_threads_specified = m_build_threads_specified;
-    options.build_threads = m_build_threads;
+    options.build_threads = static_cast<uint32_t>(m_build_threads);
+    if (m_consistency_mode_specified) {
+      vector_index::index_consistency_mode consistency_mode;
+      if (!vector_index::parse_index_consistency_mode(m_consistency_mode,
+                                                      &consistency_mode)) {
+        my_error(ER_WRONG_ARGUMENTS, MYF(0), "CREATE VECTOR INDEX");
+        return true;
+      }
+      options.consistency_mode_specified = true;
+      options.consistency_mode = consistency_mode;
+    }
+    options.diskann_max_degree =
+        static_cast<uint32_t>(opt_vector_diskann_max_degree);
+    options.diskann_build_complexity =
+        static_cast<uint32_t>(opt_vector_diskann_build_complexity);
     options.initial_lifecycle_state = kVectorIndexLifecycleCreating;
 
     if (!vector_index_registry::create_mapped_index(
@@ -494,7 +519,7 @@ class Sql_cmd_create_vector_index final : public Sql_cmd {
       return true;
     }
 
-    if (!vector_index_registry::set_lifecycle_state(
+    if (!vector_index_registry::finish_backfill(
             index_name, kVectorIndexLifecycleReady)) {
       (void)vector_index_registry::drop_index(index_name);
       my_error(ER_INTERNAL_ERROR, MYF(0), "CREATE VECTOR INDEX");
@@ -521,7 +546,9 @@ class Sql_cmd_create_vector_index final : public Sql_cmd {
   std::string m_mode;
   std::string m_provider;
   bool m_build_threads_specified;
-  uint32_t m_build_threads;
+  ulonglong m_build_threads;
+  bool m_consistency_mode_specified;
+  std::string m_consistency_mode;
 };
 
 class Sql_cmd_drop_vector_index final : public Sql_cmd {
@@ -2302,7 +2329,8 @@ Sql_cmd *PT_create_vector_index_stmt::make_cmd([[maybe_unused]] THD *thd) {
   return new (thd->mem_root) Sql_cmd_create_vector_index(
       m_if_not_exists, to_string(m_column_name), m_dimension, std::move(metric),
       std::move(mode), std::move(provider), m_build_threads_specified,
-      m_build_threads);
+      m_build_threads, m_consistency_mode_specified,
+      to_string(m_consistency_mode));
 #endif
 }
 
@@ -4158,6 +4186,11 @@ Sql_cmd *PT_load_table::make_cmd(THD *thd) {
   assert(select->parsing_place == CTX_UPDATE_VALUE);
   select->parsing_place = CTX_NONE;
 
+  return &m_cmd;
+}
+
+Sql_cmd *PT_load_vector_index::make_cmd(THD *thd) {
+  thd->lex->sql_command = Sql_cmd_load_vector_index::command_code();
   return &m_cmd;
 }
 

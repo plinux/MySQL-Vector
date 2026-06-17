@@ -25,6 +25,67 @@ VEC_INDEX_SEARCH('test.t_vec_rpl.v', '[2,2]', 8), CAST(2 AS JSON));
 JSON_CONTAINS(
 VEC_INDEX_SEARCH('test.t_vec_rpl.v', '[2,2]', 8), CAST(2 AS JSON))
 0
+SELECT VEC_INDEX_CREATE('idx_vec_rpl_load', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB');
+VEC_INDEX_CREATE('idx_vec_rpl_load', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load', '[4,1]', 2), CAST(401 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load', '[4,1]', 2), CAST(401 AS JSON))
+1
+SELECT VEC_INDEX_CREATE('idx_vec_rpl_load_fbin', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB');
+VEC_INDEX_CREATE('idx_vec_rpl_load_fbin', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load_fbin', '[1,0]', 2), CAST(101 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load_fbin', '[1,0]', 2), CAST(101 AS JSON))
+1
+SELECT VEC_INDEX_CREATE('idx_vec_rpl_load_standalone', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'standalone');
+VEC_INDEX_CREATE('idx_vec_rpl_load_standalone', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'standalone')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load_standalone', '[4,2]', 2),
+CAST(402 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load_standalone', '[4,2]', 2),
+CAST(402 AS JSON))
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load', '[4,1]', 2), CAST(401 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load', '[4,1]', 2), CAST(401 AS JSON))
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load_fbin', '[1,0]', 2), CAST(101 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load_fbin', '[1,0]', 2), CAST(101 AS JSON))
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load_standalone', '[4,2]', 2),
+CAST(402 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_vec_rpl_load_standalone', '[4,2]', 2),
+CAST(402 AS JSON))
+1
+SELECT VEC_INDEX_DROP('idx_vec_rpl_load');
+VEC_INDEX_DROP('idx_vec_rpl_load')
+1
+SELECT VEC_INDEX_DROP('idx_vec_rpl_load_fbin');
+VEC_INDEX_DROP('idx_vec_rpl_load_fbin')
+1
+SELECT VEC_INDEX_DROP('idx_vec_rpl_load_standalone');
+VEC_INDEX_DROP('idx_vec_rpl_load_standalone')
+1
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["test.t_vec_rpl.v"]
 DROP TABLE IF EXISTS t_vec_rpl_like;
 Warnings:
 Note	1051	Unknown table 'test.t_vec_rpl_like'
