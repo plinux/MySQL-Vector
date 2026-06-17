@@ -23,4 +23,10 @@ SELECT @@global.vector_faiss_train_size;
 SELECT @@global.vector_hnsw_index_memory_size;
 @@global.vector_hnsw_index_memory_size
 7516192768
+SELECT @@global.vector_build_pipeline_min_size;
+@@global.vector_build_pipeline_min_size
+8388608
+SELECT @@global.vector_build_segment_target_size;
+@@global.vector_build_segment_target_size
+9437184
 # End of tests.

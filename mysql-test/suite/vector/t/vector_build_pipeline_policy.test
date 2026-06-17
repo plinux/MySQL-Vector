@@ -1,0 +1,54 @@
+--source include/have_vector_debug_native.inc
+
+--echo #
+--echo # WL#Vector: adaptive build pipeline policy visibility
+--echo #
+
+SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
+SET @old_vector_build_pipeline_min_rows = @@GLOBAL.vector_build_pipeline_min_rows;
+SET @old_vector_build_pipeline_min_size = @@GLOBAL.vector_build_pipeline_min_size;
+
+SELECT VEC_INDEX_CREATE('idx_pipeline_policy', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'standalone');
+SELECT VEC_INDEX_UPSERT('idx_pipeline_policy', 1, '[1,0]');
+
+SET GLOBAL vector_build_pipeline_mode = 'direct';
+SELECT VEC_INDEX_REBUILD('idx_pipeline_policy');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_pipeline_mode')) AS mode,
+       JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_pipeline_decision')) AS decision,
+       JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_pipeline_trigger')) AS pipeline_trigger;
+
+SET GLOBAL vector_build_pipeline_mode = 'segmented';
+SELECT VEC_INDEX_REBUILD('idx_pipeline_policy');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_pipeline_mode')) AS mode,
+       JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_pipeline_decision')) AS decision,
+       JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_pipeline_trigger')) AS pipeline_trigger;
+
+SET GLOBAL vector_build_pipeline_mode = 'auto';
+SET GLOBAL vector_build_pipeline_min_rows = 1;
+SET GLOBAL vector_build_pipeline_min_size = 0;
+SELECT VEC_INDEX_REBUILD('idx_pipeline_policy');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_pipeline_mode')) AS mode,
+       JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_pipeline_decision')) AS decision,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_pipeline_trigger')) AS pipeline_trigger,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                    '$.build_pipeline_rows') AS pipeline_rows,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                    '$.build_pipeline_payload_size') AS payload_size,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                    '$.build_pipeline_raw_segments') AS raw_segments;
+
+SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+SET GLOBAL vector_build_pipeline_min_rows = @old_vector_build_pipeline_min_rows;
+SET GLOBAL vector_build_pipeline_min_size = @old_vector_build_pipeline_min_size;
+
+SELECT VEC_INDEX_DROP('idx_pipeline_policy');

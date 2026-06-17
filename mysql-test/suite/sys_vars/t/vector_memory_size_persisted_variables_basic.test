@@ -18,14 +18,18 @@ WHERE VARIABLE_NAME IN (
   'vector_entry_cache_size',
   'vector_pending_cache_size',
   'vector_build_memory_size',
+  'vector_build_pipeline_min_size',
+  'vector_build_segment_target_size',
   'vector_diskann_build_memory_size',
+  'vector_diskann_pq_code_budget_size',
+  'vector_diskann_search_cache_size',
   'vector_diskann_raw_segment_size',
   'vector_faiss_train_size',
   'vector_hnsw_index_memory_size')
 ORDER BY VARIABLE_NAME;
 
 --let $assert_text= Expect all vector size variables to be registered.
---let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 7
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 11
 --source include/assert.inc
 
 --let $assert_text= Expect vector size variables not to be persisted before SET PERSIST.
@@ -36,13 +40,17 @@ ORDER BY VARIABLE_NAME;
 SET PERSIST vector_entry_cache_size=1048576;
 SET PERSIST vector_pending_cache_size=2097152;
 SET PERSIST vector_build_memory_size=3145728;
-SET PERSIST vector_diskann_build_memory_size=4194304;
-SET PERSIST vector_diskann_raw_segment_size=5242880;
-SET PERSIST vector_faiss_train_size=6291456;
-SET PERSIST vector_hnsw_index_memory_size=7340032;
+SET PERSIST vector_build_pipeline_min_size=4194304;
+SET PERSIST vector_build_segment_target_size=5242880;
+SET PERSIST vector_diskann_build_memory_size=6291456;
+SET PERSIST vector_diskann_pq_code_budget_size=7340032;
+SET PERSIST vector_diskann_search_cache_size=8388608;
+SET PERSIST vector_diskann_raw_segment_size=9437184;
+SET PERSIST vector_faiss_train_size=10485760;
+SET PERSIST vector_hnsw_index_memory_size=11534336;
 
 --let $assert_text= Expect vector size variables to be persisted before restart.
---let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 7
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 11
 --source include/assert.inc
 
 SELECT VARIABLE_NAME, VARIABLE_VALUE
@@ -51,7 +59,11 @@ WHERE VARIABLE_NAME IN (
   'vector_entry_cache_size',
   'vector_pending_cache_size',
   'vector_build_memory_size',
+  'vector_build_pipeline_min_size',
+  'vector_build_segment_target_size',
   'vector_diskann_build_memory_size',
+  'vector_diskann_pq_code_budget_size',
+  'vector_diskann_search_cache_size',
   'vector_diskann_raw_segment_size',
   'vector_faiss_train_size',
   'vector_hnsw_index_memory_size')
@@ -62,7 +74,7 @@ ORDER BY VARIABLE_NAME;
 --source include/wait_until_connected_again.inc
 
 --let $assert_text= Expect vector size variables to be persisted after restart.
---let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 7
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME LIKE 'vector\\_%\\_size', count, 1] = 11
 --source include/assert.inc
 
 SELECT vi.VARIABLE_NAME, vi.VARIABLE_SOURCE, pv.VARIABLE_VALUE, gv.VARIABLE_VALUE
@@ -75,7 +87,11 @@ WHERE vi.VARIABLE_NAME IN (
   'vector_entry_cache_size',
   'vector_pending_cache_size',
   'vector_build_memory_size',
+  'vector_build_pipeline_min_size',
+  'vector_build_segment_target_size',
   'vector_diskann_build_memory_size',
+  'vector_diskann_pq_code_budget_size',
+  'vector_diskann_search_cache_size',
   'vector_diskann_raw_segment_size',
   'vector_faiss_train_size',
   'vector_hnsw_index_memory_size')
@@ -85,7 +101,11 @@ ORDER BY vi.VARIABLE_NAME;
 RESET PERSIST IF EXISTS vector_entry_cache_size;
 RESET PERSIST IF EXISTS vector_pending_cache_size;
 RESET PERSIST IF EXISTS vector_build_memory_size;
+RESET PERSIST IF EXISTS vector_build_pipeline_min_size;
+RESET PERSIST IF EXISTS vector_build_segment_target_size;
 RESET PERSIST IF EXISTS vector_diskann_build_memory_size;
+RESET PERSIST IF EXISTS vector_diskann_pq_code_budget_size;
+RESET PERSIST IF EXISTS vector_diskann_search_cache_size;
 RESET PERSIST IF EXISTS vector_diskann_raw_segment_size;
 RESET PERSIST IF EXISTS vector_faiss_train_size;
 RESET PERSIST IF EXISTS vector_hnsw_index_memory_size;

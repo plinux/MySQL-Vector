@@ -16,6 +16,12 @@ INDEX_STATE	idx_mem.provider	native
 INDEX_STATE	idx_mem.consistency_mode	transactional
 INDEX_STATE	idx_mem.truth_store_enabled	1
 INDEX_STATE	idx_mem.build_source	truth_store
+INDEX_STATE	idx_mem.build_pipeline_mode	auto
+INDEX_STATE	idx_mem.build_pipeline_decision	direct
+INDEX_STATE	idx_mem.build_pipeline_trigger	below_threshold
+INDEX_STATE	idx_mem.build_pipeline_rows	0
+INDEX_STATE	idx_mem.build_pipeline_payload_size	0
+INDEX_STATE	idx_mem.build_pipeline_raw_segments	0
 INDEX_STATE	idx_mem.standalone_ingest_memory_bytes	0
 INDEX_STATE	idx_mem.standalone_segment_count	0
 INDEX_STATE	idx_mem.standalone_segment_bytes	0
@@ -73,6 +79,12 @@ INDEX_STATE	idx_ext.provider	faiss
 INDEX_STATE	idx_ext.consistency_mode	transactional
 INDEX_STATE	idx_ext.truth_store_enabled	1
 INDEX_STATE	idx_ext.build_source	truth_store
+INDEX_STATE	idx_ext.build_pipeline_mode	auto
+INDEX_STATE	idx_ext.build_pipeline_decision	direct
+INDEX_STATE	idx_ext.build_pipeline_trigger	below_threshold
+INDEX_STATE	idx_ext.build_pipeline_rows	0
+INDEX_STATE	idx_ext.build_pipeline_payload_size	0
+INDEX_STATE	idx_ext.build_pipeline_raw_segments	0
 INDEX_STATE	idx_ext.standalone_ingest_memory_bytes	0
 INDEX_STATE	idx_ext.standalone_segment_count	0
 INDEX_STATE	idx_ext.standalone_segment_bytes	0
@@ -130,6 +142,12 @@ INDEX_STATE	idx_ext.provider	faiss
 INDEX_STATE	idx_ext.consistency_mode	transactional
 INDEX_STATE	idx_ext.truth_store_enabled	1
 INDEX_STATE	idx_ext.build_source	truth_store
+INDEX_STATE	idx_ext.build_pipeline_mode	auto
+INDEX_STATE	idx_ext.build_pipeline_decision	direct
+INDEX_STATE	idx_ext.build_pipeline_trigger	below_threshold
+INDEX_STATE	idx_ext.build_pipeline_rows	0
+INDEX_STATE	idx_ext.build_pipeline_payload_size	0
+INDEX_STATE	idx_ext.build_pipeline_raw_segments	0
 INDEX_STATE	idx_ext.standalone_ingest_memory_bytes	0
 INDEX_STATE	idx_ext.standalone_segment_count	0
 INDEX_STATE	idx_ext.standalone_segment_bytes	0
@@ -195,7 +213,7 @@ v VECTOR(2)
 CREATE VECTOR INDEX ON t_vec_status_meta(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SELECT VEC_INDEX_INFO('test.t_vec_status_meta.v');
 VEC_INDEX_INFO('test.t_vec_status_meta.v')
-{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vec_status_meta","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":5,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vec_status_meta","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":5,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
 SHOW VECTOR STATUS FOR INDEX 'test.t_vec_status_meta.v'
   WHERE Section = 'INDEX_STATE'
     AND Variable_name LIKE 'test.t_vec_status_meta.v.%';
@@ -207,6 +225,12 @@ INDEX_STATE	test.t_vec_status_meta.v.provider	native
 INDEX_STATE	test.t_vec_status_meta.v.consistency_mode	transactional
 INDEX_STATE	test.t_vec_status_meta.v.truth_store_enabled	1
 INDEX_STATE	test.t_vec_status_meta.v.build_source	truth_store
+INDEX_STATE	test.t_vec_status_meta.v.build_pipeline_mode	auto
+INDEX_STATE	test.t_vec_status_meta.v.build_pipeline_decision	direct
+INDEX_STATE	test.t_vec_status_meta.v.build_pipeline_trigger	below_threshold
+INDEX_STATE	test.t_vec_status_meta.v.build_pipeline_rows	0
+INDEX_STATE	test.t_vec_status_meta.v.build_pipeline_payload_size	0
+INDEX_STATE	test.t_vec_status_meta.v.build_pipeline_raw_segments	0
 INDEX_STATE	test.t_vec_status_meta.v.standalone_ingest_memory_bytes	0
 INDEX_STATE	test.t_vec_status_meta.v.standalone_segment_count	0
 INDEX_STATE	test.t_vec_status_meta.v.standalone_segment_bytes	0

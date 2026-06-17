@@ -1709,6 +1709,16 @@ bool get_index_info(const std::string &index_name, index_info *info) {
           &info->external_manifest_generation)) {
     return false;
   }
+  vector_index::index_service::build_pipeline_snapshot pipeline_snapshot;
+  if (g_index_service.describe_build_pipeline(index_name,
+                                              &pipeline_snapshot)) {
+    info->build_pipeline_mode = pipeline_snapshot.mode;
+    info->build_pipeline_decision = pipeline_snapshot.decision;
+    info->build_pipeline_trigger = pipeline_snapshot.trigger;
+    info->build_pipeline_rows = pipeline_snapshot.row_count;
+    info->build_pipeline_payload_size = pipeline_snapshot.payload_size;
+    info->build_pipeline_raw_segments = pipeline_snapshot.raw_segment_count;
+  }
 
   info->dimension = config.dimension;
   info->metric = vector_index::metric_to_string(config.metric);

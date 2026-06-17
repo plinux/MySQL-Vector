@@ -45,6 +45,12 @@ struct index_info {
   std::string consistency_mode;
   bool truth_store_enabled{true};
   std::string build_source;
+  std::string build_pipeline_mode;
+  std::string build_pipeline_decision;
+  std::string build_pipeline_trigger;
+  uint64_t build_pipeline_rows{0};
+  uint64_t build_pipeline_payload_size{0};
+  uint64_t build_pipeline_raw_segments{0};
   size_t standalone_ingest_memory_bytes{0};
   size_t standalone_segment_count{0};
   size_t standalone_segment_bytes{0};

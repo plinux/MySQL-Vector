@@ -38,6 +38,7 @@
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_index_build_options.h"
+#include "sql/vector/vector_index_runtime_config.h"
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_load_file.h"
@@ -1923,6 +1924,48 @@ void index_service::maybe_unload_runtime(const std::string &index_name) {
   index_it->second = std::move(unloaded);
 }
 
+build_input_stats index_service::collect_build_input_stats(
+    const std::string &index_name, const index_config &config) const {
+  build_input_stats stats;
+  const size_t rows =
+      config.consistency_mode == index_consistency_mode::kStandalone
+          ? m_standalone_store.entry_count(index_name)
+          : m_entry_store.entry_count(index_name);
+  stats.row_count = static_cast<uint64_t>(rows);
+
+  const size_t payload_bytes =
+      saturated_mul_size(saturated_mul_size(rows, config.dimension),
+                         sizeof(float));
+  stats.payload_size = payload_bytes == std::numeric_limits<size_t>::max()
+                           ? std::numeric_limits<uint64_t>::max()
+                           : static_cast<uint64_t>(payload_bytes);
+
+  if (config.consistency_mode == index_consistency_mode::kStandalone) {
+    stats.raw_segment_count =
+        static_cast<uint64_t>(m_standalone_store.raw_segment_count(index_name));
+    stats.has_raw_segments = stats.raw_segment_count > 0;
+  }
+  return stats;
+}
+
+void index_service::record_build_pipeline_decision(
+    const std::string &index_name, const index_config &config) {
+  const build_pipeline_runtime_config runtime_config =
+      global_build_pipeline_runtime_config();
+  const build_input_stats stats = collect_build_input_stats(index_name, config);
+  const build_pipeline_decision decision =
+      select_build_pipeline(stats, runtime_config.thresholds);
+
+  build_pipeline_snapshot snapshot;
+  snapshot.mode = build_pipeline_mode_name(runtime_config.thresholds.mode);
+  snapshot.decision = build_pipeline_path_name(decision.path);
+  snapshot.trigger = build_pipeline_trigger_name(decision.trigger);
+  snapshot.row_count = stats.row_count;
+  snapshot.payload_size = stats.payload_size;
+  snapshot.raw_segment_count = stats.raw_segment_count;
+  m_build_pipeline_snapshots[index_name] = std::move(snapshot);
+}
+
 bool index_service::register_index(const std::string &index_name,
                                    std::unique_ptr<backend> backend) {
   if (backend == nullptr || index_name.empty()) return false;
@@ -1974,6 +2017,7 @@ bool index_service::register_index_impl(const std::string &index_name,
   m_index_configs[index_name] = std::move(config);
   m_lifecycle_infos[index_name] =
       lifecycle_info{LIFECYCLE_READY, 1, ERROR_NONE, 0, 0, 0, 0};
+  m_build_pipeline_snapshots[index_name] = build_pipeline_snapshot{};
   return true;
 }
 
@@ -2040,6 +2084,7 @@ bool index_service::unregister_index(const std::string &index_name) {
   m_entry_store.drop_index(index_name);
   m_standalone_store.drop_index(index_name);
   m_lifecycle_infos.erase(index_name);
+  m_build_pipeline_snapshots.erase(index_name);
   return true;
 }
 
@@ -2061,6 +2106,13 @@ bool index_service::rename_index(const std::string &old_index_name,
 
   const index_config config = old_config_it->second;
   const lifecycle_info lifecycle = old_lifecycle_it->second;
+  build_pipeline_snapshot pipeline_snapshot;
+  bool has_pipeline_snapshot = false;
+  auto old_pipeline_it = m_build_pipeline_snapshots.find(old_index_name);
+  if (old_pipeline_it != m_build_pipeline_snapshots.end()) {
+    pipeline_snapshot = old_pipeline_it->second;
+    has_pipeline_snapshot = true;
+  }
 
   std::unique_ptr<backend> renamed_backend =
       build_backend_from_config(new_index_name, config);
@@ -2078,10 +2130,15 @@ bool index_service::rename_index(const std::string &old_index_name,
   m_indexes.erase(old_index_it);
   m_index_configs.erase(old_config_it);
   m_lifecycle_infos.erase(old_lifecycle_it);
+  m_build_pipeline_snapshots.erase(old_index_name);
 
   m_indexes.emplace(new_index_name, std::move(renamed_backend));
   m_index_configs.emplace(new_index_name, config);
   m_lifecycle_infos.emplace(new_index_name, lifecycle);
+  if (has_pipeline_snapshot) {
+    m_build_pipeline_snapshots.emplace(new_index_name,
+                                       std::move(pipeline_snapshot));
+  }
   maybe_unload_runtime(new_index_name);
 
   for (auto &txn_changes : m_pending_changes) {
@@ -2133,6 +2190,7 @@ bool index_service::rebuild_index(const std::string &index_name) {
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_BACKEND_CREATE_FAILED);
     return false;
   }
+  record_build_pipeline_decision(index_name, config_it->second);
   if (!rebuild_backend_from_source(m_entry_store, m_standalone_store,
                                    index_name, config_it->second,
                                    rebuilt.get())) {
@@ -2444,6 +2502,7 @@ bool index_service::rebuild_all_indexes(size_t *rebuilt_count) {
     std::unique_ptr<backend> rebuilt =
         build_backend_from_config(index_name, config);
     if (rebuilt == nullptr) return false;
+    record_build_pipeline_decision(index_name, config);
     if (!rebuild_backend_from_source(m_entry_store, m_standalone_store,
                                      index_name, config, rebuilt.get())) {
       return false;
@@ -2723,6 +2782,18 @@ size_t index_service::standalone_raw_segment_bytes(
 std::string index_service::standalone_build_source(
     const std::string &index_name) const {
   return m_standalone_store.build_source(index_name);
+}
+
+bool index_service::describe_build_pipeline(
+    const std::string &index_name, build_pipeline_snapshot *snapshot) const {
+  if (snapshot == nullptr) return false;
+  if (m_index_configs.find(index_name) == m_index_configs.end()) return false;
+
+  auto snapshot_it = m_build_pipeline_snapshots.find(index_name);
+  *snapshot = snapshot_it == m_build_pipeline_snapshots.end()
+                  ? build_pipeline_snapshot{}
+                  : snapshot_it->second;
+  return true;
 }
 
 bool index_service::restore_committed_state(const committed_state &state) {
@@ -3038,6 +3109,7 @@ bool index_service::bulk_upsert_from_reader(
     return false;
   }
   mark_lifecycle_state(&lifecycle_it->second, LIFECYCLE_REBUILDING);
+  record_build_pipeline_decision(index_name, config_it->second);
   if (!rebuild_backend_from_store(m_entry_store, index_name, rebuilt.get())) {
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_REPLAY_STATE_FAILED);
     set_bulk_load_error(error, "LOAD VECTOR DATA could not rebuild index");

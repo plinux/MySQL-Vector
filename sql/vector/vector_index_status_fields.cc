@@ -125,7 +125,7 @@ void collect_info_fields(const vector_index_registry::index_info &info,
                          field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(45);
+  fields->reserve(58);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
@@ -134,6 +134,16 @@ void collect_info_fields(const vector_index_registry::index_info &info,
   append_string(fields, "consistency_mode", info.consistency_mode);
   append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
   append_string(fields, "build_source", info.build_source);
+  append_string(fields, "build_pipeline_mode", info.build_pipeline_mode);
+  append_string(fields, "build_pipeline_decision",
+                info.build_pipeline_decision);
+  append_string(fields, "build_pipeline_trigger",
+                info.build_pipeline_trigger);
+  append_uint(fields, "build_pipeline_rows", info.build_pipeline_rows);
+  append_uint(fields, "build_pipeline_payload_size",
+              info.build_pipeline_payload_size);
+  append_uint(fields, "build_pipeline_raw_segments",
+              info.build_pipeline_raw_segments);
   append_uint(fields, "standalone_ingest_memory_bytes",
               info.standalone_ingest_memory_bytes);
   append_uint(fields, "standalone_segment_count",
@@ -194,7 +204,7 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
                                 field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(35);
+  fields->reserve(41);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
@@ -203,6 +213,16 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
   append_string(fields, "consistency_mode", info.consistency_mode);
   append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
   append_string(fields, "build_source", info.build_source);
+  append_string(fields, "build_pipeline_mode", info.build_pipeline_mode);
+  append_string(fields, "build_pipeline_decision",
+                info.build_pipeline_decision);
+  append_string(fields, "build_pipeline_trigger",
+                info.build_pipeline_trigger);
+  append_uint(fields, "build_pipeline_rows", info.build_pipeline_rows);
+  append_uint(fields, "build_pipeline_payload_size",
+              info.build_pipeline_payload_size);
+  append_uint(fields, "build_pipeline_raw_segments",
+              info.build_pipeline_raw_segments);
   append_uint(fields, "standalone_ingest_memory_bytes",
               info.standalone_ingest_memory_bytes);
   append_uint(fields, "standalone_segment_count",
@@ -250,7 +270,7 @@ void collect_backend_health_fields(
     const vector_index_registry::index_info &info, field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(14);
+  fields->reserve(21);
 
   append_string(fields, "backend_type", info.provider);
   append_nullable_string(fields, "backend_variant", info.backend_variant);

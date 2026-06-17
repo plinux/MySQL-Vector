@@ -140,6 +140,7 @@
 #include "sql/transaction.h"  // trans_commit_stmt
 #include "sql/transaction_info.h"
 #ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_build_pipeline_policy.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_limits.h"
 #endif
@@ -6873,9 +6874,10 @@ static Sys_var_ulonglong Sys_vector_entry_cache_size(
 static Sys_var_ulonglong Sys_vector_pending_cache_size(
     "vector_pending_cache_size",
     "Total in-memory budget in bytes for uncommitted vector payloads before "
-    "transaction-local spill files are used.",
+    "transaction-local spill files are used. Use 0 for no MySQL-layer pending "
+    "payload limit.",
     GLOBAL_VAR(opt_vector_pending_cache_size), CMD_LINE(REQUIRED_ARG),
-    VALID_RANGE(VECTOR_ONE_MB, max_mem_sz), DEFAULT(VECTOR_64_MB),
+    VALID_RANGE(0, max_mem_sz), DEFAULT(VECTOR_64_MB),
     BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
 
 static Sys_var_ulonglong Sys_vector_build_memory_size(
@@ -6909,6 +6911,13 @@ static Sys_var_ulonglong Sys_vector_faiss_train_size(
     GLOBAL_VAR(opt_vector_faiss_train_size), CMD_LINE(REQUIRED_ARG),
     VALID_RANGE(0, max_mem_sz), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
     NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_bool Sys_vector_faiss_keep_loaded(
+    "vector_faiss_keep_loaded",
+    "Keep FAISS external serving indexes loaded after snapshot writes. Disable "
+    "only for diagnostics that need to exercise snapshot fallback search.",
+    GLOBAL_VAR(opt_vector_faiss_keep_loaded), CMD_LINE(OPT_ARG),
+    DEFAULT(true), NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_ulonglong Sys_vector_hnsw_index_memory_size(
     "vector_hnsw_index_memory_size",
@@ -6984,6 +6993,412 @@ static Sys_var_ulong Sys_vector_diskann_build_threads(
     VALID_RANGE(0, vector_index::k_max_build_threads), DEFAULT(0),
     BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
     ON_CHECK(check_vector_diskann_build_threads));
+
+static Sys_var_ulong Sys_vector_diskann_build_blas_threads(
+    "vector_diskann_build_blas_threads",
+    "PQ and numeric library worker count used inside DiskANN offline build. "
+    "Use 0 to leave inner PQ and numeric-library thread selection unchanged.",
+    GLOBAL_VAR(opt_vector_diskann_build_blas_threads), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, vector_index::k_max_build_threads), DEFAULT(1),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_threads));
+
+static bool check_vector_search_batch_count(sys_var *self, THD *,
+                                            set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const longlong signed_value = var->value->val_int();
+  if (!var->value->unsigned_flag && signed_value < 0) {
+    const std::string value = std::to_string(signed_value);
+    my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value.c_str());
+    return true;
+  }
+
+  const ulonglong value = var->value->val_uint();
+  if (value >= 1 && value <= vector_index::k_max_search_batch_count) {
+    return false;
+  }
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static Sys_var_ulong Sys_vector_search_batch_count(
+    "vector_search_batch_count",
+    "Maximum query vector count accepted by VEC_INDEX_SEARCH_BATCH().",
+    GLOBAL_VAR(opt_vector_search_batch_count), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(1, vector_index::k_max_search_batch_count),
+    DEFAULT(vector_index::k_default_search_batch_count), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_search_batch_count));
+
+static bool check_vector_search_batch_result_count(sys_var *self, THD *,
+                                                   set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const longlong signed_value = var->value->val_int();
+  if (!var->value->unsigned_flag && signed_value < 0) {
+    const std::string value = std::to_string(signed_value);
+    my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value.c_str());
+    return true;
+  }
+
+  const ulonglong value = var->value->val_uint();
+  if (value >= 1 &&
+      value <= vector_index::k_max_search_batch_result_count) {
+    return false;
+  }
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static Sys_var_ulong Sys_vector_search_batch_result_count(
+    "vector_search_batch_result_count",
+    "Maximum result slot count accepted by VEC_INDEX_SEARCH_BATCH(), computed "
+    "as query_count * top_k.",
+    GLOBAL_VAR(opt_vector_search_batch_result_count), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(1, vector_index::k_max_search_batch_result_count),
+    DEFAULT(vector_index::k_default_search_batch_result_count), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_search_batch_result_count));
+
+static Sys_var_ulong Sys_vector_batch_search_threads(
+    "vector_batch_search_threads",
+    "Default worker count for vector batch search across all backends. Use 0 "
+    "for automatic hardware-thread based sizing.",
+    GLOBAL_VAR(opt_vector_batch_search_threads), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, vector_index::k_max_build_threads),
+    DEFAULT(vector_index::k_default_batch_search_threads), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_threads));
+
+static Sys_var_ulong Sys_vector_hnsw_search_threads(
+    "vector_hnsw_search_threads",
+    "hnswlib override for vector batch search worker count. Use 0 to inherit "
+    "vector_batch_search_threads.",
+    GLOBAL_VAR(opt_vector_hnsw_search_threads), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, vector_index::k_max_build_threads), DEFAULT(0),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_threads));
+
+static Sys_var_ulong Sys_vector_faiss_search_threads(
+    "vector_faiss_search_threads",
+    "FAISS override for vector batch search worker count. Use 0 to inherit "
+    "vector_batch_search_threads.",
+    GLOBAL_VAR(opt_vector_faiss_search_threads), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, vector_index::k_max_build_threads), DEFAULT(0),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_threads));
+
+static Sys_var_ulong Sys_vector_diskann_search_threads(
+    "vector_diskann_search_threads",
+    "DiskANN override for vector batch search worker count. Use 0 to inherit "
+    "vector_batch_search_threads.",
+    GLOBAL_VAR(opt_vector_diskann_search_threads), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, vector_index::k_max_build_threads), DEFAULT(0),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_threads));
+
+static Sys_var_ulong Sys_vector_diskann_offline_search_threads(
+    "vector_diskann_offline_search_threads",
+    "DiskANN offline adapter searcher thread count used when loading a disk "
+    "index. Use 0 for the adapter default.",
+    GLOBAL_VAR(opt_vector_diskann_offline_search_threads), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, vector_index::k_max_build_threads),
+    DEFAULT(vector_index::k_default_diskann_offline_search_threads),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_threads));
+
+static Sys_var_bool Sys_vector_lazy_external_runtime(
+    "vector_lazy_external_runtime",
+    "Unload external vector serving runtime after build or recovery and reload "
+    "it lazily on the next search.",
+    GLOBAL_VAR(opt_vector_lazy_external_runtime), CMD_LINE(OPT_ARG),
+    DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static bool check_vector_uint32_positive(sys_var *self, THD *, set_var *var);
+
+static bool check_vector_build_segment_max_rows(sys_var *self, THD *thd,
+                                                set_var *var) {
+  if (var->value == nullptr) return false;
+  if (check_vector_size(self, thd, var)) return true;
+
+  const ulonglong value = var->value->val_uint();
+  if (value >= 1) return false;
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static bool check_vector_build_segment_target_size(sys_var *self, THD *thd,
+                                                   set_var *var) {
+  if (var->value == nullptr) return false;
+  if (check_vector_size(self, thd, var)) return true;
+
+  const ulonglong value = var->value->val_uint();
+  if (value >= vector_index::k_min_build_segment_target_size) return false;
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static bool check_vector_build_pipeline_max_tasks(sys_var *self, THD *thd,
+                                                  set_var *var) {
+  if (var->value == nullptr) return false;
+  if (check_vector_build_threads(self, thd, var)) return true;
+
+  const ulonglong value = var->value->val_uint();
+  if (value >= 1) return false;
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static bool check_vector_build_pipeline_progress_interval(sys_var *self,
+                                                          THD *thd,
+                                                          set_var *var) {
+  if (var->value == nullptr) return false;
+  if (check_vector_uint32_positive(self, thd, var)) return true;
+
+  const ulonglong value = var->value->val_uint();
+  if (value <= vector_index::k_max_build_pipeline_progress_interval) {
+    return false;
+  }
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static const char *vector_build_pipeline_mode_names[] = {
+    "auto", "direct", "segmented", nullptr};
+
+static Sys_var_enum Sys_vector_build_pipeline_mode(
+    "vector_build_pipeline_mode",
+    "Vector build pipeline selector. AUTO chooses segmented build for large "
+    "inputs, DIRECT forces the short single-backend path, and SEGMENTED forces "
+    "the segment task pipeline.",
+    GLOBAL_VAR(opt_vector_build_pipeline_mode), CMD_LINE(REQUIRED_ARG),
+    vector_build_pipeline_mode_names,
+    DEFAULT(static_cast<ulong>(vector_index::build_pipeline_mode::kAuto)),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_ulonglong Sys_vector_build_pipeline_min_rows(
+    "vector_build_pipeline_min_rows",
+    "Row-count threshold that makes AUTO vector build pipeline choose the "
+    "segmented path. Use 0 to disable this trigger.",
+    GLOBAL_VAR(opt_vector_build_pipeline_min_rows), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, ULLONG_MAX),
+    DEFAULT(vector_index::k_default_build_pipeline_min_rows), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulonglong Sys_vector_build_pipeline_min_size(
+    "vector_build_pipeline_min_size",
+    "Vector payload byte threshold that makes AUTO vector build pipeline "
+    "choose the segmented path. Use 0 to disable this trigger.",
+    GLOBAL_VAR(opt_vector_build_pipeline_min_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, max_mem_sz),
+    DEFAULT(vector_index::k_default_build_pipeline_min_size), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulonglong Sys_vector_build_segment_max_rows(
+    "vector_build_segment_max_rows",
+    "Maximum row count for one vector build raw segment.",
+    GLOBAL_VAR(opt_vector_build_segment_max_rows), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(1, ULLONG_MAX),
+    DEFAULT(vector_index::k_default_build_segment_max_rows), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_segment_max_rows));
+
+static Sys_var_ulonglong Sys_vector_build_segment_target_size(
+    "vector_build_segment_target_size",
+    "Target vector payload bytes for one vector build raw segment.",
+    GLOBAL_VAR(opt_vector_build_segment_target_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(vector_index::k_min_build_segment_target_size, max_mem_sz),
+    DEFAULT(vector_index::k_default_build_segment_target_size), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_segment_target_size));
+
+static Sys_var_ulong Sys_vector_build_pipeline_max_tasks(
+    "vector_build_pipeline_max_tasks",
+    "Maximum concurrent segment build tasks for one vector index rebuild.",
+    GLOBAL_VAR(opt_vector_build_pipeline_max_tasks), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(1, vector_index::k_max_build_pipeline_max_tasks),
+    DEFAULT(vector_index::k_default_build_pipeline_max_tasks), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_pipeline_max_tasks));
+
+static Sys_var_ulong Sys_vector_build_pipeline_progress_interval(
+    "vector_build_pipeline_progress_interval",
+    "Minimum interval in seconds between vector build pipeline progress "
+    "updates.",
+    GLOBAL_VAR(opt_vector_build_pipeline_progress_interval),
+    CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(1, vector_index::k_max_build_pipeline_progress_interval),
+    DEFAULT(vector_index::k_default_build_pipeline_progress_interval),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_pipeline_progress_interval));
+
+static bool check_vector_uint32(sys_var *self, THD *, set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const longlong signed_value = var->value->val_int();
+  if (!var->value->unsigned_flag && signed_value < 0) {
+    const std::string value = std::to_string(signed_value);
+    my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value.c_str());
+    return true;
+  }
+
+  const ulonglong value = var->value->val_uint();
+  if (value <= UINT32_MAX) return false;
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static Sys_var_ulong Sys_vector_diskann_search_io_limit(
+    "vector_diskann_search_io_limit",
+    "DiskANN offline adapter search I/O operation limit used when loading a "
+    "disk index. Use 0 for no MySQL-imposed limit.",
+    GLOBAL_VAR(opt_vector_diskann_search_io_limit), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, UINT32_MAX), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(check_vector_uint32));
+
+static Sys_var_ulong Sys_vector_diskann_cache_nodes(
+    "vector_diskann_cache_nodes",
+    "DiskANN offline adapter BFS static-cache node count used when loading a "
+    "disk index. Use 0 to disable this cache.",
+    GLOBAL_VAR(opt_vector_diskann_cache_nodes), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, UINT32_MAX), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(check_vector_uint32));
+
+static Sys_var_ulonglong Sys_vector_diskann_search_cache_size(
+    "vector_diskann_search_cache_size",
+    "DiskANN native runtime search-cache budget in bytes. Use 0 to derive "
+    "the budget from vector_diskann_search_cache_ratio.",
+    GLOBAL_VAR(opt_vector_diskann_search_cache_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, max_mem_sz), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static bool check_vector_ratio(sys_var *self, THD *, set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const double value = var->value->val_real();
+  if (isfinite(value) && value >= 0.0 && value <= 1.0) return false;
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static Sys_var_double Sys_vector_diskann_search_cache_ratio(
+    "vector_diskann_search_cache_ratio",
+    "DiskANN native runtime search-cache budget ratio relative to raw vector "
+    "bytes when vector_diskann_search_cache_size is 0.",
+    GLOBAL_VAR(opt_vector_diskann_search_cache_ratio), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, 1), DEFAULT(0.1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_ratio), ON_UPDATE(nullptr));
+
+static Sys_var_ulong Sys_vector_diskann_search_beamwidth(
+    "vector_diskann_search_beamwidth",
+    "DiskANN offline adapter search beamwidth. Higher values expand more graph "
+    "frontier nodes per search step and can improve recall at extra CPU and I/O "
+    "cost.",
+    GLOBAL_VAR(opt_vector_diskann_search_beamwidth), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(1, vector_index::k_max_diskann_search_beamwidth),
+    DEFAULT(vector_index::k_default_diskann_search_beamwidth), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_build_threads));
+
+static Sys_var_ulonglong Sys_vector_diskann_pq_code_budget_size(
+    "vector_diskann_pq_code_budget_size",
+    "DiskANN offline build PQ code budget in bytes. Use 0 to derive the "
+    "budget from vector_diskann_pq_code_budget_ratio times raw "
+    "vector bytes.",
+    GLOBAL_VAR(opt_vector_diskann_pq_code_budget_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, max_mem_sz), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_double Sys_vector_diskann_pq_code_budget_ratio(
+    "vector_diskann_pq_code_budget_ratio",
+    "DiskANN native runtime PQ-code budget ratio relative to raw vector bytes "
+    "when vector_diskann_pq_code_budget_size is 0.",
+    GLOBAL_VAR(opt_vector_diskann_pq_code_budget_ratio), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, 1), DEFAULT(0.125), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_ratio), ON_UPDATE(nullptr));
+
+static bool check_vector_uint32_positive(sys_var *self, THD *, set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const longlong signed_value = var->value->val_int();
+  if (!var->value->unsigned_flag && signed_value < 0) {
+    const std::string value = std::to_string(signed_value);
+    my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value.c_str());
+    return true;
+  }
+
+  const ulonglong value = var->value->val_uint();
+  if (value >= 1 && value <= UINT32_MAX) return false;
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static Sys_var_ulong Sys_vector_diskann_search_complexity(
+    "vector_diskann_search_complexity",
+    "Default DiskANN query-time search list size for new vector indexes.",
+    GLOBAL_VAR(opt_vector_diskann_search_complexity), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(1, UINT32_MAX),
+    DEFAULT(vector_index::k_default_diskann_search_complexity), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_uint32_positive));
+
+static Sys_var_ulong Sys_vector_diskann_max_degree(
+    "vector_diskann_max_degree",
+    "Default DiskANN graph max degree for new vector indexes.",
+    GLOBAL_VAR(opt_vector_diskann_max_degree), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(1, UINT32_MAX),
+    DEFAULT(vector_index::k_default_diskann_max_degree), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_uint32_positive));
+
+static Sys_var_ulong Sys_vector_diskann_build_complexity(
+    "vector_diskann_build_complexity",
+    "Default DiskANN build complexity for new vector indexes.",
+    GLOBAL_VAR(opt_vector_diskann_build_complexity), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(1, UINT32_MAX),
+    DEFAULT(vector_index::k_default_diskann_build_complexity), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_uint32_positive));
+
+static const char *vector_diskann_build_mode_names[] = {
+    "auto", "serial", "offline", nullptr};
+
+static Sys_var_enum Sys_vector_diskann_build_mode(
+    "vector_diskann_build_mode",
+    "Default build mode for DiskANN vector indexes without an explicit "
+    "index-level build mode. AUTO tries offline build first when available, "
+    "then serial insert through the official DiskANN API.",
+    GLOBAL_VAR(opt_vector_diskann_build_mode), CMD_LINE(REQUIRED_ARG),
+    vector_diskann_build_mode_names,
+    DEFAULT(static_cast<ulong>(vector_index::diskann_build_mode::kAuto)),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static const char *vector_default_library_names[] = {
     "", "diskann", "hnsw", "faiss", nullptr};

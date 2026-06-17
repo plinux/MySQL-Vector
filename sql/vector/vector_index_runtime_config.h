@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "sql/vector/vector_build_pipeline_policy.h"
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_limits.h"
 
@@ -77,6 +78,11 @@ struct hnsw_runtime_config {
   uint32_t search_threads{0};
 };
 
+struct build_pipeline_runtime_config {
+  build_pipeline_thresholds thresholds;
+  uint32_t progress_interval{k_default_build_pipeline_progress_interval};
+};
+
 /**
   Validate whether a provider can be used with a backend mode.
 */
@@ -118,6 +124,11 @@ uint32_t resolve_runtime_threads(uint32_t statement_threads,
 */
 bool runtime_uniform_sample_position(size_t sample_index, size_t total_count,
                                      size_t sample_count, size_t *position);
+
+/**
+  Return the current global build-pipeline runtime configuration.
+*/
+build_pipeline_runtime_config global_build_pipeline_runtime_config();
 
 }  // namespace vector_index
 

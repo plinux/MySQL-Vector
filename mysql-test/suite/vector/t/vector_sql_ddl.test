@@ -160,7 +160,7 @@ SELECT JSON_LENGTH(
     'test.t_vector_ddl_large.v',
     CONCAT('[', REPEAT('0,', 783), '0]'),
     3));
---replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('test.t_vector_ddl_large.v');
 DROP TABLE t_vector_ddl_large;
 DROP TABLE t_vector_ddl;

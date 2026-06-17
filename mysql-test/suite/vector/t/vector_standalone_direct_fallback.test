@@ -3,14 +3,8 @@
 --source include/have_vector_hnsw.inc
 
 --echo #
---echo # WL#Vector: standalone providers without Knowhere
+--echo # WL#Vector: standalone providers through native runtime
 --echo #
-
-let $have_knowhere = `SELECT COALESCE(MAX(VARIABLE_VALUE = '1'), 0) FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Vector_knowhere_enabled'`;
-if ($have_knowhere)
-{
-  --skip Test requires standalone direct fallback without Knowhere
-}
 
 --disable_query_log
 --let $vector_csv=$MYSQLTEST_VARDIR/vector_standalone_direct_fallback.csv

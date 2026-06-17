@@ -407,6 +407,49 @@ class faiss_snapshot_root_guard {
   }
 };
 
+class build_pipeline_options_guard {
+ public:
+  build_pipeline_options_guard()
+      : m_mode(opt_vector_build_pipeline_mode),
+        m_min_rows(opt_vector_build_pipeline_min_rows),
+        m_min_size(opt_vector_build_pipeline_min_size),
+        m_segment_max_rows(opt_vector_build_segment_max_rows),
+        m_segment_target_size(opt_vector_build_segment_target_size),
+        m_max_tasks(opt_vector_build_pipeline_max_tasks),
+        m_progress_interval(opt_vector_build_pipeline_progress_interval) {}
+
+  ~build_pipeline_options_guard() {
+    opt_vector_build_pipeline_mode = m_mode;
+    opt_vector_build_pipeline_min_rows = m_min_rows;
+    opt_vector_build_pipeline_min_size = m_min_size;
+    opt_vector_build_segment_max_rows = m_segment_max_rows;
+    opt_vector_build_segment_target_size = m_segment_target_size;
+    opt_vector_build_pipeline_max_tasks = m_max_tasks;
+    opt_vector_build_pipeline_progress_interval = m_progress_interval;
+  }
+
+ private:
+  ulong m_mode;
+  ulonglong m_min_rows;
+  ulonglong m_min_size;
+  ulonglong m_segment_max_rows;
+  ulonglong m_segment_target_size;
+  ulong m_max_tasks;
+  ulong m_progress_interval;
+};
+
+void expect_pipeline_snapshot(
+    const vector_index::index_service::build_pipeline_snapshot &snapshot,
+    const char *mode, const char *decision, const char *trigger,
+    uint64_t row_count, uint64_t payload_size, uint64_t raw_segment_count) {
+  EXPECT_EQ(mode, snapshot.mode);
+  EXPECT_EQ(decision, snapshot.decision);
+  EXPECT_EQ(trigger, snapshot.trigger);
+  EXPECT_EQ(row_count, snapshot.row_count);
+  EXPECT_EQ(payload_size, snapshot.payload_size);
+  EXPECT_EQ(raw_segment_count, snapshot.raw_segment_count);
+}
+
 }  // namespace
 
 class NonApplyingBackend final : public vector_index::backend {
@@ -1069,6 +1112,154 @@ TEST(VectorIndexServiceTest, DirectMutationsRequireStandaloneBulkRebuild) {
   ASSERT_TRUE(service.search("idx_standalone_direct", {1.0F, 0.0F}, 1,
                              &result));
   EXPECT_TRUE(result.empty());
+}
+
+TEST(VectorIndexServiceTest, BuildPipelineRecordsDefaultDirectDecision) {
+  build_pipeline_options_guard guard;
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size,
+                             2U * sizeof(float));
+  const std::string root =
+      std::string(testing::TempDir()) + "/pipeline_direct_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_direct", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_pipeline_direct",
+      vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.direct_upsert("idx_pipeline_direct", 11,
+                                    {1.0F, 0.0F}));
+  ASSERT_TRUE(service.rebuild_index("idx_pipeline_direct"));
+
+  vector_index::index_service::build_pipeline_snapshot snapshot;
+  ASSERT_TRUE(
+      service.describe_build_pipeline("idx_pipeline_direct", &snapshot));
+  expect_pipeline_snapshot(snapshot, "auto", "direct", "below_threshold", 1, 8,
+                           0);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, BuildPipelineHonorsForcedSegmentedMode) {
+  build_pipeline_options_guard guard;
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size,
+                             2U * sizeof(float));
+  const std::string root =
+      std::string(testing::TempDir()) + "/pipeline_forced_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_forced", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_pipeline_forced",
+      vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.direct_upsert("idx_pipeline_forced", 11,
+                                    {1.0F, 0.0F}));
+  ASSERT_TRUE(service.rebuild_index("idx_pipeline_forced"));
+
+  vector_index::index_service::build_pipeline_snapshot snapshot;
+  ASSERT_TRUE(
+      service.describe_build_pipeline("idx_pipeline_forced", &snapshot));
+  expect_pipeline_snapshot(snapshot, "segmented", "segmented",
+                           "forced_segmented", 1, 8, 0);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, BuildPipelineHonorsRowThreshold) {
+  build_pipeline_options_guard guard;
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size,
+                             2U * sizeof(float));
+  const std::string root =
+      std::string(testing::TempDir()) + "/pipeline_rows_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kAuto);
+  opt_vector_build_pipeline_min_rows = 1;
+  opt_vector_build_pipeline_min_size = 0;
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_rows", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_pipeline_rows", vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.direct_upsert("idx_pipeline_rows", 11, {1.0F, 0.0F}));
+  ASSERT_TRUE(service.rebuild_index("idx_pipeline_rows"));
+
+  vector_index::index_service::build_pipeline_snapshot snapshot;
+  ASSERT_TRUE(service.describe_build_pipeline("idx_pipeline_rows", &snapshot));
+  expect_pipeline_snapshot(snapshot, "auto", "segmented", "row_count", 1, 8,
+                           0);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, BuildPipelineHonorsMultipleRawSegments) {
+  build_pipeline_options_guard guard;
+  const std::string root =
+      std::string(testing::TempDir()) + "/pipeline_raw_segments_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string first_vector_path = root + "/first.fbin";
+  const std::string first_docid_path = root + "/first.u64";
+  const std::string second_vector_path = root + "/second.fbin";
+  const std::string second_docid_path = root + "/second.u64";
+  write_raw_fbin_file(first_vector_path, 1, 2, {1.0F, 0.0F});
+  write_raw_docid_file(first_docid_path, {11});
+  write_raw_fbin_file(second_vector_path, 1, 2, {0.0F, 1.0F});
+  write_raw_docid_file(second_docid_path, {22});
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_raw", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_pipeline_raw", vector_index::index_consistency_mode::kStandalone));
+
+  vector_index::index_service::bulk_load_options options;
+  uint64_t loaded_rows = 0;
+  std::string error;
+  ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+      "idx_pipeline_raw", first_vector_path, first_docid_path, options,
+      &loaded_rows, &error))
+      << error;
+  EXPECT_EQ(1U, loaded_rows);
+  ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+      "idx_pipeline_raw", second_vector_path, second_docid_path, options,
+      &loaded_rows, &error))
+      << error;
+  EXPECT_EQ(1U, loaded_rows);
+  ASSERT_TRUE(service.rebuild_index("idx_pipeline_raw"));
+
+  vector_index::index_service::build_pipeline_snapshot snapshot;
+  ASSERT_TRUE(service.describe_build_pipeline("idx_pipeline_raw", &snapshot));
+  expect_pipeline_snapshot(snapshot, "auto", "segmented", "raw_segment_count",
+                           2, 16, 2);
+
+  std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorIndexServiceTest, BulkLoadReaderFailureDoesNotPublishRows) {

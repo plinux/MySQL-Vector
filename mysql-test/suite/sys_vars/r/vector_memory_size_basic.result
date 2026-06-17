@@ -12,9 +12,21 @@ SELECT @@global.vector_pending_cache_size;
 SELECT @@global.vector_build_memory_size;
 @@global.vector_build_memory_size
 1073741824
+SELECT @@global.vector_build_pipeline_min_size;
+@@global.vector_build_pipeline_min_size
+4294967296
+SELECT @@global.vector_build_segment_target_size;
+@@global.vector_build_segment_target_size
+8589934592
 SELECT @@global.vector_diskann_build_memory_size;
 @@global.vector_diskann_build_memory_size
 1073741824
+SELECT @@global.vector_diskann_pq_code_budget_size;
+@@global.vector_diskann_pq_code_budget_size
+0
+SELECT @@global.vector_diskann_search_cache_size;
+@@global.vector_diskann_search_cache_size
+0
 SELECT @@global.vector_diskann_raw_segment_size;
 @@global.vector_diskann_raw_segment_size
 268435456
@@ -28,8 +40,12 @@ SELECT @@global.vector_hnsw_index_memory_size;
 SHOW GLOBAL VARIABLES LIKE 'vector\\_%\\_size';
 Variable_name	Value
 vector_build_memory_size	1073741824
+vector_build_pipeline_min_size	4294967296
+vector_build_segment_target_size	8589934592
 vector_diskann_build_memory_size	1073741824
+vector_diskann_pq_code_budget_size	0
 vector_diskann_raw_segment_size	268435456
+vector_diskann_search_cache_size	0
 vector_entry_cache_size	268435456
 vector_faiss_train_size	0
 vector_hnsw_index_memory_size	0
@@ -37,8 +53,12 @@ vector_pending_cache_size	67108864
 SHOW SESSION VARIABLES LIKE 'vector\\_%\\_size';
 Variable_name	Value
 vector_build_memory_size	1073741824
+vector_build_pipeline_min_size	4294967296
+vector_build_segment_target_size	8589934592
 vector_diskann_build_memory_size	1073741824
+vector_diskann_pq_code_budget_size	0
 vector_diskann_raw_segment_size	268435456
+vector_diskann_search_cache_size	0
 vector_entry_cache_size	268435456
 vector_faiss_train_size	0
 vector_hnsw_index_memory_size	0
@@ -49,15 +69,23 @@ WHERE VARIABLE_NAME IN (
 'vector_entry_cache_size',
 'vector_pending_cache_size',
 'vector_build_memory_size',
+'vector_build_pipeline_min_size',
+'vector_build_segment_target_size',
 'vector_diskann_build_memory_size',
+'vector_diskann_pq_code_budget_size',
+'vector_diskann_search_cache_size',
 'vector_diskann_raw_segment_size',
 'vector_faiss_train_size',
 'vector_hnsw_index_memory_size')
 ORDER BY VARIABLE_NAME;
 VARIABLE_NAME	VARIABLE_VALUE
 vector_build_memory_size	1073741824
+vector_build_pipeline_min_size	4294967296
+vector_build_segment_target_size	8589934592
 vector_diskann_build_memory_size	1073741824
+vector_diskann_pq_code_budget_size	0
 vector_diskann_raw_segment_size	268435456
+vector_diskann_search_cache_size	0
 vector_entry_cache_size	268435456
 vector_faiss_train_size	0
 vector_hnsw_index_memory_size	0
@@ -70,10 +98,14 @@ ERROR 42S22: Unknown column 'vector_entry_cache_size' in 'field list'
 SET GLOBAL vector_entry_cache_size=1048576;
 SET GLOBAL vector_pending_cache_size=2097152;
 SET GLOBAL vector_build_memory_size=3145728;
-SET GLOBAL vector_diskann_build_memory_size=4194304;
-SET GLOBAL vector_diskann_raw_segment_size=5242880;
-SET GLOBAL vector_faiss_train_size=6291456;
-SET GLOBAL vector_hnsw_index_memory_size=7340032;
+SET GLOBAL vector_build_pipeline_min_size=4194304;
+SET GLOBAL vector_build_segment_target_size=5242880;
+SET GLOBAL vector_diskann_build_memory_size=6291456;
+SET GLOBAL vector_diskann_pq_code_budget_size=7340032;
+SET GLOBAL vector_diskann_search_cache_size=8388608;
+SET GLOBAL vector_diskann_raw_segment_size=9437184;
+SET GLOBAL vector_faiss_train_size=10485760;
+SET GLOBAL vector_hnsw_index_memory_size=11534336;
 SELECT @@global.vector_entry_cache_size;
 @@global.vector_entry_cache_size
 1048576
@@ -83,18 +115,30 @@ SELECT @@global.vector_pending_cache_size;
 SELECT @@global.vector_build_memory_size;
 @@global.vector_build_memory_size
 3145728
+SELECT @@global.vector_build_pipeline_min_size;
+@@global.vector_build_pipeline_min_size
+4194304
+SELECT @@global.vector_build_segment_target_size;
+@@global.vector_build_segment_target_size
+5242880
 SELECT @@global.vector_diskann_build_memory_size;
 @@global.vector_diskann_build_memory_size
-4194304
+6291456
+SELECT @@global.vector_diskann_pq_code_budget_size;
+@@global.vector_diskann_pq_code_budget_size
+7340032
+SELECT @@global.vector_diskann_search_cache_size;
+@@global.vector_diskann_search_cache_size
+8388608
 SELECT @@global.vector_diskann_raw_segment_size;
 @@global.vector_diskann_raw_segment_size
-5242880
+9437184
 SELECT @@global.vector_faiss_train_size;
 @@global.vector_faiss_train_size
-6291456
+10485760
 SELECT @@global.vector_hnsw_index_memory_size;
 @@global.vector_hnsw_index_memory_size
-7340032
+11534336
 # Online SET uses numeric byte values; negative values are rejected.
 SET GLOBAL vector_entry_cache_size=-1;
 ERROR 42000: Variable 'vector_entry_cache_size' can't be set to the value of '-1'
@@ -103,7 +147,11 @@ ERROR 42000: Variable 'vector_pending_cache_size' can't be set to the value of '
 SET GLOBAL vector_entry_cache_size=DEFAULT;
 SET GLOBAL vector_pending_cache_size=DEFAULT;
 SET GLOBAL vector_build_memory_size=DEFAULT;
+SET GLOBAL vector_build_pipeline_min_size=DEFAULT;
+SET GLOBAL vector_build_segment_target_size=DEFAULT;
 SET GLOBAL vector_diskann_build_memory_size=DEFAULT;
+SET GLOBAL vector_diskann_pq_code_budget_size=DEFAULT;
+SET GLOBAL vector_diskann_search_cache_size=DEFAULT;
 SET GLOBAL vector_diskann_raw_segment_size=DEFAULT;
 SET GLOBAL vector_faiss_train_size=DEFAULT;
 SET GLOBAL vector_hnsw_index_memory_size=DEFAULT;
@@ -117,9 +165,21 @@ SELECT @@global.vector_pending_cache_size;
 SELECT @@global.vector_build_memory_size;
 @@global.vector_build_memory_size
 1073741824
+SELECT @@global.vector_build_pipeline_min_size;
+@@global.vector_build_pipeline_min_size
+4294967296
+SELECT @@global.vector_build_segment_target_size;
+@@global.vector_build_segment_target_size
+8589934592
 SELECT @@global.vector_diskann_build_memory_size;
 @@global.vector_diskann_build_memory_size
 1073741824
+SELECT @@global.vector_diskann_pq_code_budget_size;
+@@global.vector_diskann_pq_code_budget_size
+0
+SELECT @@global.vector_diskann_search_cache_size;
+@@global.vector_diskann_search_cache_size
+0
 SELECT @@global.vector_diskann_raw_segment_size;
 @@global.vector_diskann_raw_segment_size
 268435456

@@ -9,15 +9,23 @@ WHERE VARIABLE_NAME IN (
 'vector_entry_cache_size',
 'vector_pending_cache_size',
 'vector_build_memory_size',
+'vector_build_pipeline_min_size',
+'vector_build_segment_target_size',
 'vector_diskann_build_memory_size',
+'vector_diskann_pq_code_budget_size',
+'vector_diskann_search_cache_size',
 'vector_diskann_raw_segment_size',
 'vector_faiss_train_size',
 'vector_hnsw_index_memory_size')
 ORDER BY VARIABLE_NAME;
 VARIABLE_NAME
 vector_build_memory_size
+vector_build_pipeline_min_size
+vector_build_segment_target_size
 vector_diskann_build_memory_size
+vector_diskann_pq_code_budget_size
 vector_diskann_raw_segment_size
+vector_diskann_search_cache_size
 vector_entry_cache_size
 vector_faiss_train_size
 vector_hnsw_index_memory_size
@@ -28,10 +36,14 @@ include/assert.inc [Expect vector size variables not to be persisted before SET 
 SET PERSIST vector_entry_cache_size=1048576;
 SET PERSIST vector_pending_cache_size=2097152;
 SET PERSIST vector_build_memory_size=3145728;
-SET PERSIST vector_diskann_build_memory_size=4194304;
-SET PERSIST vector_diskann_raw_segment_size=5242880;
-SET PERSIST vector_faiss_train_size=6291456;
-SET PERSIST vector_hnsw_index_memory_size=7340032;
+SET PERSIST vector_build_pipeline_min_size=4194304;
+SET PERSIST vector_build_segment_target_size=5242880;
+SET PERSIST vector_diskann_build_memory_size=6291456;
+SET PERSIST vector_diskann_pq_code_budget_size=7340032;
+SET PERSIST vector_diskann_search_cache_size=8388608;
+SET PERSIST vector_diskann_raw_segment_size=9437184;
+SET PERSIST vector_faiss_train_size=10485760;
+SET PERSIST vector_hnsw_index_memory_size=11534336;
 include/assert.inc [Expect vector size variables to be persisted before restart.]
 SELECT VARIABLE_NAME, VARIABLE_VALUE
 FROM performance_schema.persisted_variables
@@ -39,18 +51,26 @@ WHERE VARIABLE_NAME IN (
 'vector_entry_cache_size',
 'vector_pending_cache_size',
 'vector_build_memory_size',
+'vector_build_pipeline_min_size',
+'vector_build_segment_target_size',
 'vector_diskann_build_memory_size',
+'vector_diskann_pq_code_budget_size',
+'vector_diskann_search_cache_size',
 'vector_diskann_raw_segment_size',
 'vector_faiss_train_size',
 'vector_hnsw_index_memory_size')
 ORDER BY VARIABLE_NAME;
 VARIABLE_NAME	VARIABLE_VALUE
 vector_build_memory_size	3145728
-vector_diskann_build_memory_size	4194304
-vector_diskann_raw_segment_size	5242880
+vector_build_pipeline_min_size	4194304
+vector_build_segment_target_size	5242880
+vector_diskann_build_memory_size	6291456
+vector_diskann_pq_code_budget_size	7340032
+vector_diskann_raw_segment_size	9437184
+vector_diskann_search_cache_size	8388608
 vector_entry_cache_size	1048576
-vector_faiss_train_size	6291456
-vector_hnsw_index_memory_size	7340032
+vector_faiss_train_size	10485760
+vector_hnsw_index_memory_size	11534336
 vector_pending_cache_size	2097152
 # Restart and verify vector size variables survive.
 # restart
@@ -65,24 +85,36 @@ WHERE vi.VARIABLE_NAME IN (
 'vector_entry_cache_size',
 'vector_pending_cache_size',
 'vector_build_memory_size',
+'vector_build_pipeline_min_size',
+'vector_build_segment_target_size',
 'vector_diskann_build_memory_size',
+'vector_diskann_pq_code_budget_size',
+'vector_diskann_search_cache_size',
 'vector_diskann_raw_segment_size',
 'vector_faiss_train_size',
 'vector_hnsw_index_memory_size')
 ORDER BY vi.VARIABLE_NAME;
 VARIABLE_NAME	VARIABLE_SOURCE	VARIABLE_VALUE	VARIABLE_VALUE
 vector_build_memory_size	PERSISTED	3145728	3145728
-vector_diskann_build_memory_size	PERSISTED	4194304	4194304
-vector_diskann_raw_segment_size	PERSISTED	5242880	5242880
+vector_build_pipeline_min_size	PERSISTED	4194304	4194304
+vector_build_segment_target_size	PERSISTED	5242880	5242880
+vector_diskann_build_memory_size	PERSISTED	6291456	6291456
+vector_diskann_pq_code_budget_size	PERSISTED	7340032	7340032
+vector_diskann_raw_segment_size	PERSISTED	9437184	9437184
+vector_diskann_search_cache_size	PERSISTED	8388608	8388608
 vector_entry_cache_size	PERSISTED	1048576	1048576
-vector_faiss_train_size	PERSISTED	6291456	6291456
-vector_hnsw_index_memory_size	PERSISTED	7340032	7340032
+vector_faiss_train_size	PERSISTED	10485760	10485760
+vector_hnsw_index_memory_size	PERSISTED	11534336	11534336
 vector_pending_cache_size	PERSISTED	2097152	2097152
 # Reset persisted vector size variables.
 RESET PERSIST IF EXISTS vector_entry_cache_size;
 RESET PERSIST IF EXISTS vector_pending_cache_size;
 RESET PERSIST IF EXISTS vector_build_memory_size;
+RESET PERSIST IF EXISTS vector_build_pipeline_min_size;
+RESET PERSIST IF EXISTS vector_build_segment_target_size;
 RESET PERSIST IF EXISTS vector_diskann_build_memory_size;
+RESET PERSIST IF EXISTS vector_diskann_pq_code_budget_size;
+RESET PERSIST IF EXISTS vector_diskann_search_cache_size;
 RESET PERSIST IF EXISTS vector_diskann_raw_segment_size;
 RESET PERSIST IF EXISTS vector_faiss_train_size;
 RESET PERSIST IF EXISTS vector_hnsw_index_memory_size;

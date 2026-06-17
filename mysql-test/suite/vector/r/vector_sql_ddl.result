@@ -32,6 +32,12 @@ INDEX_STATE	test.t_vector_ddl.v.provider	native
 INDEX_STATE	test.t_vector_ddl.v.consistency_mode	transactional
 INDEX_STATE	test.t_vector_ddl.v.truth_store_enabled	1
 INDEX_STATE	test.t_vector_ddl.v.build_source	truth_store
+INDEX_STATE	test.t_vector_ddl.v.build_pipeline_mode	auto
+INDEX_STATE	test.t_vector_ddl.v.build_pipeline_decision	direct
+INDEX_STATE	test.t_vector_ddl.v.build_pipeline_trigger	below_threshold
+INDEX_STATE	test.t_vector_ddl.v.build_pipeline_rows	0
+INDEX_STATE	test.t_vector_ddl.v.build_pipeline_payload_size	0
+INDEX_STATE	test.t_vector_ddl.v.build_pipeline_raw_segments	0
 INDEX_STATE	test.t_vector_ddl.v.standalone_ingest_memory_bytes	0
 INDEX_STATE	test.t_vector_ddl.v.standalone_segment_count	0
 INDEX_STATE	test.t_vector_ddl.v.standalone_segment_bytes	0
@@ -146,6 +152,12 @@ INDEX_STATE	test.t_vector_ddl_renamed.v.provider	faiss
 INDEX_STATE	test.t_vector_ddl_renamed.v.consistency_mode	transactional
 INDEX_STATE	test.t_vector_ddl_renamed.v.truth_store_enabled	1
 INDEX_STATE	test.t_vector_ddl_renamed.v.build_source	truth_store
+INDEX_STATE	test.t_vector_ddl_renamed.v.build_pipeline_mode	auto
+INDEX_STATE	test.t_vector_ddl_renamed.v.build_pipeline_decision	direct
+INDEX_STATE	test.t_vector_ddl_renamed.v.build_pipeline_trigger	below_threshold
+INDEX_STATE	test.t_vector_ddl_renamed.v.build_pipeline_rows	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.build_pipeline_payload_size	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.build_pipeline_raw_segments	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_ingest_memory_bytes	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_segment_count	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_segment_bytes	0
@@ -250,6 +262,12 @@ INDEX_STATE	test.t_vector_alter_dropcol.v.provider	native
 INDEX_STATE	test.t_vector_alter_dropcol.v.consistency_mode	transactional
 INDEX_STATE	test.t_vector_alter_dropcol.v.truth_store_enabled	1
 INDEX_STATE	test.t_vector_alter_dropcol.v.build_source	truth_store
+INDEX_STATE	test.t_vector_alter_dropcol.v.build_pipeline_mode	auto
+INDEX_STATE	test.t_vector_alter_dropcol.v.build_pipeline_decision	direct
+INDEX_STATE	test.t_vector_alter_dropcol.v.build_pipeline_trigger	below_threshold
+INDEX_STATE	test.t_vector_alter_dropcol.v.build_pipeline_rows	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.build_pipeline_payload_size	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.build_pipeline_raw_segments	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_ingest_memory_bytes	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_segment_count	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_segment_bytes	0
@@ -372,6 +390,6 @@ CONCAT('[', REPEAT('0,', 783), '0]'),
 3
 SELECT VEC_INDEX_INFO('test.t_vector_ddl_large.v');
 VEC_INDEX_INFO('test.t_vector_ddl_large.v')
-{"dimension":784,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vector_ddl_large","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":5,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":3,"committed_entry_count":3}
+{"dimension":784,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vector_ddl_large","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":3,"committed_entry_count":3}
 DROP TABLE t_vector_ddl_large;
 DROP TABLE t_vector_ddl;

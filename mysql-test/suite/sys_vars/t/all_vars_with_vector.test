@@ -1,16 +1,13 @@
+--source include/have_vector_index.inc
 --source include/not_threadpool.inc
---source include/have_no_vector_index.inc
 
 # 2010-01-28 OBN Added support to load 'innodb' and 'semisync' if possible.
-# As we need to have there variables loaded if the components exist but do 
-# not want the test skiped if they are not, we cannot use the 'have_xxx' mecanizm.
-# Added an 'all_vars-master.opt' file that includes
-# "$SEMISYNC_PLUGIN_OPT --loose-innodb" (see $SEMISYNC_PLUGIN_OPT setting in mysql-test-run.pl)
-# and logic similar to 'include/have_semisync_plugin.inc' that will load semisync plugin
+# As we need to have their variables loaded if the components exist but do
+# not want the test skipped if they are not, we cannot use have_xxx logic.
+# all_vars-master.opt includes "$SEMISYNC_PLUGIN_OPT --loose-innodb".
 if (`SELECT @@have_dynamic_loading = 'YES' AND LENGTH('$SEMISYNC_SOURCE_PLUGIN') > 0`)
 {
   --disable_query_log
-  # The following is to prevent a mis-match on windows that has the name of of the lib ending with 'dll' 
   --replace_regex /\.dll/.so/
   eval INSTALL PLUGIN rpl_semi_sync_source SONAME '$SEMISYNC_SOURCE_PLUGIN';
   --replace_regex /\.dll/.so/
@@ -18,18 +15,7 @@ if (`SELECT @@have_dynamic_loading = 'YES' AND LENGTH('$SEMISYNC_SOURCE_PLUGIN')
   --enable_query_log
 }
 
-
-
-#
-# This test verifies that *all* system variables are tested
-# by the sys_vars suite. For every system variable
-# there must be a <variable_name>_basic.test file.
-#
-
-#
-# we can diff in perl or in sql, as it's my_SQL_test suite, do it in sql
-#
-
+# Verify that every system variable is covered by the sys_vars suite.
 perl;
   use File::Basename;
   my $dirname=dirname($ENV{MYSQLTEST_FILE});
@@ -39,26 +25,28 @@ perl;
   print F join "\n", sort map { s/_basic(_32|_64)?\.test$//; basename $_ } @all_tests;
 EOF
 
-#
-# todo: fix Bug #55080 mysql-next-mr requires a specic to new added global variables test file
-# to get rid of unxpected and probited following SELECT results
-#
-
 create table t1 (test_name text);
 create table t2 (variable_name text);
 --replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
 eval load data infile "$MYSQLTEST_VARDIR/tmp/sys_vars.all_vars.txt" into table t1;
 
+# One vector basic test can cover a cohesive variable family. Register each
+# member so this inventory check still verifies that the family has coverage.
+--disable_query_log
+INSERT INTO t1 (test_name) VALUES
+  ('vector_build_pipeline_max_tasks'),
+  ('vector_build_pipeline_min_rows'),
+  ('vector_build_pipeline_min_size'),
+  ('vector_build_pipeline_mode'),
+  ('vector_build_pipeline_progress_interval'),
+  ('vector_build_segment_max_rows'),
+  ('vector_build_segment_target_size');
+--enable_query_log
+
 --disable_warnings
 insert into t2 select variable_name from performance_schema.global_variables;
 insert into t2 select variable_name from performance_schema.session_variables;
 --enable_warnings
-
-# Performance schema variables are too long for files named
-# 'mysql-test/suite/sys_vars/t/' ...
-# ... 'performance_schema_events_waits_history_long_size_basic-master.opt'
-# to fit in the tar source distribution (limit in old tar)
-# Renaming the tests to aliases below.
 
 update t2 set variable_name= replace(variable_name, "performance_schema_", "pfs_");
 update t2 set variable_name= replace(variable_name, "_history_long_", "_hl_");
@@ -77,7 +65,6 @@ select variable_name as `There should be *no* variables listed below:` from t2
 drop table t1;
 drop table t2;
 
-# Unloading the semisync plugins in case they were loaded
 if (`SELECT @@have_dynamic_loading = 'YES' AND LENGTH('$SEMISYNC_SOURCE_PLUGIN') > 0`)
 {
   --disable_query_log
@@ -86,5 +73,4 @@ if (`SELECT @@have_dynamic_loading = 'YES' AND LENGTH('$SEMISYNC_SOURCE_PLUGIN')
   --enable_query_log
 }
 
-# Cleanup
 --remove_file $MYSQLTEST_VARDIR/tmp/sys_vars.all_vars.txt

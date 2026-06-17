@@ -25,6 +25,8 @@
 
 #include <algorithm>
 
+#include "sql/vector/vector_index_build_options.h"
+
 namespace vector_index {
 
 namespace {
@@ -122,6 +124,21 @@ bool runtime_uniform_sample_position(size_t sample_index, size_t total_count,
               floor_reduced_product_ratio(sample_index, remaining_rows,
                                           sample_count);
   return true;
+}
+
+build_pipeline_runtime_config global_build_pipeline_runtime_config() {
+  build_pipeline_runtime_config config;
+  config.thresholds.mode =
+      static_cast<build_pipeline_mode>(opt_vector_build_pipeline_mode);
+  config.thresholds.min_rows = opt_vector_build_pipeline_min_rows;
+  config.thresholds.min_size = opt_vector_build_pipeline_min_size;
+  config.thresholds.segment_max_rows = opt_vector_build_segment_max_rows;
+  config.thresholds.segment_target_size = opt_vector_build_segment_target_size;
+  config.thresholds.max_tasks =
+      static_cast<uint32_t>(opt_vector_build_pipeline_max_tasks);
+  config.progress_interval =
+      static_cast<uint32_t>(opt_vector_build_pipeline_progress_interval);
+  return config;
 }
 
 }  // namespace vector_index

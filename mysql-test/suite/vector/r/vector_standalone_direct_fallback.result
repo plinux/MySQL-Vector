@@ -1,5 +1,5 @@
 #
-# WL#Vector: standalone providers without Knowhere
+# WL#Vector: standalone providers through native runtime
 #
 SELECT VEC_INDEX_CREATE('idx_direct_hnsw', 2, 'EUCLIDEAN', 'MEMORY',
 'HNSWLIB', 0, 'standalone');

@@ -33,6 +33,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "sql/vector/vector_build_pipeline_policy.h"
 #include "sql/vector/vector_index_backend.h"
 
 namespace vector_index {
@@ -161,6 +162,7 @@ class standalone_entry_store {
                        size_t cache_budget);
   bool compact_to_raw_segment(const std::string &index_name,
                               index_state *state);
+  bool materialized_rebuild_fits_budget(const index_state &state) const;
   bool read_raw_segments(const index_state &state,
                          const raw_vector_segment_visitor &visitor) const;
   bool can_rebuild_direct_from_raw_segments(const index_state &state) const;
@@ -276,6 +278,15 @@ class index_service {
     std::string source_format;
   };
 
+  struct build_pipeline_snapshot {
+    std::string mode{"auto"};
+    std::string decision{"direct"};
+    std::string trigger{"below_threshold"};
+    uint64_t row_count{0};
+    uint64_t payload_size{0};
+    uint64_t raw_segment_count{0};
+  };
+
   bool register_index(const std::string &index_name,
                       std::unique_ptr<backend> backend);
   bool register_index(const std::string &index_name,
@@ -374,6 +385,8 @@ class index_service {
                       uint64_t *last_recover_fallback_ts = nullptr,
                       bool *external_manifest_present = nullptr,
                       uint64_t *external_manifest_generation = nullptr) const;
+  bool describe_build_pipeline(const std::string &index_name,
+                               build_pipeline_snapshot *snapshot) const;
   bool set_last_apply_latency_ms(const std::string &index_name,
                                  uint64_t latency_ms);
   bool set_lifecycle_state(const std::string &index_name,
@@ -459,6 +472,8 @@ class index_service {
   vector_entry_store m_entry_store;
   standalone_entry_store m_standalone_store;
   std::unordered_map<std::string, lifecycle_info> m_lifecycle_infos;
+  std::unordered_map<std::string, build_pipeline_snapshot>
+      m_build_pipeline_snapshots;
   std::unordered_map<uint64_t, std::vector<pending_change>> m_pending_changes;
   std::unordered_map<uint64_t, std::vector<savepoint_marker>> m_savepoints;
 
@@ -481,6 +496,10 @@ class index_service {
                                       bool preserve_lifecycle);
   bool ensure_runtime_loaded(const std::string &index_name);
   void maybe_unload_runtime(const std::string &index_name);
+  build_input_stats collect_build_input_stats(
+      const std::string &index_name, const index_config &config) const;
+  void record_build_pipeline_decision(const std::string &index_name,
+                                      const index_config &config);
 };
 
 }  // namespace vector_index

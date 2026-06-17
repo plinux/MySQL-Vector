@@ -12,5 +12,7 @@ SELECT @@global.vector_diskann_build_memory_size;
 SELECT @@global.vector_diskann_raw_segment_size;
 SELECT @@global.vector_faiss_train_size;
 SELECT @@global.vector_hnsw_index_memory_size;
+SELECT @@global.vector_build_pipeline_min_size;
+SELECT @@global.vector_build_segment_target_size;
 
 --echo # End of tests.

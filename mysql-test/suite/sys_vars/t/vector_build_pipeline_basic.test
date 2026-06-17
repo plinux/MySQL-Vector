@@ -1,0 +1,127 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # Variable family : vector build pipeline
+--echo # Scope           : Global dynamic
+--echo #
+
+--echo # Global defaults.
+SELECT @@global.vector_build_pipeline_mode,
+       @@global.vector_build_pipeline_min_rows,
+       @@global.vector_build_pipeline_min_size,
+       @@global.vector_build_segment_max_rows,
+       @@global.vector_build_segment_target_size,
+       @@global.vector_build_pipeline_max_tasks,
+       @@global.vector_build_pipeline_progress_interval;
+
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME IN ('vector_build_pipeline_mode',
+                          'vector_build_pipeline_min_rows',
+                          'vector_build_pipeline_min_size',
+                          'vector_build_segment_max_rows',
+                          'vector_build_segment_target_size',
+                          'vector_build_pipeline_max_tasks',
+                          'vector_build_pipeline_progress_interval')
+  ORDER BY VARIABLE_NAME;
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_build_pipeline_mode;
+
+--echo # Runtime changes are allowed.
+SET GLOBAL vector_build_pipeline_mode='direct';
+SET GLOBAL vector_build_pipeline_min_rows=0;
+SET GLOBAL vector_build_pipeline_min_size=0;
+SET GLOBAL vector_build_segment_max_rows=1;
+SET GLOBAL vector_build_segment_target_size=1048576;
+SET GLOBAL vector_build_pipeline_max_tasks=1;
+SET GLOBAL vector_build_pipeline_progress_interval=1;
+
+SELECT @@global.vector_build_pipeline_mode,
+       @@global.vector_build_pipeline_min_rows,
+       @@global.vector_build_pipeline_min_size,
+       @@global.vector_build_segment_max_rows,
+       @@global.vector_build_segment_target_size,
+       @@global.vector_build_pipeline_max_tasks,
+       @@global.vector_build_pipeline_progress_interval;
+
+SET GLOBAL vector_build_pipeline_mode='segmented';
+SET GLOBAL vector_build_pipeline_min_rows=18446744073709551615;
+SET GLOBAL vector_build_pipeline_min_size=1048576;
+SET GLOBAL vector_build_segment_max_rows=18446744073709551615;
+SET GLOBAL vector_build_segment_target_size=2097152;
+SET GLOBAL vector_build_pipeline_max_tasks=65535;
+SET GLOBAL vector_build_pipeline_progress_interval=3600;
+
+SELECT @@global.vector_build_pipeline_mode,
+       @@global.vector_build_pipeline_min_rows,
+       @@global.vector_build_pipeline_min_size,
+       @@global.vector_build_segment_max_rows,
+       @@global.vector_build_segment_target_size,
+       @@global.vector_build_pipeline_max_tasks,
+       @@global.vector_build_pipeline_progress_interval;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_pipeline_mode='bad';
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_pipeline_min_rows=-1;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_pipeline_min_size=-1;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_segment_max_rows=0;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_segment_target_size=1048575;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_pipeline_max_tasks=0;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_pipeline_max_tasks=65536;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_pipeline_progress_interval=0;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_pipeline_progress_interval=3601;
+
+--echo # Persist and reset.
+SET PERSIST vector_build_pipeline_mode='direct';
+SET PERSIST vector_build_pipeline_min_rows=1024;
+SET PERSIST vector_build_pipeline_min_size=2097152;
+SET PERSIST vector_build_segment_max_rows=2048;
+SET PERSIST vector_build_segment_target_size=3145728;
+SET PERSIST vector_build_pipeline_max_tasks=2;
+SET PERSIST vector_build_pipeline_progress_interval=30;
+
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.persisted_variables
+  WHERE VARIABLE_NAME IN ('vector_build_pipeline_mode',
+                          'vector_build_pipeline_min_rows',
+                          'vector_build_pipeline_min_size',
+                          'vector_build_segment_max_rows',
+                          'vector_build_segment_target_size',
+                          'vector_build_pipeline_max_tasks',
+                          'vector_build_pipeline_progress_interval')
+  ORDER BY VARIABLE_NAME;
+
+RESET PERSIST IF EXISTS vector_build_pipeline_mode;
+RESET PERSIST IF EXISTS vector_build_pipeline_min_rows;
+RESET PERSIST IF EXISTS vector_build_pipeline_min_size;
+RESET PERSIST IF EXISTS vector_build_segment_max_rows;
+RESET PERSIST IF EXISTS vector_build_segment_target_size;
+RESET PERSIST IF EXISTS vector_build_pipeline_max_tasks;
+RESET PERSIST IF EXISTS vector_build_pipeline_progress_interval;
+
+SET GLOBAL vector_build_pipeline_mode=DEFAULT;
+SET GLOBAL vector_build_pipeline_min_rows=DEFAULT;
+SET GLOBAL vector_build_pipeline_min_size=DEFAULT;
+SET GLOBAL vector_build_segment_max_rows=DEFAULT;
+SET GLOBAL vector_build_segment_target_size=DEFAULT;
+SET GLOBAL vector_build_pipeline_max_tasks=DEFAULT;
+SET GLOBAL vector_build_pipeline_progress_interval=DEFAULT;
+
+SELECT @@global.vector_build_pipeline_mode,
+       @@global.vector_build_pipeline_min_rows,
+       @@global.vector_build_pipeline_min_size,
+       @@global.vector_build_segment_max_rows,
+       @@global.vector_build_segment_target_size,
+       @@global.vector_build_pipeline_max_tasks,
+       @@global.vector_build_pipeline_progress_interval;
+
+--echo # End of tests.

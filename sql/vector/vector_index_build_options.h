@@ -30,7 +30,7 @@
 #include "sql/vector/vector_index_backend.h"
 
 /**
-  Global vector index build-thread defaults.
+  Global vector index build defaults.
 
   The vector module owns these option values so backend, registry and SQL
   integration commits can share one storage location while exposing each
@@ -39,14 +39,25 @@
 extern ulong opt_vector_hnsw_build_threads;
 extern ulong opt_vector_faiss_build_threads;
 extern ulong opt_vector_diskann_build_threads;
-extern ulong opt_vector_diskann_max_degree;
-extern ulong opt_vector_diskann_build_complexity;
-extern ulong opt_vector_diskann_build_mode;
+extern ulong opt_vector_diskann_build_blas_threads;
 extern ulong opt_vector_search_batch_count;
 extern ulong opt_vector_search_batch_result_count;
 extern ulong opt_vector_batch_search_threads;
 extern ulong opt_vector_hnsw_search_threads;
 extern ulong opt_vector_faiss_search_threads;
+extern ulong opt_vector_diskann_search_threads;
+extern ulong opt_vector_diskann_offline_search_threads;
+extern ulong opt_vector_diskann_search_io_limit;
+extern ulong opt_vector_diskann_cache_nodes;
+extern ulonglong opt_vector_diskann_search_cache_size;
+extern double opt_vector_diskann_search_cache_ratio;
+extern ulong opt_vector_diskann_search_complexity;
+extern ulong opt_vector_diskann_search_beamwidth;
+extern ulonglong opt_vector_diskann_pq_code_budget_size;
+extern double opt_vector_diskann_pq_code_budget_ratio;
+extern ulong opt_vector_diskann_max_degree;
+extern ulong opt_vector_diskann_build_complexity;
+extern ulong opt_vector_diskann_build_mode;
 extern ulong opt_vector_default_library;
 extern ulong opt_vector_index_consistency_mode;
 extern ulonglong opt_vector_entry_cache_size;
@@ -58,6 +69,13 @@ extern ulonglong opt_vector_faiss_train_size;
 extern bool opt_vector_faiss_keep_loaded;
 extern ulonglong opt_vector_hnsw_index_memory_size;
 extern bool opt_vector_lazy_external_runtime;
+extern ulong opt_vector_build_pipeline_mode;
+extern ulonglong opt_vector_build_pipeline_min_rows;
+extern ulonglong opt_vector_build_pipeline_min_size;
+extern ulonglong opt_vector_build_segment_max_rows;
+extern ulonglong opt_vector_build_segment_target_size;
+extern ulong opt_vector_build_pipeline_max_tasks;
+extern ulong opt_vector_build_pipeline_progress_interval;
 
 namespace vector_index {
 
@@ -68,13 +86,18 @@ enum class vector_default_library : ulong {
   kFaiss = 3
 };
 
+/**
+  Return the global DiskANN build-mode default.
+
+  The sysvar stores an enum index as ulong; this helper keeps all backend and
+  registry users on the vector enum instead of duplicating casts.
+*/
+diskann_build_mode global_diskann_build_mode();
+
 /** Return the global default vector library. */
 vector_default_library global_vector_default_library();
 
-/** Return the global DiskANN build-mode default. */
-diskann_build_mode global_diskann_build_mode();
-
-/** Return the global default vector index consistency mode. */
+/** Return the global vector-index consistency default. */
 index_consistency_mode global_index_consistency_mode();
 
 /** Return the effective build worker count for one backend build. */
@@ -85,11 +108,18 @@ size_t effective_build_scheduler_threads(size_t entry_count,
 size_t effective_build_scheduler_thread_budget(
     ulong backend_override_threads);
 
+/** Return the effective batch search worker count after inheritance. */
+size_t effective_batch_search_threads(size_t query_count,
+                                      ulong backend_override_threads);
+
 /** Return the effective hnswlib batch search worker count. */
 size_t effective_hnsw_search_threads(size_t query_count);
 
 /** Return the effective FAISS batch search worker count. */
 size_t effective_faiss_search_threads(size_t query_count);
+
+/** Return the effective DiskANN batch search worker count. */
+size_t effective_diskann_search_threads(size_t query_count);
 
 }  // namespace vector_index
 
