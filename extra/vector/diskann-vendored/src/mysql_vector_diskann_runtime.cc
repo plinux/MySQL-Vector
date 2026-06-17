@@ -32,6 +32,8 @@ struct mysql_vector_diskann_runtime_handle {
 
 namespace {
 
+constexpr uint32_t k_max_search_beamwidth = 128;
+
 #ifdef MYSQL_VECTOR_DISKANN_RUNTIME_WITH_OFFLINE_ADAPTER
 extern "C" bool mysql_vector_diskann_offline_build_from_manifest(
     const char *index_prefix, const char *manifest_path, uint32_t dimension,
@@ -355,6 +357,10 @@ bool mysql_vector_diskann_validate_search_config(
   }
   if (config->beamwidth == 0) {
     copy_error("beamwidth is zero", error_buffer, error_buffer_size);
+    return false;
+  }
+  if (config->beamwidth > k_max_search_beamwidth) {
+    copy_error("beamwidth is too large", error_buffer, error_buffer_size);
     return false;
   }
   if (error_buffer != nullptr && error_buffer_size > 0) error_buffer[0] = '\0';

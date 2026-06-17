@@ -112,6 +112,55 @@ bool emit_diskann_search_complexity(
              vector_index::k_default_diskann_search_complexity;
 }
 
+bool emit_diskann_build_mode(const vector_index_registry::index_info &info,
+                             tuning_emit_policy emit_policy) {
+  if (!info.diskann_build_mode_specified ||
+      info.diskann_build_mode_value ==
+          vector_index::diskann_build_mode::kAuto) {
+    return false;
+  }
+  return emit_policy == tuning_emit_policy::k_emit_nonzero ||
+         provider_is(info, "diskann");
+}
+
+bool emit_diskann_search_beamwidth(
+    const vector_index_registry::index_info &info,
+    tuning_emit_policy emit_policy) {
+  if (emit_policy == tuning_emit_policy::k_emit_nonzero) {
+    return info.diskann_search_beamwidth != 0;
+  }
+  return provider_is(info, "diskann") && info.diskann_search_beamwidth != 0 &&
+         info.diskann_search_beamwidth !=
+             vector_index::k_default_diskann_search_beamwidth;
+}
+
+bool emit_diskann_pq_code_budget_size(
+    const vector_index_registry::index_info &info,
+    tuning_emit_policy emit_policy) {
+  if (emit_policy == tuning_emit_policy::k_emit_nonzero) {
+    return info.diskann_pq_code_budget_size != 0;
+  }
+  return provider_is(info, "diskann") &&
+         info.diskann_pq_code_budget_size != 0;
+}
+
+bool emit_diskann_disk_pq_dims(const vector_index_registry::index_info &info,
+                               tuning_emit_policy emit_policy) {
+  if (emit_policy == tuning_emit_policy::k_emit_nonzero) {
+    return info.diskann_disk_pq_dims != 0;
+  }
+  return provider_is(info, "diskann") && info.diskann_disk_pq_dims != 0;
+}
+
+bool emit_diskann_boolean_tuning(const vector_index_registry::index_info &info,
+                                 bool value,
+                                 tuning_emit_policy emit_policy) {
+  if (emit_policy == tuning_emit_policy::k_emit_nonzero) {
+    return value;
+  }
+  return provider_is(info, "diskann") && value;
+}
+
 }  // namespace
 
 uint32_t provider_build_threads(
@@ -219,6 +268,17 @@ void append_tuning_statements(
     query->append(STRING_WITH_LEN(")"));
   }
 
+  if (emit_diskann_build_mode(info, emit_policy)) {
+    append_set_call_prefix(thd, query, "VEC_INDEX_SET_DISKANN_BUILD_MODE",
+                           index_name);
+    query->append(STRING_WITH_LEN(", "));
+    const char *build_mode =
+        vector_index::diskann_build_mode_to_string(
+            info.diskann_build_mode_value);
+    append_unescaped(query, build_mode, std::strlen(build_mode));
+    query->append(STRING_WITH_LEN(")"));
+  }
+
   if (emit_diskann_search_complexity(info, emit_policy)) {
     append_set_call_prefix(thd, query,
                            "VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY",
@@ -229,6 +289,61 @@ void append_tuning_statements(
     query->append(STRING_WITH_LEN(")"));
   }
 
+  if (emit_diskann_search_beamwidth(info, emit_policy)) {
+    append_set_call_prefix(thd, query,
+                           "VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH",
+                           index_name);
+    query->append(STRING_WITH_LEN(", "));
+    query->append_ulonglong(
+        static_cast<ulonglong>(info.diskann_search_beamwidth));
+    query->append(STRING_WITH_LEN(")"));
+  }
+
+  if (emit_diskann_pq_code_budget_size(info, emit_policy)) {
+    append_set_call_prefix(thd, query,
+                           "VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE",
+                           index_name);
+    query->append(STRING_WITH_LEN(", "));
+    query->append_ulonglong(
+        static_cast<ulonglong>(info.diskann_pq_code_budget_size));
+    query->append(STRING_WITH_LEN(")"));
+  }
+
+  if (emit_diskann_disk_pq_dims(info, emit_policy)) {
+    append_set_call_prefix(thd, query, "VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS",
+                           index_name);
+    query->append(STRING_WITH_LEN(", "));
+    query->append_ulonglong(static_cast<ulonglong>(info.diskann_disk_pq_dims));
+    query->append(STRING_WITH_LEN(")"));
+  }
+
+  if (emit_diskann_boolean_tuning(info, info.diskann_accelerate_build,
+                                  emit_policy)) {
+    append_set_call_prefix(thd, query,
+                           "VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD",
+                           index_name);
+    query->append(STRING_WITH_LEN(", "));
+    query->append_ulonglong(info.diskann_accelerate_build ? 1 : 0);
+    query->append(STRING_WITH_LEN(")"));
+  }
+
+  if (emit_diskann_boolean_tuning(info, info.diskann_shuffle_build,
+                                  emit_policy)) {
+    append_set_call_prefix(thd, query, "VEC_INDEX_SET_DISKANN_SHUFFLE_BUILD",
+                           index_name);
+    query->append(STRING_WITH_LEN(", "));
+    query->append_ulonglong(info.diskann_shuffle_build ? 1 : 0);
+    query->append(STRING_WITH_LEN(")"));
+  }
+
+  if (emit_diskann_boolean_tuning(info, info.diskann_use_bfs_cache,
+                                  emit_policy)) {
+    append_set_call_prefix(thd, query, "VEC_INDEX_SET_DISKANN_USE_BFS_CACHE",
+                           index_name);
+    query->append(STRING_WITH_LEN(", "));
+    query->append_ulonglong(info.diskann_use_bfs_cache ? 1 : 0);
+    query->append(STRING_WITH_LEN(")"));
+  }
 }
 
 }  // namespace vector_index_ddl_formatter

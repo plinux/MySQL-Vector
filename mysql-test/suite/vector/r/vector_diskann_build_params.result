@@ -36,7 +36,7 @@ CAST(1 AS JSON))
 1
 SELECT VEC_INDEX_INFO('idx_diskann_params');
 VEC_INDEX_INFO('idx_diskann_params')
-{"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":"diskann_garnet","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":48,"diskann_build_complexity":96,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":64,"diskann_search_beamwidth":16,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":3,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":"diskann_garnet","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":48,"diskann_build_complexity":96,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":64,"diskann_search_beamwidth":16,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":0,"diskann_cache_nodes":0,"diskann_accelerate_build":0,"diskann_shuffle_build":0,"diskann_use_bfs_cache":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":3,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name LIKE 'idx_diskann_params.diskann_%';
 Section	Variable_name	Value
@@ -47,10 +47,15 @@ INDEX_STATE	idx_diskann_params.diskann_build_mode	auto
 INDEX_STATE	idx_diskann_params.diskann_search_complexity	64
 INDEX_STATE	idx_diskann_params.diskann_search_beamwidth	16
 INDEX_STATE	idx_diskann_params.diskann_pq_code_budget_size	0
+INDEX_STATE	idx_diskann_params.diskann_disk_pq_dims	0
+INDEX_STATE	idx_diskann_params.diskann_cache_nodes	0
+INDEX_STATE	idx_diskann_params.diskann_accelerate_build	0
+INDEX_STATE	idx_diskann_params.diskann_shuffle_build	0
+INDEX_STATE	idx_diskann_params.diskann_use_bfs_cache	0
 # restart
 SELECT VEC_INDEX_INFO('idx_diskann_params');
 VEC_INDEX_INFO('idx_diskann_params')
-{"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":"diskann_garnet","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":48,"diskann_build_complexity":96,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":64,"diskann_search_beamwidth":16,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":3,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+{"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":"diskann_garnet","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":48,"diskann_build_complexity":96,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":64,"diskann_search_beamwidth":16,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":0,"diskann_cache_nodes":0,"diskann_accelerate_build":0,"diskann_shuffle_build":0,"diskann_use_bfs_cache":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":3,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
 SELECT JSON_CONTAINS(
 VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
 CAST(1 AS JSON));
@@ -68,6 +73,11 @@ INDEX_STATE	idx_diskann_params.diskann_build_mode	auto
 INDEX_STATE	idx_diskann_params.diskann_search_complexity	64
 INDEX_STATE	idx_diskann_params.diskann_search_beamwidth	16
 INDEX_STATE	idx_diskann_params.diskann_pq_code_budget_size	0
+INDEX_STATE	idx_diskann_params.diskann_disk_pq_dims	0
+INDEX_STATE	idx_diskann_params.diskann_cache_nodes	0
+INDEX_STATE	idx_diskann_params.diskann_accelerate_build	0
+INDEX_STATE	idx_diskann_params.diskann_shuffle_build	0
+INDEX_STATE	idx_diskann_params.diskann_use_bfs_cache	0
 SELECT VEC_INDEX_DROP('idx_diskann_params');
 VEC_INDEX_DROP('idx_diskann_params')
 1

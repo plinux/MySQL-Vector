@@ -1,0 +1,43 @@
+#
+# Variable name : vector_diskann_segmented_serving
+# Scope         : Global dynamic
+#
+# Global - default
+SELECT @@global.vector_diskann_segmented_serving;
+@@global.vector_diskann_segmented_serving
+0
+# Visible through SHOW VARIABLES and performance_schema.
+SHOW GLOBAL VARIABLES LIKE 'vector_diskann_segmented_serving';
+Variable_name	Value
+vector_diskann_segmented_serving	OFF
+SHOW SESSION VARIABLES LIKE 'vector_diskann_segmented_serving';
+Variable_name	Value
+vector_diskann_segmented_serving	OFF
+SELECT * FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='vector_diskann_segmented_serving';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_diskann_segmented_serving	OFF
+SELECT * FROM performance_schema.session_variables
+WHERE VARIABLE_NAME='vector_diskann_segmented_serving';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_diskann_segmented_serving	OFF
+SELECT @@session.vector_diskann_segmented_serving;
+ERROR HY000: Variable 'vector_diskann_segmented_serving' is a GLOBAL variable
+SELECT vector_diskann_segmented_serving;
+ERROR 42S22: Unknown column 'vector_diskann_segmented_serving' in 'field list'
+# Runtime changes are allowed.
+SET GLOBAL vector_diskann_segmented_serving=ON;
+SELECT @@global.vector_diskann_segmented_serving;
+@@global.vector_diskann_segmented_serving
+1
+SET GLOBAL vector_diskann_segmented_serving=OFF;
+SELECT @@global.vector_diskann_segmented_serving;
+@@global.vector_diskann_segmented_serving
+0
+SET GLOBAL vector_diskann_segmented_serving=2;
+ERROR 42000: Variable 'vector_diskann_segmented_serving' can't be set to the value of '2'
+SET GLOBAL vector_diskann_segmented_serving=DEFAULT;
+SELECT @@global.vector_diskann_segmented_serving;
+@@global.vector_diskann_segmented_serving
+0
+# End of tests.

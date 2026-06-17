@@ -1,0 +1,17 @@
+--source include/have_vector_diskann.inc
+
+--echo #
+--echo # WL#Vector: DISKANN VEC_INDEX_CREATE full argument list
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_diskann_full_args', 2, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN', 24, 'standalone');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_full_args'),
+  '$.consistency_mode')) AS full_args_consistency_mode,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_full_args'),
+  '$.diskann_build_threads') AS full_args_build_threads;
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_full_args.consistency_mode';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_full_args.diskann_build_threads';
+SELECT VEC_INDEX_DROP('idx_diskann_full_args');

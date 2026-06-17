@@ -545,6 +545,9 @@ TEST(VectorIndexBackendTest, BackendDefaultMethodsCoverReaderAndTuningGuards) {
       backend.set_diskann_build_mode(vector_index::diskann_build_mode::kSerial));
   EXPECT_FALSE(backend.set_diskann_search_complexity(64));
   EXPECT_FALSE(backend.set_diskann_search_beamwidth(16));
+  EXPECT_EQ(0U, backend.diskann_offline_search_threads());
+  EXPECT_EQ(0U, backend.diskann_search_io_limit());
+  EXPECT_EQ(0U, backend.diskann_cache_nodes());
   EXPECT_FALSE(backend.external_manifest_present());
   EXPECT_EQ(0U, backend.external_manifest_generation());
 }
@@ -1276,6 +1279,10 @@ TEST(VectorIndexBackendTest,
   EXPECT_FALSE(vector_index::diskann_read_modify_write_round_trip_for_testing(
       "idx_diskann_rmw_store_empty_key", 5, "", "abcdefgh", "XYZ", 8,
       &persistent_value, &build_memory_value, &resident_value));
+  EXPECT_FALSE(vector_index::diskann_read_modify_write_round_trip_for_testing(
+      "idx_diskann_rmw_store_overflow", 5, "rmw-key", "abcdefgh", "XYZ",
+      std::numeric_limits<size_t>::max(), &persistent_value,
+      &build_memory_value, &resident_value));
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -1296,8 +1303,10 @@ TEST(VectorIndexBackendTest,
   uint32_t len = 4;
   truncated.append(reinterpret_cast<const char *>(&len), sizeof(len));
   truncated.append("abc", 3);
-  EXPECT_FALSE(
-      vector_index::diskann_parse_prefixed_keys_for_testing(truncated, 1, &keys));
+  EXPECT_FALSE(vector_index::diskann_parse_prefixed_keys_for_testing(truncated,
+                                                                     1, &keys));
+  EXPECT_FALSE(vector_index::diskann_parse_prefixed_keys_for_testing(
+      truncated, 1, &keys, -1, true));
 
   std::string payload;
   const std::string k1 = "aa";
@@ -3816,6 +3825,8 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ(1U, diagnostics.concurrent_build_tasks);
   EXPECT_GE(diagnostics.effective_build_threads, 1U);
   EXPECT_EQ(1U, diagnostics.effective_blas_threads);
+  EXPECT_EQ(0U, diagnostics.pq_chunks);
+  EXPECT_EQ(0U, diagnostics.cache_nodes);
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));

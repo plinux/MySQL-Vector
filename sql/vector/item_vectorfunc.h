@@ -331,6 +331,61 @@ class Item_func_vec_index_set_diskann_pq_code_budget_size final
   }
 };
 
+class Item_func_vec_index_set_diskann_disk_pq_dims final
+    : public Item_int_func {
+ public:
+  Item_func_vec_index_set_diskann_disk_pq_dims(const POS &pos, Item *a, Item *b)
+      : Item_int_func(pos, a, b) {}
+
+  bool resolve_type(THD *thd) override;
+  longlong val_int() override;
+  const char *func_name() const override {
+    return "vec_index_set_diskann_disk_pq_dims";
+  }
+};
+
+class Item_func_vec_index_set_diskann_accelerate_build final
+    : public Item_int_func {
+ public:
+  Item_func_vec_index_set_diskann_accelerate_build(const POS &pos, Item *a,
+                                                   Item *b)
+      : Item_int_func(pos, a, b) {}
+
+  bool resolve_type(THD *thd) override;
+  longlong val_int() override;
+  const char *func_name() const override {
+    return "vec_index_set_diskann_accelerate_build";
+  }
+};
+
+class Item_func_vec_index_set_diskann_shuffle_build final
+    : public Item_int_func {
+ public:
+  Item_func_vec_index_set_diskann_shuffle_build(const POS &pos, Item *a,
+                                                Item *b)
+      : Item_int_func(pos, a, b) {}
+
+  bool resolve_type(THD *thd) override;
+  longlong val_int() override;
+  const char *func_name() const override {
+    return "vec_index_set_diskann_shuffle_build";
+  }
+};
+
+class Item_func_vec_index_set_diskann_use_bfs_cache final
+    : public Item_int_func {
+ public:
+  Item_func_vec_index_set_diskann_use_bfs_cache(const POS &pos, Item *a,
+                                                Item *b)
+      : Item_int_func(pos, a, b) {}
+
+  bool resolve_type(THD *thd) override;
+  longlong val_int() override;
+  const char *func_name() const override {
+    return "vec_index_set_diskann_use_bfs_cache";
+  }
+};
+
 class Item_func_vec_index_set_diskann_build_mode final : public Item_int_func {
  public:
   Item_func_vec_index_set_diskann_build_mode(const POS &pos, Item *a, Item *b)

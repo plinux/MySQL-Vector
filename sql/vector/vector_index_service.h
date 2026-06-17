@@ -233,11 +233,18 @@ class index_service {
     uint32_t diskann_max_degree{0};
     uint32_t diskann_build_complexity{0};
     uint32_t diskann_build_threads{0};
+    uint32_t diskann_build_blas_threads{0};
     diskann_build_mode diskann_build_mode_value{diskann_build_mode::kAuto};
     uint32_t diskann_search_complexity{0};
     uint32_t diskann_search_beamwidth{0};
     uint64_t diskann_pq_code_budget_size{0};
+    uint32_t diskann_disk_pq_dims{0};
+    uint32_t diskann_cache_nodes{0};
+    bool diskann_accelerate_build{false};
+    bool diskann_shuffle_build{false};
+    bool diskann_use_bfs_cache{false};
     bool diskann_build_mode_specified{false};
+    bool diskann_segmented_serving{false};
     index_consistency_mode consistency_mode{
         index_consistency_mode::kTransactional};
   };
@@ -337,6 +344,14 @@ class index_service {
                                     uint32_t diskann_search_beamwidth);
   bool set_diskann_pq_code_budget_size(
       const std::string &index_name, uint64_t diskann_pq_code_budget_size);
+  bool set_diskann_disk_pq_dims(const std::string &index_name,
+                                uint32_t diskann_disk_pq_dims);
+  bool set_diskann_accelerate_build(const std::string &index_name,
+                                    bool diskann_accelerate_build);
+  bool set_diskann_shuffle_build(const std::string &index_name,
+                                 bool diskann_shuffle_build);
+  bool set_diskann_use_bfs_cache(const std::string &index_name,
+                                 bool diskann_use_bfs_cache);
   bool restore_index_config(const std::string &index_name,
                             const index_config &config);
   bool set_index_consistency_mode(

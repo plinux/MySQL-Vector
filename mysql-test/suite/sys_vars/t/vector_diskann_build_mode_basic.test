@@ -1,0 +1,35 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # Variable name : vector_diskann_build_mode
+--echo #
+
+SELECT @@global.vector_diskann_build_mode;
+SHOW GLOBAL VARIABLES LIKE 'vector_diskann_build_mode';
+SHOW SESSION VARIABLES LIKE 'vector_diskann_build_mode';
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='vector_diskann_build_mode';
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.session_variables
+WHERE VARIABLE_NAME='vector_diskann_build_mode';
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_diskann_build_mode;
+
+--Error ER_BAD_FIELD_ERROR
+SELECT vector_diskann_build_mode;
+
+SET GLOBAL vector_diskann_build_mode='serial';
+SELECT @@global.vector_diskann_build_mode;
+
+SET GLOBAL vector_diskann_build_mode='offline';
+SELECT @@global.vector_diskann_build_mode;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_build_mode='invalid';
+
+--Error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('missing_diskann_index', 'bulk');
+SET GLOBAL vector_diskann_build_mode=DEFAULT;
+SELECT @@global.vector_diskann_build_mode;

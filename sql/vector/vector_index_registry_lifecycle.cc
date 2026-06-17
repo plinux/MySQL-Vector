@@ -87,13 +87,19 @@ bool index_config_matches(
          lhs.diskann_max_degree == rhs.diskann_max_degree &&
          lhs.diskann_build_complexity == rhs.diskann_build_complexity &&
          lhs.diskann_build_threads == rhs.diskann_build_threads &&
+         lhs.diskann_build_blas_threads ==
+             rhs.diskann_build_blas_threads &&
          lhs.diskann_build_mode_value == rhs.diskann_build_mode_value &&
          lhs.diskann_build_mode_specified ==
              rhs.diskann_build_mode_specified &&
          lhs.diskann_search_complexity == rhs.diskann_search_complexity &&
          lhs.diskann_search_beamwidth == rhs.diskann_search_beamwidth &&
          lhs.diskann_pq_code_budget_size ==
-             rhs.diskann_pq_code_budget_size;
+             rhs.diskann_pq_code_budget_size &&
+         lhs.diskann_disk_pq_dims == rhs.diskann_disk_pq_dims &&
+         lhs.diskann_accelerate_build == rhs.diskann_accelerate_build &&
+         lhs.diskann_shuffle_build == rhs.diskann_shuffle_build &&
+         lhs.diskann_use_bfs_cache == rhs.diskann_use_bfs_cache;
 }
 
 vector_index_metadata_store::change_log_row make_backfill_delta_row(
@@ -834,6 +840,7 @@ bool reset_mapped_indexes_for_table(const std::string &db_name,
     spec.info.diskann_max_degree = config.diskann_max_degree;
     spec.info.diskann_build_complexity = config.diskann_build_complexity;
     spec.info.diskann_build_threads = config.diskann_build_threads;
+    spec.info.diskann_build_blas_threads = config.diskann_build_blas_threads;
     spec.info.diskann_build_mode_value = config.diskann_build_mode_value;
     spec.info.diskann_build_mode_specified =
         config.diskann_build_mode_specified;
@@ -841,6 +848,11 @@ bool reset_mapped_indexes_for_table(const std::string &db_name,
     spec.info.diskann_search_beamwidth = config.diskann_search_beamwidth;
     spec.info.diskann_pq_code_budget_size =
         config.diskann_pq_code_budget_size;
+    spec.info.diskann_disk_pq_dims = config.diskann_disk_pq_dims;
+    spec.info.diskann_cache_nodes = config.diskann_cache_nodes;
+    spec.info.diskann_accelerate_build = config.diskann_accelerate_build;
+    spec.info.diskann_shuffle_build = config.diskann_shuffle_build;
+    spec.info.diskann_use_bfs_cache = config.diskann_use_bfs_cache;
     reset_specs.push_back(std::move(spec));
   }
 
@@ -1577,6 +1589,66 @@ bool set_diskann_pq_code_budget_size(const std::string &index_name,
       });
 }
 
+bool set_diskann_disk_pq_dims(const std::string &index_name,
+                              uint32_t diskann_disk_pq_dims) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->diskann_disk_pq_dims = diskann_disk_pq_dims;
+      },
+      [&] {
+        return g_index_service.set_diskann_disk_pq_dims(
+            index_name, diskann_disk_pq_dims);
+      });
+}
+
+bool set_diskann_accelerate_build(const std::string &index_name,
+                                  bool diskann_accelerate_build) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->diskann_accelerate_build = diskann_accelerate_build;
+      },
+      [&] {
+        return g_index_service.set_diskann_accelerate_build(
+            index_name, diskann_accelerate_build);
+      });
+}
+
+bool set_diskann_shuffle_build(const std::string &index_name,
+                               bool diskann_shuffle_build) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->diskann_shuffle_build = diskann_shuffle_build;
+      },
+      [&] {
+        return g_index_service.set_diskann_shuffle_build(
+            index_name, diskann_shuffle_build);
+      });
+}
+
+bool set_diskann_use_bfs_cache(const std::string &index_name,
+                               bool diskann_use_bfs_cache) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return apply_persisted_index_config_change_locked(
+      index_name,
+      [&](vector_index::index_service::index_config *candidate) {
+        candidate->diskann_use_bfs_cache = diskann_use_bfs_cache;
+      },
+      [&] {
+        return g_index_service.set_diskann_use_bfs_cache(
+            index_name, diskann_use_bfs_cache);
+      });
+}
+
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 bool detail::index_config_matches_for_testing(
     const vector_index::index_service::index_config &lhs,
@@ -1788,11 +1860,17 @@ bool get_index_info(const std::string &index_name, index_info *info) {
   info->diskann_max_degree = config.diskann_max_degree;
   info->diskann_build_complexity = config.diskann_build_complexity;
   info->diskann_build_threads = config.diskann_build_threads;
+  info->diskann_build_blas_threads = config.diskann_build_blas_threads;
   info->diskann_build_mode_value = config.diskann_build_mode_value;
   info->diskann_build_mode_specified = config.diskann_build_mode_specified;
   info->diskann_search_complexity = config.diskann_search_complexity;
   info->diskann_search_beamwidth = config.diskann_search_beamwidth;
   info->diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
+  info->diskann_disk_pq_dims = config.diskann_disk_pq_dims;
+  info->diskann_cache_nodes = config.diskann_cache_nodes;
+  info->diskann_accelerate_build = config.diskann_accelerate_build;
+  info->diskann_shuffle_build = config.diskann_shuffle_build;
+  info->diskann_use_bfs_cache = config.diskann_use_bfs_cache;
   const index_binding binding = binding_for_index_locked(index_name);
   info->owner_schema = owner_schema_for_index_locked(index_name);
   info->schema_name = binding.schema_name;

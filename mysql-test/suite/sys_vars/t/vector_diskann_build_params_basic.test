@@ -1,0 +1,88 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # Variable names : vector_diskann_max_degree, vector_diskann_build_complexity, vector_diskann_pq_runtime
+--echo #
+
+SELECT @@global.vector_diskann_max_degree;
+SELECT @@global.vector_diskann_build_complexity;
+SELECT @@global.vector_diskann_pq_runtime;
+
+SHOW GLOBAL VARIABLES LIKE 'vector_diskann_max_degree';
+SHOW GLOBAL VARIABLES LIKE 'vector_diskann_build_complexity';
+SHOW GLOBAL VARIABLES LIKE 'vector_diskann_pq_runtime';
+SHOW SESSION VARIABLES LIKE 'vector_diskann_max_degree';
+SHOW SESSION VARIABLES LIKE 'vector_diskann_build_complexity';
+SHOW SESSION VARIABLES LIKE 'vector_diskann_pq_runtime';
+
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME IN
+  ('vector_diskann_max_degree', 'vector_diskann_build_complexity',
+   'vector_diskann_pq_runtime')
+ORDER BY VARIABLE_NAME;
+
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.session_variables
+WHERE VARIABLE_NAME IN
+  ('vector_diskann_max_degree', 'vector_diskann_build_complexity',
+   'vector_diskann_pq_runtime')
+ORDER BY VARIABLE_NAME;
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_diskann_max_degree;
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_diskann_build_complexity;
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_diskann_pq_runtime;
+
+--Error ER_BAD_FIELD_ERROR
+SELECT vector_diskann_max_degree;
+
+--Error ER_BAD_FIELD_ERROR
+SELECT vector_diskann_build_complexity;
+
+--Error ER_BAD_FIELD_ERROR
+SELECT vector_diskann_pq_runtime;
+
+SET GLOBAL vector_diskann_max_degree=48;
+SET GLOBAL vector_diskann_build_complexity=96;
+SET GLOBAL vector_diskann_pq_runtime='native_auto';
+SELECT @@global.vector_diskann_max_degree;
+SELECT @@global.vector_diskann_build_complexity;
+SELECT @@global.vector_diskann_pq_runtime;
+
+SET GLOBAL vector_diskann_pq_runtime='official';
+SELECT @@global.vector_diskann_pq_runtime;
+
+SET GLOBAL vector_diskann_pq_runtime='native_strict';
+SELECT @@global.vector_diskann_pq_runtime;
+
+SET GLOBAL vector_diskann_max_degree=4294967295;
+SET GLOBAL vector_diskann_build_complexity=4294967295;
+SELECT @@global.vector_diskann_max_degree;
+SELECT @@global.vector_diskann_build_complexity;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_max_degree=0;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_build_complexity=0;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_max_degree=-1;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_build_complexity=-1;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_pq_runtime='unknown';
+
+SET GLOBAL vector_diskann_max_degree=DEFAULT;
+SET GLOBAL vector_diskann_build_complexity=DEFAULT;
+SET GLOBAL vector_diskann_pq_runtime=DEFAULT;
+SELECT @@global.vector_diskann_max_degree;
+SELECT @@global.vector_diskann_build_complexity;
+SELECT @@global.vector_diskann_pq_runtime;

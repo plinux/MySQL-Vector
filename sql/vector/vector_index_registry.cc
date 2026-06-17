@@ -43,7 +43,6 @@
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_diagnostics.h"
 #include "sql/vector/vector_index_identity.h"
-#include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry_internal.h"
 #include "sql/vector/vector_index_service.h"
 #include "sql/vector/vector_index_truth_store.h"
@@ -337,7 +336,7 @@ uint32_t effective_diskann_max_degree(
     return 0;
   }
   if (options.diskann_max_degree != 0) return options.diskann_max_degree;
-  return vector_index::k_default_diskann_max_degree;
+  return static_cast<uint32_t>(opt_vector_diskann_max_degree);
 }
 
 uint32_t effective_diskann_build_complexity(
@@ -352,7 +351,7 @@ uint32_t effective_diskann_build_complexity(
   if (options.diskann_build_complexity != 0) {
     return options.diskann_build_complexity;
   }
-  return vector_index::k_default_diskann_build_complexity;
+  return static_cast<uint32_t>(opt_vector_diskann_build_complexity);
 }
 
 uint64_t effective_diskann_pq_code_budget_size(const std::string &provider) {
@@ -362,7 +361,65 @@ uint64_t effective_diskann_pq_code_budget_size(const std::string &provider) {
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
-  return 0;
+  return opt_vector_diskann_pq_code_budget_size;
+}
+
+uint32_t effective_diskann_disk_pq_dims(
+    const std::string &provider,
+    const vector_index_registry::create_index_options &options) {
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+      provider_value != vector_index::backend_provider::kDiskAnn) {
+    return 0;
+  }
+  if (options.diskann_disk_pq_dims != 0) return options.diskann_disk_pq_dims;
+  return static_cast<uint32_t>(opt_vector_diskann_disk_pq_dims);
+}
+
+bool effective_diskann_accelerate_build(
+    const std::string &provider,
+    const vector_index_registry::create_index_options &options) {
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+      provider_value != vector_index::backend_provider::kDiskAnn) {
+    return false;
+  }
+  if (options.diskann_accelerate_build_specified) {
+    return options.diskann_accelerate_build;
+  }
+  return opt_vector_diskann_accelerate_build;
+}
+
+bool effective_diskann_shuffle_build(
+    const std::string &provider,
+    const vector_index_registry::create_index_options &options) {
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+      provider_value != vector_index::backend_provider::kDiskAnn) {
+    return false;
+  }
+  if (options.diskann_shuffle_build_specified) {
+    return options.diskann_shuffle_build;
+  }
+  return opt_vector_diskann_shuffle_build;
+}
+
+bool effective_diskann_use_bfs_cache(
+    const std::string &provider,
+    const vector_index_registry::create_index_options &options) {
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+      provider_value != vector_index::backend_provider::kDiskAnn) {
+    return false;
+  }
+  if (options.diskann_use_bfs_cache_specified) {
+    return options.diskann_use_bfs_cache;
+  }
+  return opt_vector_diskann_use_bfs_cache;
 }
 
 uint32_t effective_diskann_search_complexity(const std::string &provider) {
@@ -750,6 +807,55 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
     }
     return false;
   }
+  const uint32_t diskann_disk_pq_dims =
+      effective_diskann_disk_pq_dims(effective_provider, options);
+  if (diskann_disk_pq_dims != 0 &&
+      !g_index_service.set_diskann_disk_pq_dims(index_name,
+                                                diskann_disk_pq_dims)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
+  const bool diskann_accelerate_build =
+      effective_diskann_accelerate_build(effective_provider, options);
+  if ((diskann_accelerate_build ||
+       options.diskann_accelerate_build_specified) &&
+      !g_index_service.set_diskann_accelerate_build(
+          index_name, diskann_accelerate_build)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
+  const bool diskann_shuffle_build =
+      effective_diskann_shuffle_build(effective_provider, options);
+  if ((diskann_shuffle_build || options.diskann_shuffle_build_specified) &&
+      !g_index_service.set_diskann_shuffle_build(index_name,
+                                                 diskann_shuffle_build)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
+  const bool diskann_use_bfs_cache =
+      effective_diskann_use_bfs_cache(effective_provider, options);
+  if ((diskann_use_bfs_cache || options.diskann_use_bfs_cache_specified) &&
+      !g_index_service.set_diskann_use_bfs_cache(index_name,
+                                                 diskann_use_bfs_cache)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
   const uint32_t diskann_search_complexity =
       effective_diskann_search_complexity(effective_provider);
   if (diskann_search_complexity != 0 &&
@@ -852,6 +958,26 @@ bool apply_index_tuning_locked(const std::string &index_name,
           index_name, info.diskann_pq_code_budget_size)) {
     return false;
   }
+  if (provider_value == vector_index::backend_provider::kDiskAnn &&
+      !g_index_service.set_diskann_disk_pq_dims(
+          index_name, info.diskann_disk_pq_dims)) {
+    return false;
+  }
+  if (provider_value == vector_index::backend_provider::kDiskAnn &&
+      !g_index_service.set_diskann_accelerate_build(
+          index_name, info.diskann_accelerate_build)) {
+    return false;
+  }
+  if (provider_value == vector_index::backend_provider::kDiskAnn &&
+      !g_index_service.set_diskann_shuffle_build(
+          index_name, info.diskann_shuffle_build)) {
+    return false;
+  }
+  if (provider_value == vector_index::backend_provider::kDiskAnn &&
+      !g_index_service.set_diskann_use_bfs_cache(
+          index_name, info.diskann_use_bfs_cache)) {
+    return false;
+  }
   return true;
 }
 
@@ -875,6 +1001,10 @@ bool reapply_metadata_tuning_locked(
     info.diskann_search_complexity = row.diskann_search_complexity;
     info.diskann_search_beamwidth = row.diskann_search_beamwidth;
     info.diskann_pq_code_budget_size = row.diskann_pq_code_budget_size;
+    info.diskann_disk_pq_dims = row.diskann_disk_pq_dims;
+    info.diskann_accelerate_build = row.diskann_accelerate_build;
+    info.diskann_shuffle_build = row.diskann_shuffle_build;
+    info.diskann_use_bfs_cache = row.diskann_use_bfs_cache;
     if (!apply_index_tuning_locked(row.index_name, info)) {
       return false;
     }
@@ -932,6 +1062,10 @@ bool snapshot_metadata_locked(
     row.diskann_search_complexity = config.diskann_search_complexity;
     row.diskann_search_beamwidth = config.diskann_search_beamwidth;
     row.diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
+    row.diskann_disk_pq_dims = config.diskann_disk_pq_dims;
+    row.diskann_accelerate_build = config.diskann_accelerate_build;
+    row.diskann_shuffle_build = config.diskann_shuffle_build;
+    row.diskann_use_bfs_cache = config.diskann_use_bfs_cache;
     const index_binding binding = binding_for_index_locked(index_name);
     row.schema_name = binding.schema_name;
     row.table_name = binding.table_name;
@@ -1196,6 +1330,10 @@ bool persist_index_config_manifest_locked(
     row.diskann_search_complexity = config.diskann_search_complexity;
     row.diskann_search_beamwidth = config.diskann_search_beamwidth;
     row.diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
+    row.diskann_disk_pq_dims = config.diskann_disk_pq_dims;
+    row.diskann_accelerate_build = config.diskann_accelerate_build;
+    row.diskann_shuffle_build = config.diskann_shuffle_build;
+    row.diskann_use_bfs_cache = config.diskann_use_bfs_cache;
     found = true;
     break;
   }

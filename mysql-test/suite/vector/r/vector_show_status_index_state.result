@@ -47,6 +47,11 @@ INDEX_STATE	idx_mem.diskann_build_mode	auto
 INDEX_STATE	idx_mem.diskann_search_complexity	0
 INDEX_STATE	idx_mem.diskann_search_beamwidth	0
 INDEX_STATE	idx_mem.diskann_pq_code_budget_size	0
+INDEX_STATE	idx_mem.diskann_disk_pq_dims	0
+INDEX_STATE	idx_mem.diskann_cache_nodes	0
+INDEX_STATE	idx_mem.diskann_accelerate_build	0
+INDEX_STATE	idx_mem.diskann_shuffle_build	0
+INDEX_STATE	idx_mem.diskann_use_bfs_cache	0
 INDEX_STATE	idx_mem.lifecycle_state	ready
 INDEX_STATE	idx_mem.lifecycle_version	2
 INDEX_STATE	idx_mem.supports_mutations	1
@@ -110,6 +115,11 @@ INDEX_STATE	idx_ext.diskann_build_mode	auto
 INDEX_STATE	idx_ext.diskann_search_complexity	0
 INDEX_STATE	idx_ext.diskann_search_beamwidth	0
 INDEX_STATE	idx_ext.diskann_pq_code_budget_size	0
+INDEX_STATE	idx_ext.diskann_disk_pq_dims	0
+INDEX_STATE	idx_ext.diskann_cache_nodes	0
+INDEX_STATE	idx_ext.diskann_accelerate_build	0
+INDEX_STATE	idx_ext.diskann_shuffle_build	0
+INDEX_STATE	idx_ext.diskann_use_bfs_cache	0
 INDEX_STATE	idx_ext.lifecycle_state	ready
 INDEX_STATE	idx_ext.lifecycle_version	2
 INDEX_STATE	idx_ext.supports_mutations	1
@@ -121,10 +131,37 @@ BACKEND_HEALTH	idx_ext.backend_build_runtime	faiss_scheduler
 BACKEND_HEALTH	idx_ext.backend_build_input_source	reader
 BACKEND_HEALTH	idx_ext.backend_build_rows	0
 BACKEND_HEALTH	idx_ext.backend_build_segments	1
+BACKEND_HEALTH	idx_ext.backend_build_invocations	1
+BACKEND_HEALTH	idx_ext.backend_build_concurrent_tasks	1
+BACKEND_HEALTH	idx_ext.backend_build_effective_threads	1
+BACKEND_HEALTH	idx_ext.backend_build_effective_blas_threads	1
+BACKEND_HEALTH	idx_ext.backend_build_raw_reader_threads	0
+BACKEND_HEALTH	idx_ext.backend_build_pq_train_threads	0
+BACKEND_HEALTH	idx_ext.backend_build_pq_compress_threads	0
+BACKEND_HEALTH	idx_ext.backend_build_single_index	0
+BACKEND_HEALTH	idx_ext.backend_build_pq_chunks	0
+BACKEND_HEALTH	idx_ext.backend_build_cache_nodes	0
 BACKEND_HEALTH	idx_ext.backend_build_manifest_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_offline_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_load_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_fallback_reason	
+BACKEND_HEALTH	idx_ext.scheduler_path	faiss_scheduler
+BACKEND_HEALTH	idx_ext.scheduler_segment_count	1
+BACKEND_HEALTH	idx_ext.scheduler_task_count	1
+BACKEND_HEALTH	idx_ext.scheduler_concurrent_tasks	1
+BACKEND_HEALTH	idx_ext.scheduler_cpu_budget	1
+BACKEND_HEALTH	idx_ext.scheduler_effective_build_threads	1
+BACKEND_HEALTH	idx_ext.scheduler_effective_blas_threads	1
+BACKEND_HEALTH	idx_ext.scheduler_raw_reader_threads	0
+BACKEND_HEALTH	idx_ext.scheduler_pq_train_threads	0
+BACKEND_HEALTH	idx_ext.scheduler_pq_compress_threads	0
+BACKEND_HEALTH	idx_ext.scheduler_single_index_build	0
+BACKEND_HEALTH	idx_ext.scheduler_candidates_per_segment	0
+BACKEND_HEALTH	idx_ext.diskann_segment_pq_chunks	0
+BACKEND_HEALTH	idx_ext.diskann_segment_cache_nodes	0
+BACKEND_HEALTH	idx_ext.diskann_segment_build_wall_ms	0
+BACKEND_HEALTH	idx_ext.diskann_segment_build_sum_ms	0
+BACKEND_HEALTH	idx_ext.diskann_segment_fallback_reason	not_applicable
 BACKEND_HEALTH	idx_ext.mode	external
 BACKEND_HEALTH	idx_ext.consistency_mode	transactional
 BACKEND_HEALTH	idx_ext.truth_store_enabled	1
@@ -181,6 +218,11 @@ INDEX_STATE	idx_ext.diskann_build_mode	auto
 INDEX_STATE	idx_ext.diskann_search_complexity	0
 INDEX_STATE	idx_ext.diskann_search_beamwidth	0
 INDEX_STATE	idx_ext.diskann_pq_code_budget_size	0
+INDEX_STATE	idx_ext.diskann_disk_pq_dims	0
+INDEX_STATE	idx_ext.diskann_cache_nodes	0
+INDEX_STATE	idx_ext.diskann_accelerate_build	0
+INDEX_STATE	idx_ext.diskann_shuffle_build	0
+INDEX_STATE	idx_ext.diskann_use_bfs_cache	0
 INDEX_STATE	idx_ext.lifecycle_state	ready
 INDEX_STATE	idx_ext.lifecycle_version	2
 INDEX_STATE	idx_ext.supports_mutations	1
@@ -192,10 +234,37 @@ BACKEND_HEALTH	idx_ext.backend_build_runtime	faiss_scheduler
 BACKEND_HEALTH	idx_ext.backend_build_input_source	reader
 BACKEND_HEALTH	idx_ext.backend_build_rows	0
 BACKEND_HEALTH	idx_ext.backend_build_segments	1
+BACKEND_HEALTH	idx_ext.backend_build_invocations	1
+BACKEND_HEALTH	idx_ext.backend_build_concurrent_tasks	1
+BACKEND_HEALTH	idx_ext.backend_build_effective_threads	1
+BACKEND_HEALTH	idx_ext.backend_build_effective_blas_threads	1
+BACKEND_HEALTH	idx_ext.backend_build_raw_reader_threads	0
+BACKEND_HEALTH	idx_ext.backend_build_pq_train_threads	0
+BACKEND_HEALTH	idx_ext.backend_build_pq_compress_threads	0
+BACKEND_HEALTH	idx_ext.backend_build_single_index	0
+BACKEND_HEALTH	idx_ext.backend_build_pq_chunks	0
+BACKEND_HEALTH	idx_ext.backend_build_cache_nodes	0
 BACKEND_HEALTH	idx_ext.backend_build_manifest_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_offline_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_load_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_fallback_reason	
+BACKEND_HEALTH	idx_ext.scheduler_path	faiss_scheduler
+BACKEND_HEALTH	idx_ext.scheduler_segment_count	1
+BACKEND_HEALTH	idx_ext.scheduler_task_count	1
+BACKEND_HEALTH	idx_ext.scheduler_concurrent_tasks	1
+BACKEND_HEALTH	idx_ext.scheduler_cpu_budget	1
+BACKEND_HEALTH	idx_ext.scheduler_effective_build_threads	1
+BACKEND_HEALTH	idx_ext.scheduler_effective_blas_threads	1
+BACKEND_HEALTH	idx_ext.scheduler_raw_reader_threads	0
+BACKEND_HEALTH	idx_ext.scheduler_pq_train_threads	0
+BACKEND_HEALTH	idx_ext.scheduler_pq_compress_threads	0
+BACKEND_HEALTH	idx_ext.scheduler_single_index_build	0
+BACKEND_HEALTH	idx_ext.scheduler_candidates_per_segment	0
+BACKEND_HEALTH	idx_ext.diskann_segment_pq_chunks	0
+BACKEND_HEALTH	idx_ext.diskann_segment_cache_nodes	0
+BACKEND_HEALTH	idx_ext.diskann_segment_build_wall_ms	0
+BACKEND_HEALTH	idx_ext.diskann_segment_build_sum_ms	0
+BACKEND_HEALTH	idx_ext.diskann_segment_fallback_reason	not_applicable
 BACKEND_HEALTH	idx_ext.mode	external
 BACKEND_HEALTH	idx_ext.consistency_mode	transactional
 BACKEND_HEALTH	idx_ext.truth_store_enabled	1
@@ -229,7 +298,7 @@ v VECTOR(2)
 CREATE VECTOR INDEX ON t_vec_status_meta(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SELECT VEC_INDEX_INFO('test.t_vec_status_meta.v');
 VEC_INDEX_INFO('test.t_vec_status_meta.v')
-{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vec_status_meta","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":5,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vec_status_meta","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":0,"diskann_cache_nodes":0,"diskann_accelerate_build":0,"diskann_shuffle_build":0,"diskann_use_bfs_cache":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":5,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
 SHOW VECTOR STATUS FOR INDEX 'test.t_vec_status_meta.v'
   WHERE Section = 'INDEX_STATE'
     AND Variable_name LIKE 'test.t_vec_status_meta.v.%';
@@ -272,6 +341,11 @@ INDEX_STATE	test.t_vec_status_meta.v.diskann_build_mode	auto
 INDEX_STATE	test.t_vec_status_meta.v.diskann_search_complexity	0
 INDEX_STATE	test.t_vec_status_meta.v.diskann_search_beamwidth	0
 INDEX_STATE	test.t_vec_status_meta.v.diskann_pq_code_budget_size	0
+INDEX_STATE	test.t_vec_status_meta.v.diskann_disk_pq_dims	0
+INDEX_STATE	test.t_vec_status_meta.v.diskann_cache_nodes	0
+INDEX_STATE	test.t_vec_status_meta.v.diskann_accelerate_build	0
+INDEX_STATE	test.t_vec_status_meta.v.diskann_shuffle_build	0
+INDEX_STATE	test.t_vec_status_meta.v.diskann_use_bfs_cache	0
 INDEX_STATE	test.t_vec_status_meta.v.lifecycle_state	ready
 INDEX_STATE	test.t_vec_status_meta.v.lifecycle_version	5
 INDEX_STATE	test.t_vec_status_meta.v.supports_mutations	1

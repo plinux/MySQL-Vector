@@ -120,6 +120,62 @@ SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_tune_missing', 120);
 ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_tune_hnsw', 120);
 ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH(NULL, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_beamwidth
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_tune_diskann', NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_beamwidth
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_tune_diskann', 0);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_beamwidth
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_tune_diskann', 129);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_beamwidth
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_tune_missing', 8);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_beamwidth
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_tune_hnsw', 8);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_beamwidth
+SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE(NULL, 1048576);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_pq_code_budget_size
+SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_tune_diskann', NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_pq_code_budget_size
+SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_tune_diskann', -1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_pq_code_budget_size
+SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_tune_missing', 1048576);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_pq_code_budget_size
+SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_tune_hnsw', 1048576);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_pq_code_budget_size
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS(NULL, 8);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_disk_pq_dims
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_tune_diskann', NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_disk_pq_dims
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_tune_diskann', 65536);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_disk_pq_dims
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_tune_missing', 8);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_disk_pq_dims
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_tune_hnsw', 8);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_disk_pq_dims
+SELECT VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD(NULL, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_accelerate_build
+SELECT VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD('idx_tune_diskann', NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_accelerate_build
+SELECT VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD('idx_tune_missing', 1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_accelerate_build
+SELECT VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD('idx_tune_hnsw', 1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_accelerate_build
+SELECT VEC_INDEX_SET_DISKANN_SHUFFLE_BUILD(NULL, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_shuffle_build
+SELECT VEC_INDEX_SET_DISKANN_SHUFFLE_BUILD('idx_tune_diskann', NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_shuffle_build
+SELECT VEC_INDEX_SET_DISKANN_SHUFFLE_BUILD('idx_tune_missing', 1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_shuffle_build
+SELECT VEC_INDEX_SET_DISKANN_SHUFFLE_BUILD('idx_tune_hnsw', 1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_shuffle_build
+SELECT VEC_INDEX_SET_DISKANN_USE_BFS_CACHE(NULL, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_use_bfs_cache
+SELECT VEC_INDEX_SET_DISKANN_USE_BFS_CACHE('idx_tune_diskann', NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_use_bfs_cache
+SELECT VEC_INDEX_SET_DISKANN_USE_BFS_CACHE('idx_tune_missing', 1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_use_bfs_cache
+SELECT VEC_INDEX_SET_DISKANN_USE_BFS_CACHE('idx_tune_hnsw', 1);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_use_bfs_cache
 SELECT VEC_INDEX_DROP(NULL);
 ERROR HY000: Incorrect arguments to vec_index_drop
 SELECT VEC_INDEX_REBUILD(NULL);

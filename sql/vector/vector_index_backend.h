@@ -99,10 +99,33 @@ struct backend_build_diagnostics {
   uint32_t scheduler_cpu_budget{0};
   uint32_t effective_build_threads{0};
   uint32_t effective_blas_threads{0};
+  uint32_t raw_reader_threads{0};
+  uint32_t pq_train_threads{0};
+  uint32_t pq_compress_threads{0};
+  uint32_t candidates_per_segment{0};
+  bool single_index_build{false};
+  uint64_t pq_chunks{0};
+  uint64_t cache_nodes{0};
+  uint64_t build_wall_ms{0};
   uint64_t manifest_ms{0};
   uint64_t offline_build_ms{0};
   uint64_t load_ms{0};
   uint64_t reader_passes{0};
+  std::string diskann_pq_runtime;
+  std::string native_pq_runtime_selected_path;
+  uint64_t native_pq_runtime_elapsed_ms{0};
+  uint64_t native_pq_runtime_raw_reader_ms{0};
+  uint64_t native_pq_runtime_distance_calls{0};
+  uint64_t native_pq_runtime_train_rows{0};
+  uint64_t native_pq_runtime_compressed_rows{0};
+  bool native_pq_runtime_artifacts_written{false};
+  bool native_pq_runtime_artifacts_consumed{false};
+  bool native_pq_runtime_official_pq_used{false};
+  std::string native_pq_runtime_bridge;
+  uint64_t native_pq_runtime_bridge_ms{0};
+  uint64_t native_pq_runtime_graph_ms{0};
+  uint64_t native_pq_runtime_cache_ms{0};
+  std::string native_pq_runtime_artifact_validation;
   std::string fallback_reason;
 };
 
@@ -345,9 +368,14 @@ class backend {
       uint32_t diskann_build_threads [[maybe_unused]]) {
     return diskann_build_threads == 0;
   }
+  virtual bool set_diskann_build_blas_threads(
+      uint32_t diskann_build_blas_threads [[maybe_unused]]) {
+    return diskann_build_blas_threads == 0;
+  }
   virtual uint32_t diskann_max_degree() const { return 0; }
   virtual uint32_t diskann_build_complexity() const { return 0; }
   virtual uint32_t diskann_build_threads() const { return 0; }
+  virtual uint32_t diskann_build_blas_threads() const { return 0; }
   virtual bool set_diskann_build_mode(
       diskann_build_mode diskann_build_mode_value) {
     return diskann_build_mode_value == diskann_build_mode::kAuto;
@@ -370,6 +398,29 @@ class backend {
     return false;
   }
   virtual uint64_t diskann_pq_code_budget_size() const { return 0; }
+  virtual bool set_diskann_disk_pq_dims(
+      uint32_t diskann_disk_pq_dims [[maybe_unused]]) {
+    return diskann_disk_pq_dims == 0;
+  }
+  virtual uint32_t diskann_disk_pq_dims() const { return 0; }
+  virtual bool set_diskann_accelerate_build(
+      bool diskann_accelerate_build [[maybe_unused]]) {
+    return !diskann_accelerate_build;
+  }
+  virtual bool diskann_accelerate_build() const { return false; }
+  virtual bool set_diskann_shuffle_build(
+      bool diskann_shuffle_build [[maybe_unused]]) {
+    return !diskann_shuffle_build;
+  }
+  virtual bool diskann_shuffle_build() const { return false; }
+  virtual bool set_diskann_use_bfs_cache(
+      bool diskann_use_bfs_cache [[maybe_unused]]) {
+    return !diskann_use_bfs_cache;
+  }
+  virtual bool diskann_use_bfs_cache() const { return false; }
+  virtual uint32_t diskann_offline_search_threads() const { return 0; }
+  virtual uint32_t diskann_search_io_limit() const { return 0; }
+  virtual uint32_t diskann_cache_nodes() const { return 0; }
 
   /**
     Whether transactional stage/commit can apply mutations to this backend.
@@ -639,11 +690,14 @@ class diskann_backend final : public backend {
                              uint32_t diskann_build_complexity,
                              uint32_t diskann_build_threads) override;
   bool set_diskann_build_threads(uint32_t diskann_build_threads) override;
+  bool set_diskann_build_blas_threads(
+      uint32_t diskann_build_blas_threads) override;
+  bool set_diskann_build_mode(
+      diskann_build_mode diskann_build_mode_value) override;
   uint32_t diskann_max_degree() const override;
   uint32_t diskann_build_complexity() const override;
   uint32_t diskann_build_threads() const override;
-  bool set_diskann_build_mode(
-      diskann_build_mode diskann_build_mode_value) override;
+  uint32_t diskann_build_blas_threads() const override;
   diskann_build_mode diskann_build_mode_value() const override;
   bool set_diskann_search_complexity(uint32_t diskann_search_complexity) override;
   uint32_t diskann_search_complexity() const override;
@@ -652,6 +706,17 @@ class diskann_backend final : public backend {
   bool set_diskann_pq_code_budget_size(
       uint64_t diskann_pq_code_budget_size) override;
   uint64_t diskann_pq_code_budget_size() const override;
+  bool set_diskann_disk_pq_dims(uint32_t diskann_disk_pq_dims) override;
+  uint32_t diskann_disk_pq_dims() const override;
+  bool set_diskann_accelerate_build(bool diskann_accelerate_build) override;
+  bool diskann_accelerate_build() const override;
+  bool set_diskann_shuffle_build(bool diskann_shuffle_build) override;
+  bool diskann_shuffle_build() const override;
+  bool set_diskann_use_bfs_cache(bool diskann_use_bfs_cache) override;
+  bool diskann_use_bfs_cache() const override;
+  uint32_t diskann_offline_search_threads() const override;
+  uint32_t diskann_search_io_limit() const override;
+  uint32_t diskann_cache_nodes() const override;
   bool supports_mutations() const override { return true; }
   bool external_manifest_present() const override;
   uint64_t external_manifest_generation() const override;
@@ -664,13 +729,29 @@ class diskann_backend final : public backend {
   std::unordered_map<uint64_t, vector_data> m_entries;
   std::unique_ptr<diskann_native_state> m_native_state;
   faiss_backend m_external_adapter;
-  uint32_t m_diskann_max_degree{32};
-  uint32_t m_diskann_build_complexity{64};
+  uint32_t m_diskann_max_degree{
+      vector_index::k_default_diskann_max_degree};
+  uint32_t m_diskann_build_complexity{
+      vector_index::k_default_diskann_build_complexity};
   uint32_t m_diskann_build_threads{0};
+  uint32_t m_diskann_build_blas_threads{1};
   diskann_build_mode m_diskann_build_mode{diskann_build_mode::kAuto};
-  uint32_t m_diskann_search_complexity{64};
-  uint32_t m_diskann_search_beamwidth{16};
+  uint32_t m_diskann_search_complexity{
+      vector_index::k_default_diskann_search_complexity};
+  uint32_t m_diskann_search_beamwidth{
+      vector_index::k_default_diskann_search_beamwidth};
   uint64_t m_diskann_pq_code_budget_size{0};
+  double m_diskann_pq_code_budget_ratio{
+      vector_index::k_default_diskann_pq_code_budget_ratio};
+  uint32_t m_diskann_disk_pq_dims{0};
+  bool m_diskann_accelerate_build{false};
+  bool m_diskann_shuffle_build{false};
+  bool m_diskann_use_bfs_cache{false};
+  uint32_t m_diskann_offline_search_threads{1};
+  uint32_t m_diskann_search_io_limit{0};
+  uint32_t m_diskann_cache_nodes{0};
+  uint64_t m_diskann_search_cache_size{0};
+  double m_diskann_search_cache_ratio{0.0};
   bool m_native_runtime_enabled{false};
   bool m_external_adapter_active{true};
 
@@ -915,9 +996,10 @@ bool diskann_read_modify_write_round_trip_for_testing(
     size_t write_length, std::string *persistent_value,
     std::string *build_memory_value, std::string *resident_value);
 bool diskann_parse_prefixed_keys_for_testing(const std::string &payload,
-                                        uint32_t key_count,
-                                        std::vector<std::string> *keys,
-                                        int fail_index = -1);
+                                             uint32_t key_count,
+                                             std::vector<std::string> *keys,
+                                             int fail_index = -1,
+                                             bool null_key_data = false);
 bool diskann_api_load_for_testing();
 bool diskann_api_available_for_testing(bool has_handle, bool has_create_index,
                                    bool has_drop_index, bool has_insert,

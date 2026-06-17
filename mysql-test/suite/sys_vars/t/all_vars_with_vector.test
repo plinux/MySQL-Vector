@@ -40,7 +40,8 @@ INSERT INTO t1 (test_name) VALUES
   ('vector_build_pipeline_mode'),
   ('vector_build_pipeline_progress_interval'),
   ('vector_build_segment_max_rows'),
-  ('vector_build_segment_target_size');
+  ('vector_build_segment_target_size'),
+  ('vector_diskann_pq_runtime');
 --enable_query_log
 
 --disable_warnings

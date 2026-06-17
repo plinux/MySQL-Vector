@@ -1,5 +1,5 @@
 --echo #
---echo # Variable name : vector_diskann_build_threads
+--echo # Variable name : vector_diskann_build_threads, vector_diskann_build_mode
 --echo # Persistence   : SET PERSIST / RESET PERSIST
 --echo #
 
@@ -14,33 +14,41 @@
 --echo # DiskANN build-thread variable is registered.
 SELECT VARIABLE_NAME
 FROM performance_schema.global_variables
-WHERE VARIABLE_NAME = 'vector_diskann_build_threads';
+WHERE VARIABLE_NAME IN ('vector_diskann_build_threads',
+                        'vector_diskann_build_mode')
+ORDER BY VARIABLE_NAME;
 
 --let $assert_text= Expect vector_diskann_build_threads to be registered.
 --let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.global_variables WHERE VARIABLE_NAME = 'vector_diskann_build_threads', count, 1] = 1
 --source include/assert.inc
-
---let $assert_text= Expect vector_diskann_build_threads not to be persisted before SET PERSIST.
---let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_diskann_build_threads', count, 1] = 0
+--let $assert_text= Expect vector_diskann_build_mode to be registered.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.global_variables WHERE VARIABLE_NAME = 'vector_diskann_build_mode', count, 1] = 1
 --source include/assert.inc
 
---echo # Persist vector_diskann_build_threads.
-SET PERSIST vector_diskann_build_threads=3;
+--let $assert_text= Expect DiskANN build variables not to be persisted before SET PERSIST.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_diskann_build_threads' OR VARIABLE_NAME = 'vector_diskann_build_mode', count, 1] = 0
+--source include/assert.inc
 
---let $assert_text= Expect vector_diskann_build_threads to be persisted before restart.
---let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_diskann_build_threads', count, 1] = 1
+--echo # Persist DiskANN build variables.
+SET PERSIST vector_diskann_build_threads=3;
+SET PERSIST vector_diskann_build_mode='offline';
+
+--let $assert_text= Expect DiskANN build variables to be persisted before restart.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_diskann_build_threads' OR VARIABLE_NAME = 'vector_diskann_build_mode', count, 1] = 2
 --source include/assert.inc
 
 SELECT VARIABLE_NAME, VARIABLE_VALUE
 FROM performance_schema.persisted_variables
-WHERE VARIABLE_NAME = 'vector_diskann_build_threads';
+WHERE VARIABLE_NAME IN ('vector_diskann_build_threads',
+                        'vector_diskann_build_mode')
+ORDER BY VARIABLE_NAME;
 
---echo # Restart and verify vector_diskann_build_threads survives.
+--echo # Restart and verify DiskANN build variables survive.
 --source include/restart_mysqld.inc
 --source include/wait_until_connected_again.inc
 
---let $assert_text= Expect vector_diskann_build_threads to be persisted after restart.
---let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_diskann_build_threads', count, 1] = 1
+--let $assert_text= Expect DiskANN build variables to be persisted after restart.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_diskann_build_threads' OR VARIABLE_NAME = 'vector_diskann_build_mode', count, 1] = 2
 --source include/assert.inc
 
 SELECT vi.VARIABLE_NAME, vi.VARIABLE_SOURCE, pv.VARIABLE_VALUE, gv.VARIABLE_VALUE
@@ -49,13 +57,16 @@ JOIN performance_schema.persisted_variables pv
   ON vi.VARIABLE_NAME=pv.VARIABLE_NAME
 JOIN performance_schema.global_variables gv
   ON vi.VARIABLE_NAME=gv.VARIABLE_NAME
-WHERE vi.VARIABLE_NAME = 'vector_diskann_build_threads';
+WHERE vi.VARIABLE_NAME IN ('vector_diskann_build_threads',
+                           'vector_diskann_build_mode')
+ORDER BY vi.VARIABLE_NAME;
 
---echo # Reset persisted vector_diskann_build_threads.
+--echo # Reset persisted DiskANN build variables.
 RESET PERSIST IF EXISTS vector_diskann_build_threads;
+RESET PERSIST IF EXISTS vector_diskann_build_mode;
 
---let $assert_text= Expect vector_diskann_build_threads persistence to be reset.
---let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_diskann_build_threads', count, 1] = 0
+--let $assert_text= Expect DiskANN build variable persistence to be reset.
+--let $assert_cond= [SELECT COUNT(*) AS count FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'vector_diskann_build_threads' OR VARIABLE_NAME = 'vector_diskann_build_mode', count, 1] = 0
 --source include/assert.inc
 
 --remove_file $MYSQLD_DATADIR/mysqld-auto.cnf

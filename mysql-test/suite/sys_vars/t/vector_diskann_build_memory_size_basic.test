@@ -1,0 +1,2 @@
+--let $vector_sysvar_name= vector_diskann_build_memory_size
+--source include/vector_sysvar_alias_basic.inc

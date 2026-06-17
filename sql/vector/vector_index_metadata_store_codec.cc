@@ -51,7 +51,7 @@ bool deserialize_metadata_rows_impl(const std::string &payload,
 
     std::vector<std::string> fields;
     split_tab_fields(line, &fields);
-    if (fields.size() != 34) return false;
+    if (fields.size() != 38) return false;
 
     auto parse_uint32_field = [](const std::string &field, uint32_t *value) {
       uint64_t parsed = 0;
@@ -115,25 +115,53 @@ bool deserialize_metadata_rows_impl(const std::string &payload,
     if (!parse_uint32_field(fields[27], &row.diskann_search_beamwidth)) {
       return false;
     }
+    if (!vector_index::valid_optional_diskann_search_beamwidth(
+            row.diskann_search_beamwidth)) {
+      return false;
+    }
     if (!parse_uint64(fields[28], &row.diskann_pq_code_budget_size)) {
       return false;
     }
-    if (!parse_uint32_field(fields[29], &row.diskann_build_threads)) {
+    if (!parse_uint32_field(fields[29], &row.diskann_disk_pq_dims)) {
       return false;
     }
-    if (!parse_uint32_field(fields[30], &row.faiss_build_threads)) return false;
-    if (!vector_index::parse_diskann_build_mode(
-            fields[31], &row.diskann_build_mode_value)) {
+    if (fields[30] == "0") {
+      row.diskann_accelerate_build = false;
+    } else if (fields[30] == "1") {
+      row.diskann_accelerate_build = true;
+    } else {
+      return false;
+    }
+    if (fields[31] == "0") {
+      row.diskann_shuffle_build = false;
+    } else if (fields[31] == "1") {
+      row.diskann_shuffle_build = true;
+    } else {
       return false;
     }
     if (fields[32] == "0") {
-      row.diskann_build_mode_specified = false;
+      row.diskann_use_bfs_cache = false;
     } else if (fields[32] == "1") {
+      row.diskann_use_bfs_cache = true;
+    } else {
+      return false;
+    }
+    if (!parse_uint32_field(fields[33], &row.diskann_build_threads)) {
+      return false;
+    }
+    if (!parse_uint32_field(fields[34], &row.faiss_build_threads)) return false;
+    if (!vector_index::parse_diskann_build_mode(
+            fields[35], &row.diskann_build_mode_value)) {
+      return false;
+    }
+    if (fields[36] == "0") {
+      row.diskann_build_mode_specified = false;
+    } else if (fields[36] == "1") {
       row.diskann_build_mode_specified = true;
     } else {
       return false;
     }
-    if (!decode_hex(fields[33], &row.owner_schema) ||
+    if (!decode_hex(fields[37], &row.owner_schema) ||
         row.owner_schema.empty()) {
       return false;
     }
@@ -151,7 +179,11 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
   std::ostringstream stream;
   stream << kMetadataHeaderV1 << "\n";
   for (const metadata_row &row : rows) {
-    if (row.owner_schema.empty()) return false;
+    if (row.owner_schema.empty() ||
+        !vector_index::valid_optional_diskann_search_beamwidth(
+            row.diskann_search_beamwidth)) {
+      return false;
+    }
     stream << encode_hex(row.index_name) << "\t" << row.dimension << "\t"
            << vector_index::metric_to_string(row.metric) << "\t"
            << vector_index::backend_mode_to_string(row.mode) << "\t"
@@ -174,6 +206,10 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
            << "\t" << row.diskann_search_complexity << "\t"
            << row.diskann_search_beamwidth << "\t"
            << row.diskann_pq_code_budget_size << "\t"
+           << row.diskann_disk_pq_dims << "\t"
+           << (row.diskann_accelerate_build ? 1 : 0) << "\t"
+           << (row.diskann_shuffle_build ? 1 : 0) << "\t"
+           << (row.diskann_use_bfs_cache ? 1 : 0) << "\t"
            << row.diskann_build_threads << "\t" << row.faiss_build_threads << "\t"
            << vector_index::diskann_build_mode_to_string(
                   row.diskann_build_mode_value)

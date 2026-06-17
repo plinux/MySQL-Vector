@@ -97,6 +97,10 @@ std::vector<std::string> current_metadata_fields_for_test() {
       "240",
       "16",
       "1048576",
+      "12",
+      "1",
+      "0",
+      "1",
       "5",
       "9",
       "offline",
@@ -1115,6 +1119,11 @@ TEST_F(MetadataStoreTest, LoadCurrentMetadataRowReadsAllFields) {
   EXPECT_EQ(120U, loaded[0].diskann_build_complexity);
   EXPECT_EQ(240U, loaded[0].diskann_search_complexity);
   EXPECT_EQ(16U, loaded[0].diskann_search_beamwidth);
+  EXPECT_EQ(1048576U, loaded[0].diskann_pq_code_budget_size);
+  EXPECT_EQ(12U, loaded[0].diskann_disk_pq_dims);
+  EXPECT_TRUE(loaded[0].diskann_accelerate_build);
+  EXPECT_FALSE(loaded[0].diskann_shuffle_build);
+  EXPECT_TRUE(loaded[0].diskann_use_bfs_cache);
   EXPECT_EQ(5U, loaded[0].diskann_build_threads);
   EXPECT_EQ(9U, loaded[0].faiss_build_threads);
   EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
@@ -1253,7 +1262,7 @@ TEST_F(MetadataStoreTest, LoadRejectsInvalidProviderInCurrentRow) {
 
 TEST_F(MetadataStoreTest, LoadRejectsInvalidDiskAnnBuildModeInCurrentRow) {
   std::vector<std::string> fields = current_metadata_fields_for_test();
-  fields[31] = "background";
+  fields[35] = "background";
 
   std::vector<vector_index_metadata_store::metadata_row> loaded;
   EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
@@ -1261,10 +1270,27 @@ TEST_F(MetadataStoreTest, LoadRejectsInvalidDiskAnnBuildModeInCurrentRow) {
 
 TEST_F(MetadataStoreTest, LoadRejectsInvalidDiskAnnBuildModeSpecifiedFlag) {
   std::vector<std::string> fields = current_metadata_fields_for_test();
-  fields[32] = "true";
+  fields[36] = "true";
 
   std::vector<vector_index_metadata_store::metadata_row> loaded;
   EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+}
+
+TEST_F(MetadataStoreTest, MetadataRejectsDiskAnnSearchBeamwidthAboveLimit) {
+  std::vector<std::string> fields = current_metadata_fields_for_test();
+  fields[27] = "129";
+
+  std::vector<vector_index_metadata_store::metadata_row> loaded;
+  EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+
+  vector_index_metadata_store::metadata_row row;
+  row.index_name = "idx_invalid_beamwidth";
+  row.dimension = 2;
+  row.owner_schema = "test";
+  row.diskann_search_beamwidth = 129;
+  std::string payload;
+  EXPECT_FALSE(
+      vector_index_metadata_store::serialize_metadata_rows({row}, &payload));
 }
 
 TEST_F(MetadataStoreTest, LoadRejectsInvalidIndexHexInCurrentRow) {
@@ -1351,7 +1377,7 @@ TEST_F(MetadataStoreTest, LoadRejectsInvalidDocIdColumnHexInCurrentRow) {
 TEST_F(MetadataStoreTest, LoadRejectsOverflowCurrentMetadataFields) {
   const size_t uint32_overflow_fields[] = {8,  16, 17, 18, 19, 20, 21,
                                            22, 23, 24, 25, 26, 27, 29,
-                                           30};
+                                           33, 34};
   for (size_t field_index : uint32_overflow_fields) {
     std::vector<std::string> fields = current_metadata_fields_for_test();
     fields[field_index] = "4294967296";

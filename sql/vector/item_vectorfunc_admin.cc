@@ -42,6 +42,26 @@
 
 using namespace vector_itemfunc_internal;
 
+namespace {
+
+bool eval_diskann_bool_tuning_args(Item **args, const char *func_name,
+                                   std::string *index_name, bool *value) {
+  String name_buf;
+  const String *name = args[0]->val_str(&name_buf);
+  uint32_t int_value = 0;
+  if (name == nullptr || args[0]->null_value ||
+      !eval_uint32_arg(args[1], 0, 1, int_value)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name);
+    return false;
+  }
+
+  to_std_string(name, index_name);
+  *value = int_value != 0;
+  return true;
+}
+
+}  // namespace
+
 longlong Item_func_vec_index_create::val_int() {
   assert(fixed && arg_count >= 2 && arg_count <= 7);
   null_value = true;
@@ -136,9 +156,10 @@ longlong Item_func_vec_index_create::val_int() {
     options.consistency_mode_specified = true;
     options.consistency_mode = consistency_mode;
   }
-  options.diskann_max_degree = vector_index::k_default_diskann_max_degree;
+  options.diskann_max_degree =
+      static_cast<uint32_t>(opt_vector_diskann_max_degree);
   options.diskann_build_complexity =
-      vector_index::k_default_diskann_build_complexity;
+      static_cast<uint32_t>(opt_vector_diskann_build_complexity);
 
   if (!vector_index_registry::create_index(index_name, static_cast<size_t>(dim),
                                            metric, mode, provider, owner_schema,
@@ -451,6 +472,128 @@ longlong Item_func_vec_index_set_diskann_pq_code_budget_size::val_int() {
     return error_int();
   if (!vector_index_registry::set_diskann_pq_code_budget_size(
           index_name, diskann_pq_code_budget_size)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_int();
+  }
+  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+  null_value = false;
+  return 1;
+}
+
+bool Item_func_vec_index_set_diskann_disk_pq_dims::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 2)) return true;
+  set_nullable(false);
+  return false;
+}
+
+longlong Item_func_vec_index_set_diskann_disk_pq_dims::val_int() {
+  assert(fixed && arg_count == 2);
+  null_value = true;
+
+  String name_buf;
+  const String *name = args[0]->val_str(&name_buf);
+  uint32_t diskann_disk_pq_dims = 0;
+  if (name == nullptr || args[0]->null_value ||
+      !eval_uint32_arg(args[1], 0, vector_index::k_max_diskann_disk_pq_dims,
+                       diskann_disk_pq_dims)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_int();
+  }
+
+  std::string index_name;
+  to_std_string(name, &index_name);
+  if (check_vector_existing_index_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
+  if (!vector_index_registry::set_diskann_disk_pq_dims(
+          index_name, diskann_disk_pq_dims)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_int();
+  }
+  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+  null_value = false;
+  return 1;
+}
+
+bool Item_func_vec_index_set_diskann_accelerate_build::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 2)) return true;
+  set_nullable(false);
+  return false;
+}
+
+longlong Item_func_vec_index_set_diskann_accelerate_build::val_int() {
+  assert(fixed && arg_count == 2);
+  null_value = true;
+
+  std::string index_name;
+  bool diskann_accelerate_build = false;
+  if (!eval_diskann_bool_tuning_args(args, func_name(), &index_name,
+                                     &diskann_accelerate_build)) {
+    return error_int();
+  }
+  if (check_vector_existing_index_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
+  if (!vector_index_registry::set_diskann_accelerate_build(
+          index_name, diskann_accelerate_build)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_int();
+  }
+  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+  null_value = false;
+  return 1;
+}
+
+bool Item_func_vec_index_set_diskann_shuffle_build::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 2)) return true;
+  set_nullable(false);
+  return false;
+}
+
+longlong Item_func_vec_index_set_diskann_shuffle_build::val_int() {
+  assert(fixed && arg_count == 2);
+  null_value = true;
+
+  std::string index_name;
+  bool diskann_shuffle_build = false;
+  if (!eval_diskann_bool_tuning_args(args, func_name(), &index_name,
+                                     &diskann_shuffle_build)) {
+    return error_int();
+  }
+  if (check_vector_existing_index_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
+  if (!vector_index_registry::set_diskann_shuffle_build(
+          index_name, diskann_shuffle_build)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_int();
+  }
+  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+  null_value = false;
+  return 1;
+}
+
+bool Item_func_vec_index_set_diskann_use_bfs_cache::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 2)) return true;
+  set_nullable(false);
+  return false;
+}
+
+longlong Item_func_vec_index_set_diskann_use_bfs_cache::val_int() {
+  assert(fixed && arg_count == 2);
+  null_value = true;
+
+  std::string index_name;
+  bool diskann_use_bfs_cache = false;
+  if (!eval_diskann_bool_tuning_args(args, func_name(), &index_name,
+                                     &diskann_use_bfs_cache)) {
+    return error_int();
+  }
+  if (check_vector_existing_index_access(
+          current_thd, index_name, ALTER_ACL, func_name(), false))
+    return error_int();
+  if (!vector_index_registry::set_diskann_use_bfs_cache(
+          index_name, diskann_use_bfs_cache)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }

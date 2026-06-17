@@ -7,17 +7,38 @@
 SELECT VEC_INDEX_CREATE('idx_diskann_search_complexity', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
 
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann_search_complexity', 80);
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann_search_complexity', 16);
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann_search_complexity', 128);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann_search_complexity', 129);
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann_search_complexity', 16);
+SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_diskann_search_complexity', 1048576);
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_diskann_search_complexity', 1);
 
---replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
+--replace_regex /"backend_variant":"diskann_[a-z_]+"/"backend_variant":"<diskann_variant>"/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_diskann_search_complexity');
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_diskann_search_complexity.diskann_search_complexity';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_search_beamwidth';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_pq_code_budget_size';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_disk_pq_dims';
 
 --source include/restart_mysqld.inc
 
---replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
+--replace_regex /"backend_variant":"diskann_[a-z_]+"/"backend_variant":"<diskann_variant>"/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_diskann_search_complexity');
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_diskann_search_complexity.diskann_search_complexity';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_search_beamwidth';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_pq_code_budget_size';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_disk_pq_dims';
 
 SELECT VEC_INDEX_DROP('idx_diskann_search_complexity');

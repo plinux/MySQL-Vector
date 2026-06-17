@@ -63,6 +63,11 @@ INDEX_STATE	test.t_vector_ddl.v.diskann_build_mode	auto
 INDEX_STATE	test.t_vector_ddl.v.diskann_search_complexity	0
 INDEX_STATE	test.t_vector_ddl.v.diskann_search_beamwidth	0
 INDEX_STATE	test.t_vector_ddl.v.diskann_pq_code_budget_size	0
+INDEX_STATE	test.t_vector_ddl.v.diskann_disk_pq_dims	0
+INDEX_STATE	test.t_vector_ddl.v.diskann_cache_nodes	0
+INDEX_STATE	test.t_vector_ddl.v.diskann_accelerate_build	0
+INDEX_STATE	test.t_vector_ddl.v.diskann_shuffle_build	0
+INDEX_STATE	test.t_vector_ddl.v.diskann_use_bfs_cache	0
 INDEX_STATE	test.t_vector_ddl.v.lifecycle_state	ready
 INDEX_STATE	test.t_vector_ddl.v.lifecycle_version	5
 INDEX_STATE	test.t_vector_ddl.v.supports_mutations	1
@@ -183,6 +188,11 @@ INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_build_mode	auto
 INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_search_complexity	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_search_beamwidth	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_pq_code_budget_size	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_disk_pq_dims	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_cache_nodes	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_accelerate_build	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_shuffle_build	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_use_bfs_cache	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.lifecycle_state	ready
 INDEX_STATE	test.t_vector_ddl_renamed.v.lifecycle_version	5
 INDEX_STATE	test.t_vector_ddl_renamed.v.supports_mutations	1
@@ -194,10 +204,37 @@ BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_runtime	faiss_scheduler
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_input_source	reader
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_rows	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_segments	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_invocations	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_concurrent_tasks	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_effective_threads	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_effective_blas_threads	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_raw_reader_threads	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_train_threads	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_compress_threads	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_single_index	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_chunks	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_cache_nodes	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_manifest_ms	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_offline_ms	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_load_ms	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_fallback_reason	
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_path	faiss_scheduler
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_segment_count	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_task_count	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_concurrent_tasks	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_cpu_budget	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_effective_build_threads	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_effective_blas_threads	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_raw_reader_threads	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_pq_train_threads	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_pq_compress_threads	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_single_index_build	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_candidates_per_segment	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_pq_chunks	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_cache_nodes	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_build_wall_ms	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_build_sum_ms	0
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_fallback_reason	not_applicable
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.mode	external
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.consistency_mode	transactional
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.truth_store_enabled	1
@@ -301,6 +338,11 @@ INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_build_mode	auto
 INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_search_complexity	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_search_beamwidth	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_pq_code_budget_size	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_disk_pq_dims	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_cache_nodes	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_accelerate_build	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_shuffle_build	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_use_bfs_cache	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.lifecycle_state	ready
 INDEX_STATE	test.t_vector_alter_dropcol.v.lifecycle_version	5
 INDEX_STATE	test.t_vector_alter_dropcol.v.supports_mutations	1
@@ -398,6 +440,6 @@ CONCAT('[', REPEAT('0,', 783), '0]'),
 3
 SELECT VEC_INDEX_INFO('test.t_vector_ddl_large.v');
 VEC_INDEX_INFO('test.t_vector_ddl_large.v')
-{"dimension":784,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vector_ddl_large","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":3,"committed_entry_count":3}
+{"dimension":784,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vector_ddl_large","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":0,"diskann_cache_nodes":0,"diskann_accelerate_build":0,"diskann_shuffle_build":0,"diskann_use_bfs_cache":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":3,"committed_entry_count":3}
 DROP TABLE t_vector_ddl_large;
 DROP TABLE t_vector_ddl;

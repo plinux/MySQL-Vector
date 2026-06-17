@@ -55,9 +55,15 @@ extern ulong opt_vector_diskann_search_complexity;
 extern ulong opt_vector_diskann_search_beamwidth;
 extern ulonglong opt_vector_diskann_pq_code_budget_size;
 extern double opt_vector_diskann_pq_code_budget_ratio;
+extern ulong opt_vector_diskann_disk_pq_dims;
+extern bool opt_vector_diskann_accelerate_build;
+extern bool opt_vector_diskann_shuffle_build;
+extern bool opt_vector_diskann_use_bfs_cache;
+extern bool opt_vector_diskann_segmented_serving;
 extern ulong opt_vector_diskann_max_degree;
 extern ulong opt_vector_diskann_build_complexity;
 extern ulong opt_vector_diskann_build_mode;
+extern ulong opt_vector_diskann_pq_runtime;
 extern ulong opt_vector_default_library;
 extern ulong opt_vector_index_consistency_mode;
 extern ulonglong opt_vector_entry_cache_size;
@@ -86,6 +92,12 @@ enum class vector_default_library : ulong {
   kFaiss = 3
 };
 
+enum class diskann_pq_runtime_mode : ulong {
+  kOfficial = 0,
+  kNativeAuto = 1,
+  kNativeStrict = 2
+};
+
 /**
   Return the global DiskANN build-mode default.
 
@@ -94,23 +106,36 @@ enum class vector_default_library : ulong {
 */
 diskann_build_mode global_diskann_build_mode();
 
+/** Return the global DiskANN PQ/kmeans runtime mode. */
+diskann_pq_runtime_mode global_diskann_pq_runtime_mode();
+
+/** Return the SQL name for a DiskANN PQ/kmeans runtime mode. */
+const char *diskann_pq_runtime_mode_name(diskann_pq_runtime_mode mode);
+
+/** Return whether a DiskANN PQ runtime mode executes the Native path. */
+bool diskann_pq_runtime_uses_native(diskann_pq_runtime_mode mode);
+
+/** Return whether a failed Native path may fall back to official DiskANN PQ. */
+bool diskann_pq_runtime_allows_official_fallback(
+    diskann_pq_runtime_mode mode);
+
 /** Return the global default vector library. */
 vector_default_library global_vector_default_library();
 
 /** Return the global vector-index consistency default. */
 index_consistency_mode global_index_consistency_mode();
 
-/** Return the effective build worker count for one backend build. */
-size_t effective_build_scheduler_threads(size_t entry_count,
-                                         ulong backend_override_threads);
-
-/** Return the effective OpenMP/BLAS build worker budget. */
-size_t effective_build_scheduler_thread_budget(
-    ulong backend_override_threads);
-
 /** Return the effective batch search worker count after inheritance. */
 size_t effective_batch_search_threads(size_t query_count,
                                       ulong backend_override_threads);
+
+/** Return the effective single-backend build worker count via scheduler rules. */
+size_t effective_build_scheduler_threads(size_t entry_count,
+                                         ulong backend_override_threads);
+
+/** Return the effective OpenMP/BLAS build worker budget via scheduler rules. */
+size_t effective_build_scheduler_thread_budget(
+    ulong backend_override_threads);
 
 /** Return the effective hnswlib batch search worker count. */
 size_t effective_hnsw_search_threads(size_t query_count);

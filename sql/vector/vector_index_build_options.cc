@@ -23,9 +23,12 @@
 
 #include "sql/vector/vector_index_build_options.h"
 
+#include <algorithm>
+
 #include "sql/vector/vector_build_pipeline_policy.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_runtime_thread_pool.h"
+#include "sql/vector/vector_segment_runtime_scheduler.h"
 
 ulong opt_vector_hnsw_build_threads = 0;
 ulong opt_vector_faiss_build_threads = 0;
@@ -51,13 +54,21 @@ ulong opt_vector_diskann_search_complexity =
 ulong opt_vector_diskann_search_beamwidth =
     vector_index::k_default_diskann_search_beamwidth;
 ulonglong opt_vector_diskann_pq_code_budget_size = 0;
-double opt_vector_diskann_pq_code_budget_ratio = 0.125;
+double opt_vector_diskann_pq_code_budget_ratio =
+    vector_index::k_default_diskann_pq_code_budget_ratio;
+ulong opt_vector_diskann_disk_pq_dims = 0;
+bool opt_vector_diskann_accelerate_build = false;
+bool opt_vector_diskann_shuffle_build = false;
+bool opt_vector_diskann_use_bfs_cache = false;
+bool opt_vector_diskann_segmented_serving = false;
 ulong opt_vector_diskann_max_degree =
     vector_index::k_default_diskann_max_degree;
 ulong opt_vector_diskann_build_complexity =
     vector_index::k_default_diskann_build_complexity;
 ulong opt_vector_diskann_build_mode =
     static_cast<ulong>(vector_index::diskann_build_mode::kAuto);
+ulong opt_vector_diskann_pq_runtime =
+    static_cast<ulong>(vector_index::diskann_pq_runtime_mode::kNativeAuto);
 ulong opt_vector_default_library =
     static_cast<ulong>(vector_index::vector_default_library::kNone);
 ulong opt_vector_index_consistency_mode =
@@ -101,6 +112,41 @@ diskann_build_mode global_diskann_build_mode() {
   return diskann_build_mode::kAuto;
 }
 
+diskann_pq_runtime_mode global_diskann_pq_runtime_mode() {
+  switch (static_cast<diskann_pq_runtime_mode>(
+      opt_vector_diskann_pq_runtime)) {
+    case diskann_pq_runtime_mode::kOfficial:
+      return diskann_pq_runtime_mode::kOfficial;
+    case diskann_pq_runtime_mode::kNativeAuto:
+      return diskann_pq_runtime_mode::kNativeAuto;
+    case diskann_pq_runtime_mode::kNativeStrict:
+      return diskann_pq_runtime_mode::kNativeStrict;
+  }
+  return diskann_pq_runtime_mode::kNativeAuto;
+}
+
+const char *diskann_pq_runtime_mode_name(diskann_pq_runtime_mode mode) {
+  switch (mode) {
+    case diskann_pq_runtime_mode::kOfficial:
+      return "official";
+    case diskann_pq_runtime_mode::kNativeAuto:
+      return "native_auto";
+    case diskann_pq_runtime_mode::kNativeStrict:
+      return "native_strict";
+  }
+  return "native_auto";
+}
+
+bool diskann_pq_runtime_uses_native(diskann_pq_runtime_mode mode) {
+  return mode == diskann_pq_runtime_mode::kNativeAuto ||
+         mode == diskann_pq_runtime_mode::kNativeStrict;
+}
+
+bool diskann_pq_runtime_allows_official_fallback(
+    diskann_pq_runtime_mode mode) {
+  return mode == diskann_pq_runtime_mode::kNativeAuto;
+}
+
 vector_default_library global_vector_default_library() {
   switch (static_cast<vector_default_library>(opt_vector_default_library)) {
     case vector_default_library::kNone:
@@ -126,17 +172,6 @@ index_consistency_mode global_index_consistency_mode() {
   return index_consistency_mode::kTransactional;
 }
 
-size_t effective_build_scheduler_threads(size_t entry_count,
-                                         ulong backend_override_threads) {
-  return effective_runtime_worker_count(entry_count,
-                                        backend_override_threads);
-}
-
-size_t effective_build_scheduler_thread_budget(ulong backend_override_threads) {
-  return effective_runtime_worker_count(k_max_build_threads,
-                                        backend_override_threads);
-}
-
 size_t effective_batch_search_threads(size_t query_count,
                                       ulong backend_override_threads) {
   if (query_count == 0) return 0;
@@ -144,8 +179,31 @@ size_t effective_batch_search_threads(size_t query_count,
   ulong configured = backend_override_threads;
   if (configured == 0) configured = opt_vector_batch_search_threads;
 
-  return effective_runtime_worker_count(query_count,
-                                        static_cast<size_t>(configured));
+  return effective_runtime_worker_count(
+      query_count, effective_build_scheduler_thread_budget(configured));
+}
+
+size_t effective_build_scheduler_thread_budget(ulong backend_override_threads) {
+  segment_scheduler_input input;
+  input.segment_count = 1;
+  input.requested_task_count = 1;
+  input.cpu_budget = backend_override_threads == 0 ? 0 : backend_override_threads;
+  input.requested_build_threads = backend_override_threads;
+  input.requested_blas_threads = backend_override_threads == 0
+                                      ? 1
+                                      : backend_override_threads;
+
+  segment_scheduler_plan plan;
+  if (!make_segment_scheduler_plan(input, &plan)) return 1;
+  return std::max<size_t>(1, plan.effective_build_threads);
+}
+
+size_t effective_build_scheduler_threads(size_t entry_count,
+                                         ulong backend_override_threads) {
+  if (entry_count == 0) return 0;
+  return effective_runtime_worker_count(
+      entry_count,
+      effective_build_scheduler_thread_budget(backend_override_threads));
 }
 
 size_t effective_hnsw_search_threads(size_t query_count) {

@@ -1,0 +1,43 @@
+#
+# Variable name : vector_diskann_shuffle_build
+# Scope         : Global dynamic
+#
+# Global - default
+SELECT @@global.vector_diskann_shuffle_build;
+@@global.vector_diskann_shuffle_build
+0
+# Visible through SHOW VARIABLES and performance_schema.
+SHOW GLOBAL VARIABLES LIKE 'vector_diskann_shuffle_build';
+Variable_name	Value
+vector_diskann_shuffle_build	OFF
+SHOW SESSION VARIABLES LIKE 'vector_diskann_shuffle_build';
+Variable_name	Value
+vector_diskann_shuffle_build	OFF
+SELECT * FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='vector_diskann_shuffle_build';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_diskann_shuffle_build	OFF
+SELECT * FROM performance_schema.session_variables
+WHERE VARIABLE_NAME='vector_diskann_shuffle_build';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_diskann_shuffle_build	OFF
+SELECT @@session.vector_diskann_shuffle_build;
+ERROR HY000: Variable 'vector_diskann_shuffle_build' is a GLOBAL variable
+SELECT vector_diskann_shuffle_build;
+ERROR 42S22: Unknown column 'vector_diskann_shuffle_build' in 'field list'
+# Runtime changes are allowed.
+SET GLOBAL vector_diskann_shuffle_build=ON;
+SELECT @@global.vector_diskann_shuffle_build;
+@@global.vector_diskann_shuffle_build
+1
+SET GLOBAL vector_diskann_shuffle_build=OFF;
+SELECT @@global.vector_diskann_shuffle_build;
+@@global.vector_diskann_shuffle_build
+0
+SET GLOBAL vector_diskann_shuffle_build=2;
+ERROR 42000: Variable 'vector_diskann_shuffle_build' can't be set to the value of '2'
+SET GLOBAL vector_diskann_shuffle_build=DEFAULT;
+SELECT @@global.vector_diskann_shuffle_build;
+@@global.vector_diskann_shuffle_build
+0
+# End of tests.

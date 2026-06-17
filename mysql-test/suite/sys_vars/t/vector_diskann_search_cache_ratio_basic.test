@@ -1,0 +1,2 @@
+--let $vector_sysvar_name= vector_diskann_search_cache_ratio
+--source include/vector_sysvar_alias_basic.inc

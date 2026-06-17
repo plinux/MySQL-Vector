@@ -6890,11 +6890,12 @@ static Sys_var_ulonglong Sys_vector_build_memory_size(
 
 static Sys_var_ulonglong Sys_vector_diskann_build_memory_size(
     "vector_diskann_build_memory_size",
-    "DiskANN offline build memory budget in bytes. The backend maps this "
-    "budget to DiskANN's build-time memory limit.",
+    "DiskANN offline build memory budget in bytes. Use 0 to derive the "
+    "budget from currently available build memory when the platform exposes "
+    "it; otherwise the backend falls back to the segment payload size.",
     GLOBAL_VAR(opt_vector_diskann_build_memory_size), CMD_LINE(REQUIRED_ARG),
-    VALID_RANGE(VECTOR_ONE_MB, max_mem_sz), DEFAULT(VECTOR_1_GB),
-    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+    VALID_RANGE(0, max_mem_sz), DEFAULT(VECTOR_1_GB), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
 
 static Sys_var_ulonglong Sys_vector_diskann_raw_segment_size(
     "vector_diskann_raw_segment_size",
@@ -6966,6 +6967,48 @@ static bool check_vector_faiss_build_threads(sys_var *self, THD *thd,
                                              set_var *var) {
   if (!check_vector_build_threads(self, thd, var))
     return false;
+  return true;
+}
+
+static bool check_vector_diskann_disk_pq_dims(sys_var *self, THD *, set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const longlong signed_value = var->value->val_int();
+  if (!var->value->unsigned_flag && signed_value < 0) {
+    const std::string value = std::to_string(signed_value);
+    my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value.c_str());
+    return true;
+  }
+
+  const ulonglong value = var->value->val_uint();
+  if (value <= vector_index::k_max_diskann_disk_pq_dims) return false;
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static bool check_vector_diskann_search_beamwidth(sys_var *self, THD *,
+                                                  set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const longlong signed_value = var->value->val_int();
+  if (!var->value->unsigned_flag && signed_value < 0) {
+    const std::string value = std::to_string(signed_value);
+    my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value.c_str());
+    return true;
+  }
+
+  const ulonglong value = var->value->val_uint();
+  if (value >= 1 &&
+      value <= vector_index::k_max_diskann_search_beamwidth) {
+    return false;
+  }
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
   return true;
 }
 
@@ -7322,7 +7365,7 @@ static Sys_var_ulong Sys_vector_diskann_search_beamwidth(
     VALID_RANGE(1, vector_index::k_max_diskann_search_beamwidth),
     DEFAULT(vector_index::k_default_diskann_search_beamwidth), BLOCK_SIZE(1),
     NO_MUTEX_GUARD, NOT_IN_BINLOG,
-    ON_CHECK(check_vector_build_threads));
+    ON_CHECK(check_vector_diskann_search_beamwidth));
 
 static Sys_var_ulonglong Sys_vector_diskann_pq_code_budget_size(
     "vector_diskann_pq_code_budget_size",
@@ -7338,8 +7381,49 @@ static Sys_var_double Sys_vector_diskann_pq_code_budget_ratio(
     "DiskANN native runtime PQ-code budget ratio relative to raw vector bytes "
     "when vector_diskann_pq_code_budget_size is 0.",
     GLOBAL_VAR(opt_vector_diskann_pq_code_budget_ratio), CMD_LINE(REQUIRED_ARG),
-    VALID_RANGE(0, 1), DEFAULT(0.125), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    VALID_RANGE(0, 1),
+    DEFAULT(vector_index::k_default_diskann_pq_code_budget_ratio),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
     ON_CHECK(check_vector_ratio), ON_UPDATE(nullptr));
+
+static Sys_var_ulong Sys_vector_diskann_disk_pq_dims(
+    "vector_diskann_disk_pq_dims",
+    "DiskANN offline build disk PQ dimensions. Use 0 for automatic disk "
+    "layout: keep full vectors when node records fit one DiskANN sector, "
+    "otherwise derive disk PQ dimensions from the PQ code budget.",
+    GLOBAL_VAR(opt_vector_diskann_disk_pq_dims), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, vector_index::k_max_diskann_disk_pq_dims), DEFAULT(0),
+    BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_diskann_disk_pq_dims));
+
+static Sys_var_bool Sys_vector_diskann_accelerate_build(
+    "vector_diskann_accelerate_build",
+    "Allow DiskANN offline build to use accelerated build paths when the "
+    "linked adapter supports them.",
+    GLOBAL_VAR(opt_vector_diskann_accelerate_build), CMD_LINE(OPT_ARG),
+    DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_bool Sys_vector_diskann_shuffle_build(
+    "vector_diskann_shuffle_build",
+    "Allow DiskANN offline build to shuffle build input batches when the "
+    "linked adapter supports it.",
+    GLOBAL_VAR(opt_vector_diskann_shuffle_build), CMD_LINE(OPT_ARG),
+    DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_bool Sys_vector_diskann_use_bfs_cache(
+    "vector_diskann_use_bfs_cache",
+    "Force DiskANN offline load to use BFS cache. DiskANN offline load also "
+    "uses BFS cache automatically when search cache nodes are configured.",
+    GLOBAL_VAR(opt_vector_diskann_use_bfs_cache), CMD_LINE(OPT_ARG),
+    DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_bool Sys_vector_diskann_segmented_serving(
+    "vector_diskann_segmented_serving",
+    "Allow DiskANN raw-only standalone/offline builds to keep one serving "
+    "backend per raw segment and fan out search across segments. The default "
+    "keeps one logical DiskANN index for all raw segments.",
+    GLOBAL_VAR(opt_vector_diskann_segmented_serving), CMD_LINE(OPT_ARG),
+    DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static bool check_vector_uint32_positive(sys_var *self, THD *, set_var *var) {
   if (var->value == nullptr) return false;
@@ -7398,6 +7482,21 @@ static Sys_var_enum Sys_vector_diskann_build_mode(
     GLOBAL_VAR(opt_vector_diskann_build_mode), CMD_LINE(REQUIRED_ARG),
     vector_diskann_build_mode_names,
     DEFAULT(static_cast<ulong>(vector_index::diskann_build_mode::kAuto)),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static const char *vector_diskann_pq_runtime_names[] = {
+    "official", "native_auto", "native_strict", nullptr};
+
+static Sys_var_enum Sys_vector_diskann_pq_runtime(
+    "vector_diskann_pq_runtime",
+    "DiskANN PQ/kmeans runtime selector. OFFICIAL keeps the upstream DiskANN "
+    "implementation. NATIVE_AUTO generates MySQL-Vector native PQ artifacts "
+    "and permits an official fallback. NATIVE_STRICT requires the native "
+    "artifact and graph/cache bridge path to succeed.",
+    GLOBAL_VAR(opt_vector_diskann_pq_runtime), CMD_LINE(REQUIRED_ARG),
+    vector_diskann_pq_runtime_names,
+    DEFAULT(static_cast<ulong>(
+        vector_index::diskann_pq_runtime_mode::kNativeAuto)),
     NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static const char *vector_default_library_names[] = {

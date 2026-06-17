@@ -1,0 +1,38 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # Variable name : vector_diskann_accelerate_build
+--echo # Scope         : Global dynamic
+--echo #
+
+--echo # Global - default
+SELECT @@global.vector_diskann_accelerate_build;
+
+--echo # Visible through SHOW VARIABLES and performance_schema.
+SHOW GLOBAL VARIABLES LIKE 'vector_diskann_accelerate_build';
+SHOW SESSION VARIABLES LIKE 'vector_diskann_accelerate_build';
+SELECT * FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME='vector_diskann_accelerate_build';
+SELECT * FROM performance_schema.session_variables
+  WHERE VARIABLE_NAME='vector_diskann_accelerate_build';
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_diskann_accelerate_build;
+
+--Error ER_BAD_FIELD_ERROR
+SELECT vector_diskann_accelerate_build;
+
+--echo # Runtime changes are allowed.
+SET GLOBAL vector_diskann_accelerate_build=ON;
+SELECT @@global.vector_diskann_accelerate_build;
+
+SET GLOBAL vector_diskann_accelerate_build=OFF;
+SELECT @@global.vector_diskann_accelerate_build;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_accelerate_build=2;
+
+SET GLOBAL vector_diskann_accelerate_build=DEFAULT;
+SELECT @@global.vector_diskann_accelerate_build;
+
+--echo # End of tests.

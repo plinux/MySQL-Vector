@@ -179,9 +179,24 @@ SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Value = '0';
 Section	Variable_name	Value
 BACKEND_HEALTH	idx_show_filter.backend_build_rows	0
+BACKEND_HEALTH	idx_show_filter.backend_build_raw_reader_threads	0
+BACKEND_HEALTH	idx_show_filter.backend_build_pq_train_threads	0
+BACKEND_HEALTH	idx_show_filter.backend_build_pq_compress_threads	0
+BACKEND_HEALTH	idx_show_filter.backend_build_single_index	0
+BACKEND_HEALTH	idx_show_filter.backend_build_pq_chunks	0
+BACKEND_HEALTH	idx_show_filter.backend_build_cache_nodes	0
 BACKEND_HEALTH	idx_show_filter.backend_build_manifest_ms	0
 BACKEND_HEALTH	idx_show_filter.backend_build_offline_ms	0
 BACKEND_HEALTH	idx_show_filter.backend_build_load_ms	0
+BACKEND_HEALTH	idx_show_filter.scheduler_raw_reader_threads	0
+BACKEND_HEALTH	idx_show_filter.scheduler_pq_train_threads	0
+BACKEND_HEALTH	idx_show_filter.scheduler_pq_compress_threads	0
+BACKEND_HEALTH	idx_show_filter.scheduler_single_index_build	0
+BACKEND_HEALTH	idx_show_filter.scheduler_candidates_per_segment	0
+BACKEND_HEALTH	idx_show_filter.diskann_segment_pq_chunks	0
+BACKEND_HEALTH	idx_show_filter.diskann_segment_cache_nodes	0
+BACKEND_HEALTH	idx_show_filter.diskann_segment_build_wall_ms	0
+BACKEND_HEALTH	idx_show_filter.diskann_segment_build_sum_ms	0
 BACKEND_HEALTH	idx_show_filter.last_error_code	0
 BACKEND_HEALTH	idx_show_filter.last_error_ts	0
 BACKEND_HEALTH	idx_show_filter.recover_fallback_count	0

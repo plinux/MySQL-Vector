@@ -1,0 +1,165 @@
+#
+# Variable name : vector_diskann_* offline search params
+# Scope         : Global dynamic
+#
+# Global defaults.
+SELECT @@global.vector_diskann_offline_search_threads,
+@@global.vector_diskann_search_io_limit,
+@@global.vector_diskann_cache_nodes,
+@@global.vector_diskann_search_complexity,
+@@global.vector_diskann_search_beamwidth,
+@@global.vector_diskann_pq_code_budget_size,
+@@global.vector_diskann_pq_code_budget_ratio,
+@@global.vector_diskann_search_cache_size,
+@@global.vector_diskann_search_cache_ratio;
+@@global.vector_diskann_offline_search_threads	@@global.vector_diskann_search_io_limit	@@global.vector_diskann_cache_nodes	@@global.vector_diskann_search_complexity	@@global.vector_diskann_search_beamwidth	@@global.vector_diskann_pq_code_budget_size	@@global.vector_diskann_pq_code_budget_ratio	@@global.vector_diskann_search_cache_size	@@global.vector_diskann_search_cache_ratio
+1	0	0	64	16	0	0.125000	0	0.100000
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME IN ('vector_diskann_offline_search_threads',
+'vector_diskann_search_io_limit',
+'vector_diskann_cache_nodes',
+'vector_diskann_search_complexity',
+'vector_diskann_search_beamwidth',
+'vector_diskann_pq_code_budget_size',
+'vector_diskann_pq_code_budget_ratio',
+'vector_diskann_search_cache_size',
+'vector_diskann_search_cache_ratio')
+ORDER BY VARIABLE_NAME;
+VARIABLE_NAME	VARIABLE_VALUE
+vector_diskann_cache_nodes	0
+vector_diskann_offline_search_threads	1
+vector_diskann_pq_code_budget_ratio	0.125000
+vector_diskann_pq_code_budget_size	0
+vector_diskann_search_beamwidth	16
+vector_diskann_search_cache_ratio	0.100000
+vector_diskann_search_cache_size	0
+vector_diskann_search_complexity	64
+vector_diskann_search_io_limit	0
+SELECT @@session.vector_diskann_search_io_limit;
+ERROR HY000: Variable 'vector_diskann_search_io_limit' is a GLOBAL variable
+# Runtime changes are allowed.
+SET GLOBAL vector_diskann_offline_search_threads=8;
+SET GLOBAL vector_diskann_search_io_limit=1024;
+SET GLOBAL vector_diskann_cache_nodes=2048;
+SET GLOBAL vector_diskann_search_complexity=96;
+SET GLOBAL vector_diskann_search_beamwidth=16;
+SET GLOBAL vector_diskann_pq_code_budget_size=1048576;
+SET GLOBAL vector_diskann_pq_code_budget_ratio=0.25;
+SET GLOBAL vector_diskann_search_cache_size=2097152;
+SET GLOBAL vector_diskann_search_cache_ratio=0.2;
+SELECT @@global.vector_diskann_offline_search_threads,
+@@global.vector_diskann_search_io_limit,
+@@global.vector_diskann_cache_nodes,
+@@global.vector_diskann_search_complexity,
+@@global.vector_diskann_search_beamwidth,
+@@global.vector_diskann_pq_code_budget_size,
+@@global.vector_diskann_pq_code_budget_ratio,
+@@global.vector_diskann_search_cache_size,
+@@global.vector_diskann_search_cache_ratio;
+@@global.vector_diskann_offline_search_threads	@@global.vector_diskann_search_io_limit	@@global.vector_diskann_cache_nodes	@@global.vector_diskann_search_complexity	@@global.vector_diskann_search_beamwidth	@@global.vector_diskann_pq_code_budget_size	@@global.vector_diskann_pq_code_budget_ratio	@@global.vector_diskann_search_cache_size	@@global.vector_diskann_search_cache_ratio
+8	1024	2048	96	16	1048576	0.250000	2097152	0.200000
+SET GLOBAL vector_diskann_offline_search_threads=65535;
+SET GLOBAL vector_diskann_search_io_limit=4294967295;
+SET GLOBAL vector_diskann_cache_nodes=4294967295;
+SET GLOBAL vector_diskann_search_complexity=4294967295;
+SET GLOBAL vector_diskann_search_beamwidth=128;
+SET GLOBAL vector_diskann_pq_code_budget_size=0;
+SET GLOBAL vector_diskann_pq_code_budget_ratio=1;
+SET GLOBAL vector_diskann_search_cache_size=0;
+SET GLOBAL vector_diskann_search_cache_ratio=1;
+SELECT @@global.vector_diskann_offline_search_threads,
+@@global.vector_diskann_search_io_limit,
+@@global.vector_diskann_cache_nodes,
+@@global.vector_diskann_search_complexity,
+@@global.vector_diskann_search_beamwidth,
+@@global.vector_diskann_pq_code_budget_size,
+@@global.vector_diskann_pq_code_budget_ratio,
+@@global.vector_diskann_search_cache_size,
+@@global.vector_diskann_search_cache_ratio;
+@@global.vector_diskann_offline_search_threads	@@global.vector_diskann_search_io_limit	@@global.vector_diskann_cache_nodes	@@global.vector_diskann_search_complexity	@@global.vector_diskann_search_beamwidth	@@global.vector_diskann_pq_code_budget_size	@@global.vector_diskann_pq_code_budget_ratio	@@global.vector_diskann_search_cache_size	@@global.vector_diskann_search_cache_ratio
+65535	4294967295	4294967295	4294967295	128	0	1.000000	0	1.000000
+SET GLOBAL vector_diskann_offline_search_threads=65536;
+ERROR 42000: Variable 'vector_diskann_offline_search_threads' can't be set to the value of '65536'
+SET GLOBAL vector_diskann_search_io_limit=4294967296;
+ERROR 42000: Variable 'vector_diskann_search_io_limit' can't be set to the value of '4294967296'
+SET GLOBAL vector_diskann_cache_nodes=4294967296;
+ERROR 42000: Variable 'vector_diskann_cache_nodes' can't be set to the value of '4294967296'
+SET GLOBAL vector_diskann_search_complexity=0;
+ERROR 42000: Variable 'vector_diskann_search_complexity' can't be set to the value of '0'
+SET GLOBAL vector_diskann_search_complexity=4294967296;
+ERROR 42000: Variable 'vector_diskann_search_complexity' can't be set to the value of '4294967296'
+SET GLOBAL vector_diskann_search_beamwidth=129;
+ERROR 42000: Variable 'vector_diskann_search_beamwidth' can't be set to the value of '129'
+SET GLOBAL vector_diskann_search_io_limit=-1;
+ERROR 42000: Variable 'vector_diskann_search_io_limit' can't be set to the value of '-1'
+SET GLOBAL vector_diskann_pq_code_budget_size=-1;
+ERROR 42000: Variable 'vector_diskann_pq_code_budget_size' can't be set to the value of '-1'
+SET GLOBAL vector_diskann_pq_code_budget_ratio=1.1;
+ERROR 42000: Variable 'vector_diskann_pq_code_budget_ratio' can't be set to the value of '1.100000'
+SET GLOBAL vector_diskann_search_cache_size=-1;
+ERROR 42000: Variable 'vector_diskann_search_cache_size' can't be set to the value of '-1'
+SET GLOBAL vector_diskann_search_cache_ratio=1.1;
+ERROR 42000: Variable 'vector_diskann_search_cache_ratio' can't be set to the value of '1.100000'
+# Persist and reset.
+SET PERSIST vector_diskann_offline_search_threads=8;
+SET PERSIST vector_diskann_search_io_limit=1024;
+SET PERSIST vector_diskann_cache_nodes=2048;
+SET PERSIST vector_diskann_search_complexity=96;
+SET PERSIST vector_diskann_search_beamwidth=16;
+SET PERSIST vector_diskann_pq_code_budget_size=1048576;
+SET PERSIST vector_diskann_pq_code_budget_ratio=0.25;
+SET PERSIST vector_diskann_search_cache_size=2097152;
+SET PERSIST vector_diskann_search_cache_ratio=0.2;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME IN ('vector_diskann_offline_search_threads',
+'vector_diskann_search_io_limit',
+'vector_diskann_cache_nodes',
+'vector_diskann_search_complexity',
+'vector_diskann_search_beamwidth',
+'vector_diskann_pq_code_budget_size',
+'vector_diskann_pq_code_budget_ratio',
+'vector_diskann_search_cache_size',
+'vector_diskann_search_cache_ratio')
+ORDER BY VARIABLE_NAME;
+VARIABLE_NAME	VARIABLE_VALUE
+vector_diskann_cache_nodes	2048
+vector_diskann_offline_search_threads	8
+vector_diskann_pq_code_budget_ratio	0.250000
+vector_diskann_pq_code_budget_size	1048576
+vector_diskann_search_beamwidth	16
+vector_diskann_search_cache_ratio	0.200000
+vector_diskann_search_cache_size	2097152
+vector_diskann_search_complexity	96
+vector_diskann_search_io_limit	1024
+RESET PERSIST IF EXISTS vector_diskann_offline_search_threads;
+RESET PERSIST IF EXISTS vector_diskann_search_io_limit;
+RESET PERSIST IF EXISTS vector_diskann_cache_nodes;
+RESET PERSIST IF EXISTS vector_diskann_search_complexity;
+RESET PERSIST IF EXISTS vector_diskann_search_beamwidth;
+RESET PERSIST IF EXISTS vector_diskann_pq_code_budget_size;
+RESET PERSIST IF EXISTS vector_diskann_pq_code_budget_ratio;
+RESET PERSIST IF EXISTS vector_diskann_search_cache_size;
+RESET PERSIST IF EXISTS vector_diskann_search_cache_ratio;
+SET GLOBAL vector_diskann_offline_search_threads=DEFAULT;
+SET GLOBAL vector_diskann_search_io_limit=DEFAULT;
+SET GLOBAL vector_diskann_cache_nodes=DEFAULT;
+SET GLOBAL vector_diskann_search_complexity=DEFAULT;
+SET GLOBAL vector_diskann_search_beamwidth=DEFAULT;
+SET GLOBAL vector_diskann_pq_code_budget_size=DEFAULT;
+SET GLOBAL vector_diskann_pq_code_budget_ratio=DEFAULT;
+SET GLOBAL vector_diskann_search_cache_size=DEFAULT;
+SET GLOBAL vector_diskann_search_cache_ratio=DEFAULT;
+SELECT @@global.vector_diskann_offline_search_threads,
+@@global.vector_diskann_search_io_limit,
+@@global.vector_diskann_cache_nodes,
+@@global.vector_diskann_search_complexity,
+@@global.vector_diskann_search_beamwidth,
+@@global.vector_diskann_pq_code_budget_size,
+@@global.vector_diskann_pq_code_budget_ratio,
+@@global.vector_diskann_search_cache_size,
+@@global.vector_diskann_search_cache_ratio;
+@@global.vector_diskann_offline_search_threads	@@global.vector_diskann_search_io_limit	@@global.vector_diskann_cache_nodes	@@global.vector_diskann_search_complexity	@@global.vector_diskann_search_beamwidth	@@global.vector_diskann_pq_code_budget_size	@@global.vector_diskann_pq_code_budget_ratio	@@global.vector_diskann_search_cache_size	@@global.vector_diskann_search_cache_ratio
+1	0	0	64	16	0	0.125000	0	0.100000
+# End of tests.

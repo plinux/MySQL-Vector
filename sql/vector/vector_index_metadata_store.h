@@ -77,6 +77,10 @@ struct metadata_row {
   uint32_t faiss_build_threads{0};
   bool diskann_build_mode_specified{false};
   uint64_t diskann_pq_code_budget_size{0};
+  uint32_t diskann_disk_pq_dims{0};
+  bool diskann_accelerate_build{false};
+  bool diskann_shuffle_build{false};
+  bool diskann_use_bfs_cache{false};
   std::string owner_schema;
 };
 

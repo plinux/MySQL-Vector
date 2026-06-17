@@ -84,15 +84,42 @@ bool has_build_diagnostics(
   present |= !diagnostics.input_source.empty();
   present |= diagnostics.row_count != 0;
   present |= diagnostics.segment_count != 0;
+  present |= diagnostics.build_invocations != 0;
+  present |= diagnostics.concurrent_build_tasks != 0;
+  present |= diagnostics.scheduler_cpu_budget != 0;
+  present |= diagnostics.effective_build_threads != 0;
+  present |= diagnostics.effective_blas_threads != 0;
+  present |= diagnostics.raw_reader_threads != 0;
+  present |= diagnostics.pq_train_threads != 0;
+  present |= diagnostics.pq_compress_threads != 0;
+  present |= diagnostics.candidates_per_segment != 0;
+  present |= diagnostics.single_index_build;
+  present |= diagnostics.pq_chunks != 0;
+  present |= diagnostics.cache_nodes != 0;
+  present |= diagnostics.build_wall_ms != 0;
   present |= diagnostics.manifest_ms != 0;
   present |= diagnostics.offline_build_ms != 0;
   present |= diagnostics.load_ms != 0;
+  present |= !diagnostics.native_pq_runtime_selected_path.empty();
+  present |= diagnostics.native_pq_runtime_elapsed_ms != 0;
+  present |= diagnostics.native_pq_runtime_raw_reader_ms != 0;
+  present |= diagnostics.native_pq_runtime_distance_calls != 0;
+  present |= diagnostics.native_pq_runtime_train_rows != 0;
+  present |= diagnostics.native_pq_runtime_compressed_rows != 0;
+  present |= diagnostics.native_pq_runtime_artifacts_written;
+  present |= diagnostics.native_pq_runtime_artifacts_consumed;
+  present |= diagnostics.native_pq_runtime_official_pq_used;
+  present |= !diagnostics.native_pq_runtime_bridge.empty();
+  present |= diagnostics.native_pq_runtime_bridge_ms != 0;
+  present |= diagnostics.native_pq_runtime_graph_ms != 0;
+  present |= diagnostics.native_pq_runtime_cache_ms != 0;
+  present |= !diagnostics.native_pq_runtime_artifact_validation.empty();
   present |= !diagnostics.fallback_reason.empty();
   return present;
 }
 
 void append_build_diagnostics(
-    field_values *fields,
+    field_values *fields, bool diskann_provider,
     const vector_index::backend_build_diagnostics &diagnostics) {
   if (!has_build_diagnostics(diagnostics)) return;
   append_nullable_string(fields, "backend_build_runtime", diagnostics.runtime);
@@ -100,12 +127,114 @@ void append_build_diagnostics(
                          diagnostics.input_source);
   append_uint(fields, "backend_build_rows", diagnostics.row_count);
   append_uint(fields, "backend_build_segments", diagnostics.segment_count);
+  append_uint(fields, "backend_build_invocations",
+              diagnostics.build_invocations);
+  append_uint(fields, "backend_build_concurrent_tasks",
+              diagnostics.concurrent_build_tasks);
+  append_uint(fields, "backend_build_effective_threads",
+              diagnostics.effective_build_threads);
+  append_uint(fields, "backend_build_effective_blas_threads",
+              diagnostics.effective_blas_threads);
+  append_uint(fields, "backend_build_raw_reader_threads",
+              diagnostics.raw_reader_threads);
+  append_uint(fields, "backend_build_pq_train_threads",
+              diagnostics.pq_train_threads);
+  append_uint(fields, "backend_build_pq_compress_threads",
+              diagnostics.pq_compress_threads);
+  append_bool(fields, "backend_build_single_index",
+              diagnostics.single_index_build);
+  append_uint(fields, "backend_build_pq_chunks", diagnostics.pq_chunks);
+  append_uint(fields, "backend_build_cache_nodes", diagnostics.cache_nodes);
   append_uint(fields, "backend_build_manifest_ms", diagnostics.manifest_ms);
   append_uint(fields, "backend_build_offline_ms",
               diagnostics.offline_build_ms);
   append_uint(fields, "backend_build_load_ms", diagnostics.load_ms);
+  if (diskann_provider && !diagnostics.diskann_pq_runtime.empty()) {
+    append_nullable_string(fields, "diskann_pq_runtime",
+                           diagnostics.diskann_pq_runtime);
+  }
+  const bool has_native_pq_diagnostics =
+      !diagnostics.native_pq_runtime_selected_path.empty() ||
+      diagnostics.native_pq_runtime_elapsed_ms != 0 ||
+      diagnostics.native_pq_runtime_raw_reader_ms != 0 ||
+      diagnostics.native_pq_runtime_distance_calls != 0 ||
+      diagnostics.native_pq_runtime_train_rows != 0 ||
+      diagnostics.native_pq_runtime_compressed_rows != 0 ||
+      diagnostics.native_pq_runtime_artifacts_written ||
+      diagnostics.native_pq_runtime_artifacts_consumed ||
+      diagnostics.native_pq_runtime_official_pq_used ||
+      !diagnostics.native_pq_runtime_bridge.empty() ||
+      diagnostics.native_pq_runtime_bridge_ms != 0 ||
+      diagnostics.native_pq_runtime_graph_ms != 0 ||
+      diagnostics.native_pq_runtime_cache_ms != 0 ||
+      !diagnostics.native_pq_runtime_artifact_validation.empty();
+  if (diskann_provider && has_native_pq_diagnostics) {
+    append_nullable_string(fields, "native_pq_runtime_selected_path",
+                           diagnostics.native_pq_runtime_selected_path);
+    append_uint(fields, "native_pq_runtime_elapsed_ms",
+                diagnostics.native_pq_runtime_elapsed_ms);
+    append_uint(fields, "native_pq_runtime_raw_reader_ms",
+                diagnostics.native_pq_runtime_raw_reader_ms);
+    append_uint(fields, "native_pq_runtime_distance_calls",
+                diagnostics.native_pq_runtime_distance_calls);
+    append_uint(fields, "native_pq_runtime_train_rows",
+                diagnostics.native_pq_runtime_train_rows);
+    append_uint(fields, "native_pq_runtime_compressed_rows",
+                diagnostics.native_pq_runtime_compressed_rows);
+    append_bool(fields, "native_pq_runtime_artifacts_written",
+                diagnostics.native_pq_runtime_artifacts_written);
+    append_bool(fields, "native_pq_runtime_artifacts_consumed",
+                diagnostics.native_pq_runtime_artifacts_consumed);
+    append_bool(fields, "native_pq_runtime_official_pq_used",
+                diagnostics.native_pq_runtime_official_pq_used);
+    append_nullable_string(fields, "native_pq_runtime_bridge",
+                           diagnostics.native_pq_runtime_bridge);
+    append_uint(fields, "native_pq_runtime_bridge_ms",
+                diagnostics.native_pq_runtime_bridge_ms);
+    append_uint(fields, "native_pq_runtime_graph_ms",
+                diagnostics.native_pq_runtime_graph_ms);
+    append_uint(fields, "native_pq_runtime_cache_ms",
+                diagnostics.native_pq_runtime_cache_ms);
+    append_nullable_string(fields, "native_pq_runtime_artifact_validation",
+                           diagnostics.native_pq_runtime_artifact_validation);
+  }
   append_nullable_string(fields, "backend_build_fallback_reason",
                          diagnostics.fallback_reason);
+
+  append_nullable_string(fields, "scheduler_path", diagnostics.runtime);
+  append_uint(fields, "scheduler_segment_count", diagnostics.segment_count);
+  append_uint(fields, "scheduler_task_count", diagnostics.build_invocations);
+  append_uint(fields, "scheduler_concurrent_tasks",
+              diagnostics.concurrent_build_tasks);
+  append_uint(fields, "scheduler_cpu_budget", diagnostics.scheduler_cpu_budget);
+  append_uint(fields, "scheduler_effective_build_threads",
+              diagnostics.effective_build_threads);
+  append_uint(fields, "scheduler_effective_blas_threads",
+              diagnostics.effective_blas_threads);
+  append_uint(fields, "scheduler_raw_reader_threads",
+              diagnostics.raw_reader_threads);
+  append_uint(fields, "scheduler_pq_train_threads",
+              diagnostics.pq_train_threads);
+  append_uint(fields, "scheduler_pq_compress_threads",
+              diagnostics.pq_compress_threads);
+  append_bool(fields, "scheduler_single_index_build",
+              diagnostics.single_index_build);
+  append_uint(fields, "scheduler_candidates_per_segment",
+              diagnostics.candidates_per_segment);
+  append_uint(fields, "diskann_segment_pq_chunks",
+              diskann_provider ? diagnostics.pq_chunks : 0);
+  append_uint(fields, "diskann_segment_cache_nodes",
+              diskann_provider ? diagnostics.cache_nodes : 0);
+  const uint64_t build_wall_ms =
+      diagnostics.build_wall_ms != 0 ? diagnostics.build_wall_ms
+                                     : diagnostics.offline_build_ms;
+  append_uint(fields, "diskann_segment_build_wall_ms",
+              diskann_provider ? build_wall_ms : 0);
+  append_uint(fields, "diskann_segment_build_sum_ms",
+              diskann_provider ? diagnostics.offline_build_ms : 0);
+  append_nullable_string(fields, "diskann_segment_fallback_reason",
+                         diskann_provider ? diagnostics.fallback_reason
+                                          : "not_applicable");
 }
 
 }  // namespace
@@ -156,7 +285,7 @@ void collect_info_fields(const vector_index_registry::index_info &info,
                          field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(58);
+  fields->reserve(62);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
@@ -186,7 +315,9 @@ void collect_info_fields(const vector_index_registry::index_info &info,
   append_uint(fields, "standalone_raw_segment_bytes",
               info.standalone_raw_segment_bytes);
   append_nullable_string(fields, "backend_variant", info.backend_variant);
-  append_build_diagnostics(fields, info.build_diagnostics);
+  append_build_diagnostics(fields, ascii_equal_ignore_case(info.provider,
+                                                           "diskann"),
+                           info.build_diagnostics);
   append_nullable_string(fields, "schema_name", info.schema_name);
   append_nullable_string(fields, "table_name", info.table_name);
   append_nullable_string(fields, "column_name", info.column_name);
@@ -212,6 +343,12 @@ void collect_info_fields(const vector_index_registry::index_info &info,
               info.diskann_search_beamwidth);
   append_uint(fields, "diskann_pq_code_budget_size",
               info.diskann_pq_code_budget_size);
+  append_uint(fields, "diskann_disk_pq_dims", info.diskann_disk_pq_dims);
+  append_uint(fields, "diskann_cache_nodes", info.diskann_cache_nodes);
+  append_bool(fields, "diskann_accelerate_build",
+              info.diskann_accelerate_build);
+  append_bool(fields, "diskann_shuffle_build", info.diskann_shuffle_build);
+  append_bool(fields, "diskann_use_bfs_cache", info.diskann_use_bfs_cache);
   append_bool(fields, "supports_mutations", info.supports_mutations);
   append_string(fields, "lifecycle_state", info.lifecycle_state);
   append_uint(fields, "lifecycle_version", info.lifecycle_version);
@@ -236,7 +373,7 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
                                 field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(41);
+  fields->reserve(45);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
@@ -291,6 +428,12 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
               info.diskann_search_beamwidth);
   append_uint(fields, "diskann_pq_code_budget_size",
               info.diskann_pq_code_budget_size);
+  append_uint(fields, "diskann_disk_pq_dims", info.diskann_disk_pq_dims);
+  append_uint(fields, "diskann_cache_nodes", info.diskann_cache_nodes);
+  append_bool(fields, "diskann_accelerate_build",
+              info.diskann_accelerate_build);
+  append_bool(fields, "diskann_shuffle_build", info.diskann_shuffle_build);
+  append_bool(fields, "diskann_use_bfs_cache", info.diskann_use_bfs_cache);
   append_string(fields, "lifecycle_state", info.lifecycle_state);
   append_uint(fields, "lifecycle_version", info.lifecycle_version);
   append_bool(fields, "supports_mutations", info.supports_mutations);
@@ -306,7 +449,9 @@ void collect_backend_health_fields(
 
   append_string(fields, "backend_type", info.provider);
   append_nullable_string(fields, "backend_variant", info.backend_variant);
-  append_build_diagnostics(fields, info.build_diagnostics);
+  append_build_diagnostics(fields, ascii_equal_ignore_case(info.provider,
+                                                           "diskann"),
+                           info.build_diagnostics);
   append_string(fields, "mode", info.mode);
   append_string(fields, "consistency_mode", info.consistency_mode);
   append_bool(fields, "truth_store_enabled", info.truth_store_enabled);

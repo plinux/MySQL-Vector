@@ -32,23 +32,34 @@ namespace vector_index {
 
 inline constexpr uint32_t k_max_build_threads = 65535;
 inline constexpr uint32_t k_max_faiss_pq_bits = 24;
-inline constexpr uint32_t k_max_diskann_search_beamwidth = 65535;
+inline constexpr uint32_t k_max_diskann_disk_pq_dims = 65535;
+inline constexpr uint32_t k_max_diskann_search_beamwidth = 128;
 inline constexpr uint32_t k_max_vector_dimension =
     std::numeric_limits<uint32_t>::max() / sizeof(float);
 inline constexpr uint32_t k_max_search_top_k = 10000;
-inline constexpr uint32_t k_max_search_batch_count = 1024;
-inline constexpr uint32_t k_max_search_batch_result_count = 65536;
-inline constexpr uint32_t k_default_search_batch_count = 1024;
-inline constexpr uint32_t k_default_search_batch_result_count = 65536;
-inline constexpr uint32_t k_default_batch_search_threads = 32;
 inline constexpr uint32_t k_default_diskann_max_degree = 32;
 inline constexpr uint32_t k_default_diskann_build_complexity = 64;
 inline constexpr uint32_t k_default_diskann_search_complexity = 64;
 inline constexpr uint32_t k_default_diskann_search_beamwidth = 16;
+inline constexpr double k_default_diskann_pq_code_budget_ratio = 0.125;
 inline constexpr uint32_t k_default_diskann_offline_search_threads = 1;
+inline constexpr uint32_t k_default_batch_search_threads = 32;
 inline constexpr uint32_t k_default_hnsw_search_ef = 64;
 inline constexpr uint32_t k_default_hnsw_m = 16;
 inline constexpr uint32_t k_default_hnsw_ef_construction = 200;
+inline constexpr uint32_t k_default_search_batch_count = 1024;
+inline constexpr uint32_t k_default_search_batch_result_count = 65536;
+inline constexpr uint32_t k_max_search_batch_count = 65535;
+inline constexpr uint32_t k_max_search_batch_result_count = 1048576;
+
+inline constexpr bool valid_diskann_search_beamwidth(uint64_t beamwidth) {
+  return beamwidth >= 1 && beamwidth <= k_max_diskann_search_beamwidth;
+}
+
+inline constexpr bool valid_optional_diskann_search_beamwidth(
+    uint64_t beamwidth) {
+  return beamwidth == 0 || valid_diskann_search_beamwidth(beamwidth);
+}
 
 inline size_t saturated_add_size(size_t left, size_t right) {
   const size_t max_value = std::numeric_limits<size_t>::max();

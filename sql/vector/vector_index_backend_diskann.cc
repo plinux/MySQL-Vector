@@ -1097,11 +1097,21 @@ class diskann_native_state {
     return remove_dir_if_empty(std::filesystem::path(path).parent_path().string());
   }
 
-  static std::string apply_read_modify_write(
-      const std::string &value, size_t write_length,
-      diskann_rmw_data_callback callback, void *user_data) {
-    std::vector<uint64_t> aligned((write_length + sizeof(uint64_t) - 1) /
-                                  sizeof(uint64_t));
+  static bool apply_read_modify_write(const std::string &value,
+                                      size_t write_length,
+                                      diskann_rmw_data_callback callback,
+                                      void *user_data, std::string *updated) {
+    if (callback == nullptr || updated == nullptr ||
+        write_length >
+            std::numeric_limits<size_t>::max() - (sizeof(uint64_t) - 1) ||
+        write_length > updated->max_size()) {
+      return false;
+    }
+    const size_t aligned_words =
+        (write_length + sizeof(uint64_t) - 1) / sizeof(uint64_t);
+    if (aligned_words > std::vector<uint64_t>().max_size()) return false;
+
+    std::vector<uint64_t> aligned(aligned_words);
     if (!aligned.empty()) {
       std::memset(aligned.data(), 0, aligned.size() * sizeof(uint64_t));
       if (!value.empty()) {
@@ -1110,9 +1120,13 @@ class diskann_native_state {
       }
     }
     callback(user_data, reinterpret_cast<uint8_t *>(aligned.data()), write_length);
-    if (write_length == 0) return "";
-    return std::string(reinterpret_cast<const char *>(aligned.data()),
-                       write_length);
+    if (write_length == 0) {
+      updated->clear();
+    } else {
+      updated->assign(reinterpret_cast<const char *>(aligned.data()),
+                      write_length);
+    }
+    return true;
   }
 
   static bool read_modify_write_store_value(
@@ -1123,8 +1137,12 @@ class diskann_native_state {
     std::string value;
     const auto iter = shard.entries.find(relative_path);
     if (iter != shard.entries.end()) value = iter->second;
-    shard.entries[relative_path] =
-        apply_read_modify_write(value, write_length, callback, user_data);
+    std::string updated;
+    if (!apply_read_modify_write(value, write_length, callback, user_data,
+                                 &updated)) {
+      return false;
+    }
+    shard.entries[relative_path] = std::move(updated);
     return true;
   }
 
@@ -1140,8 +1158,11 @@ class diskann_native_state {
     } else {
       (void)load_persistent_value(relative_path, &value);
     }
-    std::string updated =
-        apply_read_modify_write(value, write_length, callback, user_data);
+    std::string updated;
+    if (!apply_read_modify_write(value, write_length, callback, user_data,
+                                 &updated)) {
+      return false;
+    }
     if (!save_persistent_value(
             key_path_from_store_key(m_store_directory, relative_path), updated)) {
       return false;
@@ -1166,8 +1187,11 @@ class diskann_native_state {
     }
     std::string value;
     (void)load_persistent_value(relative_path, &value);
-    const std::string updated =
-        apply_read_modify_write(value, write_length, callback, user_data);
+    std::string updated;
+    if (!apply_read_modify_write(value, write_length, callback, user_data,
+                                 &updated)) {
+      return false;
+    }
     return save_persistent_value(
         key_path_from_store_key(m_store_directory, relative_path), updated);
   }
@@ -1177,6 +1201,7 @@ class diskann_native_state {
                                 const std::function<bool(uint32_t, const uint8_t *,
                                                          size_t)> &visitor) {
     if (key_count == 0) return true;
+    if (key_data == nullptr) return false;
     const uint8_t *ptr = key_data;
     size_t remaining = key_length;
     for (uint32_t i = 0; i < key_count; ++i) {
@@ -1459,6 +1484,22 @@ uint32_t diskann_backend::diskann_build_threads() const {
   return m_mode == backend_mode::kExternal ? m_diskann_build_threads : 0;
 }
 
+bool diskann_backend::set_diskann_build_blas_threads(
+    uint32_t diskann_build_blas_threads) {
+  if (m_mode != backend_mode::kExternal ||
+      diskann_build_blas_threads > vector_index::k_max_build_threads) {
+    return false;
+  }
+  m_diskann_build_blas_threads = diskann_build_blas_threads;
+  m_native_runtime_enabled = false;
+  m_native_state.reset();
+  return true;
+}
+
+uint32_t diskann_backend::diskann_build_blas_threads() const {
+  return m_mode == backend_mode::kExternal ? m_diskann_build_blas_threads : 0;
+}
+
 bool diskann_backend::set_diskann_build_mode(
     diskann_build_mode diskann_build_mode_value) {
   if (m_mode != backend_mode::kExternal) return false;
@@ -1499,7 +1540,8 @@ uint32_t diskann_backend::diskann_search_complexity() const {
 
 bool diskann_backend::set_diskann_search_beamwidth(
     uint32_t diskann_search_beamwidth) {
-  if (m_mode != backend_mode::kExternal || diskann_search_beamwidth == 0) {
+  if (m_mode != backend_mode::kExternal ||
+      !valid_diskann_search_beamwidth(diskann_search_beamwidth)) {
     return false;
   }
   m_diskann_search_beamwidth = diskann_search_beamwidth;
@@ -1521,6 +1563,70 @@ bool diskann_backend::set_diskann_pq_code_budget_size(
 
 uint64_t diskann_backend::diskann_pq_code_budget_size() const {
   return m_mode == backend_mode::kExternal ? m_diskann_pq_code_budget_size : 0;
+}
+
+bool diskann_backend::set_diskann_disk_pq_dims(uint32_t diskann_disk_pq_dims) {
+  if (m_mode != backend_mode::kExternal ||
+      diskann_disk_pq_dims > vector_index::k_max_diskann_disk_pq_dims) {
+    return false;
+  }
+  m_diskann_disk_pq_dims = diskann_disk_pq_dims;
+  m_native_runtime_enabled = false;
+  m_native_state.reset();
+  return true;
+}
+
+uint32_t diskann_backend::diskann_disk_pq_dims() const {
+  return m_mode == backend_mode::kExternal ? m_diskann_disk_pq_dims : 0;
+}
+
+bool diskann_backend::set_diskann_accelerate_build(
+    bool diskann_accelerate_build) {
+  if (m_mode != backend_mode::kExternal) return false;
+  m_diskann_accelerate_build = diskann_accelerate_build;
+  m_native_runtime_enabled = false;
+  m_native_state.reset();
+  return true;
+}
+
+bool diskann_backend::diskann_accelerate_build() const {
+  return m_mode == backend_mode::kExternal && m_diskann_accelerate_build;
+}
+
+bool diskann_backend::set_diskann_shuffle_build(bool diskann_shuffle_build) {
+  if (m_mode != backend_mode::kExternal) return false;
+  m_diskann_shuffle_build = diskann_shuffle_build;
+  m_native_runtime_enabled = false;
+  m_native_state.reset();
+  return true;
+}
+
+bool diskann_backend::diskann_shuffle_build() const {
+  return m_mode == backend_mode::kExternal && m_diskann_shuffle_build;
+}
+
+bool diskann_backend::set_diskann_use_bfs_cache(bool diskann_use_bfs_cache) {
+  if (m_mode != backend_mode::kExternal) return false;
+  m_diskann_use_bfs_cache = diskann_use_bfs_cache;
+  m_native_runtime_enabled = false;
+  m_native_state.reset();
+  return true;
+}
+
+bool diskann_backend::diskann_use_bfs_cache() const {
+  return m_mode == backend_mode::kExternal && m_diskann_use_bfs_cache;
+}
+
+uint32_t diskann_backend::diskann_offline_search_threads() const {
+  return m_mode == backend_mode::kExternal ? m_diskann_offline_search_threads : 0;
+}
+
+uint32_t diskann_backend::diskann_search_io_limit() const {
+  return m_mode == backend_mode::kExternal ? m_diskann_search_io_limit : 0;
+}
+
+uint32_t diskann_backend::diskann_cache_nodes() const {
+  return m_mode == backend_mode::kExternal ? m_diskann_cache_nodes : 0;
 }
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
@@ -1617,14 +1723,17 @@ bool diskann_read_modify_write_round_trip_for_testing(
 }
 
 bool diskann_parse_prefixed_keys_for_testing(const std::string &payload,
-                                        uint32_t key_count,
-                                        std::vector<std::string> *keys,
-                                        int fail_index) {
+                                             uint32_t key_count,
+                                             std::vector<std::string> *keys,
+                                             int fail_index,
+                                             bool null_key_data) {
   if (keys == nullptr) return false;
   keys->clear();
+  const uint8_t *key_data =
+      null_key_data ? nullptr
+                    : reinterpret_cast<const uint8_t *>(payload.data());
   return diskann_native_state::parse_prefixed_keys_for_testing(
-      reinterpret_cast<const uint8_t *>(payload.data()), payload.size(),
-      key_count,
+      key_data, payload.size(), key_count,
       [keys, fail_index](uint32_t index, const uint8_t *key, size_t length) {
         if (static_cast<int>(index) == fail_index) return false;
         keys->emplace_back(reinterpret_cast<const char *>(key), length);

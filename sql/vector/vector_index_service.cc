@@ -1807,6 +1807,11 @@ std::unique_ptr<backend> build_backend_from_config(
       !backend->set_diskann_build_threads(config.diskann_build_threads)) {
     return nullptr;
   }
+  if (config.diskann_build_blas_threads != 0 &&
+      !backend->set_diskann_build_blas_threads(
+          config.diskann_build_blas_threads)) {
+    return nullptr;
+  }
   if (!backend->set_diskann_build_mode(effective_diskann_build_mode(config))) {
     return nullptr;
   }
@@ -1814,6 +1819,26 @@ std::unique_ptr<backend> build_backend_from_config(
        config.diskann_pq_code_budget_size != 0) &&
       !backend->set_diskann_pq_code_budget_size(
           config.diskann_pq_code_budget_size)) {
+    return nullptr;
+  }
+  if ((config.provider == backend_provider::kDiskAnn ||
+       config.diskann_disk_pq_dims != 0) &&
+      !backend->set_diskann_disk_pq_dims(config.diskann_disk_pq_dims)) {
+    return nullptr;
+  }
+  if ((config.provider == backend_provider::kDiskAnn ||
+       config.diskann_accelerate_build) &&
+      !backend->set_diskann_accelerate_build(config.diskann_accelerate_build)) {
+    return nullptr;
+  }
+  if ((config.provider == backend_provider::kDiskAnn ||
+       config.diskann_shuffle_build) &&
+      !backend->set_diskann_shuffle_build(config.diskann_shuffle_build)) {
+    return nullptr;
+  }
+  if ((config.provider == backend_provider::kDiskAnn ||
+       config.diskann_use_bfs_cache) &&
+      !backend->set_diskann_use_bfs_cache(config.diskann_use_bfs_cache)) {
     return nullptr;
   }
   if (config.diskann_search_complexity != 0 &&
@@ -1929,10 +1954,17 @@ void sync_diskann_build_config_from_backend(
   config->diskann_max_degree = index_backend.diskann_max_degree();
   config->diskann_build_complexity = index_backend.diskann_build_complexity();
   config->diskann_build_threads = index_backend.diskann_build_threads();
+  config->diskann_build_blas_threads =
+      index_backend.diskann_build_blas_threads();
   config->diskann_build_mode_value =
       index_backend.diskann_build_mode_value();
   config->diskann_pq_code_budget_size =
       index_backend.diskann_pq_code_budget_size();
+  config->diskann_disk_pq_dims = index_backend.diskann_disk_pq_dims();
+  config->diskann_cache_nodes = index_backend.diskann_cache_nodes();
+  config->diskann_accelerate_build = index_backend.diskann_accelerate_build();
+  config->diskann_shuffle_build = index_backend.diskann_shuffle_build();
+  config->diskann_use_bfs_cache = index_backend.diskann_use_bfs_cache();
 }
 
 template <typename pending_changes_map>
@@ -2209,6 +2241,22 @@ class segmented_backend final : public backend {
     m_config.diskann_build_threads = diskann_build_threads;
     return true;
   }
+  bool set_diskann_build_blas_threads(
+      uint32_t diskann_build_blas_threads) override {
+    if (m_config.provider != backend_provider::kDiskAnn ||
+        diskann_build_blas_threads > k_max_build_threads) {
+      return false;
+    }
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_build_blas_threads(
+              diskann_build_blas_threads)) {
+        return false;
+      }
+    }
+    m_config.diskann_build_blas_threads = diskann_build_blas_threads;
+    return true;
+  }
   bool set_diskann_build_mode(
       diskann_build_mode diskann_build_mode_value) override {
     if (m_config.provider != backend_provider::kDiskAnn) return false;
@@ -2240,7 +2288,7 @@ class segmented_backend final : public backend {
   bool set_diskann_search_beamwidth(
       uint32_t diskann_search_beamwidth) override {
     if (m_config.provider != backend_provider::kDiskAnn ||
-        diskann_search_beamwidth == 0) {
+        !valid_diskann_search_beamwidth(diskann_search_beamwidth)) {
       return false;
     }
     for (const auto &segment : m_segments) {
@@ -2263,6 +2311,54 @@ class segmented_backend final : public backend {
       }
     }
     m_config.diskann_pq_code_budget_size = diskann_pq_code_budget_size;
+    return true;
+  }
+  bool set_diskann_disk_pq_dims(uint32_t diskann_disk_pq_dims) override {
+    if (m_config.provider != backend_provider::kDiskAnn ||
+        diskann_disk_pq_dims > k_max_diskann_disk_pq_dims) {
+      return false;
+    }
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_disk_pq_dims(diskann_disk_pq_dims)) {
+        return false;
+      }
+    }
+    m_config.diskann_disk_pq_dims = diskann_disk_pq_dims;
+    return true;
+  }
+  bool set_diskann_accelerate_build(
+      bool diskann_accelerate_build) override {
+    if (m_config.provider != backend_provider::kDiskAnn) return false;
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_accelerate_build(diskann_accelerate_build)) {
+        return false;
+      }
+    }
+    m_config.diskann_accelerate_build = diskann_accelerate_build;
+    return true;
+  }
+  bool set_diskann_shuffle_build(bool diskann_shuffle_build) override {
+    if (m_config.provider != backend_provider::kDiskAnn) return false;
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_shuffle_build(diskann_shuffle_build)) {
+        return false;
+      }
+    }
+    m_config.diskann_shuffle_build = diskann_shuffle_build;
+    return true;
+  }
+  bool set_diskann_use_bfs_cache(bool diskann_use_bfs_cache) override {
+    if (m_config.provider != backend_provider::kDiskAnn) return false;
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          !segment->set_diskann_use_bfs_cache(diskann_use_bfs_cache)) {
+        return false;
+      }
+    }
+    m_config.diskann_use_bfs_cache = diskann_use_bfs_cache;
     return true;
   }
   uint32_t hnsw_m() const override { return m_config.hnsw_m; }
@@ -2288,6 +2384,9 @@ class segmented_backend final : public backend {
   uint32_t diskann_build_threads() const override {
     return m_config.diskann_build_threads;
   }
+  uint32_t diskann_build_blas_threads() const override {
+    return m_config.diskann_build_blas_threads;
+  }
   diskann_build_mode diskann_build_mode_value() const override {
     return m_config.diskann_build_mode_value;
   }
@@ -2299,6 +2398,18 @@ class segmented_backend final : public backend {
   }
   uint64_t diskann_pq_code_budget_size() const override {
     return m_config.diskann_pq_code_budget_size;
+  }
+  uint32_t diskann_disk_pq_dims() const override {
+    return m_config.diskann_disk_pq_dims;
+  }
+  bool diskann_accelerate_build() const override {
+    return m_config.diskann_accelerate_build;
+  }
+  bool diskann_shuffle_build() const override {
+    return m_config.diskann_shuffle_build;
+  }
+  bool diskann_use_bfs_cache() const override {
+    return m_config.diskann_use_bfs_cache;
   }
   bool supports_mutations() const override { return false; }
 
@@ -3232,6 +3343,79 @@ bool index_service::set_diskann_pq_code_budget_size(
   return true;
 }
 
+bool index_service::set_diskann_disk_pq_dims(
+    const std::string &index_name, uint32_t diskann_disk_pq_dims) {
+  auto config_it = m_index_configs.find(index_name);
+  auto index_it = m_indexes.find(index_name);
+  if (!all_true(config_it != m_index_configs.end(),
+                index_it != m_indexes.end())) {
+    return false;
+  }
+  if (pending_changes_contain_index(m_pending_changes, index_name))
+    return false;
+  if (!index_it->second->set_diskann_disk_pq_dims(diskann_disk_pq_dims)) {
+    return false;
+  }
+  config_it->second.diskann_disk_pq_dims =
+      index_it->second->diskann_disk_pq_dims();
+  return true;
+}
+
+bool index_service::set_diskann_accelerate_build(
+    const std::string &index_name, bool diskann_accelerate_build) {
+  auto config_it = m_index_configs.find(index_name);
+  auto index_it = m_indexes.find(index_name);
+  if (!all_true(config_it != m_index_configs.end(),
+                index_it != m_indexes.end())) {
+    return false;
+  }
+  if (pending_changes_contain_index(m_pending_changes, index_name))
+    return false;
+  if (!index_it->second->set_diskann_accelerate_build(
+          diskann_accelerate_build)) {
+    return false;
+  }
+  config_it->second.diskann_accelerate_build =
+      index_it->second->diskann_accelerate_build();
+  return true;
+}
+
+bool index_service::set_diskann_shuffle_build(
+    const std::string &index_name, bool diskann_shuffle_build) {
+  auto config_it = m_index_configs.find(index_name);
+  auto index_it = m_indexes.find(index_name);
+  if (!all_true(config_it != m_index_configs.end(),
+                index_it != m_indexes.end())) {
+    return false;
+  }
+  if (pending_changes_contain_index(m_pending_changes, index_name))
+    return false;
+  if (!index_it->second->set_diskann_shuffle_build(diskann_shuffle_build)) {
+    return false;
+  }
+  config_it->second.diskann_shuffle_build =
+      index_it->second->diskann_shuffle_build();
+  return true;
+}
+
+bool index_service::set_diskann_use_bfs_cache(
+    const std::string &index_name, bool diskann_use_bfs_cache) {
+  auto config_it = m_index_configs.find(index_name);
+  auto index_it = m_indexes.find(index_name);
+  if (!all_true(config_it != m_index_configs.end(),
+                index_it != m_indexes.end())) {
+    return false;
+  }
+  if (pending_changes_contain_index(m_pending_changes, index_name))
+    return false;
+  if (!index_it->second->set_diskann_use_bfs_cache(diskann_use_bfs_cache)) {
+    return false;
+  }
+  config_it->second.diskann_use_bfs_cache =
+      index_it->second->diskann_use_bfs_cache();
+  return true;
+}
+
 bool index_service::rebuild_all_indexes(size_t *rebuilt_count) {
   if (rebuilt_count == nullptr) return false;
 
@@ -3378,6 +3562,7 @@ bool index_service::describe_index(
   config->diskann_max_degree = backend->diskann_max_degree();
   config->diskann_build_complexity = backend->diskann_build_complexity();
   config->diskann_build_threads = backend->diskann_build_threads();
+  config->diskann_build_blas_threads = backend->diskann_build_blas_threads();
   config->diskann_build_mode_value =
       detail::effective_diskann_build_mode(config_it->second);
   config->diskann_build_mode_specified =
@@ -3386,6 +3571,11 @@ bool index_service::describe_index(
   config->diskann_search_beamwidth = backend->diskann_search_beamwidth();
   config->diskann_pq_code_budget_size =
       backend->diskann_pq_code_budget_size();
+  config->diskann_disk_pq_dims = backend->diskann_disk_pq_dims();
+  config->diskann_cache_nodes = backend->diskann_cache_nodes();
+  config->diskann_accelerate_build = backend->diskann_accelerate_build();
+  config->diskann_shuffle_build = backend->diskann_shuffle_build();
+  config->diskann_use_bfs_cache = backend->diskann_use_bfs_cache();
   if (supports_mutations != nullptr) {
     *supports_mutations = backend->supports_mutations();
   }
@@ -3679,6 +3869,8 @@ bool index_service::restore_index_config(const std::string &index_name,
       index_it->second->diskann_build_complexity();
   config_it->second.diskann_build_threads =
       index_it->second->diskann_build_threads();
+  config_it->second.diskann_build_blas_threads =
+      index_it->second->diskann_build_blas_threads();
   config_it->second.diskann_build_mode_value =
       index_it->second->diskann_build_mode_value();
   config_it->second.diskann_build_mode_specified =
@@ -3689,6 +3881,14 @@ bool index_service::restore_index_config(const std::string &index_name,
       index_it->second->diskann_search_beamwidth();
   config_it->second.diskann_pq_code_budget_size =
       index_it->second->diskann_pq_code_budget_size();
+  config_it->second.diskann_disk_pq_dims =
+      index_it->second->diskann_disk_pq_dims();
+  config_it->second.diskann_accelerate_build =
+      index_it->second->diskann_accelerate_build();
+  config_it->second.diskann_shuffle_build =
+      index_it->second->diskann_shuffle_build();
+  config_it->second.diskann_use_bfs_cache =
+      index_it->second->diskann_use_bfs_cache();
   mark_lifecycle_ready(&lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;

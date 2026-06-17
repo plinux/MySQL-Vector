@@ -3867,6 +3867,10 @@ TEST(VectorIndexServiceTest,
                                                "diskann"));
   EXPECT_FALSE(service.set_diskann_search_complexity("idx_diskann_search_zero", 0));
   EXPECT_FALSE(service.set_diskann_search_beamwidth("idx_diskann_search_zero", 0));
+  EXPECT_TRUE(
+      service.set_diskann_search_beamwidth("idx_diskann_search_zero", 128));
+  EXPECT_FALSE(
+      service.set_diskann_search_beamwidth("idx_diskann_search_zero", 129));
   EXPECT_TRUE(service.set_diskann_pq_code_budget_size("idx_diskann_search_zero",
                                                       0));
   EXPECT_TRUE(service.set_diskann_pq_code_budget_size("idx_diskann_search_zero",
