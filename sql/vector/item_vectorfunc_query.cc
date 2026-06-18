@@ -35,11 +35,19 @@
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry.h"
+#include "sql/vector/vector_status.h"
 #include "sql/vector/vector_utils.h"
 
 using namespace vector_itemfunc_internal;
 
 namespace {
+
+void record_rejected_searches(size_t query_count) {
+  for (size_t query_idx = 0; query_idx < query_count; ++query_idx) {
+    vector_status::record_search_request();
+    vector_status::record_search_failure();
+  }
+}
 
 bool decode_vector_batch_arg(Item *arg, String *buf, size_t query_count,
                              std::vector<vector_index::vector_data> *queries) {
@@ -214,8 +222,9 @@ String *Item_func_vec_index_search::val_str(String *str [[maybe_unused]]) {
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_access(
-          current_thd, index_name, SELECT_ACL, func_name(), false)) {
+  if (check_vector_existing_index_access(current_thd, index_name, SELECT_ACL,
+                                         func_name(), false)) {
+    record_rejected_searches(1);
     return error_str();
   }
 
@@ -273,8 +282,9 @@ String *Item_func_vec_index_search_batch::val_str(
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_access(
-          current_thd, index_name, SELECT_ACL, func_name(), false)) {
+  if (check_vector_existing_index_access(current_thd, index_name, SELECT_ACL,
+                                         func_name(), false)) {
+    record_rejected_searches(queries.size());
     return error_str();
   }
 
@@ -328,8 +338,9 @@ String *Item_func_vec_index_search_with_distance::val_str(
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_access(
-          current_thd, index_name, SELECT_ACL, func_name(), false)) {
+  if (check_vector_existing_index_access(current_thd, index_name, SELECT_ACL,
+                                         func_name(), false)) {
+    record_rejected_searches(1);
     return error_str();
   }
 

@@ -46,7 +46,7 @@ AS committed_entry_count,
 JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_arg'),
 '$.lifecycle_state')) AS lifecycle_state;
 entry_count	committed_entry_count	lifecycle_state
-0	0	bulk_loading
+0	1	bulk_loading
 SELECT VEC_INDEX_SEARCH('idx_standalone_arg', '[1,0]', 1);
 ERROR HY000: Incorrect arguments to vec_index_search
 SELECT VEC_INDEX_REBUILD('idx_standalone_arg');

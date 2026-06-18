@@ -23,6 +23,12 @@ SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
   AND Variable_name LIKE 'Vector_truth_store_persist_%';
 --replace_regex /[0-9]+/<num>/
 SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name LIKE 'Vector_truth_store_delta_persist_%';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name LIKE 'Vector_truth_store_compact_%';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
   AND Variable_name = 'Vector_change_log_replay_failures';
 --replace_regex /[0-9]+/<num>/
 SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
@@ -64,6 +70,17 @@ SHOW VECTOR STATUS WHERE Variable_name = 'Vector_truth_store_backend'
 --disable_query_log
 --eval SHOW VECTOR STATUS WHERE Variable_name = 'Vector_truth_store_backend' OR Variable_name = 'Vector_truth_store_transactional' AND Value = '$truth_store_transactional';
 --enable_query_log
+--replace_regex /[0-9]+/<num>/
+SHOW GLOBAL STATUS LIKE 'Vector_truth_store_delta_persist_%';
+--replace_regex /[0-9]+/<num>/
+SHOW GLOBAL STATUS LIKE 'Vector_truth_store_compact_%';
+--replace_regex /[0-9]+/<num>/
+SHOW GLOBAL STATUS LIKE 'Vector_backend_%';
+--let $delta_persist_requests= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_delta_persist_requests'", Value, 1)
+--disable_query_log
+--replace_regex /[0-9]+/<num>/
+--eval SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS' AND Variable_name = 'Vector_truth_store_delta_persist_requests' AND Value = '$delta_persist_requests';
+--enable_query_log
 
 SELECT VEC_INDEX_CREATE('idx_show_filter', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
@@ -102,4 +119,33 @@ SHOW VECTOR STATUS FOR INDEX idx_show_filter
   WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name = 'idx_show_filter.external_manifest_generation'
   AND Value > '0';
+SELECT VEC_INDEX_CREATE('idx_show_backlog', 2, 'EUCLIDEAN', 'EXTERNAL',
+                        'FAISS', 0, 'standalone');
+SELECT VEC_INDEX_UPSERT('idx_show_backlog', 7, VEC_FROMTEXT('[7,7]'));
+SHOW GLOBAL STATUS LIKE 'Vector_pending_apply_count';
+SHOW GLOBAL STATUS LIKE 'Vector_backlog_indexes';
+SHOW GLOBAL STATUS LIKE 'Vector_pending_txn_changes';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_pending_apply_count'
+  AND Value = '1';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_pending_apply_total'
+  AND Value = '1';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_backlog_indexes'
+  AND Value = '1';
+SHOW VECTOR STATUS FOR INDEX idx_show_backlog
+  WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_show_backlog.pending_apply_count'
+  AND Value = '1';
+SELECT VEC_INDEX_REBUILD('idx_show_backlog');
+SHOW GLOBAL STATUS LIKE 'Vector_pending_apply_count';
+SHOW GLOBAL STATUS LIKE 'Vector_backlog_indexes';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_pending_apply_count'
+  AND Value = '0';
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_backlog_indexes'
+  AND Value = '0';
+SELECT VEC_INDEX_DROP('idx_show_backlog');
 SELECT VEC_INDEX_DROP('idx_show_filter');

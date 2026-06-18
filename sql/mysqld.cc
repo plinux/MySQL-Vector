@@ -9691,6 +9691,22 @@ static int show_vector_status_value(uint64_t value, SHOW_VAR *var, char *buf) {
   return 0;
 }
 
+static int show_vector_summary_value(
+    const vector_index_registry::global_status_summary &summary,
+    uint64_t value, SHOW_VAR *var, char *buf) {
+  (void)summary;
+  return show_vector_status_value(value, var, buf);
+}
+
+#define DEFINE_VECTOR_SUMMARY_STATUS_FUNC(func_name, field_name)            \
+  static int show_vector_##func_name(THD *, SHOW_VAR *var, char *buf) {     \
+    vector_index_registry::global_status_summary summary;                    \
+    if (!vector_index_registry::get_global_status_summary(&summary)) {       \
+      return show_vector_status_value(0, var, buf);                         \
+    }                                                                       \
+    return show_vector_summary_value(summary, summary.field_name, var, buf); \
+  }
+
 static int show_vector_index_create_requests(THD *, SHOW_VAR *var, char *buf) {
   return show_vector_status_value(vector_status::index_create_requests(), var, buf);
 }
@@ -9887,6 +9903,30 @@ static int show_vector_truth_store_persist_failures(THD *, SHOW_VAR *var,
                                   var, buf);
 }
 
+static int show_vector_truth_store_delta_persist_requests(THD *, SHOW_VAR *var,
+                                                          char *buf) {
+  return show_vector_status_value(
+      vector_status::truth_store_delta_persist_requests(), var, buf);
+}
+
+static int show_vector_truth_store_delta_persist_failures(THD *, SHOW_VAR *var,
+                                                          char *buf) {
+  return show_vector_status_value(
+      vector_status::truth_store_delta_persist_failures(), var, buf);
+}
+
+static int show_vector_truth_store_compact_requests(THD *, SHOW_VAR *var,
+                                                    char *buf) {
+  return show_vector_status_value(vector_status::truth_store_compact_requests(),
+                                  var, buf);
+}
+
+static int show_vector_truth_store_compact_failures(THD *, SHOW_VAR *var,
+                                                    char *buf) {
+  return show_vector_status_value(vector_status::truth_store_compact_failures(),
+                                  var, buf);
+}
+
 static int show_vector_pending_txn_changes(THD *, SHOW_VAR *var, char *buf) {
   return show_vector_status_value(vector_status::pending_txn_changes(), var, buf);
 }
@@ -9920,6 +9960,44 @@ static int show_vector_truth_store_transactional(THD *, SHOW_VAR *var,
   return show_vector_status_value(
       vector_index_truth_store::active_backend_transactional() ? 1 : 0, var, buf);
 }
+
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_loaded_indexes,
+                                  backend_loaded_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_writable_indexes,
+                                  backend_writable_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_readonly_indexes,
+                                  backend_readonly_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_error_indexes, backend_error_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_manifest_present_indexes,
+                                  backend_manifest_present_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_manifest_generation_max,
+                                  backend_manifest_generation_max)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_mode_memory_indexes,
+                                  backend_mode_memory_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_mode_external_indexes,
+                                  backend_mode_external_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_provider_native_indexes,
+                                  backend_provider_native_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_provider_faiss_indexes,
+                                  backend_provider_faiss_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_provider_diskann_indexes,
+                                  backend_provider_diskann_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_provider_hnswlib_indexes,
+                                  backend_provider_hnswlib_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_lifecycle_ready_indexes,
+                                  backend_lifecycle_ready_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_lifecycle_rebuilding_indexes,
+                                  backend_lifecycle_rebuilding_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_lifecycle_recovering_indexes,
+                                  backend_lifecycle_recovering_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_lifecycle_failed_indexes,
+                                  backend_lifecycle_failed_indexes)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(pending_apply_count, pending_apply_count)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(rebuild_progress, rebuild_progress)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(recover_progress, recover_progress)
+DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backlog_indexes, backlog_indexes)
+
+#undef DEFINE_VECTOR_SUMMARY_STATUS_FUNC
 #endif
 
 SHOW_VAR status_vars[] = {
@@ -10386,6 +10464,18 @@ SHOW_VAR status_vars[] = {
     {"Vector_truth_store_persist_failures",
      (char *)&show_vector_truth_store_persist_failures, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
+    {"Vector_truth_store_delta_persist_requests",
+     (char *)&show_vector_truth_store_delta_persist_requests, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_truth_store_delta_persist_failures",
+     (char *)&show_vector_truth_store_delta_persist_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_truth_store_compact_requests",
+     (char *)&show_vector_truth_store_compact_requests, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_truth_store_compact_failures",
+     (char *)&show_vector_truth_store_compact_failures, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
     {"Vector_pending_txn_changes", (char *)&show_vector_pending_txn_changes,
      SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {"Vector_committed_vector_memory_bytes",
@@ -10394,7 +10484,64 @@ SHOW_VAR status_vars[] = {
     {"Vector_pending_vector_memory_bytes",
      (char *)&show_vector_pending_vector_memory_bytes, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_loaded_indexes",
+     (char *)&show_vector_backend_loaded_indexes, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_writable_indexes",
+     (char *)&show_vector_backend_writable_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_readonly_indexes",
+     (char *)&show_vector_backend_readonly_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_error_indexes",
+     (char *)&show_vector_backend_error_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_manifest_present_indexes",
+     (char *)&show_vector_backend_manifest_present_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_manifest_generation_max",
+     (char *)&show_vector_backend_manifest_generation_max, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_mode_memory_indexes",
+     (char *)&show_vector_backend_mode_memory_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_mode_external_indexes",
+     (char *)&show_vector_backend_mode_external_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_provider_native_indexes",
+     (char *)&show_vector_backend_provider_native_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_provider_faiss_indexes",
+     (char *)&show_vector_backend_provider_faiss_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_provider_diskann_indexes",
+     (char *)&show_vector_backend_provider_diskann_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_provider_hnswlib_indexes",
+     (char *)&show_vector_backend_provider_hnswlib_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_lifecycle_ready_indexes",
+     (char *)&show_vector_backend_lifecycle_ready_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_lifecycle_rebuilding_indexes",
+     (char *)&show_vector_backend_lifecycle_rebuilding_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_lifecycle_recovering_indexes",
+     (char *)&show_vector_backend_lifecycle_recovering_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_backend_lifecycle_failed_indexes",
+     (char *)&show_vector_backend_lifecycle_failed_indexes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_pending_apply_count",
+     (char *)&show_vector_pending_apply_count, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_pending_apply_total",
+     (char *)&show_vector_pending_apply_count, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {"Vector_apply_latency_ms", (char *)&show_vector_apply_latency_ms, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_rebuild_progress", (char *)&show_vector_rebuild_progress,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_recover_progress", (char *)&show_vector_recover_progress,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_backlog_indexes", (char *)&show_vector_backlog_indexes, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
     {"Vector_truth_store_backend", (char *)&show_vector_truth_store_backend,
      SHOW_FUNC, SHOW_SCOPE_GLOBAL},

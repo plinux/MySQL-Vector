@@ -664,6 +664,7 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_identity.cc
     vector/vector_index_runtime_config.cc
     vector/vector_index_runtime_thread_pool.cc
+    vector/vector_index_observability.cc
     vector/vector_index_status_fields.cc
     vector/vector_diskann_scheduler.cc
     vector/vector_segment_task.cc

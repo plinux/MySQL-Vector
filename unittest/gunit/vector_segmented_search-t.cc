@@ -56,6 +56,15 @@ TEST(VectorSegmentedSearchTest, CandidateTopKHandlesEmptyInputs) {
   EXPECT_EQ(0U, segmented_search_candidate_top_k(10, 5, 0, 1, 65536));
 }
 
+TEST(VectorSegmentedSearchTest, DiskAnnSearchListSlackShrinksByFanout) {
+  EXPECT_EQ(63U, diskann_search_list_slack_top_k(10, 64, 1));
+  EXPECT_EQ(199U, diskann_search_list_slack_top_k(10, 800, 4));
+  EXPECT_EQ(24U, diskann_search_list_slack_top_k(10, 800, 32));
+  EXPECT_EQ(10U, diskann_search_list_slack_top_k(10, 16, 4));
+  EXPECT_EQ(10U, diskann_search_list_slack_top_k(10, 0, 4));
+  EXPECT_EQ(0U, diskann_search_list_slack_top_k(0, 64, 1));
+}
+
 TEST(VectorSegmentedSearchTest, MergeHandlesEmptyAndZeroTopK) {
   std::vector<search_result> merged{{1, 1.0}};
   EXPECT_TRUE(merge_segment_topk({}, 10, &merged));

@@ -48,6 +48,23 @@ TEST(VectorDiskAnnSchedulerTest, DerivesPerSegmentPqBudget) {
   EXPECT_GT(budget.pq_code_budget_gb, 0.0);
 }
 
+TEST(VectorDiskAnnSchedulerTest, DerivesEffectiveDiskPqDimsForLargeNodes) {
+  vector_index::diskann_segment_budget_input input;
+  input.dimension = 1024;
+  input.row_count = 16777216;
+  input.payload_size = input.row_count * input.dimension * sizeof(float);
+  input.pq_code_budget_size = 0;
+  input.pq_code_budget_ratio = 0.125;
+  input.disk_pq_dims = 0;
+  input.max_degree = 56;
+
+  vector_index::diskann_segment_budget budget;
+  ASSERT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
+
+  EXPECT_EQ(512U, budget.disk_pq_dims);
+  EXPECT_EQ(512U, budget.pq_chunks);
+}
+
 TEST(VectorDiskAnnSchedulerTest, ExplicitDiskPqDimsWinsOverRatio) {
   vector_index::diskann_segment_budget_input input;
   input.dimension = 128;

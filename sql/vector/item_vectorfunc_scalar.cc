@@ -237,7 +237,7 @@ bool Item_func_vec_dot_product::resolve_type(THD *thd) {
 }
 
 double Item_func_vec_dot_product::val_real() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   double result = 0.0;
   if (!eval_binary_vector_function(this, args[0], args[1],
                                    vector_utils::compute_dot_product,
@@ -254,7 +254,7 @@ bool Item_func_vec_inner_product::resolve_type(THD *thd) {
 }
 
 double Item_func_vec_inner_product::val_real() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   double result = 0.0;
   if (!eval_binary_vector_function(this, args[0], args[1],
                                    vector_utils::compute_dot_product,
@@ -271,7 +271,7 @@ bool Item_func_vec_distance_euclidean::resolve_type(THD *thd) {
 }
 
 double Item_func_vec_distance_euclidean::val_real() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   double result = 0.0;
   if (!eval_binary_vector_function(
           this, args[0], args[1],
@@ -293,7 +293,7 @@ bool Item_func_vec_distance_cosine::resolve_type(THD *thd) {
 }
 
 double Item_func_vec_distance_cosine::val_real() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   double result = 0.0;
   if (!eval_binary_vector_function(
           this, args[0], args[1],

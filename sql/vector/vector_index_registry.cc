@@ -1955,6 +1955,11 @@ bool snapshot_runtime_state_locked(
                                         &committed_entry_count)) {
       return false;
     }
+    // Standalone ingest intentionally leads its serving backend until rebuild.
+    if (config.consistency_mode ==
+        vector_index::index_consistency_mode::kStandalone) {
+      continue;
+    }
     if (entry_count < committed_entry_count) {
       lagging_index_names->push_back(index_name);
     }

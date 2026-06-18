@@ -64,6 +64,14 @@ SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
   '$.backend_variant')) AS backend_variant,
   JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
   '$.backend_build_segments') AS backend_build_segments;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                    '$.build_segment_effective_row_limit') AS row_limit,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                    '$.build_segment_target_size') AS target_size,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                    '$.build_segment_max_rows') AS max_rows,
+       JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                    '$.build_segment_policy')) AS segment_policy;
 SELECT JSON_CONTAINS(
   VEC_INDEX_SEARCH('idx_segmented_search_params', VEC_FROMTEXT('[1,0]'), 6),
   CAST(100000 AS JSON)) AS has_doc_100000,
@@ -72,6 +80,57 @@ SELECT JSON_CONTAINS(
                          CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')),
                          2, 6),
   CAST(100001 AS JSON)) AS batch_has_doc_100001;
+SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                                      '$.scheduler_search_fanout_segments'))
+            AS UNSIGNED) >= 2 AS fanout_segments_visible,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                                      '$.scheduler_search_global_top_k'))
+            AS UNSIGNED) = 6 AS global_top_k_matches_sql_top_k,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                                      '$.scheduler_search_per_segment_top_k'))
+            AS UNSIGNED) >= 6 AS segment_window_covers_sql_top_k,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                                      '$.scheduler_search_candidate_count'))
+            AS UNSIGNED) >=
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
+                                      '$.scheduler_search_per_segment_top_k'))
+            AS UNSIGNED) AS candidates_cover_segment_window;
+SET @segmented_search_info = VEC_INDEX_INFO('idx_segmented_search_params');
+SET @segmented_search_candidate_count =
+  CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                 '$.scheduler_search_candidate_count'))
+       AS UNSIGNED);
+SET @segmented_search_query_count =
+  CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                 '$.scheduler_search_query_count'))
+       AS UNSIGNED);
+SELECT @segmented_search_query_count = 2 AS query_count_visible,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_segment_min_entries'))
+            AS UNSIGNED) > 0 AS min_segment_entries_visible,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_segment_max_entries'))
+            AS UNSIGNED) >=
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_segment_min_entries'))
+            AS UNSIGNED) AS max_segment_entries_cover_min,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_segment_total_entries'))
+            AS UNSIGNED) >=
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_segment_max_entries'))
+            AS UNSIGNED) AS total_segment_entries_cover_max,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_diskann_search_list'))
+            AS UNSIGNED) = 0 AS non_diskann_search_list_zero,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_diskann_beamwidth'))
+            AS UNSIGNED) = 0 AS non_diskann_beamwidth_zero,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_total_candidate_rows'))
+            AS UNSIGNED) =
+       @segmented_search_candidate_count * @segmented_search_query_count
+         AS total_candidate_rows_match;
 
 SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
 SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;

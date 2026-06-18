@@ -650,9 +650,18 @@ TEST(VectorIndexBackendTest,
   info.build_diagnostics.search_per_segment_top_k = 30;
   info.build_diagnostics.search_result_budget = 1000;
   info.build_diagnostics.search_candidate_count = 90;
+  info.build_diagnostics.search_query_count = 4;
+  info.build_diagnostics.search_segment_min_entries = 11;
+  info.build_diagnostics.search_segment_max_entries = 31;
+  info.build_diagnostics.search_segment_total_entries = 63;
+  info.build_diagnostics.search_diskann_search_list = 1600;
+  info.build_diagnostics.search_diskann_beamwidth = 16;
+  info.build_diagnostics.search_total_candidate_rows = 360;
   info.build_diagnostics.single_index_build = true;
   info.build_diagnostics.pq_chunks = 8;
   info.build_diagnostics.cache_nodes = 5;
+  info.build_diagnostics.requested_disk_pq_dims = 12;
+  info.build_diagnostics.effective_disk_pq_dims = 8;
   info.build_diagnostics.manifest_ms = 11;
   info.build_diagnostics.offline_build_ms = 22;
   info.build_diagnostics.load_ms = 33;
@@ -664,6 +673,10 @@ TEST(VectorIndexBackendTest,
   info.build_diagnostics.native_pq_runtime_compressed_rows = 42;
   info.build_diagnostics.native_pq_runtime_artifacts_written = true;
   info.build_diagnostics.fallback_reason = "offline_unavailable";
+  info.build_segment_effective_row_limit = 65536;
+  info.build_segment_target_size = 1048576;
+  info.build_segment_max_rows = 1048576;
+  info.build_segment_policy = "size_first";
   info.diskann_disk_pq_dims = 12;
   info.diskann_cache_nodes = 5;
   info.diskann_accelerate_build = true;
@@ -710,6 +723,26 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "backend_build_cache_nodes");
   ASSERT_NE(nullptr, cache_nodes);
   EXPECT_EQ(5U, cache_nodes->uint_value);
+  const auto *effective_disk_pq_dims =
+      find_status_field(fields, "diskann_effective_disk_pq_dims");
+  ASSERT_NE(nullptr, effective_disk_pq_dims);
+  EXPECT_EQ(8U, effective_disk_pq_dims->uint_value);
+  const auto *segment_effective_row_limit =
+      find_status_field(fields, "build_segment_effective_row_limit");
+  ASSERT_NE(nullptr, segment_effective_row_limit);
+  EXPECT_EQ(65536U, segment_effective_row_limit->uint_value);
+  const auto *segment_target_size =
+      find_status_field(fields, "build_segment_target_size");
+  ASSERT_NE(nullptr, segment_target_size);
+  EXPECT_EQ(1048576U, segment_target_size->uint_value);
+  const auto *segment_max_rows =
+      find_status_field(fields, "build_segment_max_rows");
+  ASSERT_NE(nullptr, segment_max_rows);
+  EXPECT_EQ(1048576U, segment_max_rows->uint_value);
+  const auto *segment_policy =
+      find_status_field(fields, "build_segment_policy");
+  ASSERT_NE(nullptr, segment_policy);
+  EXPECT_EQ("size_first", segment_policy->string_value);
   const auto *offline_ms =
       find_status_field(fields, "backend_build_offline_ms");
   ASSERT_NE(nullptr, offline_ms);
@@ -771,6 +804,10 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "native_pq_runtime_artifacts_written");
   ASSERT_NE(nullptr, native_artifacts);
   EXPECT_TRUE(native_artifacts->bool_value);
+  const auto *segment_effective_disk_pq_dims =
+      find_status_field(fields, "diskann_segment_effective_disk_pq_dims");
+  ASSERT_NE(nullptr, segment_effective_disk_pq_dims);
+  EXPECT_EQ(8U, segment_effective_disk_pq_dims->uint_value);
   const auto *scheduler_segments =
       find_status_field(fields, "scheduler_segment_count");
   ASSERT_NE(nullptr, scheduler_segments);
@@ -839,6 +876,34 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "scheduler_search_candidate_count");
   ASSERT_NE(nullptr, search_candidate_count);
   EXPECT_EQ(90U, search_candidate_count->uint_value);
+  const auto *search_query_count =
+      find_status_field(fields, "scheduler_search_query_count");
+  ASSERT_NE(nullptr, search_query_count);
+  EXPECT_EQ(4U, search_query_count->uint_value);
+  const auto *search_segment_min_entries =
+      find_status_field(fields, "scheduler_search_segment_min_entries");
+  ASSERT_NE(nullptr, search_segment_min_entries);
+  EXPECT_EQ(11U, search_segment_min_entries->uint_value);
+  const auto *search_segment_max_entries =
+      find_status_field(fields, "scheduler_search_segment_max_entries");
+  ASSERT_NE(nullptr, search_segment_max_entries);
+  EXPECT_EQ(31U, search_segment_max_entries->uint_value);
+  const auto *search_segment_total_entries =
+      find_status_field(fields, "scheduler_search_segment_total_entries");
+  ASSERT_NE(nullptr, search_segment_total_entries);
+  EXPECT_EQ(63U, search_segment_total_entries->uint_value);
+  const auto *search_diskann_search_list =
+      find_status_field(fields, "scheduler_search_diskann_search_list");
+  ASSERT_NE(nullptr, search_diskann_search_list);
+  EXPECT_EQ(1600U, search_diskann_search_list->uint_value);
+  const auto *search_diskann_beamwidth =
+      find_status_field(fields, "scheduler_search_diskann_beamwidth");
+  ASSERT_NE(nullptr, search_diskann_beamwidth);
+  EXPECT_EQ(16U, search_diskann_beamwidth->uint_value);
+  const auto *search_total_candidate_rows =
+      find_status_field(fields, "scheduler_search_total_candidate_rows");
+  ASSERT_NE(nullptr, search_total_candidate_rows);
+  EXPECT_EQ(360U, search_total_candidate_rows->uint_value);
 }
 
 TEST(VectorIndexBackendTest,

@@ -214,8 +214,7 @@ SELECT VEC_INDEX_TXN_COMMIT(@txn2);
 VEC_INDEX_TXN_COMMIT(@txn2)
 1
 SELECT VEC_INDEX_TXN_ROLLBACK(@txn2);
-VEC_INDEX_TXN_ROLLBACK(@txn2)
-1
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback
 SELECT VEC_INDEX_DROP('idx_status');
 VEC_INDEX_DROP('idx_status')
 1
@@ -329,7 +328,7 @@ WHERE VARIABLE_NAME = 'Vector_rebuild_requests') - @rebuild_before;
 SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
 FROM performance_schema.global_status
 WHERE VARIABLE_NAME = 'Vector_rebuild_requests') - @rebuild_before
-1
+2
 SELECT (
 SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
 FROM performance_schema.global_status
@@ -338,7 +337,7 @@ WHERE VARIABLE_NAME = 'Vector_recover_requests') - @recover_before;
 SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
 FROM performance_schema.global_status
 WHERE VARIABLE_NAME = 'Vector_recover_requests') - @recover_before
-1
+2
 SELECT (
 SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
 FROM performance_schema.global_status
@@ -437,7 +436,7 @@ WHERE VARIABLE_NAME = 'Vector_txn_commit_requests') - @commit_req_before;
 SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
 FROM performance_schema.global_status
 WHERE VARIABLE_NAME = 'Vector_txn_commit_requests') - @commit_req_before
-2
+1
 SELECT (
 SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
 FROM performance_schema.global_status

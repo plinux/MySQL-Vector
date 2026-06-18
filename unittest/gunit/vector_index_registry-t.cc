@@ -6571,7 +6571,7 @@ TEST_F(VectorIndexRegistryTest,
   EXPECT_FALSE(info.truth_store_enabled);
   EXPECT_EQ("delta_replay", info.build_source);
   EXPECT_EQ(0U, info.entry_count);
-  EXPECT_EQ(0U, info.committed_entry_count);
+  EXPECT_EQ(1U, info.committed_entry_count);
   EXPECT_GT(info.standalone_segment_count, 0U);
   EXPECT_GT(info.standalone_segment_bytes, 0U);
 

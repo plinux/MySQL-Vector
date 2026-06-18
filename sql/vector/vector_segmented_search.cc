@@ -70,6 +70,18 @@ size_t segmented_search_candidate_top_k(size_t top_k, size_t segment_count,
   return std::min(std::max(top_k, candidate_top_k), segment_entry_count);
 }
 
+size_t diskann_search_list_slack_top_k(size_t top_k, size_t search_complexity,
+                                       size_t fanout_count) {
+  if (top_k == 0 || search_complexity == 0) return top_k;
+  if (search_complexity <= top_k) return top_k;
+
+  const size_t safe_fanout_count = std::max<size_t>(fanout_count, 1);
+  const size_t max_returned_candidates = search_complexity - 1;
+  size_t slack_top_k = max_returned_candidates / safe_fanout_count;
+  if (slack_top_k == 0) slack_top_k = top_k;
+  return std::max(top_k, slack_top_k);
+}
+
 bool merge_segment_topk(
     const std::vector<std::vector<search_result>> &segment_results,
     size_t top_k, std::vector<search_result> *results) {

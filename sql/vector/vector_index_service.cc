@@ -2108,27 +2108,22 @@ class segmented_backend final : public backend {
     if (query.size() != m_config.dimension) return false;
     if (top_k == 0) return true;
 
-    std::vector<size_t> segment_top_k;
-    size_t max_segment_top_k = 0;
-    size_t candidate_count = 0;
-    if (!compute_segment_search_budget(top_k, 1, &segment_top_k,
-                                       &max_segment_top_k,
-                                       &candidate_count)) {
+    search_budget_summary budget;
+    if (!compute_segment_search_budget(top_k, 1, &budget)) {
       return false;
     }
 
     std::vector<std::vector<search_result>> segment_results(m_segments.size());
     const size_t worker_count =
         segmented_search_threads(m_config, m_segments.size());
-    record_search_budget(worker_count, top_k, max_segment_top_k,
-                         candidate_count);
+    record_search_budget(worker_count, top_k, 1, budget);
     const bool search_ok = parallel_for_ranges_scoped(
         m_segments.size(), worker_count,
         [&](size_t begin, size_t end, size_t) {
           for (size_t i = begin; i < end; ++i) {
             const auto &segment = m_segments[i];
             if (segment == nullptr) return false;
-            if (!segment->search(query, segment_top_k[i],
+            if (!segment->search(query, budget.segment_top_k[i],
                                  &segment_results[i])) {
               return false;
             }
@@ -2156,12 +2151,8 @@ class segmented_backend final : public backend {
       return true;
     }
 
-    std::vector<size_t> segment_top_k;
-    size_t max_segment_top_k = 0;
-    size_t candidate_count = 0;
-    if (!compute_segment_search_budget(top_k, queries.size(), &segment_top_k,
-                                       &max_segment_top_k,
-                                       &candidate_count)) {
+    search_budget_summary budget;
+    if (!compute_segment_search_budget(top_k, queries.size(), &budget)) {
       return false;
     }
 
@@ -2169,15 +2160,14 @@ class segmented_backend final : public backend {
         m_segments.size());
     const size_t worker_count =
         segmented_search_threads(m_config, m_segments.size());
-    record_search_budget(worker_count, top_k, max_segment_top_k,
-                         candidate_count);
+    record_search_budget(worker_count, top_k, queries.size(), budget);
     const bool search_ok = parallel_for_ranges_scoped(
         m_segments.size(), worker_count,
         [&](size_t begin, size_t end, size_t) {
           for (size_t i = begin; i < end; ++i) {
             const auto &segment = m_segments[i];
             if (segment == nullptr) return false;
-            if (!segment->search_batch(queries, segment_top_k[i],
+            if (!segment->search_batch(queries, budget.segment_top_k[i],
                                        &segment_batch_results[i])) {
               return false;
             }
@@ -2222,6 +2212,20 @@ class segmented_backend final : public backend {
         m_search_result_budget.load(std::memory_order_relaxed);
     diagnostics.search_candidate_count =
         m_search_candidate_count.load(std::memory_order_relaxed);
+    diagnostics.search_query_count =
+        m_search_query_count.load(std::memory_order_relaxed);
+    diagnostics.search_segment_min_entries =
+        m_search_segment_min_entries.load(std::memory_order_relaxed);
+    diagnostics.search_segment_max_entries =
+        m_search_segment_max_entries.load(std::memory_order_relaxed);
+    diagnostics.search_segment_total_entries =
+        m_search_segment_total_entries.load(std::memory_order_relaxed);
+    diagnostics.search_diskann_search_list =
+        m_search_diskann_search_list.load(std::memory_order_relaxed);
+    diagnostics.search_diskann_beamwidth =
+        m_search_diskann_beamwidth.load(std::memory_order_relaxed);
+    diagnostics.search_total_candidate_rows =
+        m_search_total_candidate_rows.load(std::memory_order_relaxed);
     return diagnostics;
   }
   bool set_search_ef(uint32_t search_ef) override {
@@ -2440,36 +2444,77 @@ class segmented_backend final : public backend {
   bool supports_mutations() const override { return false; }
 
  private:
+  struct search_budget_summary {
+    std::vector<size_t> segment_top_k;
+    size_t max_segment_top_k{0};
+    size_t candidate_count{0};
+    size_t min_segment_entry_count{0};
+    size_t max_segment_entry_count{0};
+    size_t total_segment_entry_count{0};
+    size_t diskann_search_list{0};
+    size_t diskann_beamwidth{0};
+  };
+
   bool compute_segment_search_budget(size_t top_k, size_t query_count,
-                                     std::vector<size_t> *segment_top_k,
-                                     size_t *max_segment_top_k,
-                                     size_t *candidate_count) const {
-    if (segment_top_k == nullptr || max_segment_top_k == nullptr ||
-        candidate_count == nullptr) {
+                                     search_budget_summary *budget) const {
+    if (budget == nullptr) {
       return false;
     }
-    segment_top_k->assign(m_segments.size(), 0);
-    *max_segment_top_k = 0;
-    *candidate_count = 0;
+    budget->segment_top_k.assign(m_segments.size(), 0);
+    budget->max_segment_top_k = 0;
+    budget->candidate_count = 0;
+    budget->min_segment_entry_count =
+        m_segments.empty() ? 0 : std::numeric_limits<size_t>::max();
+    budget->max_segment_entry_count = 0;
+    budget->total_segment_entry_count = 0;
+    budget->diskann_search_list = 0;
+    budget->diskann_beamwidth = 0;
 
     const size_t result_budget =
         static_cast<size_t>(opt_vector_search_batch_result_count);
     for (size_t i = 0; i < m_segments.size(); ++i) {
       const auto &segment = m_segments[i];
       if (segment == nullptr) return false;
-      const size_t current_top_k = segmented_search_candidate_top_k(
-          top_k, m_segments.size(), segment->entry_count(), query_count,
+      const size_t segment_entry_count = segment->entry_count();
+      budget->min_segment_entry_count =
+          std::min(budget->min_segment_entry_count, segment_entry_count);
+      budget->max_segment_entry_count =
+          std::max(budget->max_segment_entry_count, segment_entry_count);
+      budget->total_segment_entry_count =
+          saturated_add_size(budget->total_segment_entry_count,
+                             segment_entry_count);
+      size_t current_top_k = segmented_search_candidate_top_k(
+          top_k, m_segments.size(), segment_entry_count, query_count,
           result_budget);
-      (*segment_top_k)[i] = current_top_k;
-      *max_segment_top_k = std::max(*max_segment_top_k, current_top_k);
-      *candidate_count = saturated_add_size(*candidate_count, current_top_k);
+      if (m_config.provider == backend_provider::kDiskAnn &&
+          m_config.mode == backend_mode::kExternal) {
+        const size_t search_complexity =
+            m_config.diskann_search_complexity == 0
+                ? static_cast<size_t>(k_default_diskann_search_complexity)
+                : static_cast<size_t>(m_config.diskann_search_complexity);
+        budget->diskann_search_list = search_complexity;
+        budget->diskann_beamwidth =
+            m_config.diskann_search_beamwidth == 0
+                ? static_cast<size_t>(k_default_diskann_search_beamwidth)
+                : static_cast<size_t>(m_config.diskann_search_beamwidth);
+        current_top_k =
+            std::min(current_top_k, diskann_search_list_slack_top_k(
+                                        top_k, search_complexity,
+                                        m_segments.size()));
+      }
+      budget->segment_top_k[i] = current_top_k;
+      budget->max_segment_top_k =
+          std::max(budget->max_segment_top_k, current_top_k);
+      budget->candidate_count =
+          saturated_add_size(budget->candidate_count, current_top_k);
     }
+    if (m_segments.empty()) budget->min_segment_entry_count = 0;
     return true;
   }
 
   void record_search_budget(size_t worker_count, size_t top_k,
-                            size_t max_segment_top_k,
-                            size_t candidate_count) const {
+                            size_t query_count,
+                            const search_budget_summary &budget) const {
     m_search_fanout_segments.store(
         static_cast<uint64_t>(m_segments.size()), std::memory_order_relaxed);
     m_search_fanout_threads.store(static_cast<uint64_t>(worker_count),
@@ -2477,12 +2522,34 @@ class segmented_backend final : public backend {
     m_search_global_top_k.store(static_cast<uint64_t>(top_k),
                                 std::memory_order_relaxed);
     m_search_per_segment_top_k.store(
-        static_cast<uint64_t>(max_segment_top_k), std::memory_order_relaxed);
+        static_cast<uint64_t>(budget.max_segment_top_k),
+        std::memory_order_relaxed);
     m_search_result_budget.store(
         static_cast<uint64_t>(opt_vector_search_batch_result_count),
         std::memory_order_relaxed);
-    m_search_candidate_count.store(static_cast<uint64_t>(candidate_count),
+    m_search_candidate_count.store(static_cast<uint64_t>(budget.candidate_count),
                                    std::memory_order_relaxed);
+    m_search_query_count.store(static_cast<uint64_t>(query_count),
+                               std::memory_order_relaxed);
+    m_search_segment_min_entries.store(
+        static_cast<uint64_t>(budget.min_segment_entry_count),
+        std::memory_order_relaxed);
+    m_search_segment_max_entries.store(
+        static_cast<uint64_t>(budget.max_segment_entry_count),
+        std::memory_order_relaxed);
+    m_search_segment_total_entries.store(
+        static_cast<uint64_t>(budget.total_segment_entry_count),
+        std::memory_order_relaxed);
+    m_search_diskann_search_list.store(
+        static_cast<uint64_t>(budget.diskann_search_list),
+        std::memory_order_relaxed);
+    m_search_diskann_beamwidth.store(
+        static_cast<uint64_t>(budget.diskann_beamwidth),
+        std::memory_order_relaxed);
+    m_search_total_candidate_rows.store(
+        static_cast<uint64_t>(
+            saturated_mul_size(query_count, budget.candidate_count)),
+        std::memory_order_relaxed);
   }
 
   template <typename Apply>
@@ -2502,6 +2569,13 @@ class segmented_backend final : public backend {
   mutable std::atomic<uint64_t> m_search_per_segment_top_k{0};
   mutable std::atomic<uint64_t> m_search_result_budget{0};
   mutable std::atomic<uint64_t> m_search_candidate_count{0};
+  mutable std::atomic<uint64_t> m_search_query_count{0};
+  mutable std::atomic<uint64_t> m_search_segment_min_entries{0};
+  mutable std::atomic<uint64_t> m_search_segment_max_entries{0};
+  mutable std::atomic<uint64_t> m_search_segment_total_entries{0};
+  mutable std::atomic<uint64_t> m_search_diskann_search_list{0};
+  mutable std::atomic<uint64_t> m_search_diskann_beamwidth{0};
+  mutable std::atomic<uint64_t> m_search_total_candidate_rows{0};
 };
 
 bool raw_segments_use_single_backend(
@@ -2989,6 +3063,12 @@ std::unique_ptr<backend> build_segmented_backend_from_raw_segments(
                                        : diagnostics.build_invocations;
     aggregate.pq_chunks += diagnostics.pq_chunks;
     aggregate.cache_nodes += diagnostics.cache_nodes;
+    aggregate.requested_disk_pq_dims =
+        std::max(aggregate.requested_disk_pq_dims,
+                 diagnostics.requested_disk_pq_dims);
+    aggregate.effective_disk_pq_dims =
+        std::max(aggregate.effective_disk_pq_dims,
+                 diagnostics.effective_disk_pq_dims);
     aggregate.manifest_ms += diagnostics.manifest_ms;
     aggregate.offline_build_ms += diagnostics.offline_build_ms;
     aggregate.load_ms += diagnostics.load_ms;
@@ -4034,9 +4114,13 @@ bool index_service::describe_index(
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   auto lifecycle_it = m_lifecycle_infos.find(index_name);
-  const bool has_committed_entries = m_entry_store.has_index(index_name);
+  index_observability_state observability;
+  if (!describe_index_observability(index_name, &observability)) {
+    return false;
+  }
+  const bool has_serving_entries = m_entry_store.has_index(index_name);
   if (config_it == m_index_configs.end() || index_it == m_indexes.end() ||
-      !has_committed_entries) {
+      !has_serving_entries) {
     return false;
   }
   if (lifecycle_it == m_lifecycle_infos.end()) return false;
@@ -4081,7 +4165,7 @@ bool index_service::describe_index(
     *entry_count = backend->entry_count();
   }
   if (committed_entry_count != nullptr) {
-    *committed_entry_count = m_entry_store.entry_count(index_name);
+    *committed_entry_count = observability.authoritative_entry_count;
   }
   if (lifecycle_state != nullptr) *lifecycle_state = lifecycle_it->second.state;
   if (lifecycle_version != nullptr)
@@ -4108,6 +4192,42 @@ bool index_service::describe_index(
   if (build_diagnostics != nullptr) {
     *build_diagnostics = backend->build_diagnostics();
   }
+  return true;
+}
+
+bool index_service::describe_index_observability(
+    const std::string &index_name, index_observability_state *state) const {
+  if (state == nullptr) return false;
+
+  auto config_it = m_index_configs.find(index_name);
+  auto index_it = m_indexes.find(index_name);
+  if (config_it == m_index_configs.end() || index_it == m_indexes.end()) {
+    return false;
+  }
+  if (!m_entry_store.has_index(index_name) ||
+      !m_standalone_store.has_index(index_name)) {
+    return false;
+  }
+
+  const bool truth_store_enabled =
+      config_it->second.consistency_mode == index_consistency_mode::kTransactional;
+  state->truth_store_enabled = truth_store_enabled;
+  state->authoritative_entry_count =
+      truth_store_enabled ? m_entry_store.entry_count(index_name)
+                          : m_standalone_store.entry_count(index_name);
+  state->standalone_ingest_memory_bytes =
+      truth_store_enabled ? 0 : m_standalone_store.memory_bytes(index_name);
+  state->standalone_segment_count =
+      truth_store_enabled ? 0 : m_standalone_store.segment_count(index_name);
+  state->standalone_segment_bytes =
+      truth_store_enabled ? 0 : m_standalone_store.segment_bytes(index_name);
+  state->standalone_raw_segment_count =
+      truth_store_enabled ? 0 : m_standalone_store.raw_segment_count(index_name);
+  state->standalone_raw_segment_bytes =
+      truth_store_enabled ? 0 : m_standalone_store.raw_segment_bytes(index_name);
+  state->build_source =
+      truth_store_enabled ? "truth_store"
+                          : m_standalone_store.build_source(index_name);
   return true;
 }
 

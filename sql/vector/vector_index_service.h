@@ -301,6 +301,17 @@ class index_service {
     uint64_t raw_segment_count{0};
   };
 
+  struct index_observability_state {
+    bool truth_store_enabled{true};
+    size_t authoritative_entry_count{0};
+    size_t standalone_ingest_memory_bytes{0};
+    size_t standalone_segment_count{0};
+    size_t standalone_segment_bytes{0};
+    size_t standalone_raw_segment_count{0};
+    size_t standalone_raw_segment_bytes{0};
+    std::string build_source{"truth_store"};
+  };
+
   bool register_index(const std::string &index_name,
                       std::unique_ptr<backend> backend);
   bool register_index(const std::string &index_name,
@@ -412,6 +423,8 @@ class index_service {
       const;
   bool describe_build_pipeline(const std::string &index_name,
                                build_pipeline_snapshot *snapshot) const;
+  bool describe_index_observability(const std::string &index_name,
+                                    index_observability_state *state) const;
   bool snapshot_segment_tasks(
       const std::string &index_name,
       std::vector<vector_index_metadata_store::segment_task_row> *rows) const;

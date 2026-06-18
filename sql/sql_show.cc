@@ -1162,8 +1162,6 @@ bool send_show_vector_status(
       {"Vector_pending_vector_memory_bytes",
        Vector_status_section::kGlobalGauges,
        vector_index_registry::total_pending_vector_memory_bytes()},
-      {"Vector_pending_apply_count", Vector_status_section::kSyncPipeline,
-       snapshot.pending_txn_changes},
       {"Vector_apply_latency_ms", Vector_status_section::kSyncPipeline,
        snapshot.apply_latency_ms},
   };
@@ -1221,73 +1219,11 @@ bool send_show_vector_status(
   std::vector<std::string> index_names;
   if (vector_index_registry::list_indexes(&index_names)) {
     std::sort(index_names.begin(), index_names.end());
-    uint64_t lifecycle_ready = 0;
-    uint64_t lifecycle_rebuilding = 0;
-    uint64_t lifecycle_recovering = 0;
-    uint64_t lifecycle_failed = 0;
-    uint64_t mode_memory = 0;
-    uint64_t mode_external = 0;
-    uint64_t provider_native = 0;
-    uint64_t provider_faiss = 0;
-    uint64_t provider_diskann = 0;
-    uint64_t provider_hnswlib = 0;
-    uint64_t backend_loaded = 0;
-    uint64_t backend_writable = 0;
-    uint64_t backend_readonly = 0;
-    uint64_t backend_error = 0;
-    uint64_t backend_manifest_present = 0;
-    uint64_t backend_manifest_generation_max = 0;
-    uint64_t pending_apply_total = 0;
-    uint64_t backlog_indexes = 0;
-    uint64_t rebuild_progress_total = 0;
-    uint64_t recover_progress_total = 0;
-    uint64_t progress_index_count = 0;
-
     for (const std::string &index_name : index_names) {
       if (!vector_status_matches_for_index(for_index_name, index_name.c_str()))
         continue;
       vector_index_registry::index_info info;
       if (!vector_index_registry::get_index_info(index_name, &info)) continue;
-
-      if (info.lifecycle_state == "ready") {
-        ++lifecycle_ready;
-      } else if (info.lifecycle_state == "rebuilding") {
-        ++lifecycle_rebuilding;
-      } else if (info.lifecycle_state == "recovering") {
-        ++lifecycle_recovering;
-      } else if (info.lifecycle_state == "failed") {
-        ++lifecycle_failed;
-      }
-
-      if (info.mode == "memory") {
-        ++mode_memory;
-      } else if (info.mode == "external") {
-        ++mode_external;
-      }
-
-      if (info.provider == "native") {
-        ++provider_native;
-      } else if (info.provider == "faiss") {
-        ++provider_faiss;
-      } else if (info.provider == "diskann") {
-        ++provider_diskann;
-      } else if (info.provider == "hnswlib") {
-        ++provider_hnswlib;
-      }
-
-      const bool loaded = vector_index_status_fields::is_loaded(info);
-      const bool writable = vector_index_status_fields::is_writable(info);
-      if (loaded) ++backend_loaded;
-      if (writable) {
-        ++backend_writable;
-      } else {
-        ++backend_readonly;
-      }
-      if (info.last_error_code != 0) ++backend_error;
-      if (info.external_manifest_present) ++backend_manifest_present;
-      if (info.external_manifest_generation > backend_manifest_generation_max) {
-        backend_manifest_generation_max = info.external_manifest_generation;
-      }
 
       vector_index_status_fields::field_values fields;
       vector_index_status_fields::collect_index_state_fields(info, &fields);
@@ -1305,20 +1241,6 @@ bool send_show_vector_status(
                                           where_predicates)) {
         return true;
       }
-
-      const uint64_t pending_apply_count =
-          vector_index_status_fields::pending_apply_count(info);
-      if (pending_apply_count > 0) {
-        pending_apply_total += pending_apply_count;
-        ++backlog_indexes;
-      }
-      const uint64_t rebuild_progress =
-          vector_index_status_fields::rebuild_progress(info);
-      const uint64_t recover_progress =
-          vector_index_status_fields::recover_progress(info);
-      rebuild_progress_total += rebuild_progress;
-      recover_progress_total += recover_progress;
-      ++progress_index_count;
       vector_index_status_fields::collect_sync_pipeline_fields(info, &fields);
       if (send_vector_index_status_fields(protocol,
                                           Vector_status_section::kSyncPipeline,
@@ -1329,52 +1251,69 @@ bool send_show_vector_status(
     }
 
     if (for_index_name.empty()) {
-      const uint64_t rebuild_progress =
-          progress_index_count == 0 ? 0 : rebuild_progress_total / progress_index_count;
-      const uint64_t recover_progress =
-          progress_index_count == 0 ? 0 : recover_progress_total / progress_index_count;
+      vector_index_registry::global_status_summary summary;
+      if (!vector_index_registry::get_global_status_summary(&summary)) {
+        return true;
+      }
       const Vector_status_row backend_rows[] = {
           {"Vector_backend_loaded_indexes",
-           Vector_status_section::kBackendHealth, backend_loaded},
+           Vector_status_section::kBackendHealth,
+           summary.backend_loaded_indexes},
           {"Vector_backend_writable_indexes",
-           Vector_status_section::kBackendHealth, backend_writable},
+           Vector_status_section::kBackendHealth,
+           summary.backend_writable_indexes},
           {"Vector_backend_readonly_indexes",
-           Vector_status_section::kBackendHealth, backend_readonly},
+           Vector_status_section::kBackendHealth,
+           summary.backend_readonly_indexes},
           {"Vector_backend_error_indexes",
-           Vector_status_section::kBackendHealth, backend_error},
+           Vector_status_section::kBackendHealth,
+           summary.backend_error_indexes},
           {"Vector_backend_manifest_present_indexes",
-           Vector_status_section::kBackendHealth, backend_manifest_present},
+           Vector_status_section::kBackendHealth,
+           summary.backend_manifest_present_indexes},
           {"Vector_backend_manifest_generation_max",
            Vector_status_section::kBackendHealth,
-           backend_manifest_generation_max},
+           summary.backend_manifest_generation_max},
           {"Vector_backend_mode_memory_indexes",
-           Vector_status_section::kBackendHealth, mode_memory},
+           Vector_status_section::kBackendHealth,
+           summary.backend_mode_memory_indexes},
           {"Vector_backend_mode_external_indexes",
-           Vector_status_section::kBackendHealth, mode_external},
+           Vector_status_section::kBackendHealth,
+           summary.backend_mode_external_indexes},
           {"Vector_backend_provider_native_indexes",
-           Vector_status_section::kBackendHealth, provider_native},
+           Vector_status_section::kBackendHealth,
+           summary.backend_provider_native_indexes},
           {"Vector_backend_provider_faiss_indexes",
-           Vector_status_section::kBackendHealth, provider_faiss},
+           Vector_status_section::kBackendHealth,
+           summary.backend_provider_faiss_indexes},
           {"Vector_backend_provider_diskann_indexes",
-           Vector_status_section::kBackendHealth, provider_diskann},
+           Vector_status_section::kBackendHealth,
+           summary.backend_provider_diskann_indexes},
           {"Vector_backend_provider_hnswlib_indexes",
-           Vector_status_section::kBackendHealth, provider_hnswlib},
+           Vector_status_section::kBackendHealth,
+           summary.backend_provider_hnswlib_indexes},
           {"Vector_backend_lifecycle_ready_indexes",
-           Vector_status_section::kBackendHealth, lifecycle_ready},
+           Vector_status_section::kBackendHealth,
+           summary.backend_lifecycle_ready_indexes},
           {"Vector_backend_lifecycle_rebuilding_indexes",
-           Vector_status_section::kBackendHealth, lifecycle_rebuilding},
+           Vector_status_section::kBackendHealth,
+           summary.backend_lifecycle_rebuilding_indexes},
           {"Vector_backend_lifecycle_recovering_indexes",
-           Vector_status_section::kBackendHealth, lifecycle_recovering},
+           Vector_status_section::kBackendHealth,
+           summary.backend_lifecycle_recovering_indexes},
           {"Vector_backend_lifecycle_failed_indexes",
-           Vector_status_section::kBackendHealth, lifecycle_failed},
+           Vector_status_section::kBackendHealth,
+           summary.backend_lifecycle_failed_indexes},
+          {"Vector_pending_apply_count", Vector_status_section::kSyncPipeline,
+           summary.pending_apply_count},
           {"Vector_rebuild_progress", Vector_status_section::kSyncPipeline,
-           rebuild_progress},
+           summary.rebuild_progress},
           {"Vector_recover_progress", Vector_status_section::kSyncPipeline,
-           recover_progress},
+           summary.recover_progress},
           {"Vector_pending_apply_total", Vector_status_section::kSyncPipeline,
-           pending_apply_total},
+           summary.pending_apply_count},
           {"Vector_backlog_indexes", Vector_status_section::kSyncPipeline,
-           backlog_indexes},
+           summary.backlog_indexes},
       };
 
       for (const Vector_status_row &row : backend_rows) {

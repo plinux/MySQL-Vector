@@ -1302,7 +1302,7 @@ TEST(VectorIndexServiceTest, DirectMutationsRequireStandaloneBulkRebuild) {
   EXPECT_EQ(vector_index::index_consistency_mode::kStandalone,
             config.consistency_mode);
   EXPECT_EQ(0U, entry_count);
-  EXPECT_EQ(0U, committed_entry_count);
+  EXPECT_EQ(1U, committed_entry_count);
   EXPECT_EQ("bulk_loading", lifecycle_state);
 
   EXPECT_FALSE(service.search("idx_standalone_direct", {1.0F, 0.0F}, 1,
@@ -3605,7 +3605,7 @@ TEST(VectorIndexServiceTest, DiskAnnStandaloneMutationsWaitForRebuild) {
             config.consistency_mode);
   EXPECT_EQ(vector_index::backend_provider::kDiskAnn, config.provider);
   EXPECT_EQ(0U, entry_count);
-  EXPECT_EQ(0U, committed_entry_count);
+  EXPECT_EQ(1U, committed_entry_count);
   EXPECT_EQ("bulk_loading", lifecycle_state);
   EXPECT_GT(service.standalone_ingest_memory_bytes("idx_diskann_standalone"),
             0U);
@@ -3617,7 +3617,7 @@ TEST(VectorIndexServiceTest, DiskAnnStandaloneMutationsWaitForRebuild) {
                                      &entry_count, &committed_entry_count,
                                      &lifecycle_state));
   EXPECT_EQ(1U, entry_count);
-  EXPECT_EQ(0U, committed_entry_count);
+  EXPECT_EQ(1U, committed_entry_count);
   EXPECT_EQ("ready", lifecycle_state);
   ASSERT_TRUE(service.search("idx_diskann_standalone", {1.0F, 0.0F}, 1,
                              &result));
@@ -4361,7 +4361,7 @@ TEST(VectorIndexServiceTest,
   ASSERT_TRUE(service.describe_index("idx_standalone_spill", &config, nullptr,
                                      &entry_count, &committed_entry_count));
   EXPECT_EQ(1U, entry_count);
-  EXPECT_EQ(0U, committed_entry_count);
+  EXPECT_EQ(1U, committed_entry_count);
   ASSERT_TRUE(service.search("idx_standalone_spill", {1.0F, 0.0F}, 2,
                              &result));
   ASSERT_EQ(1U, result.size());

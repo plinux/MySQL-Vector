@@ -177,6 +177,14 @@ SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_mult
   '$.scheduler_concurrent_tasks') AS concurrent_tasks,
   JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
   '$.entry_count') AS entry_count;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.build_segment_effective_row_limit') AS row_limit,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.build_segment_target_size') AS target_size,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.build_segment_max_rows') AS max_rows,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.build_segment_policy')) AS segment_policy;
 SELECT JSON_CONTAINS(
   VEC_INDEX_SEARCH('idx_diskann_load_segmented_multi',
                    VEC_FROMTEXT('[1,0]'), 6),

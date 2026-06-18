@@ -179,6 +179,35 @@ JSON_CONTAINS(JSON_EXTRACT(@segmented_batch, '$[1]'),
 CAST(101 AS JSON)) AS segmented_batch_doc_101_visible;
 segmented_batch_doc_103_visible	segmented_batch_doc_101_visible
 1	1
+SET GLOBAL vector_build_segment_max_rows = 2;
+SELECT VEC_INDEX_CREATE('idx_load_mixed_segments', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone');
+VEC_INDEX_CREATE('idx_load_mixed_segments', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'standalone')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_load_mixed_segments'),
+'$.standalone_raw_segment_count')
+AS raw_segment_count_before_delta;
+raw_segment_count_before_delta
+2
+SELECT VEC_INDEX_UPSERT('idx_load_mixed_segments', 900001,
+VEC_FROMTEXT('[0.9,0.1]'));
+VEC_INDEX_UPSERT('idx_load_mixed_segments', 900001,
+VEC_FROMTEXT('[0.9,0.1]'))
+1
+SELECT VEC_INDEX_BULK_BUILD('idx_load_mixed_segments');
+VEC_INDEX_BULK_BUILD('idx_load_mixed_segments')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_load_mixed_segments'),
+'$.build_source')) AS build_source,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_load_mixed_segments'),
+'$.standalone_raw_segment_count') AS raw_segment_count,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_load_mixed_segments'),
+'$.build_pipeline_raw_segments') AS raw_segments,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_load_mixed_segments'),
+'$.build_segment_policy')) AS segment_policy;
+build_source	raw_segment_count	raw_segments	segment_policy
+raw_segments_compacted	1	2	row_limited
 SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
 SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
 SELECT VEC_INDEX_CREATE('idx_load_generated_docid', 2, 'EUCLIDEAN', 'MEMORY',
@@ -205,6 +234,9 @@ VEC_INDEX_DROP('idx_load_pending')
 1
 SELECT VEC_INDEX_DROP('idx_load_segmented');
 VEC_INDEX_DROP('idx_load_segmented')
+1
+SELECT VEC_INDEX_DROP('idx_load_mixed_segments');
+VEC_INDEX_DROP('idx_load_mixed_segments')
 1
 SELECT VEC_INDEX_DROP('idx_load_generated_docid');
 VEC_INDEX_DROP('idx_load_generated_docid')

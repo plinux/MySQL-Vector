@@ -51,6 +51,8 @@ VEC_INDEX_REBUILD('idx_diskann_pq_runtime_diskpq')
 SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
 '$.diskann_disk_pq_dims') AS disk_pq_dims,
 JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+'$.diskann_effective_disk_pq_dims') AS effective_disk_pq_dims,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
 '$.native_pq_runtime_artifacts_consumed') AS artifacts_consumed,
 JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
 '$.native_pq_runtime_official_pq_used') AS official_pq_used,
@@ -60,8 +62,8 @@ JSON_CONTAINS(
 VEC_INDEX_SEARCH('idx_diskann_pq_runtime_diskpq',
 VEC_FROMTEXT('[1,0,0,0]'), 1),
 CAST(1 AS JSON)) AS found_doc;
-disk_pq_dims	artifacts_consumed	official_pq_used	native_bridge	found_doc
-2	1	0	native_pq_graph_cache	1
+disk_pq_dims	effective_disk_pq_dims	artifacts_consumed	official_pq_used	native_bridge	found_doc
+2	2	1	0	native_pq_graph_cache	1
 SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime_diskpq');
 VEC_INDEX_DROP('idx_diskann_pq_runtime_diskpq')
 1

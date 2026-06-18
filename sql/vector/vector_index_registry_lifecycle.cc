@@ -24,6 +24,7 @@
 #include "sql/vector/vector_index_registry.h"
 
 #include <algorithm>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -33,7 +34,9 @@
 #include <vector>
 
 #include "sql/vector/vector_index_identity.h"
+#include "sql/vector/vector_index_observability.h"
 #include "sql/vector/vector_index_registry_internal.h"
+#include "sql/vector/vector_index_runtime_config.h"
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_status.h"
@@ -61,6 +64,116 @@ bool binding_matches_column(const index_binding &binding,
                             const std::string &column_name) {
   return binding_matches_table(binding, schema_name, table_name) &&
          binding.column_name == column_name;
+}
+
+const char *build_segment_policy_name(
+    uint64_t dimension,
+    const vector_index::build_pipeline_thresholds &thresholds) {
+  vector_index::build_pipeline_thresholds size_thresholds = thresholds;
+  size_thresholds.segment_max_rows = std::numeric_limits<uint64_t>::max();
+  const uint64_t size_row_limit =
+      vector_index::build_segment_row_limit(dimension, size_thresholds);
+  return thresholds.segment_max_rows <= size_row_limit ? "row_limited"
+                                                       : "size_first";
+}
+
+bool populate_index_info_locked(const std::string &index_name, index_info *info) {
+  if (info == nullptr) return false;
+
+  vector_index::index_service::index_config config;
+  vector_index::index_service::index_observability_state observability;
+  bool supports_mutations = false;
+  size_t entry_count = 0;
+  std::string lifecycle_state;
+  uint64_t lifecycle_version = 0;
+  uint32_t last_error_code = 0;
+  uint64_t last_error_ts = 0;
+  if (!g_index_service.describe_index(
+          index_name, &config, &supports_mutations, &entry_count,
+          &info->committed_entry_count, &lifecycle_state, &lifecycle_version,
+          &last_error_code, &last_error_ts, &info->last_apply_latency_ms,
+          &info->recover_fallback_count, &info->last_recover_fallback_ts,
+          &info->external_manifest_present,
+          &info->external_manifest_generation, &info->build_diagnostics)) {
+    return false;
+  }
+  if (!g_index_service.describe_index_observability(index_name, &observability)) {
+    return false;
+  }
+
+  vector_index::index_service::build_pipeline_snapshot pipeline_snapshot;
+  if (g_index_service.describe_build_pipeline(index_name, &pipeline_snapshot)) {
+    info->build_pipeline_mode = pipeline_snapshot.mode;
+    info->build_pipeline_decision = pipeline_snapshot.decision;
+    info->build_pipeline_trigger = pipeline_snapshot.trigger;
+    info->build_pipeline_rows = pipeline_snapshot.row_count;
+    info->build_pipeline_payload_size = pipeline_snapshot.payload_size;
+    info->build_pipeline_raw_segments = pipeline_snapshot.raw_segment_count;
+  }
+
+  info->dimension = config.dimension;
+  info->metric = vector_index::metric_to_string(config.metric);
+  info->mode = vector_index::backend_mode_to_string(config.mode);
+  info->provider = vector_index::backend_provider_to_string(config.provider);
+  info->consistency_mode =
+      vector_index::index_consistency_mode_to_string(config.consistency_mode);
+  info->truth_store_enabled = observability.truth_store_enabled;
+  info->standalone_ingest_memory_bytes =
+      observability.standalone_ingest_memory_bytes;
+  info->standalone_segment_count = observability.standalone_segment_count;
+  info->standalone_segment_bytes = observability.standalone_segment_bytes;
+  info->standalone_raw_segment_count =
+      observability.standalone_raw_segment_count;
+  info->standalone_raw_segment_bytes =
+      observability.standalone_raw_segment_bytes;
+  info->build_source = observability.build_source;
+  const vector_index::build_pipeline_runtime_config runtime_config =
+      vector_index::global_build_pipeline_runtime_config();
+  info->build_segment_effective_row_limit =
+      vector_index::build_segment_row_limit(
+          static_cast<uint64_t>(config.dimension), runtime_config.thresholds);
+  info->build_segment_target_size =
+      runtime_config.thresholds.segment_target_size;
+  info->build_segment_max_rows = runtime_config.thresholds.segment_max_rows;
+  info->build_segment_policy =
+      build_segment_policy_name(static_cast<uint64_t>(config.dimension),
+                                runtime_config.thresholds);
+  info->backend_variant = config.backend_variant;
+  info->search_ef = config.search_ef;
+  info->hnsw_m = config.hnsw_m;
+  info->hnsw_ef_construction = config.hnsw_ef_construction;
+  info->hnsw_build_threads = config.hnsw_build_threads;
+  info->faiss_nlist = config.faiss_nlist;
+  info->faiss_nprobe = config.faiss_nprobe;
+  info->faiss_pq_m = config.faiss_pq_m;
+  info->faiss_pq_bits = config.faiss_pq_bits;
+  info->faiss_build_threads = config.faiss_build_threads;
+  info->diskann_max_degree = config.diskann_max_degree;
+  info->diskann_build_complexity = config.diskann_build_complexity;
+  info->diskann_build_threads = config.diskann_build_threads;
+  info->diskann_build_mode_value = config.diskann_build_mode_value;
+  info->diskann_build_mode_specified = config.diskann_build_mode_specified;
+  info->diskann_search_complexity = config.diskann_search_complexity;
+  info->diskann_search_beamwidth = config.diskann_search_beamwidth;
+  info->diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
+  info->diskann_disk_pq_dims = config.diskann_disk_pq_dims;
+  info->diskann_cache_nodes = config.diskann_cache_nodes;
+  info->diskann_accelerate_build = config.diskann_accelerate_build;
+  info->diskann_shuffle_build = config.diskann_shuffle_build;
+  info->diskann_use_bfs_cache = config.diskann_use_bfs_cache;
+  const index_binding binding = binding_for_index_locked(index_name);
+  info->owner_schema = owner_schema_for_index_locked(index_name);
+  info->schema_name = binding.schema_name;
+  info->table_name = binding.table_name;
+  info->column_name = binding.column_name;
+  info->lifecycle_state = lifecycle_state;
+  info->lifecycle_version = lifecycle_version;
+  info->last_error_code = last_error_code;
+  info->last_error_ts = last_error_ts;
+  info->supports_mutations = supports_mutations;
+  info->entry_count = entry_count;
+  info->committed_entry_count = observability.authoritative_entry_count;
+  return true;
 }
 
 bool snapshot_index_config_locked(
@@ -1794,91 +1907,89 @@ bool get_index_info(const std::string &index_name, index_info *info) {
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
-  vector_index::index_service::index_config config;
-  bool supports_mutations = false;
-  size_t entry_count = 0;
-  size_t committed_entry_count = 0;
-  std::string lifecycle_state;
-  uint64_t lifecycle_version = 0;
-  uint32_t last_error_code = 0;
-  uint64_t last_error_ts = 0;
-  if (!g_index_service.describe_index(
-          index_name, &config, &supports_mutations, &entry_count,
-          &committed_entry_count, &lifecycle_state, &lifecycle_version,
-          &last_error_code, &last_error_ts, &info->last_apply_latency_ms,
-          &info->recover_fallback_count, &info->last_recover_fallback_ts,
-          &info->external_manifest_present,
-          &info->external_manifest_generation, &info->build_diagnostics)) {
-    return false;
-  }
-  vector_index::index_service::build_pipeline_snapshot pipeline_snapshot;
-  if (g_index_service.describe_build_pipeline(index_name,
-                                              &pipeline_snapshot)) {
-    info->build_pipeline_mode = pipeline_snapshot.mode;
-    info->build_pipeline_decision = pipeline_snapshot.decision;
-    info->build_pipeline_trigger = pipeline_snapshot.trigger;
-    info->build_pipeline_rows = pipeline_snapshot.row_count;
-    info->build_pipeline_payload_size = pipeline_snapshot.payload_size;
-    info->build_pipeline_raw_segments = pipeline_snapshot.raw_segment_count;
+  return populate_index_info_locked(index_name, info);
+}
+
+bool get_global_status_summary(global_status_summary *summary) {
+  if (summary == nullptr) return false;
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+
+  *summary = global_status_summary{};
+  std::vector<std::string> index_names;
+  if (!g_index_service.list_indexes(&index_names)) return false;
+
+  uint64_t rebuild_progress_total = 0;
+  uint64_t recover_progress_total = 0;
+  uint64_t progress_index_count = 0;
+  for (const std::string &index_name : index_names) {
+    index_info info;
+    if (!populate_index_info_locked(index_name, &info)) return false;
+
+    if (info.lifecycle_state == "ready") {
+      ++summary->backend_lifecycle_ready_indexes;
+    } else if (info.lifecycle_state == "rebuilding") {
+      ++summary->backend_lifecycle_rebuilding_indexes;
+    } else if (info.lifecycle_state == "recovering") {
+      ++summary->backend_lifecycle_recovering_indexes;
+    } else if (info.lifecycle_state == "failed") {
+      ++summary->backend_lifecycle_failed_indexes;
+    }
+
+    if (info.mode == "memory") {
+      ++summary->backend_mode_memory_indexes;
+    } else if (info.mode == "external") {
+      ++summary->backend_mode_external_indexes;
+    }
+
+    if (info.provider == "native") {
+      ++summary->backend_provider_native_indexes;
+    } else if (info.provider == "faiss") {
+      ++summary->backend_provider_faiss_indexes;
+    } else if (info.provider == "diskann") {
+      ++summary->backend_provider_diskann_indexes;
+    } else if (info.provider == "hnswlib") {
+      ++summary->backend_provider_hnswlib_indexes;
+    }
+
+    const bool loaded = vector_index_observability::is_loaded(info);
+    const bool writable = vector_index_observability::is_writable(info);
+    if (loaded) ++summary->backend_loaded_indexes;
+    if (writable) {
+      ++summary->backend_writable_indexes;
+    } else {
+      ++summary->backend_readonly_indexes;
+    }
+    if (info.last_error_code != 0) ++summary->backend_error_indexes;
+    if (info.external_manifest_present) ++summary->backend_manifest_present_indexes;
+    if (info.external_manifest_generation >
+        summary->backend_manifest_generation_max) {
+      summary->backend_manifest_generation_max =
+          info.external_manifest_generation;
+    }
+
+    const uint64_t pending_apply =
+        vector_index_observability::pending_apply_count(info);
+    if (pending_apply > 0) {
+      summary->pending_apply_count += pending_apply;
+      ++summary->backlog_indexes;
+    }
+    rebuild_progress_total +=
+        vector_index_observability::rebuild_progress(info);
+    recover_progress_total +=
+        vector_index_observability::recover_progress(info);
+    ++progress_index_count;
   }
 
-  info->dimension = config.dimension;
-  info->metric = vector_index::metric_to_string(config.metric);
-  info->mode = vector_index::backend_mode_to_string(config.mode);
-  info->provider = vector_index::backend_provider_to_string(config.provider);
-  info->consistency_mode =
-      vector_index::index_consistency_mode_to_string(config.consistency_mode);
-  info->truth_store_enabled =
-      config.consistency_mode ==
-      vector_index::index_consistency_mode::kTransactional;
-  info->standalone_ingest_memory_bytes =
-      g_index_service.standalone_ingest_memory_bytes(index_name);
-  info->standalone_segment_count =
-      g_index_service.standalone_segment_count(index_name);
-  info->standalone_segment_bytes =
-      g_index_service.standalone_segment_bytes(index_name);
-  info->standalone_raw_segment_count =
-      g_index_service.standalone_raw_segment_count(index_name);
-  info->standalone_raw_segment_bytes =
-      g_index_service.standalone_raw_segment_bytes(index_name);
-  info->build_source = info->truth_store_enabled
-                           ? "truth_store"
-                           : g_index_service.standalone_build_source(index_name);
-  info->backend_variant = config.backend_variant;
-  info->search_ef = config.search_ef;
-  info->hnsw_m = config.hnsw_m;
-  info->hnsw_ef_construction = config.hnsw_ef_construction;
-  info->hnsw_build_threads = config.hnsw_build_threads;
-  info->faiss_nlist = config.faiss_nlist;
-  info->faiss_nprobe = config.faiss_nprobe;
-  info->faiss_pq_m = config.faiss_pq_m;
-  info->faiss_pq_bits = config.faiss_pq_bits;
-  info->faiss_build_threads = config.faiss_build_threads;
-  info->diskann_max_degree = config.diskann_max_degree;
-  info->diskann_build_complexity = config.diskann_build_complexity;
-  info->diskann_build_threads = config.diskann_build_threads;
-  info->diskann_build_mode_value = config.diskann_build_mode_value;
-  info->diskann_build_mode_specified = config.diskann_build_mode_specified;
-  info->diskann_search_complexity = config.diskann_search_complexity;
-  info->diskann_search_beamwidth = config.diskann_search_beamwidth;
-  info->diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
-  info->diskann_disk_pq_dims = config.diskann_disk_pq_dims;
-  info->diskann_cache_nodes = config.diskann_cache_nodes;
-  info->diskann_accelerate_build = config.diskann_accelerate_build;
-  info->diskann_shuffle_build = config.diskann_shuffle_build;
-  info->diskann_use_bfs_cache = config.diskann_use_bfs_cache;
-  const index_binding binding = binding_for_index_locked(index_name);
-  info->owner_schema = owner_schema_for_index_locked(index_name);
-  info->schema_name = binding.schema_name;
-  info->table_name = binding.table_name;
-  info->column_name = binding.column_name;
-  info->lifecycle_state = lifecycle_state;
-  info->lifecycle_version = lifecycle_version;
-  info->last_error_code = last_error_code;
-  info->last_error_ts = last_error_ts;
-  info->supports_mutations = supports_mutations;
-  info->entry_count = entry_count;
-  info->committed_entry_count = committed_entry_count;
+  summary->rebuild_progress =
+      progress_index_count == 0
+          ? 0
+          : rebuild_progress_total / progress_index_count;
+  summary->recover_progress =
+      progress_index_count == 0
+          ? 0
+          : recover_progress_total / progress_index_count;
   return true;
 }
 

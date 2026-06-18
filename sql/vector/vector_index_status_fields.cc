@@ -28,11 +28,12 @@
 #include <cstring>
 #include <utility>
 
+#include "sql/vector/vector_index_observability.h"
+
 namespace vector_index_status_fields {
 namespace {
 
 bool ascii_equal_ignore_case(const std::string &lhs, const char *rhs) {
-  if (rhs == nullptr) return false;
   const size_t rhs_len = std::strlen(rhs);
   if (lhs.size() != rhs_len) return false;
   for (size_t i = 0; i < rhs_len; ++i) {
@@ -99,9 +100,18 @@ bool has_build_diagnostics(
   present |= diagnostics.search_per_segment_top_k != 0;
   present |= diagnostics.search_result_budget != 0;
   present |= diagnostics.search_candidate_count != 0;
+  present |= diagnostics.search_query_count != 0;
+  present |= diagnostics.search_segment_min_entries != 0;
+  present |= diagnostics.search_segment_max_entries != 0;
+  present |= diagnostics.search_segment_total_entries != 0;
+  present |= diagnostics.search_diskann_search_list != 0;
+  present |= diagnostics.search_diskann_beamwidth != 0;
+  present |= diagnostics.search_total_candidate_rows != 0;
   present |= diagnostics.single_index_build;
   present |= diagnostics.pq_chunks != 0;
   present |= diagnostics.cache_nodes != 0;
+  present |= diagnostics.requested_disk_pq_dims != 0;
+  present |= diagnostics.effective_disk_pq_dims != 0;
   present |= diagnostics.build_wall_ms != 0;
   present |= diagnostics.manifest_ms != 0;
   present |= diagnostics.offline_build_ms != 0;
@@ -151,6 +161,10 @@ void append_build_diagnostics(
               diagnostics.single_index_build);
   append_uint(fields, "backend_build_pq_chunks", diagnostics.pq_chunks);
   append_uint(fields, "backend_build_cache_nodes", diagnostics.cache_nodes);
+  if (diskann_provider && diagnostics.effective_disk_pq_dims != 0) {
+    append_uint(fields, "diskann_effective_disk_pq_dims",
+                diagnostics.effective_disk_pq_dims);
+  }
   append_uint(fields, "backend_build_manifest_ms", diagnostics.manifest_ms);
   append_uint(fields, "backend_build_offline_ms",
               diagnostics.offline_build_ms);
@@ -233,7 +247,14 @@ void append_build_diagnostics(
       diagnostics.search_global_top_k != 0 ||
       diagnostics.search_per_segment_top_k != 0 ||
       diagnostics.search_result_budget != 0 ||
-      diagnostics.search_candidate_count != 0;
+      diagnostics.search_candidate_count != 0 ||
+      diagnostics.search_query_count != 0 ||
+      diagnostics.search_segment_min_entries != 0 ||
+      diagnostics.search_segment_max_entries != 0 ||
+      diagnostics.search_segment_total_entries != 0 ||
+      diagnostics.search_diskann_search_list != 0 ||
+      diagnostics.search_diskann_beamwidth != 0 ||
+      diagnostics.search_total_candidate_rows != 0;
   if (has_search_diagnostics) {
     append_uint(fields, "scheduler_search_fanout_segments",
                 diagnostics.search_fanout_segments);
@@ -247,9 +268,27 @@ void append_build_diagnostics(
                 diagnostics.search_result_budget);
     append_uint(fields, "scheduler_search_candidate_count",
                 diagnostics.search_candidate_count);
+    append_uint(fields, "scheduler_search_query_count",
+                diagnostics.search_query_count);
+    append_uint(fields, "scheduler_search_segment_min_entries",
+                diagnostics.search_segment_min_entries);
+    append_uint(fields, "scheduler_search_segment_max_entries",
+                diagnostics.search_segment_max_entries);
+    append_uint(fields, "scheduler_search_segment_total_entries",
+                diagnostics.search_segment_total_entries);
+    append_uint(fields, "scheduler_search_diskann_search_list",
+                diagnostics.search_diskann_search_list);
+    append_uint(fields, "scheduler_search_diskann_beamwidth",
+                diagnostics.search_diskann_beamwidth);
+    append_uint(fields, "scheduler_search_total_candidate_rows",
+                diagnostics.search_total_candidate_rows);
   }
   append_uint(fields, "diskann_segment_pq_chunks",
               diskann_provider ? diagnostics.pq_chunks : 0);
+  if (diskann_provider && diagnostics.effective_disk_pq_dims != 0) {
+    append_uint(fields, "diskann_segment_effective_disk_pq_dims",
+                diagnostics.effective_disk_pq_dims);
+  }
   append_uint(fields, "diskann_segment_cache_nodes",
               diskann_provider ? diagnostics.cache_nodes : 0);
   const uint64_t build_wall_ms =
@@ -267,32 +306,23 @@ void append_build_diagnostics(
 }  // namespace
 
 uint64_t pending_apply_count(const vector_index_registry::index_info &info) {
-  const auto entry_count = static_cast<uint64_t>(info.entry_count);
-  const auto committed_entry_count =
-      static_cast<uint64_t>(info.committed_entry_count);
-  return entry_count > committed_entry_count
-             ? entry_count - committed_entry_count
-             : committed_entry_count - entry_count;
+  return vector_index_observability::pending_apply_count(info);
 }
 
 uint64_t rebuild_progress(const vector_index_registry::index_info &info) {
-  if (ascii_equal_ignore_case(info.lifecycle_state, "ready")) return 100;
-  if (ascii_equal_ignore_case(info.lifecycle_state, "rebuilding")) return 50;
-  return 0;
+  return vector_index_observability::rebuild_progress(info);
 }
 
 uint64_t recover_progress(const vector_index_registry::index_info &info) {
-  if (ascii_equal_ignore_case(info.lifecycle_state, "ready")) return 100;
-  if (ascii_equal_ignore_case(info.lifecycle_state, "recovering")) return 50;
-  return 0;
+  return vector_index_observability::recover_progress(info);
 }
 
 bool is_loaded(const vector_index_registry::index_info &info) {
-  return !ascii_equal_ignore_case(info.lifecycle_state, "failed");
+  return vector_index_observability::is_loaded(info);
 }
 
 bool is_writable(const vector_index_registry::index_info &info) {
-  return is_loaded(info) && info.supports_mutations;
+  return vector_index_observability::is_writable(info);
 }
 
 std::string status_value(const field_value &field) {
@@ -312,7 +342,7 @@ void collect_info_fields(const vector_index_registry::index_info &info,
                          field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(68);
+  fields->reserve(72);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
@@ -331,6 +361,12 @@ void collect_info_fields(const vector_index_registry::index_info &info,
               info.build_pipeline_payload_size);
   append_uint(fields, "build_pipeline_raw_segments",
               info.build_pipeline_raw_segments);
+  append_uint(fields, "build_segment_effective_row_limit",
+              info.build_segment_effective_row_limit);
+  append_uint(fields, "build_segment_target_size",
+              info.build_segment_target_size);
+  append_uint(fields, "build_segment_max_rows", info.build_segment_max_rows);
+  append_string(fields, "build_segment_policy", info.build_segment_policy);
   append_uint(fields, "standalone_ingest_memory_bytes",
               info.standalone_ingest_memory_bytes);
   append_uint(fields, "standalone_segment_count",
@@ -345,6 +381,7 @@ void collect_info_fields(const vector_index_registry::index_info &info,
   append_build_diagnostics(fields, ascii_equal_ignore_case(info.provider,
                                                            "diskann"),
                            info.build_diagnostics);
+  append_nullable_string(fields, "owner_schema", info.owner_schema);
   append_nullable_string(fields, "schema_name", info.schema_name);
   append_nullable_string(fields, "table_name", info.table_name);
   append_nullable_string(fields, "column_name", info.column_name);
@@ -400,7 +437,7 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
                                 field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(45);
+  fields->reserve(49);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
@@ -419,6 +456,12 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
               info.build_pipeline_payload_size);
   append_uint(fields, "build_pipeline_raw_segments",
               info.build_pipeline_raw_segments);
+  append_uint(fields, "build_segment_effective_row_limit",
+              info.build_segment_effective_row_limit);
+  append_uint(fields, "build_segment_target_size",
+              info.build_segment_target_size);
+  append_uint(fields, "build_segment_max_rows", info.build_segment_max_rows);
+  append_string(fields, "build_segment_policy", info.build_segment_policy);
   append_uint(fields, "standalone_ingest_memory_bytes",
               info.standalone_ingest_memory_bytes);
   append_uint(fields, "standalone_segment_count",

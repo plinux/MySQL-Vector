@@ -126,6 +126,8 @@ GRANT ALTER, SELECT ON vector_acl_owner.* TO
 SELECT VEC_INDEX_UPSERT('idx_standalone_acl', 1, '[1,1]');
 SELECT VEC_INDEX_SET_SEARCH_EF('idx_standalone_acl', 32);
 SELECT VEC_INDEX_REBUILD('idx_standalone_acl');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_acl'),
+                                 '$.owner_schema')) AS owner_schema;
 SELECT VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1);
 SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_standalone_acl'))
   AS owner_index_visible;
@@ -137,6 +139,8 @@ SELECT VEC_INDEX_DROP('idx_standalone_acl');
 --source include/restart_mysqld.inc
 
 --connect (con_standalone_acl,localhost,vec_standalone_acl_user,,vector_acl_other)
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_acl'),
+                                 '$.owner_schema')) AS owner_schema;
 SELECT VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1);
 SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_standalone_acl'))
   AS owner_index_visible_after_restart;

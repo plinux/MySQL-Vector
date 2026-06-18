@@ -49,7 +49,6 @@ GLOBAL_GAUGES	Vector_manifest_change_log_checkpoint	<num>
 GLOBAL_GAUGES	Vector_pending_txn_changes	<num>
 GLOBAL_GAUGES	Vector_committed_vector_memory_bytes	<num>
 GLOBAL_GAUGES	Vector_pending_vector_memory_bytes	<num>
-SYNC_PIPELINE	Vector_pending_apply_count	<num>
 SYNC_PIPELINE	Vector_apply_latency_ms	<num>
 GLOBAL_GAUGES	Vector_truth_store_backend	mysql
 GLOBAL_GAUGES	Vector_truth_store_transactional	<num>
@@ -69,6 +68,7 @@ BACKEND_HEALTH	Vector_backend_lifecycle_ready_indexes	<num>
 BACKEND_HEALTH	Vector_backend_lifecycle_rebuilding_indexes	<num>
 BACKEND_HEALTH	Vector_backend_lifecycle_recovering_indexes	<num>
 BACKEND_HEALTH	Vector_backend_lifecycle_failed_indexes	<num>
+SYNC_PIPELINE	Vector_pending_apply_count	<num>
 SYNC_PIPELINE	Vector_rebuild_progress	<num>
 SYNC_PIPELINE	Vector_recover_progress	<num>
 SYNC_PIPELINE	Vector_pending_apply_total	<num>
@@ -100,6 +100,16 @@ SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
 Section	Variable_name	Value
 GLOBAL_COUNTERS	Vector_truth_store_persist_requests	<num>
 GLOBAL_COUNTERS	Vector_truth_store_persist_failures	<num>
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name LIKE 'Vector_truth_store_delta_persist_%';
+Section	Variable_name	Value
+GLOBAL_COUNTERS	Vector_truth_store_delta_persist_requests	<num>
+GLOBAL_COUNTERS	Vector_truth_store_delta_persist_failures	<num>
+SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
+  AND Variable_name LIKE 'Vector_truth_store_compact_%';
+Section	Variable_name	Value
+GLOBAL_COUNTERS	Vector_truth_store_compact_requests	<num>
+GLOBAL_COUNTERS	Vector_truth_store_compact_failures	<num>
 SHOW VECTOR STATUS WHERE Section = 'GLOBAL_COUNTERS'
   AND Variable_name = 'Vector_change_log_replay_failures';
 Section	Variable_name	Value
@@ -171,6 +181,35 @@ GLOBAL_GAUGES	Vector_truth_store_transactional	1
 Section	Variable_name	Value
 GLOBAL_GAUGES	Vector_truth_store_backend	mysql
 GLOBAL_GAUGES	Vector_truth_store_transactional	1
+SHOW GLOBAL STATUS LIKE 'Vector_truth_store_delta_persist_%';
+Variable_name	Value
+Vector_truth_store_delta_persist_failures	<num>
+Vector_truth_store_delta_persist_requests	<num>
+SHOW GLOBAL STATUS LIKE 'Vector_truth_store_compact_%';
+Variable_name	Value
+Vector_truth_store_compact_failures	<num>
+Vector_truth_store_compact_requests	<num>
+SHOW GLOBAL STATUS LIKE 'Vector_backend_%';
+Variable_name	Value
+Vector_backend_error_indexes	<num>
+Vector_backend_lifecycle_failed_indexes	<num>
+Vector_backend_lifecycle_ready_indexes	<num>
+Vector_backend_lifecycle_rebuilding_indexes	<num>
+Vector_backend_lifecycle_recovering_indexes	<num>
+Vector_backend_loaded_indexes	<num>
+Vector_backend_manifest_generation_max	<num>
+Vector_backend_manifest_present_indexes	<num>
+Vector_backend_mode_external_indexes	<num>
+Vector_backend_mode_memory_indexes	<num>
+Vector_backend_provider_diskann_indexes	<num>
+Vector_backend_provider_faiss_indexes	<num>
+Vector_backend_provider_hnswlib_indexes	<num>
+Vector_backend_provider_native_indexes	<num>
+Vector_backend_readonly_indexes	<num>
+Vector_backend_recover_fallbacks	<num>
+Vector_backend_writable_indexes	<num>
+Section	Variable_name	Value
+GLOBAL_COUNTERS	Vector_truth_store_delta_persist_requests	<num>
 SELECT VEC_INDEX_CREATE('idx_show_filter', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
 VEC_INDEX_CREATE('idx_show_filter', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
 1
@@ -254,6 +293,66 @@ WHERE Section = 'BACKEND_HEALTH'
   AND Value > '0';
 Section	Variable_name	Value
 BACKEND_HEALTH	idx_show_filter.external_manifest_generation	1
+SELECT VEC_INDEX_CREATE('idx_show_backlog', 2, 'EUCLIDEAN', 'EXTERNAL',
+'FAISS', 0, 'standalone');
+VEC_INDEX_CREATE('idx_show_backlog', 2, 'EUCLIDEAN', 'EXTERNAL',
+'FAISS', 0, 'standalone')
+1
+SELECT VEC_INDEX_UPSERT('idx_show_backlog', 7, VEC_FROMTEXT('[7,7]'));
+VEC_INDEX_UPSERT('idx_show_backlog', 7, VEC_FROMTEXT('[7,7]'))
+1
+SHOW GLOBAL STATUS LIKE 'Vector_pending_apply_count';
+Variable_name	Value
+Vector_pending_apply_count	1
+SHOW GLOBAL STATUS LIKE 'Vector_backlog_indexes';
+Variable_name	Value
+Vector_backlog_indexes	1
+SHOW GLOBAL STATUS LIKE 'Vector_pending_txn_changes';
+Variable_name	Value
+Vector_pending_txn_changes	0
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_pending_apply_count'
+  AND Value = '1';
+Section	Variable_name	Value
+SYNC_PIPELINE	Vector_pending_apply_count	1
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_pending_apply_total'
+  AND Value = '1';
+Section	Variable_name	Value
+SYNC_PIPELINE	Vector_pending_apply_total	1
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_backlog_indexes'
+  AND Value = '1';
+Section	Variable_name	Value
+SYNC_PIPELINE	Vector_backlog_indexes	1
+SHOW VECTOR STATUS FOR INDEX idx_show_backlog
+WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'idx_show_backlog.pending_apply_count'
+  AND Value = '1';
+Section	Variable_name	Value
+SYNC_PIPELINE	idx_show_backlog.pending_apply_count	1
+SELECT VEC_INDEX_REBUILD('idx_show_backlog');
+VEC_INDEX_REBUILD('idx_show_backlog')
+1
+SHOW GLOBAL STATUS LIKE 'Vector_pending_apply_count';
+Variable_name	Value
+Vector_pending_apply_count	0
+SHOW GLOBAL STATUS LIKE 'Vector_backlog_indexes';
+Variable_name	Value
+Vector_backlog_indexes	0
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_pending_apply_count'
+  AND Value = '0';
+Section	Variable_name	Value
+SYNC_PIPELINE	Vector_pending_apply_count	0
+SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
+  AND Variable_name = 'Vector_backlog_indexes'
+  AND Value = '0';
+Section	Variable_name	Value
+SYNC_PIPELINE	Vector_backlog_indexes	0
+SELECT VEC_INDEX_DROP('idx_show_backlog');
+VEC_INDEX_DROP('idx_show_backlog')
+1
 SELECT VEC_INDEX_DROP('idx_show_filter');
 VEC_INDEX_DROP('idx_show_filter')
 1

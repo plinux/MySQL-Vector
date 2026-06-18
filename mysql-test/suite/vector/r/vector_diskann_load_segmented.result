@@ -91,6 +91,16 @@ JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
 '$.entry_count') AS entry_count;
 backend_variant	backend_build_segments	backend_build_invocations	single_index_build	concurrent_tasks	entry_count
 segmented	128	128	0	2	512
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+'$.build_segment_effective_row_limit') AS row_limit,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+'$.build_segment_target_size') AS target_size,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+'$.build_segment_max_rows') AS max_rows,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+'$.build_segment_policy')) AS segment_policy;
+row_limit	target_size	max_rows	segment_policy
+4	1048576	4	row_limited
 SELECT JSON_CONTAINS(
 VEC_INDEX_SEARCH('idx_diskann_load_segmented_multi',
 VEC_FROMTEXT('[1,0]'), 6),

@@ -51,6 +51,10 @@ struct index_info {
   uint64_t build_pipeline_rows{0};
   uint64_t build_pipeline_payload_size{0};
   uint64_t build_pipeline_raw_segments{0};
+  uint64_t build_segment_effective_row_limit{0};
+  uint64_t build_segment_target_size{0};
+  uint64_t build_segment_max_rows{0};
+  std::string build_segment_policy;
   size_t standalone_ingest_memory_bytes{0};
   size_t standalone_segment_count{0};
   size_t standalone_segment_bytes{0};
@@ -97,6 +101,29 @@ struct index_info {
   size_t entry_count{0};
   size_t committed_entry_count{0};
   std::string owner_schema;
+};
+
+struct global_status_summary {
+  uint64_t backend_loaded_indexes{0};
+  uint64_t backend_writable_indexes{0};
+  uint64_t backend_readonly_indexes{0};
+  uint64_t backend_error_indexes{0};
+  uint64_t backend_manifest_present_indexes{0};
+  uint64_t backend_manifest_generation_max{0};
+  uint64_t backend_mode_memory_indexes{0};
+  uint64_t backend_mode_external_indexes{0};
+  uint64_t backend_provider_native_indexes{0};
+  uint64_t backend_provider_faiss_indexes{0};
+  uint64_t backend_provider_diskann_indexes{0};
+  uint64_t backend_provider_hnswlib_indexes{0};
+  uint64_t backend_lifecycle_ready_indexes{0};
+  uint64_t backend_lifecycle_rebuilding_indexes{0};
+  uint64_t backend_lifecycle_recovering_indexes{0};
+  uint64_t backend_lifecycle_failed_indexes{0};
+  uint64_t rebuild_progress{0};
+  uint64_t recover_progress{0};
+  uint64_t pending_apply_count{0};
+  uint64_t backlog_indexes{0};
 };
 
 struct create_index_options {
@@ -248,6 +275,7 @@ bool set_diskann_use_bfs_cache(const std::string &index_name,
 bool rebuild_all_indexes(size_t *rebuilt_count);
 bool recover_all_indexes(size_t *recovered_count);
 bool get_index_info(const std::string &index_name, index_info *info);
+bool get_global_status_summary(global_status_summary *summary);
 bool list_indexes(std::vector<std::string> *index_names);
 bool metadata_loaded();
 size_t committed_vector_memory_bytes();
