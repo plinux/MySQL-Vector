@@ -38,6 +38,11 @@ uint32_t auto_cpu_budget() {
 
 uint32_t at_least_one(uint32_t value) { return value == 0 ? 1U : value; }
 
+uint32_t auto_build_threads(uint32_t cpu_budget, uint32_t task_count) {
+  const uint32_t budget_per_task = std::max(1U, cpu_budget / task_count);
+  return std::max(1U, budget_per_task);
+}
+
 uint32_t saturated_multiply(uint32_t lhs, uint32_t rhs) {
   const uint64_t product = static_cast<uint64_t>(lhs) * rhs;
   return product > std::numeric_limits<uint32_t>::max()
@@ -59,10 +64,14 @@ bool make_segment_scheduler_plan(const segment_scheduler_input &input,
       input.requested_task_count == 0 ? input.segment_count
                                       : input.requested_task_count;
   const uint32_t task_count =
-      std::max(1U, std::min(input.segment_count, requested_tasks));
-  const uint32_t budget_per_task = std::max(1U, cpu_budget / task_count);
+      input.single_index_build
+          ? 1U
+          : std::max(1U, std::min(input.segment_count, requested_tasks));
   const uint32_t requested_build_threads =
-      at_least_one(input.requested_build_threads);
+      input.requested_build_threads == 0
+          ? auto_build_threads(cpu_budget, task_count)
+          : input.requested_build_threads;
+  const uint32_t budget_per_task = std::max(1U, cpu_budget / task_count);
   const uint32_t effective_build_threads =
       std::max(1U, std::min(requested_build_threads, budget_per_task));
   const uint32_t requested_blas_threads =
@@ -75,9 +84,17 @@ bool make_segment_scheduler_plan(const segment_scheduler_input &input,
       input.top_k == 0 ? 0 : saturated_multiply(input.top_k, multiplier);
 
   plan->task_count = task_count;
+  plan->cpu_budget = cpu_budget;
   plan->effective_build_threads = effective_build_threads;
   plan->effective_blas_threads = effective_blas_threads;
+  plan->raw_reader_threads =
+      input.single_index_build
+          ? std::max(1U, std::min(input.segment_count, effective_build_threads))
+          : task_count;
+  plan->pq_train_threads = effective_build_threads;
+  plan->pq_compress_threads = effective_build_threads;
   plan->candidates_per_segment = std::max(input.top_k, candidates);
+  plan->single_index_build = input.single_index_build;
   return true;
 }
 

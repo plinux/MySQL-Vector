@@ -15,6 +15,7 @@ SELECT VEC_INDEX_TXN_COMMIT(@txn1);
 SELECT VEC_INDEX_TXN_PENDING(@txn1);
 SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_txn');
 
 SET @txn2 = VEC_INDEX_TXN_BEGIN();
@@ -32,6 +33,7 @@ SELECT VEC_INDEX_STAGE_ERASE('idx_txn', @txn4, 1);
 SELECT VEC_INDEX_TXN_COMMIT(@txn4);
 SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_txn');
 
 SET @txn_sp = VEC_INDEX_TXN_BEGIN();

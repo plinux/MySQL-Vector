@@ -23,20 +23,29 @@
 
 #include "sql/vector/vector_index_diagnostics.h"
 
-#include <cstdlib>
 #include <fstream>
 #include <mutex>
 #include <sstream>
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+#include <cstdlib>
+#endif
+
 namespace {
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 constexpr const char *kDiagnosticsPathEnv = "MYSQL_VECTOR_DIAG_FILE";
+#endif
 
 std::mutex g_diagnostics_mutex;
 
 const char *diagnostics_path() {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
   const char *path = std::getenv(kDiagnosticsPathEnv);
   return (path != nullptr && path[0] != '\0') ? path : nullptr;
+#else
+  return nullptr;
+#endif
 }
 
 uint64_t system_time_ms() {

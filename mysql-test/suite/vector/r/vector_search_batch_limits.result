@@ -1,0 +1,37 @@
+#
+# WL#Vector: batch search limit sysvars
+#
+SET @old_search_batch_count = @@global.vector_search_batch_count;
+SET @old_search_batch_result_count = @@global.vector_search_batch_result_count;
+SELECT VEC_INDEX_CREATE('idx_search_batch_limits', 2, 'EUCLIDEAN',
+'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_search_batch_limits', 2, 'EUCLIDEAN',
+'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_search_batch_limits', 1, '[1,0]');
+VEC_INDEX_UPSERT('idx_search_batch_limits', 1, '[1,0]')
+1
+SELECT VEC_INDEX_UPSERT('idx_search_batch_limits', 2, '[0,1]');
+VEC_INDEX_UPSERT('idx_search_batch_limits', 2, '[0,1]')
+1
+SET GLOBAL vector_search_batch_count=1;
+SELECT VEC_INDEX_SEARCH_BATCH('idx_search_batch_limits',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 1);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET GLOBAL vector_search_batch_count=2;
+SET GLOBAL vector_search_batch_result_count=1;
+SELECT VEC_INDEX_SEARCH_BATCH('idx_search_batch_limits',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 1);
+ERROR HY000: Incorrect arguments to vec_index_search_batch
+SET GLOBAL vector_search_batch_result_count=2;
+SELECT VEC_INDEX_SEARCH_BATCH('idx_search_batch_limits',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('idx_search_batch_limits',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 1)
+[[1],[2]]
+SET GLOBAL vector_search_batch_count = @old_search_batch_count;
+SET GLOBAL vector_search_batch_result_count = @old_search_batch_result_count;
+SELECT VEC_INDEX_DROP('idx_search_batch_limits');
+VEC_INDEX_DROP('idx_search_batch_limits')
+1
+# End of tests.

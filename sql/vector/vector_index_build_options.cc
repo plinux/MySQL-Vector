@@ -60,7 +60,7 @@ ulong opt_vector_diskann_disk_pq_dims = 0;
 bool opt_vector_diskann_accelerate_build = false;
 bool opt_vector_diskann_shuffle_build = false;
 bool opt_vector_diskann_use_bfs_cache = false;
-bool opt_vector_diskann_segmented_serving = false;
+bool opt_vector_diskann_segmented_serving = true;
 ulong opt_vector_diskann_max_degree =
     vector_index::k_default_diskann_max_degree;
 ulong opt_vector_diskann_build_complexity =

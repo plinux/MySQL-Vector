@@ -93,6 +93,12 @@ bool has_build_diagnostics(
   present |= diagnostics.pq_train_threads != 0;
   present |= diagnostics.pq_compress_threads != 0;
   present |= diagnostics.candidates_per_segment != 0;
+  present |= diagnostics.search_fanout_segments != 0;
+  present |= diagnostics.search_fanout_threads != 0;
+  present |= diagnostics.search_global_top_k != 0;
+  present |= diagnostics.search_per_segment_top_k != 0;
+  present |= diagnostics.search_result_budget != 0;
+  present |= diagnostics.search_candidate_count != 0;
   present |= diagnostics.single_index_build;
   present |= diagnostics.pq_chunks != 0;
   present |= diagnostics.cache_nodes != 0;
@@ -221,6 +227,27 @@ void append_build_diagnostics(
               diagnostics.single_index_build);
   append_uint(fields, "scheduler_candidates_per_segment",
               diagnostics.candidates_per_segment);
+  const bool has_search_diagnostics =
+      diagnostics.search_fanout_segments != 0 ||
+      diagnostics.search_fanout_threads != 0 ||
+      diagnostics.search_global_top_k != 0 ||
+      diagnostics.search_per_segment_top_k != 0 ||
+      diagnostics.search_result_budget != 0 ||
+      diagnostics.search_candidate_count != 0;
+  if (has_search_diagnostics) {
+    append_uint(fields, "scheduler_search_fanout_segments",
+                diagnostics.search_fanout_segments);
+    append_uint(fields, "scheduler_search_fanout_threads",
+                diagnostics.search_fanout_threads);
+    append_uint(fields, "scheduler_search_global_top_k",
+                diagnostics.search_global_top_k);
+    append_uint(fields, "scheduler_search_per_segment_top_k",
+                diagnostics.search_per_segment_top_k);
+    append_uint(fields, "scheduler_search_result_budget",
+                diagnostics.search_result_budget);
+    append_uint(fields, "scheduler_search_candidate_count",
+                diagnostics.search_candidate_count);
+  }
   append_uint(fields, "diskann_segment_pq_chunks",
               diskann_provider ? diagnostics.pq_chunks : 0);
   append_uint(fields, "diskann_segment_cache_nodes",
@@ -285,7 +312,7 @@ void collect_info_fields(const vector_index_registry::index_info &info,
                          field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(62);
+  fields->reserve(68);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);

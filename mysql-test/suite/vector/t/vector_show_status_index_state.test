@@ -21,6 +21,7 @@ CREATE TABLE t_vec_status_meta (
 ) ENGINE=InnoDB;
 CREATE VECTOR INDEX ON t_vec_status_meta(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('test.t_vec_status_meta.v');
 SHOW VECTOR STATUS FOR INDEX 'test.t_vec_status_meta.v'
   WHERE Section = 'INDEX_STATE'

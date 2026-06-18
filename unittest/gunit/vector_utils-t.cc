@@ -82,6 +82,8 @@ TEST(VectorUtilsTest, ParseTextVectorRejectsMalformedTokens) {
       "1, 2]",
       "[not-a-number]",
       "[1e1000]",
+      "[1e39]",
+      "[-1e39]",
       "[1 2]",
       "[1] trailing",
       "[] trailing",
@@ -115,6 +117,9 @@ TEST(VectorUtilsTest, ParseBinaryVectorRejectsMisalignedLength) {
   size_t dim = 0;
 
   EXPECT_FALSE(vector_utils::parse_binary_vector(&input, &dim));
+  binary_vector_data rhs({1.0F});
+  EXPECT_FALSE(
+      vector_utils::check_compatible_vector_inputs(&input, rhs.string(), &dim));
 }
 
 TEST(VectorUtilsTest, ParseDistanceMetricRecognizesAliases) {

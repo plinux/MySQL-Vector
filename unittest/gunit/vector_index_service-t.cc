@@ -29,6 +29,7 @@
 #include <memory>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -243,6 +244,156 @@ const char *segmented_memory_provider_for_testing() {
 #endif
 #endif
 }
+
+void install_diskann_offline_test_adapter() {
+#if defined(MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB) && \
+    !defined(MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED)
+  vector_index::diskann_reset_offline_adapter_path_for_testing();
+  vector_index::diskann_set_offline_adapter_path_for_testing(
+      MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB);
+#endif
+}
+
+struct diskann_serial_test_adapter_installer {
+  diskann_serial_test_adapter_installer() {
+#ifdef MYSQL_VECTOR_DISKANN_TEST_LIB
+    vector_index::diskann_reset_adapter_path_for_testing();
+    vector_index::diskann_set_adapter_path_for_testing(
+        MYSQL_VECTOR_DISKANN_TEST_LIB);
+#endif
+  }
+};
+
+[[maybe_unused]] diskann_serial_test_adapter_installer
+    install_diskann_serial_test_adapter;
+
+class configurable_backend final : public vector_index::backend {
+ public:
+  explicit configurable_backend(vector_index::backend_provider provider)
+      : m_provider(provider),
+        m_storage(2, vector_index::metric_type::kEuclidean) {}
+
+  bool upsert(uint64_t doc_id,
+              const vector_index::vector_data &vector) override {
+    return m_storage.upsert(doc_id, vector);
+  }
+  bool erase(uint64_t doc_id) override { return m_storage.erase(doc_id); }
+  bool search(
+      const vector_index::vector_data &query, size_t top_k,
+      std::vector<vector_index::search_result> *results) const override {
+    return m_storage.search(query, top_k, results);
+  }
+  size_t entry_count() const override { return m_storage.entry_count(); }
+  size_t dimension() const override { return m_storage.dimension(); }
+  vector_index::metric_type metric() const override {
+    return m_storage.metric();
+  }
+  vector_index::backend_mode mode() const override {
+    return vector_index::backend_mode::kMemory;
+  }
+  vector_index::backend_provider provider() const override {
+    return m_provider;
+  }
+  bool supports_mutations() const override { return true; }
+
+  bool set_search_ef(uint32_t value) override {
+    if (!accept_setters) return false;
+    search_ef_value = value;
+    return true;
+  }
+  bool set_faiss_ivf_params(uint32_t nlist, uint32_t nprobe) override {
+    if (!accept_setters) return false;
+    faiss_nlist = nlist;
+    faiss_nprobe = nprobe;
+    return true;
+  }
+  bool set_faiss_ivf_pq_params(uint32_t nlist, uint32_t nprobe, uint32_t pq_m,
+                               uint32_t pq_bits) override {
+    if (!accept_setters) return false;
+    faiss_nlist = nlist;
+    faiss_nprobe = nprobe;
+    faiss_pq_m = pq_m;
+    faiss_pq_bits = pq_bits;
+    return true;
+  }
+  bool set_diskann_build_params(uint32_t max_degree, uint32_t build_complexity,
+                                uint32_t build_threads) override {
+    if (!accept_setters) return false;
+    diskann_max_degree = max_degree;
+    diskann_build_complexity = build_complexity;
+    diskann_build_threads = build_threads;
+    return true;
+  }
+  bool set_diskann_build_threads(uint32_t build_threads) override {
+    if (!accept_setters) return false;
+    diskann_build_threads = build_threads;
+    return true;
+  }
+  bool set_diskann_build_mode(
+      vector_index::diskann_build_mode build_mode) override {
+    if (!accept_setters) return false;
+    diskann_build_mode_value = build_mode;
+    return true;
+  }
+  bool set_diskann_search_complexity(uint32_t search_complexity) override {
+    if (!accept_setters) return false;
+    diskann_search_complexity = search_complexity;
+    return true;
+  }
+  bool set_diskann_search_beamwidth(uint32_t search_beamwidth) override {
+    if (!accept_setters) return false;
+    diskann_search_beamwidth = search_beamwidth;
+    return true;
+  }
+  bool set_diskann_pq_code_budget_size(uint64_t budget_size) override {
+    if (!accept_setters) return false;
+    diskann_pq_code_budget_size = budget_size;
+    return true;
+  }
+  bool set_diskann_disk_pq_dims(uint32_t disk_pq_dims) override {
+    if (!accept_setters) return false;
+    diskann_disk_pq_dims = disk_pq_dims;
+    return true;
+  }
+  bool set_diskann_accelerate_build(bool accelerate_build) override {
+    if (!accept_setters) return false;
+    diskann_accelerate_build = accelerate_build;
+    return true;
+  }
+  bool set_diskann_shuffle_build(bool shuffle_build) override {
+    if (!accept_setters) return false;
+    diskann_shuffle_build = shuffle_build;
+    return true;
+  }
+  bool set_diskann_use_bfs_cache(bool use_bfs_cache) override {
+    if (!accept_setters) return false;
+    diskann_use_bfs_cache = use_bfs_cache;
+    return true;
+  }
+
+  bool accept_setters{true};
+  uint32_t search_ef_value{0};
+  uint32_t faiss_nlist{0};
+  uint32_t faiss_nprobe{0};
+  uint32_t faiss_pq_m{0};
+  uint32_t faiss_pq_bits{0};
+  uint32_t diskann_max_degree{0};
+  uint32_t diskann_build_complexity{0};
+  uint32_t diskann_build_threads{0};
+  vector_index::diskann_build_mode diskann_build_mode_value{
+      vector_index::diskann_build_mode::kAuto};
+  uint32_t diskann_search_complexity{0};
+  uint32_t diskann_search_beamwidth{0};
+  uint64_t diskann_pq_code_budget_size{0};
+  uint32_t diskann_disk_pq_dims{0};
+  bool diskann_accelerate_build{false};
+  bool diskann_shuffle_build{false};
+  bool diskann_use_bfs_cache{false};
+
+ private:
+  vector_index::backend_provider m_provider;
+  vector_index::memory_backend m_storage;
+};
 
 class BoolGuard {
  public:
@@ -465,7 +616,8 @@ class build_pipeline_options_guard {
         m_segment_max_rows(opt_vector_build_segment_max_rows),
         m_segment_target_size(opt_vector_build_segment_target_size),
         m_max_tasks(opt_vector_build_pipeline_max_tasks),
-        m_progress_interval(opt_vector_build_pipeline_progress_interval) {}
+        m_progress_interval(opt_vector_build_pipeline_progress_interval),
+        m_diskann_segmented_serving(opt_vector_diskann_segmented_serving) {}
 
   ~build_pipeline_options_guard() {
     opt_vector_build_pipeline_mode = m_mode;
@@ -475,6 +627,7 @@ class build_pipeline_options_guard {
     opt_vector_build_segment_target_size = m_segment_target_size;
     opt_vector_build_pipeline_max_tasks = m_max_tasks;
     opt_vector_build_pipeline_progress_interval = m_progress_interval;
+    opt_vector_diskann_segmented_serving = m_diskann_segmented_serving;
   }
 
  private:
@@ -485,6 +638,7 @@ class build_pipeline_options_guard {
   ulonglong m_segment_target_size;
   ulong m_max_tasks;
   ulong m_progress_interval;
+  bool m_diskann_segmented_serving;
 };
 
 void expect_pipeline_snapshot(
@@ -929,6 +1083,11 @@ TEST(VectorEntryStoreTest, RejectsInvalidOperationsAndPreservesState) {
 
   ASSERT_TRUE(store.upsert("idx_a", 2, {2.0F, 2.0F}));
   ASSERT_TRUE(store.upsert("idx_a", 1, {1.0F, 1.0F}));
+  const uint64_t generation_after_insert = store.generation("idx_a");
+  ASSERT_TRUE(store.upsert("idx_a", 1, {1.0F, 1.0F}));
+  EXPECT_EQ(generation_after_insert, store.generation("idx_a"));
+  ASSERT_TRUE(store.erase("idx_a", 99));
+  EXPECT_EQ(generation_after_insert, store.generation("idx_a"));
   EXPECT_FALSE(store.for_each_committed_entry(
       "idx_a", [&visited_doc_ids](uint64_t doc_id,
                                    const vector_index::vector_data &) {
@@ -1181,6 +1340,8 @@ TEST(VectorIndexServiceTest, BuildPipelineRecordsDefaultDirectDecision) {
   ASSERT_TRUE(service.set_index_consistency_mode(
       "idx_pipeline_direct",
       vector_index::index_consistency_mode::kStandalone));
+  EXPECT_TRUE(service.standalone_build_source("missing_index").empty());
+  EXPECT_EQ("memory", service.standalone_build_source("idx_pipeline_direct"));
   ASSERT_TRUE(service.direct_upsert("idx_pipeline_direct", 11,
                                     {1.0F, 0.0F}));
   ASSERT_TRUE(service.rebuild_index("idx_pipeline_direct"));
@@ -1190,6 +1351,231 @@ TEST(VectorIndexServiceTest, BuildPipelineRecordsDefaultDirectDecision) {
       service.describe_build_pipeline("idx_pipeline_direct", &snapshot));
   expect_pipeline_snapshot(snapshot, "auto", "direct", "below_threshold", 1, 8,
                            0);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest,
+     SegmentedBackendDelegatesSearchAndProviderTuningsToSegments) {
+  vector_index::index_service::index_config search_config;
+  search_config.dimension = 2;
+  search_config.metric = vector_index::metric_type::kEuclidean;
+  search_config.mode = vector_index::backend_mode::kMemory;
+  search_config.provider = vector_index::backend_provider::kNative;
+  auto first_segment = std::make_shared<configurable_backend>(
+      vector_index::backend_provider::kNative);
+  auto second_segment = std::make_shared<configurable_backend>(
+      vector_index::backend_provider::kNative);
+  ASSERT_TRUE(first_segment->upsert(1, {1.0F, 1.0F}));
+  ASSERT_TRUE(second_segment->upsert(9, {9.0F, 9.0F}));
+  auto search_backend = vector_index::make_segmented_backend_for_testing(
+      search_config, {first_segment, second_segment});
+  EXPECT_FALSE(search_backend->supports_mutations());
+  EXPECT_FALSE(search_backend->upsert(3, {3.0F, 3.0F}));
+  EXPECT_FALSE(search_backend->erase(1));
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(search_backend->search({1.0F, 1.0F}, 2, &results));
+  ASSERT_EQ(2U, results.size());
+  EXPECT_EQ(1U, results[0].doc_id);
+  EXPECT_EQ(9U, results[1].doc_id);
+
+  std::vector<std::vector<vector_index::search_result>> batch_results;
+  ASSERT_TRUE(search_backend->search_batch({{1.0F, 1.0F}, {9.0F, 9.0F}}, 1,
+                                           &batch_results));
+  ASSERT_EQ(2U, batch_results.size());
+  ASSERT_EQ(1U, batch_results[0].size());
+  ASSERT_EQ(1U, batch_results[1].size());
+  EXPECT_EQ(1U, batch_results[0][0].doc_id);
+  EXPECT_EQ(9U, batch_results[1][0].doc_id);
+
+  vector_index::index_service::index_config hnsw_config = search_config;
+  hnsw_config.provider = vector_index::backend_provider::kHnswlib;
+  auto hnsw_segment = std::make_shared<configurable_backend>(
+      vector_index::backend_provider::kHnswlib);
+  auto hnsw_backend = vector_index::make_segmented_backend_for_testing(
+      hnsw_config, {hnsw_segment});
+  EXPECT_TRUE(hnsw_backend->set_search_ef(72));
+  EXPECT_EQ(72U, hnsw_backend->search_ef());
+  EXPECT_EQ(72U, hnsw_segment->search_ef_value);
+
+  vector_index::index_service::index_config faiss_config = search_config;
+  faiss_config.provider = vector_index::backend_provider::kFaiss;
+  auto faiss_segment = std::make_shared<configurable_backend>(
+      vector_index::backend_provider::kFaiss);
+  auto faiss_backend = vector_index::make_segmented_backend_for_testing(
+      faiss_config, {faiss_segment});
+  EXPECT_TRUE(faiss_backend->set_faiss_ivf_params(16, 4));
+  EXPECT_TRUE(faiss_backend->set_faiss_ivf_pq_params(32, 8, 4, 8));
+  EXPECT_EQ(32U, faiss_segment->faiss_nlist);
+  EXPECT_EQ(8U, faiss_segment->faiss_nprobe);
+  EXPECT_EQ(4U, faiss_segment->faiss_pq_m);
+  EXPECT_EQ(8U, faiss_segment->faiss_pq_bits);
+
+  auto rejecting_faiss_segment = std::make_shared<configurable_backend>(
+      vector_index::backend_provider::kFaiss);
+  rejecting_faiss_segment->accept_setters = false;
+  auto rejecting_faiss_backend =
+      vector_index::make_segmented_backend_for_testing(
+          faiss_config, {faiss_segment, rejecting_faiss_segment});
+  EXPECT_FALSE(rejecting_faiss_backend->set_faiss_ivf_params(64, 16));
+
+  vector_index::index_service::index_config diskann_config = search_config;
+  diskann_config.mode = vector_index::backend_mode::kExternal;
+  diskann_config.provider = vector_index::backend_provider::kDiskAnn;
+  auto diskann_segment = std::make_shared<configurable_backend>(
+      vector_index::backend_provider::kDiskAnn);
+  auto diskann_backend = vector_index::make_segmented_backend_for_testing(
+      diskann_config, {diskann_segment});
+  EXPECT_TRUE(diskann_backend->set_diskann_build_params(56, 100, 8));
+  EXPECT_TRUE(diskann_backend->set_diskann_build_threads(12));
+  EXPECT_TRUE(diskann_backend->set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
+  EXPECT_TRUE(diskann_backend->set_diskann_search_complexity(800));
+  EXPECT_TRUE(diskann_backend->set_diskann_search_beamwidth(32));
+  EXPECT_TRUE(diskann_backend->set_diskann_pq_code_budget_size(4096));
+  EXPECT_TRUE(diskann_backend->set_diskann_disk_pq_dims(16));
+  EXPECT_TRUE(diskann_backend->set_diskann_accelerate_build(true));
+  EXPECT_TRUE(diskann_backend->set_diskann_shuffle_build(true));
+  EXPECT_TRUE(diskann_backend->set_diskann_use_bfs_cache(true));
+  EXPECT_EQ(56U, diskann_backend->diskann_max_degree());
+  EXPECT_EQ(100U, diskann_backend->diskann_build_complexity());
+  EXPECT_EQ(12U, diskann_backend->diskann_build_threads());
+  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+            diskann_backend->diskann_build_mode_value());
+  EXPECT_EQ(800U, diskann_backend->diskann_search_complexity());
+  EXPECT_EQ(32U, diskann_backend->diskann_search_beamwidth());
+  EXPECT_EQ(4096U, diskann_backend->diskann_pq_code_budget_size());
+  EXPECT_EQ(16U, diskann_backend->diskann_disk_pq_dims());
+  EXPECT_TRUE(diskann_backend->diskann_accelerate_build());
+  EXPECT_TRUE(diskann_backend->diskann_shuffle_build());
+  EXPECT_TRUE(diskann_backend->diskann_use_bfs_cache());
+  EXPECT_EQ(56U, diskann_segment->diskann_max_degree);
+  EXPECT_EQ(100U, diskann_segment->diskann_build_complexity);
+  EXPECT_EQ(12U, diskann_segment->diskann_build_threads);
+  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+            diskann_segment->diskann_build_mode_value);
+  EXPECT_EQ(800U, diskann_segment->diskann_search_complexity);
+  EXPECT_EQ(32U, diskann_segment->diskann_search_beamwidth);
+  EXPECT_EQ(4096U, diskann_segment->diskann_pq_code_budget_size);
+  EXPECT_EQ(16U, diskann_segment->diskann_disk_pq_dims);
+  EXPECT_TRUE(diskann_segment->diskann_accelerate_build);
+  EXPECT_TRUE(diskann_segment->diskann_shuffle_build);
+  EXPECT_TRUE(diskann_segment->diskann_use_bfs_cache);
+}
+
+TEST(VectorIndexServiceTest,
+     DiskAnnStandaloneOfflineRawSegmentsUseSegmentedBackendByDefault) {
+  vector_index::index_service::index_config config;
+  config.provider = vector_index::backend_provider::kDiskAnn;
+  config.mode = vector_index::backend_mode::kExternal;
+  config.diskann_segmented_serving = opt_vector_diskann_segmented_serving;
+  config.diskann_build_mode_value = vector_index::diskann_build_mode::kOffline;
+  EXPECT_FALSE(
+      vector_index::raw_segments_use_single_backend_for_testing(config));
+
+  config.diskann_build_mode_value = vector_index::diskann_build_mode::kAuto;
+  EXPECT_FALSE(
+      vector_index::raw_segments_use_single_backend_for_testing(config));
+}
+
+TEST(VectorIndexServiceTest,
+     DiskAnnStandaloneOfflineRawSegmentsCanUseSingleBackendForDiagnostics) {
+  vector_index::index_service::index_config config;
+  config.provider = vector_index::backend_provider::kDiskAnn;
+  config.mode = vector_index::backend_mode::kExternal;
+  config.diskann_segmented_serving = false;
+  config.diskann_build_mode_value = vector_index::diskann_build_mode::kOffline;
+  EXPECT_TRUE(
+      vector_index::raw_segments_use_single_backend_for_testing(config));
+
+  config.diskann_build_mode_value = vector_index::diskann_build_mode::kAuto;
+  EXPECT_TRUE(
+      vector_index::raw_segments_use_single_backend_for_testing(config));
+
+  config.diskann_build_mode_value = vector_index::diskann_build_mode::kSerial;
+  EXPECT_FALSE(
+      vector_index::raw_segments_use_single_backend_for_testing(config));
+}
+
+TEST(VectorIndexServiceTest,
+     DiskAnnSegmentedServingDisablesRawSegmentSingleBackend) {
+  vector_index::index_service::index_config config;
+  config.provider = vector_index::backend_provider::kDiskAnn;
+  config.mode = vector_index::backend_mode::kExternal;
+  config.diskann_segmented_serving = true;
+
+  config.diskann_build_mode_value = vector_index::diskann_build_mode::kOffline;
+  EXPECT_FALSE(
+      vector_index::raw_segments_use_single_backend_for_testing(config));
+
+  config.diskann_build_mode_value = vector_index::diskann_build_mode::kAuto;
+  EXPECT_FALSE(
+      vector_index::raw_segments_use_single_backend_for_testing(config));
+}
+
+TEST(VectorIndexServiceTest, NonDiskAnnRawSegmentsKeepSegmentedBackend) {
+  vector_index::index_service::index_config config;
+  config.mode = vector_index::backend_mode::kExternal;
+  config.provider = vector_index::backend_provider::kNative;
+  EXPECT_FALSE(
+      vector_index::raw_segments_use_single_backend_for_testing(config));
+
+  config.provider = vector_index::backend_provider::kFaiss;
+  EXPECT_FALSE(
+      vector_index::raw_segments_use_single_backend_for_testing(config));
+}
+
+TEST(VectorIndexServiceTest, RawSegmentFileHelpersRejectInvalidInputs) {
+  size_t value = 123;
+  EXPECT_FALSE(vector_index::parse_manifest_size_for_testing("7", nullptr));
+  EXPECT_FALSE(vector_index::parse_manifest_size_for_testing("abc", &value));
+  ASSERT_TRUE(vector_index::parse_manifest_size_for_testing("7", &value));
+  EXPECT_EQ(7U, value);
+
+  EXPECT_FALSE(vector_index::file_size_as_size_for_testing("missing.file",
+                                                           nullptr));
+  EXPECT_FALSE(vector_index::file_size_as_size_for_testing("missing.file",
+                                                           &value));
+
+  size_t bytes = 1;
+  EXPECT_FALSE(vector_index::vector_payload_bytes_for_testing(1, 1, nullptr));
+  EXPECT_FALSE(vector_index::vector_payload_bytes_for_testing(
+      std::numeric_limits<size_t>::max(), 2, &bytes));
+  ASSERT_TRUE(vector_index::vector_payload_bytes_for_testing(5, 0, &bytes));
+  EXPECT_EQ(0U, bytes);
+  ASSERT_TRUE(vector_index::vector_payload_bytes_for_testing(3, 2, &bytes));
+  EXPECT_EQ(3U * 2U * sizeof(float), bytes);
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_service_file_helpers";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  ASSERT_TRUE(std::filesystem::create_directories(root, ec));
+
+  const std::string source = root + "/source.bin";
+  const std::string target = root + "/nested/target.bin";
+  const std::string parent_file = root + "/parent_file";
+  write_binary_bytes(source, "payload");
+  write_binary_bytes(parent_file, "not a directory");
+  EXPECT_FALSE(vector_index::copy_or_link_file_for_testing("", target));
+  EXPECT_FALSE(vector_index::copy_or_link_file_for_testing(source, ""));
+  EXPECT_FALSE(vector_index::copy_or_link_file_for_testing(
+      source, parent_file + "/target.bin"));
+  EXPECT_FALSE(vector_index::copy_or_link_file_for_testing(root + "/missing",
+                                                           target));
+  ASSERT_TRUE(vector_index::copy_or_link_file_for_testing(source, target));
+  ASSERT_TRUE(vector_index::file_size_as_size_for_testing(target, &value));
+  EXPECT_EQ(7U, value);
+
+  EXPECT_FALSE(vector_index::write_generated_docid_file_for_testing("", 1));
+  EXPECT_FALSE(vector_index::write_generated_docid_file_for_testing(root, 1));
+  EXPECT_FALSE(vector_index::write_generated_docid_file_for_testing(
+      parent_file + "/docids.u64", 1));
+  const std::string docids = root + "/docids.u64";
+  ASSERT_TRUE(vector_index::write_generated_docid_file_for_testing(docids, 3));
+  ASSERT_TRUE(vector_index::file_size_as_size_for_testing(docids, &value));
+  EXPECT_EQ(sizeof(uint64_t) * 4U, value);
 
   std::filesystem::remove_all(root, ec);
 }
@@ -1299,18 +1685,26 @@ TEST(VectorIndexServiceTest, DiskAnnSearchTuningsUpdateConfig) {
   ASSERT_TRUE(service.set_index_consistency_mode(
       "idx_segmented_diskann",
       vector_index::index_consistency_mode::kStandalone));
-  ASSERT_TRUE(service.rebuild_index("idx_segmented_diskann"));
 
   ASSERT_TRUE(service.set_diskann_search_complexity("idx_segmented_diskann",
                                                     200));
   ASSERT_TRUE(service.set_diskann_search_beamwidth("idx_segmented_diskann",
                                                   32));
+  ASSERT_TRUE(service.set_diskann_disk_pq_dims("idx_segmented_diskann", 8));
+  ASSERT_TRUE(service.set_diskann_accelerate_build("idx_segmented_diskann",
+                                                  true));
+  ASSERT_TRUE(service.set_diskann_shuffle_build("idx_segmented_diskann", true));
+  ASSERT_TRUE(service.set_diskann_use_bfs_cache("idx_segmented_diskann", true));
 
   vector_index::index_service::index_config described;
   ASSERT_TRUE(service.describe_index("idx_segmented_diskann", &described,
                                      nullptr, nullptr, nullptr));
   EXPECT_EQ(200U, described.diskann_search_complexity);
   EXPECT_EQ(32U, described.diskann_search_beamwidth);
+  EXPECT_EQ(8U, described.diskann_disk_pq_dims);
+  EXPECT_TRUE(described.diskann_accelerate_build);
+  EXPECT_TRUE(described.diskann_shuffle_build);
+  EXPECT_TRUE(described.diskann_use_bfs_cache);
 }
 
 TEST(VectorIndexServiceTest, SegmentedFaissTuningsUpdateConfig) {
@@ -1337,6 +1731,11 @@ TEST(VectorIndexServiceTest, SegmentedFaissTuningsUpdateConfig) {
   ASSERT_TRUE(service.set_faiss_ivf_params("idx_segmented_faiss", 4, 2));
   ASSERT_TRUE(
       service.set_faiss_ivf_pq_params("idx_segmented_faiss", 4, 2, 2, 4));
+  EXPECT_FALSE(service.set_diskann_disk_pq_dims("idx_segmented_faiss", 4));
+  EXPECT_FALSE(service.set_diskann_accelerate_build("idx_segmented_faiss",
+                                                   true));
+  EXPECT_FALSE(service.set_diskann_shuffle_build("idx_segmented_faiss", true));
+  EXPECT_FALSE(service.set_diskann_use_bfs_cache("idx_segmented_faiss", true));
 
   vector_index::index_service::index_config described;
   ASSERT_TRUE(service.describe_index("idx_segmented_faiss", &described,
@@ -1442,6 +1841,16 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsMultipleRawSegments) {
   EXPECT_EQ(2U, diagnostics.row_count);
   EXPECT_EQ(2U, diagnostics.segment_count);
   EXPECT_EQ(2U, diagnostics.build_invocations);
+  EXPECT_EQ(2U, diagnostics.concurrent_build_tasks);
+  EXPECT_GE(diagnostics.effective_build_threads, 1U);
+  const uint32_t cpu_budget =
+      std::thread::hardware_concurrency() == 0
+          ? 1U
+          : std::thread::hardware_concurrency();
+  EXPECT_LE(static_cast<uint64_t>(diagnostics.effective_build_threads) *
+                diagnostics.concurrent_build_tasks,
+            cpu_budget);
+  EXPECT_GE(diagnostics.effective_blas_threads, 1U);
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(service.search("idx_pipeline_raw", {1.0F, 0.0F}, 2, &result));
@@ -1458,6 +1867,89 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsMultipleRawSegments) {
   ASSERT_EQ(1U, batch_result[1].size());
   EXPECT_EQ(11U, batch_result[0][0].doc_id);
   EXPECT_EQ(22U, batch_result[1][0].doc_id);
+
+  vector_index::reset_runtime_worker_pool_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, BuildPipelineSchedulesFourRawSegmentTasks) {
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  opt_vector_build_pipeline_max_tasks = 4;
+  opt_vector_build_segment_max_rows = 2;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+  vector_index::reset_runtime_worker_pool_for_testing();
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/pipeline_four_segments_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 8, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F, 4.0F, 0.0F,
+                       5.0F, 0.0F, 6.0F, 0.0F, 7.0F, 0.0F, 8.0F, 0.0F});
+  write_raw_docid_file(docid_path, {1, 2, 3, 4, 5, 6, 7, 8});
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_pipeline_four", 2,
+                                                  "euclidean", "memory",
+                                                  provider));
+  if (std::string(provider) == "hnsw") {
+    ASSERT_TRUE(service.set_hnsw_build_threads("idx_pipeline_four", 16));
+  } else if (std::string(provider) == "faiss") {
+    ASSERT_TRUE(service.set_faiss_build_threads("idx_pipeline_four", 16));
+  } else if (std::string(provider) == "diskann") {
+    ASSERT_TRUE(service.set_diskann_build_threads("idx_pipeline_four", 16));
+  }
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_pipeline_four", vector_index::index_consistency_mode::kStandalone));
+
+  vector_index::index_service::bulk_load_options options;
+  uint64_t loaded_rows = 0;
+  std::string error;
+  ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+      "idx_pipeline_four", vector_path, docid_path, options, &loaded_rows,
+      &error))
+      << error;
+  EXPECT_EQ(8U, loaded_rows);
+  EXPECT_EQ(4U, service.standalone_raw_segment_count("idx_pipeline_four"));
+
+  ASSERT_TRUE(service.rebuild_index("idx_pipeline_four"));
+
+  vector_index::index_service::build_pipeline_snapshot snapshot;
+  ASSERT_TRUE(service.describe_build_pipeline("idx_pipeline_four", &snapshot));
+  expect_pipeline_snapshot(snapshot, "auto", "segmented", "raw_segment_count",
+                           8, 64, 4);
+
+  vector_index::index_service::index_config described;
+  vector_index::backend_build_diagnostics diagnostics;
+  ASSERT_TRUE(service.describe_index(
+      "idx_pipeline_four", &described, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      &diagnostics));
+  EXPECT_EQ("segmented", diagnostics.runtime);
+  EXPECT_EQ("raw_segments", diagnostics.input_source);
+  EXPECT_EQ(8U, diagnostics.row_count);
+  EXPECT_EQ(4U, diagnostics.segment_count);
+  EXPECT_EQ(4U, diagnostics.build_invocations);
+  EXPECT_EQ(4U, diagnostics.concurrent_build_tasks);
+  if (std::string(provider) != "native") {
+    EXPECT_EQ(4U, diagnostics.effective_build_threads);
+    EXPECT_EQ(1U, diagnostics.effective_blas_threads);
+  }
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search("idx_pipeline_four", {8.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(8U, result[0].doc_id);
 
   vector_index::reset_runtime_worker_pool_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -1532,6 +2024,188 @@ TEST(VectorIndexServiceTest, SegmentedSearchHandlesNestedParallelBackend) {
   } else {
     EXPECT_EQ(0U, vector_index::runtime_worker_pool_size_for_testing());
   }
+
+  vector_index::reset_runtime_worker_pool_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, DiskAnnRawSegmentsBuildSingleBackend) {
+  install_diskann_offline_test_adapter();
+  if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
+    GTEST_SKIP() << "DiskANN offline manifest adapter unavailable in current "
+                    "build/runtime";
+  }
+  build_pipeline_options_guard guard;
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+  opt_vector_build_pipeline_max_tasks = 2;
+  opt_vector_diskann_segmented_serving = false;
+  vector_index::reset_runtime_worker_pool_for_testing();
+  const std::string root =
+      std::string(testing::TempDir()) + "/pipeline_diskann_manifest_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string first_vector_path = root + "/first.fbin";
+  const std::string first_docid_path = root + "/first.u64";
+  const std::string second_vector_path = root + "/second.fbin";
+  const std::string second_docid_path = root + "/second.u64";
+  write_raw_fbin_file(first_vector_path, 4, 2,
+                      {1.0F, 1.0F, 2.0F, 2.0F, 3.0F, 3.0F, 4.0F, 4.0F});
+  write_raw_docid_file(first_docid_path, {10, 20, 30, 40});
+  write_raw_fbin_file(second_vector_path, 4, 2,
+                      {9.0F, 9.0F, 8.0F, 8.0F, 7.0F, 7.0F, 6.0F, 6.0F});
+  write_raw_docid_file(second_docid_path, {90, 80, 70, 60});
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_diskann_manifest", 2,
+                                                  "euclidean", "external",
+                                                  "diskann"));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      "idx_diskann_manifest", vector_index::index_consistency_mode::kStandalone));
+  ASSERT_TRUE(service.set_diskann_build_mode(
+      "idx_diskann_manifest", vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(service.set_diskann_build_params("idx_diskann_manifest", 4, 16,
+                                               1));
+
+  vector_index::index_service::bulk_load_options options;
+  uint64_t loaded_rows = 0;
+  std::string error;
+  ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+      "idx_diskann_manifest", first_vector_path, first_docid_path, options,
+      &loaded_rows, &error))
+      << error;
+  EXPECT_EQ(4U, loaded_rows);
+  ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+      "idx_diskann_manifest", second_vector_path, second_docid_path, options,
+      &loaded_rows, &error))
+      << error;
+  EXPECT_EQ(4U, loaded_rows);
+
+  ASSERT_TRUE(service.rebuild_index("idx_diskann_manifest"));
+
+  vector_index::index_service::index_config described;
+  vector_index::backend_build_diagnostics diagnostics;
+  ASSERT_TRUE(service.describe_index(
+      "idx_diskann_manifest", &described, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      &diagnostics));
+  EXPECT_EQ(vector_index::backend_provider::kDiskAnn, described.provider);
+  EXPECT_TRUE(described.backend_variant == "diskann_offline" ||
+              described.backend_variant == "diskann_vendored_offline")
+      << described.backend_variant;
+  EXPECT_TRUE(diagnostics.runtime == "official_cpp_main" ||
+              diagnostics.runtime == "vendored_runtime")
+      << diagnostics.runtime;
+  EXPECT_EQ("raw_segments", diagnostics.input_source);
+  EXPECT_EQ(8U, diagnostics.row_count);
+  EXPECT_EQ(2U, diagnostics.segment_count);
+  EXPECT_EQ(1U, diagnostics.build_invocations);
+
+  std::vector<vector_index_metadata_store::segment_task_row> rows;
+  ASSERT_TRUE(service.snapshot_segment_tasks("idx_diskann_manifest", &rows));
+  ASSERT_EQ(2U, rows.size());
+  for (const auto &row : rows) {
+    EXPECT_EQ(vector_index_metadata_store::segment_task_state::kReady,
+              row.state);
+    EXPECT_EQ(1U, row.attempt);
+    EXPECT_EQ(0U, row.last_error_code);
+    EXPECT_GT(row.row_count, 0U);
+    EXPECT_GT(row.payload_size, 0U);
+  }
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search("idx_diskann_manifest", {1.0F, 1.0F}, 4,
+                             &result));
+  ASSERT_GE(result.size(), 2U);
+  EXPECT_EQ(10U, result[0].doc_id);
+
+  std::vector<std::vector<vector_index::search_result>> batch_result;
+  ASSERT_TRUE(service.search_batch(
+      "idx_diskann_manifest", {{1.0F, 1.0F}, {9.0F, 9.0F}}, 2,
+      &batch_result));
+  ASSERT_EQ(2U, batch_result.size());
+  ASSERT_GE(batch_result[0].size(), 1U);
+  ASSERT_GE(batch_result[1].size(), 1U);
+  EXPECT_EQ(10U, batch_result[0][0].doc_id);
+  EXPECT_EQ(90U, batch_result[1][0].doc_id);
+
+  vector_index::reset_runtime_worker_pool_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest,
+     TransactionalDiskAnnOfflineRebuildUsesTruthStoreRawSegments) {
+  install_diskann_offline_test_adapter();
+  if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
+    GTEST_SKIP() << "DiskANN offline manifest adapter unavailable in current "
+                    "build/runtime";
+  }
+  build_pipeline_options_guard guard;
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+  opt_vector_build_pipeline_max_tasks = 2;
+  opt_vector_build_segment_max_rows = 4;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/pipeline_diskann_txn_manifest_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings("idx_diskann_txn_offline", 2,
+                                                  "euclidean", "external",
+                                                  "diskann"));
+  for (uint64_t doc_id = 1; doc_id <= 8; ++doc_id) {
+    ASSERT_TRUE(service.stage_upsert(8801, "idx_diskann_txn_offline", doc_id,
+                                     {static_cast<float>(doc_id), 0.0F}));
+  }
+  ASSERT_TRUE(service.commit(8801));
+  ASSERT_TRUE(service.set_diskann_build_mode(
+      "idx_diskann_txn_offline", vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(service.rebuild_index("idx_diskann_txn_offline"));
+
+  vector_index::index_service::index_config config;
+  vector_index::backend_build_diagnostics diagnostics;
+  size_t entry_count = 0;
+  size_t committed_entry_count = 0;
+  ASSERT_TRUE(service.describe_index(
+      "idx_diskann_txn_offline", &config, nullptr, &entry_count,
+      &committed_entry_count, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, &diagnostics));
+  EXPECT_EQ(vector_index::index_consistency_mode::kTransactional,
+            config.consistency_mode);
+  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+            config.diskann_build_mode_value);
+  EXPECT_EQ("truth_store_snapshot", diagnostics.input_source);
+  EXPECT_EQ(2U, diagnostics.segment_count);
+  EXPECT_EQ(2U, diagnostics.build_invocations);
+  EXPECT_GE(diagnostics.concurrent_build_tasks, 1U);
+  EXPECT_EQ(8U, entry_count);
+  EXPECT_EQ(8U, committed_entry_count);
+
+  std::vector<vector_index_metadata_store::segment_task_row> task_rows;
+  ASSERT_TRUE(
+      service.snapshot_segment_tasks("idx_diskann_txn_offline", &task_rows));
+  ASSERT_FALSE(task_rows.empty());
+  for (const auto &row : task_rows) {
+    EXPECT_EQ(vector_index_metadata_store::segment_task_state::kReady,
+              row.state);
+    EXPECT_TRUE(row.vector_path.empty());
+    EXPECT_TRUE(row.docid_path.empty());
+  }
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      service.search("idx_diskann_txn_offline", {1.0F, 0.0F}, 8, &result));
+  ASSERT_EQ(8U, result.size());
 
   vector_index::reset_runtime_worker_pool_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -2347,6 +3021,85 @@ TEST(VectorStandaloneEntryStoreTest, RawSegmentCanReuseValidatedDocIdSet) {
 }
 
 TEST(VectorStandaloneEntryStoreTest,
+     RawSegmentSplitReadsDocIdsWhenNoValidatedSetIsProvided) {
+  build_pipeline_options_guard guard;
+  opt_vector_build_segment_max_rows = 1;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_split_docids_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 3, 2,
+                      {3.0F, 0.0F, 1.0F, 0.0F, 2.0F, 0.0F});
+  write_raw_docid_file(docid_path, {30, 10, 20});
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_raw_split_docids", 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_split_docids", vector_path,
+                                          docid_path, 3, 2));
+  EXPECT_EQ(3U, store.entry_count("idx_raw_split_docids"));
+  EXPECT_EQ(3U, store.raw_segment_count("idx_raw_split_docids"));
+
+  const auto entries = collect_entries(&store, "idx_raw_split_docids");
+  ASSERT_EQ(3U, entries.size());
+  EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), entries.at(10));
+  EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}), entries.at(20));
+  EXPECT_EQ((vector_index::vector_data{3.0F, 0.0F}), entries.at(30));
+
+  RawSegmentCountingBackend backend;
+  ASSERT_TRUE(store.rebuild_backend_input("idx_raw_split_docids", &backend));
+  EXPECT_EQ(1U, backend.raw_segment_reader_calls);
+  EXPECT_EQ((std::vector<size_t>{1, 1, 1}), backend.raw_segment_doc_counts);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     RawSegmentSplitRejectsDocIdMismatchAndRollsBack) {
+  build_pipeline_options_guard guard;
+  opt_vector_build_segment_max_rows = 1;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_split_rollback_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string short_docid_path = root + "/short.u64";
+  const std::string valid_docid_path = root + "/valid.u64";
+  write_raw_fbin_file(vector_path, 3, 2,
+                      {3.0F, 0.0F, 1.0F, 0.0F, 2.0F, 0.0F});
+  write_raw_docid_file(short_docid_path, {30, 10});
+  write_raw_docid_file(valid_docid_path, {30, 10, 20});
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_raw_split_rollback", 2));
+  EXPECT_FALSE(store.bulk_upsert_raw_files("idx_raw_split_rollback",
+                                           vector_path, short_docid_path, 3, 2));
+  EXPECT_EQ(0U, store.entry_count("idx_raw_split_rollback"));
+  EXPECT_EQ(0U, store.raw_segment_count("idx_raw_split_rollback"));
+  EXPECT_EQ(0U, store.raw_segment_bytes("idx_raw_split_rollback"));
+
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_split_rollback", vector_path,
+                                          valid_docid_path, 3, 2));
+  EXPECT_EQ(3U, store.entry_count("idx_raw_split_rollback"));
+  EXPECT_EQ(3U, store.raw_segment_count("idx_raw_split_rollback"));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
      RebuildRejectsMaterializedFallbackOverCacheBudget) {
   const std::string root =
       std::string(testing::TempDir()) + "/standalone_rebuild_budget_t";
@@ -2426,6 +3179,53 @@ TEST(VectorStandaloneEntryStoreTest, BulkUpsertPersistsDeltaSegment) {
   std::filesystem::remove_all(root, ec);
 }
 
+TEST(VectorStandaloneEntryStoreTest, FindAndIterationValidatePublicApiEdges) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_find_edges_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_find_edges", 2));
+
+  vector_index::vector_data vector;
+  bool found = true;
+  EXPECT_FALSE(store.find_entry("idx_find_edges", 1, nullptr, &found));
+  EXPECT_FALSE(store.find_entry("idx_find_edges", 1, &vector, nullptr));
+  EXPECT_FALSE(store.find_entry("missing", 1, &vector, &found));
+  ASSERT_TRUE(store.find_entry("idx_find_edges", 1, &vector, &found));
+  EXPECT_FALSE(found);
+  EXPECT_TRUE(vector.empty());
+
+  ASSERT_TRUE(store.upsert("idx_find_edges", 7, {7.0F, 1.0F},
+                           std::numeric_limits<size_t>::max()));
+  ASSERT_TRUE(store.find_entry("idx_find_edges", 7, &vector, &found));
+  EXPECT_TRUE(found);
+  EXPECT_EQ((vector_index::vector_data{7.0F, 1.0F}), vector);
+
+  EXPECT_FALSE(store.for_each_entry(
+      "idx_find_edges", vector_index::standalone_entry_store::entry_visitor{}));
+  EXPECT_FALSE(store.for_each_entry(
+      "missing", [](uint64_t, const vector_index::vector_data &) {
+        return true;
+      }));
+
+  std::vector<uint64_t> visited_doc_ids;
+  ASSERT_TRUE(store.for_each_entry(
+      "idx_find_edges",
+      [&visited_doc_ids](uint64_t doc_id, const vector_index::vector_data &entry) {
+        visited_doc_ids.push_back(doc_id);
+        EXPECT_EQ((vector_index::vector_data{7.0F, 1.0F}), entry);
+        return true;
+      }));
+  EXPECT_EQ((std::vector<uint64_t>{7}), visited_doc_ids);
+
+  std::filesystem::remove_all(root, ec);
+}
+
 TEST(VectorStandaloneEntryStoreTest, RawAndDeltaSegmentsReplayInDocIdOrder) {
   const std::string root =
       std::string(testing::TempDir()) + "/standalone_raw_delta_replay_t";
@@ -2499,6 +3299,121 @@ TEST(VectorStandaloneEntryStoreTest, RawOnlyRebuildUsesRawSegmentReader) {
   EXPECT_FALSE(store.rebuild_backend_input("idx_raw_direct",
                                            &rejecting_backend));
   EXPECT_EQ(1U, rejecting_backend.raw_segment_reader_calls);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     RawSegmentReaderRejectsMissingIndexAndInvalidVisitor) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_reader_visitor_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {3.0F, 0.0F, 1.0F, 0.0F});
+  write_raw_docid_file(docid_path, {30, 10});
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_raw_direct", 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_direct", vector_path,
+                                          docid_path, 2, 2));
+
+  EXPECT_FALSE(store.read_rebuild_raw_segments(
+      "missing", [](const vector_index::raw_vector_segment &) {
+        return true;
+      }));
+  EXPECT_FALSE(store.read_rebuild_raw_segments(
+      "idx_raw_direct", vector_index::raw_vector_segment_visitor{}));
+
+  bool visitor_called = false;
+  EXPECT_FALSE(store.read_rebuild_raw_segments(
+      "idx_raw_direct",
+      [&visitor_called](const vector_index::raw_vector_segment &segment) {
+        EXPECT_EQ(2U, segment.row_count);
+        visitor_called = true;
+        return false;
+      }));
+  EXPECT_TRUE(visitor_called);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     DeltaSegmentsCannotBypassRawSegmentPreparation) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_delta_raw_reader_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_delta", 2));
+  ASSERT_TRUE(store.bulk_upsert("idx_delta", {{20, {2.0F, 0.0F}}}));
+  EXPECT_EQ("delta_replay", store.build_source("idx_delta"));
+  EXPECT_FALSE(store.read_rebuild_raw_segments(
+      "idx_delta", [](const vector_index::raw_vector_segment &) {
+        ADD_FAILURE() << "delta segments must be compacted before raw rebuild";
+        return true;
+      }));
+
+  ASSERT_TRUE(store.prepare_raw_segments_for_rebuild("idx_delta"));
+  size_t segment_count = 0;
+  ASSERT_TRUE(store.read_rebuild_raw_segments(
+      "idx_delta",
+      [&segment_count](const vector_index::raw_vector_segment &segment) {
+        EXPECT_EQ(1U, segment.row_count);
+        ++segment_count;
+        return true;
+      }));
+  EXPECT_EQ(1U, segment_count);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest, RawSegmentReaderRejectsSizeDrift) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_size_drift_t";
+  const std::string input_dir = root + "/input";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(input_dir, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = input_dir + "/source.fbin";
+  const std::string docid_path = input_dir + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {3.0F, 0.0F, 1.0F, 0.0F});
+  write_raw_docid_file(docid_path, {30, 10});
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_raw_drift", 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_drift", vector_path,
+                                          docid_path, 2, 2));
+
+  const std::string stored_docid_path =
+      find_raw_segment_file_from_manifest(root, ".u64");
+  ASSERT_FALSE(stored_docid_path.empty());
+  {
+    std::ofstream file(stored_docid_path,
+                       std::ios::out | std::ios::binary | std::ios::app);
+    ASSERT_TRUE(file.is_open());
+    const char extra_byte = '\0';
+    file.write(&extra_byte, 1);
+    ASSERT_TRUE(file.good());
+  }
+
+  EXPECT_FALSE(store.read_rebuild_raw_segments(
+      "idx_raw_drift", [](const vector_index::raw_vector_segment &) {
+        ADD_FAILURE() << "size drift should reject the raw segment";
+        return true;
+      }));
+
+  std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorStandaloneEntryStoreTest, MixedSegmentsCompactBeforeRawRebuild) {
@@ -4798,6 +5713,10 @@ TEST(VectorIndexServiceTest, RegisterIndexConfigAppliesDiskAnnTunings) {
   config.diskann_search_complexity = 72;
   config.diskann_search_beamwidth = 16;
   config.diskann_pq_code_budget_size = 1048576;
+  config.diskann_disk_pq_dims = 12;
+  config.diskann_accelerate_build = true;
+  config.diskann_shuffle_build = true;
+  config.diskann_use_bfs_cache = true;
 
   ASSERT_TRUE(service.register_index("idx_diskann_tuned", config));
 
@@ -4814,6 +5733,10 @@ TEST(VectorIndexServiceTest, RegisterIndexConfigAppliesDiskAnnTunings) {
   EXPECT_EQ(72U, described.diskann_search_complexity);
   EXPECT_EQ(16U, described.diskann_search_beamwidth);
   EXPECT_EQ(1048576U, described.diskann_pq_code_budget_size);
+  EXPECT_EQ(12U, described.diskann_disk_pq_dims);
+  EXPECT_TRUE(described.diskann_accelerate_build);
+  EXPECT_TRUE(described.diskann_shuffle_build);
+  EXPECT_TRUE(described.diskann_use_bfs_cache);
   EXPECT_TRUE(supports_mutations);
   EXPECT_EQ(0U, entry_count);
   EXPECT_EQ(0U, committed_entry_count);
@@ -4984,6 +5907,20 @@ TEST(VectorIndexServiceTest, RegisterIndexConfigRejectsInvalidCombinations) {
   EXPECT_FALSE(service.register_index("idx_bad_diskann_pq_on_native",
                                      bad_diskann_pq_on_native));
 
+  vector_index::index_service::index_config bad_diskann_disk_pq_on_native =
+      bad_diskann_search_on_native;
+  bad_diskann_disk_pq_on_native.diskann_search_complexity = 0;
+  bad_diskann_disk_pq_on_native.diskann_disk_pq_dims = 12;
+  EXPECT_FALSE(service.register_index("idx_bad_diskann_disk_pq_on_native",
+                                     bad_diskann_disk_pq_on_native));
+
+  vector_index::index_service::index_config bad_diskann_flag_on_native =
+      bad_diskann_search_on_native;
+  bad_diskann_flag_on_native.diskann_search_complexity = 0;
+  bad_diskann_flag_on_native.diskann_use_bfs_cache = true;
+  EXPECT_FALSE(service.register_index("idx_bad_diskann_flag_on_native",
+                                     bad_diskann_flag_on_native));
+
   vector_index::index_service::index_config diskann_auto_mode_on_native{
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kMemory,
@@ -5075,6 +6012,12 @@ TEST(VectorIndexServiceTest, ServiceApiGuardBranchesRejectInvalidState) {
   vector_index::index_service::index_config unsupported_tuning = config;
   unsupported_tuning.search_ef = 32;
   EXPECT_FALSE(service.restore_index_config("idx_guard", unsupported_tuning));
+
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_service_fail_restore_index_config");
+    EXPECT_FALSE(service.restore_index_config("idx_guard", config));
+  }
 
   vector_index::index_service::committed_state invalid_state;
   invalid_state["idx_guard"].emplace(1, vector_index::vector_data{1.0F});

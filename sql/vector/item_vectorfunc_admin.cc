@@ -42,28 +42,16 @@
 
 using namespace vector_itemfunc_internal;
 
-namespace {
-
-bool eval_diskann_bool_tuning_args(Item **args, const char *func_name,
-                                   std::string *index_name, bool *value) {
-  String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
-  uint32_t int_value = 0;
-  if (name == nullptr || args[0]->null_value ||
-      !eval_uint32_arg(args[1], 0, 1, int_value)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name);
-    return false;
-  }
-
-  to_std_string(name, index_name);
-  *value = int_value != 0;
+static bool eval_bool01_arg(Item *arg, bool *value) {
+  if (arg == nullptr || value == nullptr) return false;
+  const longlong parsed = arg->val_int();
+  if (arg->null_value || (parsed != 0 && parsed != 1)) return false;
+  *value = parsed != 0;
   return true;
 }
 
-}  // namespace
-
 longlong Item_func_vec_index_create::val_int() {
-  assert(fixed && arg_count >= 2 && arg_count <= 7);
+  assert_fixed_arg_count_between(fixed, arg_count, 2, 7);
   null_value = true;
 
   String name_buf;
@@ -179,7 +167,7 @@ bool Item_func_vec_index_set_search_ef::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_search_ef::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;
@@ -213,7 +201,7 @@ bool Item_func_vec_index_set_hnsw_build_params::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_hnsw_build_params::val_int() {
-  assert(fixed && arg_count == 3);
+  assert_fixed_arg_count(fixed, arg_count, 3);
   null_value = true;
 
   String name_buf;
@@ -251,7 +239,7 @@ bool Item_func_vec_index_set_faiss_ivf_params::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_faiss_ivf_params::val_int() {
-  assert(fixed && arg_count == 3);
+  assert_fixed_arg_count(fixed, arg_count, 3);
   null_value = true;
 
   String name_buf;
@@ -289,7 +277,7 @@ bool Item_func_vec_index_set_faiss_ivfpq_params::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_faiss_ivfpq_params::val_int() {
-  assert(fixed && arg_count == 5);
+  assert_fixed_arg_count(fixed, arg_count, 5);
   null_value = true;
 
   String name_buf;
@@ -334,7 +322,7 @@ bool Item_func_vec_index_set_diskann_build_params::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_diskann_build_params::val_int() {
-  assert(fixed && arg_count >= 3 && arg_count <= 4);
+  assert_fixed_arg_count_between(fixed, arg_count, 3, 4);
   null_value = true;
 
   String name_buf;
@@ -381,7 +369,7 @@ bool Item_func_vec_index_set_diskann_search_complexity::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_diskann_search_complexity::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;
@@ -416,7 +404,7 @@ bool Item_func_vec_index_set_diskann_search_beamwidth::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_diskann_search_beamwidth::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;
@@ -453,7 +441,7 @@ bool Item_func_vec_index_set_diskann_pq_code_budget_size::resolve_type(
 }
 
 longlong Item_func_vec_index_set_diskann_pq_code_budget_size::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;
@@ -487,14 +475,15 @@ bool Item_func_vec_index_set_diskann_disk_pq_dims::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_diskann_disk_pq_dims::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;
   const String *name = args[0]->val_str(&name_buf);
   uint32_t diskann_disk_pq_dims = 0;
   if (name == nullptr || args[0]->null_value ||
-      !eval_uint32_arg(args[1], 0, vector_index::k_max_diskann_disk_pq_dims,
+      !eval_uint32_arg(args[1], 0,
+                       vector_index::k_max_diskann_disk_pq_dims,
                        diskann_disk_pq_dims)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -522,20 +511,24 @@ bool Item_func_vec_index_set_diskann_accelerate_build::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_diskann_accelerate_build::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
-  std::string index_name;
-  bool diskann_accelerate_build = false;
-  if (!eval_diskann_bool_tuning_args(args, func_name(), &index_name,
-                                     &diskann_accelerate_build)) {
+  String name_buf;
+  const String *name = args[0]->val_str(&name_buf);
+  bool accelerate_build = false;
+  if (name == nullptr || args[0]->null_value ||
+      !eval_bool01_arg(args[1], &accelerate_build)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
+  std::string index_name;
+  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
   if (!vector_index_registry::set_diskann_accelerate_build(
-          index_name, diskann_accelerate_build)) {
+          index_name, accelerate_build)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -551,20 +544,24 @@ bool Item_func_vec_index_set_diskann_shuffle_build::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_diskann_shuffle_build::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
-  std::string index_name;
-  bool diskann_shuffle_build = false;
-  if (!eval_diskann_bool_tuning_args(args, func_name(), &index_name,
-                                     &diskann_shuffle_build)) {
+  String name_buf;
+  const String *name = args[0]->val_str(&name_buf);
+  bool shuffle_build = false;
+  if (name == nullptr || args[0]->null_value ||
+      !eval_bool01_arg(args[1], &shuffle_build)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
+  std::string index_name;
+  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_diskann_shuffle_build(
-          index_name, diskann_shuffle_build)) {
+  if (!vector_index_registry::set_diskann_shuffle_build(index_name,
+                                                        shuffle_build)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -580,20 +577,24 @@ bool Item_func_vec_index_set_diskann_use_bfs_cache::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_diskann_use_bfs_cache::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
-  std::string index_name;
-  bool diskann_use_bfs_cache = false;
-  if (!eval_diskann_bool_tuning_args(args, func_name(), &index_name,
-                                     &diskann_use_bfs_cache)) {
+  String name_buf;
+  const String *name = args[0]->val_str(&name_buf);
+  bool use_bfs_cache = false;
+  if (name == nullptr || args[0]->null_value ||
+      !eval_bool01_arg(args[1], &use_bfs_cache)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
+  std::string index_name;
+  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_diskann_use_bfs_cache(
-          index_name, diskann_use_bfs_cache)) {
+  if (!vector_index_registry::set_diskann_use_bfs_cache(index_name,
+                                                        use_bfs_cache)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -609,7 +610,7 @@ bool Item_func_vec_index_set_diskann_build_mode::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_set_diskann_build_mode::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;
@@ -666,7 +667,7 @@ bool Item_func_vec_index_drop::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_drop::val_int() {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String name_buf;
@@ -694,7 +695,7 @@ bool Item_func_vec_index_rebuild::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_rebuild::val_int() {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String name_buf;
@@ -726,7 +727,7 @@ bool Item_func_vec_index_bulk_load_begin::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_bulk_load_begin::val_int() {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String name_buf;
@@ -758,7 +759,7 @@ bool Item_func_vec_index_bulk_build::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_bulk_build::val_int() {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String name_buf;
@@ -790,7 +791,7 @@ bool Item_func_vec_index_recover::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_recover::val_int() {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String name_buf;
@@ -822,7 +823,7 @@ bool Item_func_vec_index_rebuild_all::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_rebuild_all::val_int() {
-  assert(fixed && arg_count == 0);
+  assert_fixed_arg_count(fixed, arg_count, 0);
   null_value = true;
 
   size_t rebuilt_count = 0;
@@ -845,7 +846,7 @@ bool Item_func_vec_index_recover_all::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_recover_all::val_int() {
-  assert(fixed && arg_count == 0);
+  assert_fixed_arg_count(fixed, arg_count, 0);
   null_value = true;
 
   size_t recovered_count = 0;
@@ -868,7 +869,7 @@ bool Item_func_vec_index_upsert::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_upsert::val_int() {
-  assert(fixed && arg_count == 3);
+  assert_fixed_arg_count(fixed, arg_count, 3);
   null_value = true;
 
   String name_buf;
@@ -910,7 +911,7 @@ bool Item_func_vec_index_upsert_batch::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_upsert_batch::val_int() {
-  assert(fixed && arg_count == 4);
+  assert_fixed_arg_count(fixed, arg_count, 4);
   null_value = true;
 
   String name_buf;
@@ -1027,7 +1028,7 @@ bool Item_func_vec_index_erase::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_erase::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;

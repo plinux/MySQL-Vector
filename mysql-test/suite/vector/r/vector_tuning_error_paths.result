@@ -110,6 +110,19 @@ SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_tune_missing', 24, 90);
 ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
 SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_tune_faiss', 24, 90);
 ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_params
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE(NULL, 'serial');
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_mode
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_tune_diskann', NULL);
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_mode
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_tune_diskann', 'bogus');
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_mode
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_tune_missing', 'serial');
+ERROR HY000: Incorrect arguments to vec_index_set_diskann_build_mode
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_tune_faiss', 'serial');
+VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_tune_faiss', 'serial')
+0
+Warnings:
+Warning	1210	Incorrect arguments to vec_index_set_diskann_build_mode
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(NULL, 120);
 ERROR HY000: Incorrect arguments to vec_index_set_diskann_search_complexity
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_tune_diskann', NULL);

@@ -47,7 +47,7 @@ uint64_t build_segment_row_limit(uint64_t dimension,
                            ? std::numeric_limits<uint64_t>::max()
                            : thresholds.segment_max_rows;
   const uint64_t row_size = saturating_vector_row_size(dimension);
-  if (thresholds.segment_target_size != 0) {
+  if (thresholds.segment_target_size != 0 && row_size != 0) {
     row_limit = std::min(
         row_limit, std::max<uint64_t>(1, thresholds.segment_target_size /
                                              row_size));

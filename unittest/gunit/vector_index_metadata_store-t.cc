@@ -99,7 +99,7 @@ std::vector<std::string> current_metadata_fields_for_test() {
       "1048576",
       "12",
       "1",
-      "0",
+      "1",
       "1",
       "5",
       "9",
@@ -358,9 +358,27 @@ TEST_F(MetadataStoreTest, DetailHelpersCoverParserAndArtifactPathEdges) {
     EXPECT_FALSE(path.empty());
   }
 
+  {
+    DataHomeGuard data_home;
+    vector_index_metadata_store::reset_path_for_testing();
+    data_home.Set("/tmp/mysql-vector-datadir");
+    EXPECT_TRUE(detail::raw_path_for_artifact("prepared", &path));
+    EXPECT_NE(std::string::npos,
+              path.find("/tmp/mysql-vector-datadir/mysql_vector_index/"));
+
+    data_home.Set("/tmp/mysql-vector-datadir/");
+    EXPECT_TRUE(detail::raw_path_for_artifact("changelog", &path));
+    EXPECT_NE(std::string::npos,
+              path.find("/tmp/mysql-vector-datadir/mysql_vector_index/"));
+    vector_index_metadata_store::set_path_for_testing(m_path);
+  }
+
   EXPECT_STREQ("pending",
                vector_index_metadata_store::segment_task_state_to_string(
                    vector_index_metadata_store::segment_task_state::kPending));
+  EXPECT_STREQ("abandoned",
+               vector_index_metadata_store::segment_task_state_to_string(
+                   vector_index_metadata_store::segment_task_state::kAbandoned));
   EXPECT_STREQ("pending",
                vector_index_metadata_store::segment_task_state_to_string(
                    static_cast<vector_index_metadata_store::segment_task_state>(
@@ -534,6 +552,74 @@ TEST_F(MetadataStoreTest, SegmentTaskRowsRejectMalformedPayloads) {
       invalid_rows, &payload));
 }
 
+TEST_F(MetadataStoreTest, SegmentTaskRowsRejectInvalidFieldValues) {
+  const std::string header = "mysql-vector-segment-task-v1\n";
+  const std::string index_hex = encode_hex_for_test("idx_segment");
+  const std::string vector_path_hex = encode_hex_for_test("/tmp/vector.fbin");
+  const std::string docid_path_hex = encode_hex_for_test("/tmp/vector.u64");
+  const std::string artifact_prefix_hex =
+      encode_hex_for_test("/tmp/artifact/seg_7");
+  const auto row = [&](const std::string &index, const std::string &generation,
+                       const std::string &segment_id,
+                       const std::string &state,
+                       const std::string &row_count,
+                       const std::string &payload_size,
+                       const std::string &vector_path,
+                       const std::string &docid_path,
+                       const std::string &artifact_prefix,
+                       const std::string &attempt,
+                       const std::string &last_error_code,
+                       const std::string &updated_ts) {
+    return header + index + "\t" + generation + "\t" + segment_id + "\t" +
+           state + "\t" + row_count + "\t" + payload_size + "\t" +
+           vector_path + "\t" + docid_path + "\t" + artifact_prefix + "\t" +
+           attempt + "\t" + last_error_code + "\t" + updated_ts + "\n";
+  };
+
+  const std::string valid = row(index_hex, "1", "2", "pending", "3", "4",
+                                vector_path_hex, docid_path_hex,
+                                artifact_prefix_hex, "0", "0", "0");
+
+  std::vector<vector_index_metadata_store::segment_task_row> rows;
+  ASSERT_TRUE(vector_index_metadata_store::deserialize_segment_task_rows(
+      valid, &rows));
+
+  const std::vector<std::string> invalid_payloads{
+      header + index_hex + "\t1\t2\tpending\t3\t4\t" + vector_path_hex +
+          "\t" + docid_path_hex + "\t" + artifact_prefix_hex + "\t0\t0\n",
+      row("zz", "1", "2", "pending", "3", "4", vector_path_hex,
+          docid_path_hex, artifact_prefix_hex, "0", "0", "0"),
+      row(index_hex, "generation", "2", "pending", "3", "4",
+          vector_path_hex, docid_path_hex, artifact_prefix_hex, "0", "0",
+          "0"),
+      row(index_hex, "1", "segment", "pending", "3", "4",
+          vector_path_hex, docid_path_hex, artifact_prefix_hex, "0", "0",
+          "0"),
+      row(index_hex, "1", "2", "pending", "rows", "4", vector_path_hex,
+          docid_path_hex, artifact_prefix_hex, "0", "0", "0"),
+      row(index_hex, "1", "2", "pending", "3", "payload",
+          vector_path_hex, docid_path_hex, artifact_prefix_hex, "0", "0",
+          "0"),
+      row(index_hex, "1", "2", "pending", "3", "4", "zz", docid_path_hex,
+          artifact_prefix_hex, "0", "0", "0"),
+      row(index_hex, "1", "2", "pending", "3", "4", vector_path_hex, "zz",
+          artifact_prefix_hex, "0", "0", "0"),
+      row(index_hex, "1", "2", "pending", "3", "4", vector_path_hex,
+          docid_path_hex, "zz", "0", "0", "0"),
+      row(index_hex, "1", "2", "pending", "3", "4", vector_path_hex,
+          docid_path_hex, artifact_prefix_hex, "attempt", "0", "0"),
+      row(index_hex, "1", "2", "pending", "3", "4", vector_path_hex,
+          docid_path_hex, artifact_prefix_hex, "0", "last_error", "0"),
+      row(index_hex, "1", "2", "pending", "3", "4", vector_path_hex,
+          docid_path_hex, artifact_prefix_hex, "0", "0", "updated")};
+
+  for (const std::string &payload : invalid_payloads) {
+    EXPECT_FALSE(vector_index_metadata_store::deserialize_segment_task_rows(
+        payload, &rows))
+        << payload;
+  }
+}
+
 TEST_F(MetadataStoreTest, SegmentTaskRawArtifactAndQuarantine) {
   const std::string payload = "mysql-vector-segment-task-v1\n";
   bool found = true;
@@ -555,6 +641,47 @@ TEST_F(MetadataStoreTest, SegmentTaskRawArtifactAndQuarantine) {
   ASSERT_TRUE(vector_index_metadata_store::load_raw_artifact(
       "segment_tasks", &loaded, &found));
   EXPECT_FALSE(found);
+}
+
+TEST_F(MetadataStoreTest, SegmentTaskStoreEmptySaveAndRemovalFailure) {
+  std::vector<vector_index_metadata_store::segment_task_row> rows;
+  vector_index_metadata_store::segment_task_row row;
+  row.index_name = "idx_segment";
+  row.generation = 1;
+  row.segment_id = 2;
+  row.state = vector_index_metadata_store::segment_task_state::kPending;
+  row.row_count = 3;
+  row.payload_size = 4;
+  rows.push_back(row);
+
+  ASSERT_TRUE(vector_index_metadata_store::save_segment_tasks(rows));
+  std::ifstream exists_before(m_segment_task_path);
+  ASSERT_TRUE(exists_before.good());
+  exists_before.close();
+
+  rows.clear();
+  ASSERT_TRUE(vector_index_metadata_store::save_segment_tasks(rows));
+  std::ifstream exists_after(m_segment_task_path);
+  EXPECT_FALSE(exists_after.good());
+
+  ASSERT_TRUE(vector_index_metadata_store::save_segment_tasks({row}));
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_metadata_store_fail_remove_if_exists");
+    EXPECT_FALSE(vector_index_metadata_store::save_segment_tasks({}));
+  }
+}
+
+TEST_F(MetadataStoreTest, SegmentTaskQuarantineRenamesStore) {
+  ASSERT_TRUE(vector_index_metadata_store::save_raw_artifact(
+      "segment_tasks", "bad\nrow\n"));
+
+  ASSERT_TRUE(vector_index_metadata_store::quarantine_segment_task_store());
+
+  std::ifstream current(m_segment_task_path);
+  EXPECT_FALSE(current.good());
+  std::ifstream quarantined(m_segment_task_path + ".corrupt");
+  EXPECT_TRUE(quarantined.good());
 }
 
 TEST_F(MetadataStoreTest, DefaultDataHomeStoreRoundTripWithoutOverride) {
@@ -1122,7 +1249,7 @@ TEST_F(MetadataStoreTest, LoadCurrentMetadataRowReadsAllFields) {
   EXPECT_EQ(1048576U, loaded[0].diskann_pq_code_budget_size);
   EXPECT_EQ(12U, loaded[0].diskann_disk_pq_dims);
   EXPECT_TRUE(loaded[0].diskann_accelerate_build);
-  EXPECT_FALSE(loaded[0].diskann_shuffle_build);
+  EXPECT_TRUE(loaded[0].diskann_shuffle_build);
   EXPECT_TRUE(loaded[0].diskann_use_bfs_cache);
   EXPECT_EQ(5U, loaded[0].diskann_build_threads);
   EXPECT_EQ(9U, loaded[0].faiss_build_threads);
@@ -1328,12 +1455,18 @@ TEST_F(MetadataStoreTest, LoadRejectsInvalidDimensionAndMetricInCurrentRow) {
   }
 }
 
-TEST_F(MetadataStoreTest, LoadRejectsEmptyLifecycleState) {
-  std::vector<std::string> fields = current_metadata_fields_for_test();
-  fields[5].clear();
-
+TEST_F(MetadataStoreTest, LoadRejectsInvalidConsistencyModeAndEmptyLifecycle) {
   std::vector<vector_index_metadata_store::metadata_row> loaded;
-  EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+  {
+    std::vector<std::string> fields = current_metadata_fields_for_test();
+    fields[5].clear();
+    EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+  }
+  {
+    std::vector<std::string> fields = current_metadata_fields_for_test();
+    fields[6].clear();
+    EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+  }
 }
 
 TEST_F(MetadataStoreTest, LoadRejectsZeroLifecycleVersion) {
@@ -1391,6 +1524,17 @@ TEST_F(MetadataStoreTest, LoadRejectsOverflowCurrentMetadataFields) {
   for (size_t field_index : uint64_overflow_fields) {
     std::vector<std::string> fields = current_metadata_fields_for_test();
     fields[field_index] = "18446744073709551616";
+
+    std::vector<vector_index_metadata_store::metadata_row> loaded;
+    EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded))
+        << field_index;
+  }
+}
+
+TEST_F(MetadataStoreTest, LoadRejectsInvalidCurrentMetadataBoolFields) {
+  for (size_t field_index : {30U, 31U, 32U}) {
+    std::vector<std::string> fields = current_metadata_fields_for_test();
+    fields[field_index] = "true";
 
     std::vector<vector_index_metadata_store::metadata_row> loaded;
     EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded))
@@ -1601,10 +1745,24 @@ TEST_F(MetadataStoreTest, RawArtifactRejectsUnknownArtifactName) {
   std::string payload;
   bool found = false;
   EXPECT_FALSE(
+      vector_index_metadata_store::load_raw_artifact("metadata", nullptr,
+                                                     &found));
+  EXPECT_FALSE(
+      vector_index_metadata_store::load_raw_artifact("metadata", &payload,
+                                                     nullptr));
+  EXPECT_FALSE(
       vector_index_metadata_store::save_raw_artifact("unknown", "payload"));
   EXPECT_FALSE(vector_index_metadata_store::load_raw_artifact("unknown", &payload,
                                                             &found));
   EXPECT_FALSE(vector_index_metadata_store::delete_raw_artifact("unknown"));
+}
+
+TEST_F(MetadataStoreTest, DeleteRawArtifactFailsWhenRemovalIsInjected) {
+  ASSERT_TRUE(vector_index_metadata_store::save_raw_artifact(
+      "manifest", "payload"));
+
+  VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_metadata_store_fail_remove_if_exists");
+  EXPECT_FALSE(vector_index_metadata_store::delete_raw_artifact("manifest"));
 }
 
 TEST_F(MetadataStoreTest, QuarantinePreparedStoreRenamesPreparedFile) {
@@ -1800,6 +1958,9 @@ TEST_F(MetadataStoreTest, DeserializePreparedRejectsInvalidFields) {
   std::vector<vector_index_metadata_store::prepared_change_row> loaded;
 
   EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t3\t0\t616263\t0\t99\tupsert\t\t7\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
       header + "9223372036854775808\t3\t0\t616263\t0\t99\tupsert\t" +
           index_hex + "\t7\t0000803f\n",
       &loaded));
@@ -1899,6 +2060,29 @@ TEST_F(MetadataStoreTest, DeserializeCommittedRejectsInvalidFields) {
       header + index_hex + "\t7\t2\t0\n", &loaded));
   EXPECT_FALSE(vector_index_metadata_store::deserialize_committed_rows(
       header + index_hex + "\t7\t2\t0000803f\n", &loaded));
+}
+
+TEST_F(MetadataStoreTest, CommittedRowsAcceptZeroDimensionVectors) {
+  const std::string index_hex = encode_hex_for_test("idx_zero");
+  const std::string payload =
+      "mysql-vector-committed-v1\n" + index_hex + "\t7\t0\t\n";
+  std::vector<vector_index_metadata_store::committed_row> loaded;
+  ASSERT_TRUE(vector_index_metadata_store::deserialize_committed_rows(
+      payload, &loaded));
+  ASSERT_EQ(1U, loaded.size());
+  EXPECT_EQ("idx_zero", loaded[0].index_name);
+  EXPECT_TRUE(loaded[0].vector.empty());
+
+  std::vector<vector_index_metadata_store::committed_row> rows{
+      {"idx_zero", 8, {}}};
+  std::string serialized;
+  ASSERT_TRUE(vector_index_metadata_store::serialize_committed_rows(
+      rows, &serialized));
+  loaded.clear();
+  ASSERT_TRUE(vector_index_metadata_store::deserialize_committed_rows(
+      serialized, &loaded));
+  ASSERT_EQ(1U, loaded.size());
+  EXPECT_TRUE(loaded[0].vector.empty());
 }
 
 TEST_F(MetadataStoreTest,
@@ -2119,6 +2303,8 @@ TEST_F(MetadataStoreTest, DeserializeManifestRejectsInvalidCheckpoints) {
   vector_index_metadata_store::manifest_row loaded;
 
   EXPECT_FALSE(vector_index_metadata_store::deserialize_manifest_row(
+      "mysql-vector-manifest-v1\nready\t0\t1\t2\t3\n", &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_manifest_row(
       "mysql-vector-manifest-v1\nready\t1\tbad\t2\t3\n", &loaded));
   EXPECT_FALSE(vector_index_metadata_store::deserialize_manifest_row(
       "mysql-vector-manifest-v1\nready\t1\t2\tbad\t3\n", &loaded));
@@ -2131,11 +2317,16 @@ TEST_F(MetadataStoreTest, SaveManifestRejectsInvalidInput) {
   invalid_empty_state.state = "";
   invalid_empty_state.version = 1;
   EXPECT_FALSE(vector_index_metadata_store::save_manifest(invalid_empty_state));
+  std::string payload;
+  EXPECT_FALSE(vector_index_metadata_store::serialize_manifest_row(
+      invalid_empty_state, &payload));
 
   vector_index_metadata_store::manifest_row invalid_zero_version;
   invalid_zero_version.state = "ready";
   invalid_zero_version.version = 0;
   EXPECT_FALSE(vector_index_metadata_store::save_manifest(invalid_zero_version));
+  EXPECT_FALSE(vector_index_metadata_store::serialize_manifest_row(
+      invalid_zero_version, &payload));
 }
 
 TEST_F(MetadataStoreTest,
@@ -2335,6 +2526,8 @@ TEST_F(MetadataStoreTest, DeserializeChangeLogRejectsInvalidFields) {
   std::vector<vector_index_metadata_store::change_log_row> loaded;
 
   EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
+      header + "1\t88\tupsert\t\t101\t0000803f\n", &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
       header + "1\tnot_a_txn\tupsert\t" + index_hex +
           "\t101\t0000803f\n",
       &loaded));
@@ -2417,6 +2610,8 @@ TEST_F(MetadataStoreTest, QuarantineMissingStoresReturnsTrue) {
   EXPECT_TRUE(vector_index_metadata_store::quarantine_committed_store());
   EXPECT_TRUE(vector_index_metadata_store::quarantine_manifest_store());
   EXPECT_TRUE(vector_index_metadata_store::quarantine_change_log_store());
+  EXPECT_TRUE(vector_index_metadata_store::quarantine_prepared_store());
+  EXPECT_TRUE(vector_index_metadata_store::quarantine_segment_task_store());
 }
 
 TEST_F(MetadataStoreTest, QuarantineFailsWhenCorruptTargetIsDirectory) {

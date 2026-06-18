@@ -3,8 +3,15 @@
 #
 SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime', 2, 'EUCLIDEAN',
 'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_diskann_pq_runtime', 2, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN')
+1
 SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_diskann_pq_runtime', 1, VEC_FROMTEXT('[1,1]'))
+1
 SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime');
+VEC_INDEX_REBUILD('idx_diskann_pq_runtime')
+1
 SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime'),
 '$.diskann_pq_runtime')) AS diskann_pq_runtime,
 JSON_CONTAINS(

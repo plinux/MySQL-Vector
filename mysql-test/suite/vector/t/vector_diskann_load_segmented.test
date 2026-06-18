@@ -1,0 +1,210 @@
+--source include/have_vector_diskann.inc
+
+# The forced offline adapter may reserve a large native workspace even though
+# the logical fixture is small. Keep 2 GiB available before headroom.
+--let $vector_big_test_estimated_peak_kib=2097152
+--source suite/vector/include/vector_big_test_memory.inc
+
+--echo #
+--echo # WL#Vector: DISKANN standalone LOAD VECTOR DATA diagnostic single index fallback
+--echo #
+
+--disable_query_log
+--let $vector_fbin=$MYSQLTEST_VARDIR/vector_diskann_load_segmented.fbin
+--let $vector_docid=$MYSQLTEST_VARDIR/vector_diskann_load_segmented.u64
+--exec rm -f $vector_fbin $vector_docid
+--copy_file $MYSQL_TEST_DIR/suite/vector/std_data/vector_load_data_256.fbin $vector_fbin
+--copy_file $MYSQL_TEST_DIR/suite/vector/std_data/vector_load_data_256.u64 $vector_docid
+SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
+SET @old_vector_build_pipeline_max_tasks = @@GLOBAL.vector_build_pipeline_max_tasks;
+SET @old_vector_build_segment_max_rows = @@GLOBAL.vector_build_segment_max_rows;
+SET @old_vector_build_segment_target_size = @@GLOBAL.vector_build_segment_target_size;
+SET @old_vector_diskann_pq_runtime = @@GLOBAL.vector_diskann_pq_runtime;
+SET @old_vector_diskann_segmented_serving = @@GLOBAL.vector_diskann_segmented_serving;
+SET GLOBAL vector_build_pipeline_mode = 'segmented';
+SET GLOBAL vector_build_pipeline_max_tasks = 2;
+SET GLOBAL vector_build_segment_max_rows = 4;
+SET GLOBAL vector_build_segment_target_size = 1048576;
+SET GLOBAL vector_diskann_pq_runtime = 'native_auto';
+SET GLOBAL vector_diskann_segmented_serving = OFF;
+--enable_query_log
+
+SELECT VEC_INDEX_CREATE('idx_diskann_load_segmented', 2, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN', 0, 'standalone');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_load_segmented',
+                                        'offline');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_load_segmented',
+                                          32, 64, 4);
+
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_diskann_load_segmented.fbin'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_diskann_load_segmented.u64'
+  INTO VECTOR INDEX idx_diskann_load_segmented
+  FORMAT FBIN;
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_diskann_load_segmented.fbin'
+  INTO VECTOR INDEX idx_diskann_load_segmented
+  FORMAT FBIN;
+--enable_query_log
+
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+                    '$.standalone_raw_segment_count') AS raw_segment_count;
+
+--disable_query_log
+delimiter |;
+CREATE PROCEDURE try_diskann_segmented_build()
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET @build_ok = 0;
+  SET @build_ok = 1;
+  SET @build_result = VEC_INDEX_BULK_BUILD('idx_diskann_load_segmented');
+END|
+delimiter ;|
+CALL try_diskann_segmented_build();
+DROP PROCEDURE try_diskann_segmented_build;
+--let $build_ok=`SELECT @build_ok`
+if (!$build_ok)
+{
+  SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+  SET GLOBAL vector_build_pipeline_max_tasks = @old_vector_build_pipeline_max_tasks;
+  SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+  SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+  SET GLOBAL vector_diskann_pq_runtime = @old_vector_diskann_pq_runtime;
+  SET GLOBAL vector_diskann_segmented_serving = @old_vector_diskann_segmented_serving;
+  SELECT VEC_INDEX_DROP('idx_diskann_load_segmented');
+  --remove_file $vector_fbin
+  --remove_file $vector_docid
+  --skip Test requires DISKANN offline adapter support
+}
+--enable_query_log
+
+--replace_regex /diskann_vendored_offline|diskann_offline/<diskann_single_index>/
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.backend_variant')) AS backend_variant,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.backend_build_segments') AS backend_build_segments,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.backend_build_invocations') AS backend_build_invocations,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.diskann_pq_runtime')) AS diskann_pq_runtime,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.native_pq_runtime_artifacts_written') AS native_artifacts_written,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.native_pq_runtime_compressed_rows') AS native_compressed_rows,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.scheduler_single_index_build') AS single_index_build,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.scheduler_raw_reader_threads') AS raw_reader_threads,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.scheduler_pq_train_threads') AS pq_train_threads,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.scheduler_pq_compress_threads') AS pq_compress_threads,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented'),
+  '$.entry_count') AS entry_count;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_load_segmented', VEC_FROMTEXT('[1,0]'), 6),
+  CAST(100000 AS JSON)) AS has_doc_100000,
+  JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_load_segmented', VEC_FROMTEXT('[1,0]'), 6),
+  CAST(0 AS JSON)) AS has_generated_doc_0;
+
+SELECT VEC_INDEX_DROP('idx_diskann_load_segmented');
+
+--echo #
+--echo # WL#Vector: DISKANN default segmented serving fan-out
+--echo #
+
+--disable_query_log
+SET GLOBAL vector_diskann_segmented_serving = DEFAULT;
+--enable_query_log
+
+SELECT VEC_INDEX_CREATE('idx_diskann_load_segmented_multi', 2, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN', 0, 'standalone');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_load_segmented_multi',
+                                        'offline');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_load_segmented_multi',
+                                          32, 64, 4);
+
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_diskann_load_segmented.fbin'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_diskann_load_segmented.u64'
+  INTO VECTOR INDEX idx_diskann_load_segmented_multi
+  FORMAT FBIN;
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_diskann_load_segmented.fbin'
+  INTO VECTOR INDEX idx_diskann_load_segmented_multi
+  FORMAT FBIN;
+--enable_query_log
+
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+                    '$.standalone_raw_segment_count') AS raw_segment_count;
+
+--disable_query_log
+delimiter |;
+CREATE PROCEDURE try_diskann_segmented_serving_build()
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET @build_ok = 0;
+  SET @build_ok = 1;
+  SET @build_result = VEC_INDEX_BULK_BUILD(
+    'idx_diskann_load_segmented_multi');
+END|
+delimiter ;|
+CALL try_diskann_segmented_serving_build();
+DROP PROCEDURE try_diskann_segmented_serving_build;
+--let $build_ok=`SELECT @build_ok`
+if (!$build_ok)
+{
+  SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+  SET GLOBAL vector_build_pipeline_max_tasks = @old_vector_build_pipeline_max_tasks;
+  SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+  SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+  SET GLOBAL vector_diskann_pq_runtime = @old_vector_diskann_pq_runtime;
+  SET GLOBAL vector_diskann_segmented_serving = @old_vector_diskann_segmented_serving;
+  SELECT VEC_INDEX_DROP('idx_diskann_load_segmented_multi');
+  --remove_file $vector_fbin
+  --remove_file $vector_docid
+  --skip Test requires DISKANN offline adapter support
+}
+--enable_query_log
+
+--replace_regex /diskann_vendored_offline|diskann_offline/<diskann_segment_backend>/
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.backend_variant')) AS backend_variant,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.backend_build_segments') AS backend_build_segments,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.backend_build_invocations') AS backend_build_invocations,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.scheduler_single_index_build') AS single_index_build,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.scheduler_concurrent_tasks') AS concurrent_tasks,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.entry_count') AS entry_count;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_load_segmented_multi',
+                   VEC_FROMTEXT('[1,0]'), 6),
+  CAST(100000 AS JSON)) AS has_doc_100000,
+  JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_load_segmented_multi',
+                   VEC_FROMTEXT('[1,0]'), 6),
+  CAST(0 AS JSON)) AS has_generated_doc_0;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.scheduler_search_fanout_segments') AS search_fanout_segments,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.scheduler_search_global_top_k') AS search_global_top_k,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.scheduler_search_per_segment_top_k') AS search_per_segment_top_k,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.scheduler_search_result_budget') AS search_result_budget,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_load_segmented_multi'),
+  '$.scheduler_search_candidate_count') AS search_candidate_count;
+
+--disable_query_log
+SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+SET GLOBAL vector_build_pipeline_max_tasks = @old_vector_build_pipeline_max_tasks;
+SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+SET GLOBAL vector_diskann_pq_runtime = @old_vector_diskann_pq_runtime;
+SET GLOBAL vector_diskann_segmented_serving = @old_vector_diskann_segmented_serving;
+--enable_query_log
+
+SELECT VEC_INDEX_DROP('idx_diskann_load_segmented_multi');
+--remove_file $vector_fbin
+--remove_file $vector_docid

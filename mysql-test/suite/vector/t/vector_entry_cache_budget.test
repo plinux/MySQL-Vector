@@ -1,4 +1,4 @@
---source include/have_vector_hnsw.inc
+--source include/have_vector_debug_native.inc
 
 --echo #
 --echo # WL#vector-v1: committed entry cache budget and truth-store read-through
@@ -7,7 +7,7 @@
 SET @old_vector_entry_cache_size = @@global.vector_entry_cache_size;
 SET GLOBAL vector_entry_cache_size = 0;
 
-SELECT VEC_INDEX_CREATE('idx_entry_cache_budget', 2, 'EUCLIDEAN', 'MEMORY', 'HNSW');
+SELECT VEC_INDEX_CREATE('idx_entry_cache_budget', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 
 SET @txn = VEC_INDEX_TXN_BEGIN();
 SELECT VEC_INDEX_STAGE_UPSERT('idx_entry_cache_budget', @txn, 1, '[1,1]');

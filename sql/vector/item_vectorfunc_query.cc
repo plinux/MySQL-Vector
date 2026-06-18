@@ -114,7 +114,7 @@ bool Item_func_vec_index_info::resolve_type(THD *thd) {
 }
 
 String *Item_func_vec_index_info::val_str(String *str [[maybe_unused]]) {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   String name_buf;
@@ -154,7 +154,7 @@ bool Item_func_vec_index_list::resolve_type(THD *thd) {
 }
 
 String *Item_func_vec_index_list::val_str(String *str [[maybe_unused]]) {
-  assert(fixed && arg_count == 0);
+  assert_fixed_arg_count(fixed, arg_count, 0);
   null_value = true;
 
   std::vector<std::string> index_names;
@@ -191,7 +191,7 @@ bool Item_func_vec_index_search::resolve_type(THD *thd) {
 }
 
 String *Item_func_vec_index_search::val_str(String *str [[maybe_unused]]) {
-  assert(fixed && arg_count == 3);
+  assert_fixed_arg_count(fixed, arg_count, 3);
   null_value = true;
 
   String name_buf;
@@ -246,7 +246,7 @@ bool Item_func_vec_index_search_batch::resolve_type(THD *thd) {
 
 String *Item_func_vec_index_search_batch::val_str(
     String *str [[maybe_unused]]) {
-  assert(fixed && arg_count == 4);
+  assert_fixed_arg_count(fixed, arg_count, 4);
   null_value = true;
 
   String name_buf;
@@ -305,7 +305,7 @@ bool Item_func_vec_index_search_with_distance::resolve_type(THD *thd) {
 
 String *Item_func_vec_index_search_with_distance::val_str(
     String *str [[maybe_unused]]) {
-  assert(fixed && arg_count == 3);
+  assert_fixed_arg_count(fixed, arg_count, 3);
   null_value = true;
 
   String name_buf;

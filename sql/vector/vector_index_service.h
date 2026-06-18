@@ -534,7 +534,20 @@ class index_service {
 };
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
-bool segmented_backend_contract_valid_for_testing();
+bool parse_manifest_size_for_testing(const std::string &text, size_t *value);
+bool file_size_as_size_for_testing(const std::string &path, size_t *bytes);
+bool copy_or_link_file_for_testing(const std::string &source,
+                                   const std::string &target);
+bool write_generated_docid_file_for_testing(const std::string &path,
+                                            uint64_t row_count);
+bool vector_payload_bytes_for_testing(size_t entry_count, size_t dimension,
+                                      size_t *bytes);
+std::unique_ptr<backend> make_segmented_backend_for_testing(
+    index_service::index_config config,
+    std::vector<std::shared_ptr<backend>> segments,
+    backend_build_diagnostics diagnostics = {});
+bool raw_segments_use_single_backend_for_testing(
+    const index_service::index_config &config);
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 }  // namespace vector_index

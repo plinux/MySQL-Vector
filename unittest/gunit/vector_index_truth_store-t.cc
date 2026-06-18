@@ -266,6 +266,10 @@ TEST(VectorIndexTruthStoreTest, DefaultFindCommittedStopsWhenRowIsFound) {
   ASSERT_TRUE(store.find_committed("idx", 9, &row, &found));
   EXPECT_FALSE(found);
   EXPECT_TRUE(row.index_name.empty());
+
+  EXPECT_FALSE(store.find_committed("", 1, &row, &found));
+  EXPECT_FALSE(store.find_committed("idx", 1, nullptr, &found));
+  EXPECT_FALSE(store.find_committed("idx", 1, &row, nullptr));
 }
 
 TEST(VectorIndexTruthStoreTest, DefaultCommittedIteratorRejectsEmptyVisitor) {
@@ -1050,6 +1054,7 @@ TEST(VectorIndexTruthStoreTest,
   EXPECT_STREQ("mysql", store->backend_name());
 
   EXPECT_FALSE(store->quarantine_committed());
+  EXPECT_FALSE(store->quarantine_segment_tasks());
 }
 
 TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {
@@ -1155,11 +1160,30 @@ TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {
   EXPECT_EQ(99U, loaded_prepared[0].txn_id);
   EXPECT_EQ("idx_truth", loaded_prepared[0].index_name);
 
+  std::vector<vector_index_metadata_store::segment_task_row> segment_rows(1);
+  segment_rows[0].index_name = "idx_truth";
+  segment_rows[0].generation = 3;
+  segment_rows[0].segment_id = 7;
+  segment_rows[0].state =
+      vector_index_metadata_store::segment_task_state::kReady;
+  segment_rows[0].row_count = 1;
+  segment_rows[0].payload_size = 8;
+  segment_rows[0].vector_path = "/tmp/vector.fbin";
+  segment_rows[0].docid_path = "/tmp/vector.u64";
+  segment_rows[0].artifact_prefix = "/tmp/segment-7";
+  ASSERT_TRUE(store->save_segment_tasks(segment_rows));
+  std::vector<vector_index_metadata_store::segment_task_row>
+      loaded_segment_rows;
+  ASSERT_TRUE(store->load_segment_tasks(&loaded_segment_rows));
+  ASSERT_EQ(1U, loaded_segment_rows.size());
+  EXPECT_EQ(7U, loaded_segment_rows[0].segment_id);
+
   ASSERT_TRUE(store->quarantine_metadata());
   ASSERT_TRUE(store->quarantine_committed());
   ASSERT_TRUE(store->quarantine_manifest());
   ASSERT_TRUE(store->quarantine_change_log());
   ASSERT_TRUE(store->quarantine_prepared());
+  ASSERT_TRUE(store->quarantine_segment_tasks());
 
   vector_index_metadata_store::reset_path_for_testing();
   std::remove(path.c_str());
@@ -1168,11 +1192,13 @@ TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {
   std::remove((path + ".manifest").c_str());
   std::remove((path + ".changelog").c_str());
   std::remove((path + ".prepared").c_str());
+  std::remove((path + ".segment_tasks").c_str());
   std::remove((path + ".corrupt").c_str());
   std::remove((path + ".committed.corrupt").c_str());
   std::remove((path + ".manifest.corrupt").c_str());
   std::remove((path + ".changelog.corrupt").c_str());
   std::remove((path + ".prepared.corrupt").c_str());
+  std::remove((path + ".segment_tasks.corrupt").c_str());
 }
 
 }  // namespace vector_index_truth_store_unittest

@@ -14,6 +14,8 @@ SELECT VEC_INDEX_CREATE('idx_load_transactional', 2, 'EUCLIDEAN', 'MEMORY',
 VEC_INDEX_CREATE('idx_load_transactional', 2, 'EUCLIDEAN', 'MEMORY',
 'NATIVE')
 1
+ERROR 42000: This version of MySQL doesn't yet support 'LOAD VECTOR DATA FORMAT JSON'
+ERROR HY000: Incorrect arguments to load vector data
 SELECT JSON_CONTAINS(
 VEC_INDEX_SEARCH('idx_load_transactional', VEC_FROMTEXT('[1,0]'), 1),
 CAST(201 AS JSON)) AS transactional_csv_visible;

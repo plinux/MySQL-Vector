@@ -56,6 +56,15 @@ LOAD VECTOR DATA INFILE 'vectors.fbin'
 SELECT VEC_INDEX_CREATE('idx_load_transactional', 2, 'EUCLIDEAN', 'MEMORY',
                         'NATIVE');
 --disable_query_log
+--error ER_NOT_SUPPORTED_YET
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.csv'
+  INTO VECTOR INDEX idx_load_transactional
+  FORMAT JSON;
+--error ER_WRONG_ARGUMENTS
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.csv'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_load_data.u64'
+  INTO VECTOR INDEX idx_load_transactional
+  FORMAT CSV;
 eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_load_data.csv'
   INTO VECTOR INDEX idx_load_transactional
   FORMAT CSV

@@ -1,0 +1,68 @@
+#
+# WL#Vector: generic runtime scheduler diagnostics for HNSW and FAISS
+#
+SET @old_vector_hnsw_build_threads = @@GLOBAL.vector_hnsw_build_threads;
+SET @old_vector_faiss_build_threads = @@GLOBAL.vector_faiss_build_threads;
+SET GLOBAL vector_hnsw_build_threads = 2;
+SET GLOBAL vector_faiss_build_threads = 2;
+SELECT VEC_INDEX_CREATE('idx_scheduler_hnsw', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_scheduler_hnsw', 2, 'EUCLIDEAN',
+'MEMORY', 'HNSWLIB')
+1
+SELECT VEC_INDEX_UPSERT('idx_scheduler_hnsw', 1, VEC_FROMTEXT('[1,0]'));
+VEC_INDEX_UPSERT('idx_scheduler_hnsw', 1, VEC_FROMTEXT('[1,0]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_scheduler_hnsw', 2, VEC_FROMTEXT('[2,0]'));
+VEC_INDEX_UPSERT('idx_scheduler_hnsw', 2, VEC_FROMTEXT('[2,0]'))
+1
+SELECT VEC_INDEX_REBUILD('idx_scheduler_hnsw');
+VEC_INDEX_REBUILD('idx_scheduler_hnsw')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_hnsw'),
+'$.backend_build_runtime')) AS hnsw_runtime,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_hnsw'),
+'$.backend_build_effective_threads') >= 1 AS hnsw_threads_present,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_hnsw'),
+'$.backend_build_effective_blas_threads') AS hnsw_blas_threads,
+COALESCE(JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_hnsw'),
+'$.backend_build_pq_chunks'), 0) AS hnsw_pq_chunks,
+COALESCE(JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_hnsw'),
+'$.backend_build_cache_nodes'), 0) AS hnsw_cache_nodes;
+hnsw_runtime	hnsw_threads_present	hnsw_blas_threads	hnsw_pq_chunks	hnsw_cache_nodes
+hnsw_scheduler	1	1	0	0
+SELECT VEC_INDEX_CREATE('idx_scheduler_faiss', 2, 'EUCLIDEAN',
+'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_scheduler_faiss', 2, 'EUCLIDEAN',
+'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_UPSERT('idx_scheduler_faiss', 1, VEC_FROMTEXT('[1,0]'));
+VEC_INDEX_UPSERT('idx_scheduler_faiss', 1, VEC_FROMTEXT('[1,0]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_scheduler_faiss', 2, VEC_FROMTEXT('[2,0]'));
+VEC_INDEX_UPSERT('idx_scheduler_faiss', 2, VEC_FROMTEXT('[2,0]'))
+1
+SELECT VEC_INDEX_REBUILD('idx_scheduler_faiss');
+VEC_INDEX_REBUILD('idx_scheduler_faiss')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_faiss'),
+'$.backend_build_runtime')) AS faiss_runtime,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_faiss'),
+'$.backend_build_effective_threads') >= 1 AS faiss_threads_present,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_faiss'),
+'$.backend_build_effective_blas_threads') >= 1
+AS faiss_blas_threads_present,
+COALESCE(JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_faiss'),
+'$.backend_build_pq_chunks'), 0) AS faiss_pq_chunks,
+COALESCE(JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_faiss'),
+'$.backend_build_cache_nodes'), 0) AS faiss_cache_nodes;
+faiss_runtime	faiss_threads_present	faiss_blas_threads_present	faiss_pq_chunks	faiss_cache_nodes
+faiss_scheduler	1	1	0	0
+SET GLOBAL vector_hnsw_build_threads = @old_vector_hnsw_build_threads;
+SET GLOBAL vector_faiss_build_threads = @old_vector_faiss_build_threads;
+SELECT VEC_INDEX_DROP('idx_scheduler_hnsw');
+VEC_INDEX_DROP('idx_scheduler_hnsw')
+1
+SELECT VEC_INDEX_DROP('idx_scheduler_faiss');
+VEC_INDEX_DROP('idx_scheduler_faiss')
+1

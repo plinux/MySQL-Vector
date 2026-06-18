@@ -1,5 +1,10 @@
 --source include/have_vector_diskann.inc
 
+# The transactional rebuild forces the real offline adapter. Keep 2 GiB for
+# mysqld and the native build workspace before headroom.
+--let $vector_big_test_estimated_peak_kib=2097152
+--source suite/vector/include/vector_big_test_memory.inc
+
 --echo #
 --echo # WL#Vector: transactional DISKANN offline rebuild
 --echo #

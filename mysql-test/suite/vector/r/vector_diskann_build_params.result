@@ -62,9 +62,39 @@ JSON_CONTAINS(
 VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
 CAST(1 AS JSON))
 1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+'$.backend_build_runtime')) AS backend_build_runtime;
+backend_build_runtime
+serial_fallback
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+'$.backend_build_input_source')) AS backend_build_input_source;
+backend_build_input_source
+serial_entries
 SELECT VEC_INDEX_INFO('idx_diskann_params');
 VEC_INDEX_INFO('idx_diskann_params')
 {"dimension":2,"metric":"euclidean","mode":"external","provider":"diskann","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":"<diskann_variant>","backend_build_runtime":"serial_fallback","backend_build_input_source":"serial_entries","backend_build_rows":1,"backend_build_segments":0,"backend_build_invocations":0,"backend_build_concurrent_tasks":1,"backend_build_effective_threads":1,"backend_build_effective_blas_threads":1,"backend_build_raw_reader_threads":0,"backend_build_pq_train_threads":1,"backend_build_pq_compress_threads":1,"backend_build_single_index":0,"backend_build_pq_chunks":0,"backend_build_cache_nodes":0,"backend_build_manifest_ms":0,"backend_build_offline_ms":0,"backend_build_load_ms":0,"diskann_pq_runtime":"native_auto","backend_build_fallback_reason":"offline_min_rows","scheduler_path":"serial_fallback","scheduler_segment_count":0,"scheduler_task_count":0,"scheduler_concurrent_tasks":1,"scheduler_cpu_budget":1,"scheduler_effective_build_threads":1,"scheduler_effective_blas_threads":1,"scheduler_raw_reader_threads":0,"scheduler_pq_train_threads":1,"scheduler_pq_compress_threads":1,"scheduler_single_index_build":0,"scheduler_candidates_per_segment":0,"diskann_segment_pq_chunks":0,"diskann_segment_cache_nodes":0,"diskann_segment_build_wall_ms":0,"diskann_segment_build_sum_ms":0,"diskann_segment_fallback_reason":"offline_min_rows","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":48,"diskann_build_complexity":96,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":64,"diskann_search_beamwidth":16,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":2,"diskann_cache_nodes":0,"diskann_accelerate_build":1,"diskann_shuffle_build":1,"diskann_use_bfs_cache":1,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SHOW VECTOR STATUS
+WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name LIKE 'idx_diskann_params.backend_build_%';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_diskann_params.backend_build_runtime	serial_fallback
+BACKEND_HEALTH	idx_diskann_params.backend_build_input_source	serial_entries
+BACKEND_HEALTH	idx_diskann_params.backend_build_rows	1
+BACKEND_HEALTH	idx_diskann_params.backend_build_segments	0
+BACKEND_HEALTH	idx_diskann_params.backend_build_invocations	0
+BACKEND_HEALTH	idx_diskann_params.backend_build_concurrent_tasks	1
+BACKEND_HEALTH	idx_diskann_params.backend_build_effective_threads	1
+BACKEND_HEALTH	idx_diskann_params.backend_build_effective_blas_threads	1
+BACKEND_HEALTH	idx_diskann_params.backend_build_raw_reader_threads	0
+BACKEND_HEALTH	idx_diskann_params.backend_build_pq_train_threads	1
+BACKEND_HEALTH	idx_diskann_params.backend_build_pq_compress_threads	1
+BACKEND_HEALTH	idx_diskann_params.backend_build_single_index	0
+BACKEND_HEALTH	idx_diskann_params.backend_build_pq_chunks	0
+BACKEND_HEALTH	idx_diskann_params.backend_build_cache_nodes	0
+BACKEND_HEALTH	idx_diskann_params.backend_build_manifest_ms	0
+BACKEND_HEALTH	idx_diskann_params.backend_build_offline_ms	0
+BACKEND_HEALTH	idx_diskann_params.backend_build_load_ms	0
+BACKEND_HEALTH	idx_diskann_params.backend_build_fallback_reason	offline_min_rows
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name LIKE 'idx_diskann_params.diskann_%';
 Section	Variable_name	Value

@@ -114,7 +114,7 @@ class runtime_worker_pool {
 
  private:
   bool resize_locked(size_t thread_count) {
-    if (m_workers.size() == thread_count) return true;
+    if (m_workers.size() >= thread_count) return true;
     shutdown_locked();
     try {
       for (size_t i = 0; i < thread_count; ++i) {
@@ -158,7 +158,11 @@ class runtime_worker_pool {
     }
     m_queue_cv.notify_all();
     for (std::thread &worker : workers) {
-      if (worker.joinable()) worker.join();
+      if (!worker.joinable()) continue;
+      try {
+        worker.join();
+      } catch (...) {
+      }
     }
     {
       std::lock_guard<std::mutex> queue_guard(m_queue_mutex);
@@ -178,6 +182,30 @@ runtime_worker_pool &global_runtime_worker_pool() {
   static runtime_worker_pool pool;
   return pool;
 }
+
+class scoped_thread_joiner {
+ public:
+  explicit scoped_thread_joiner(std::vector<std::thread> *workers)
+      : m_workers(workers) {}
+
+  ~scoped_thread_joiner() { join_all(); }
+
+  void join_all() {
+    if (m_joined) return;
+    m_joined = true;
+    for (std::thread &worker : *m_workers) {
+      if (!worker.joinable()) continue;
+      try {
+        worker.join();
+      } catch (...) {
+      }
+    }
+  }
+
+ private:
+  std::vector<std::thread> *m_workers;
+  bool m_joined{false};
+};
 
 }  // namespace
 
@@ -215,6 +243,7 @@ bool parallel_for_ranges_scoped(size_t item_count, size_t configured_threads,
   std::vector<unsigned char> worker_ok(thread_count, 1);
   std::vector<std::thread> workers;
   workers.reserve(thread_count);
+  scoped_thread_joiner joiner(&workers);
   const size_t chunk_size = (item_count + thread_count - 1) / thread_count;
 
   try {
@@ -234,10 +263,7 @@ bool parallel_for_ranges_scoped(size_t item_count, size_t configured_threads,
   } catch (...) {
     failed.store(true, std::memory_order_relaxed);
   }
-
-  for (std::thread &worker : workers) {
-    if (worker.joinable()) worker.join();
-  }
+  joiner.join_all();
   return !failed.load(std::memory_order_relaxed) &&
          std::all_of(worker_ok.begin(), worker_ok.end(),
                      [](unsigned char ok) { return ok != 0; });

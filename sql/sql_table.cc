@@ -11016,6 +11016,41 @@ static bool create_vector_like_indexes(
             index_name, info.diskann_search_complexity)) {
       return false;
     }
+    if (info.diskann_search_beamwidth != 0 &&
+        !vector_index_registry::set_diskann_search_beamwidth(
+            index_name, info.diskann_search_beamwidth)) {
+      return false;
+    }
+    if (info.diskann_build_mode_specified &&
+        !vector_index_registry::set_diskann_build_mode(
+            index_name, info.diskann_build_mode_value)) {
+      return false;
+    }
+    if (info.provider == "diskann" &&
+        !vector_index_registry::set_diskann_pq_code_budget_size(
+            index_name, info.diskann_pq_code_budget_size)) {
+      return false;
+    }
+    if (info.provider == "diskann" &&
+        !vector_index_registry::set_diskann_disk_pq_dims(
+            index_name, info.diskann_disk_pq_dims)) {
+      return false;
+    }
+    if (info.provider == "diskann" &&
+        !vector_index_registry::set_diskann_accelerate_build(
+            index_name, info.diskann_accelerate_build)) {
+      return false;
+    }
+    if (info.provider == "diskann" &&
+        !vector_index_registry::set_diskann_shuffle_build(
+            index_name, info.diskann_shuffle_build)) {
+      return false;
+    }
+    if (info.provider == "diskann" &&
+        !vector_index_registry::set_diskann_use_bfs_cache(
+            index_name, info.diskann_use_bfs_cache)) {
+      return false;
+    }
     if (created_index_names != nullptr) {
       created_index_names->push_back(index_name);
     }

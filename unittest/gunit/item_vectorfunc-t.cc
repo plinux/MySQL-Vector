@@ -1912,6 +1912,22 @@ TEST_F(ItemVectorFuncFixture, ItemTuningItemsRejectMissingIndexes) {
   expect_wrong_arguments_int(
       new Item_func_vec_index_set_diskann_pq_code_budget_size(
           POS(), make_string_item("idx_missing_diskann_pq"), new Item_int(0)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_disk_pq_dims(
+          POS(), make_string_item("idx_missing_diskann_disk_pq"),
+          new Item_int(12)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_accelerate_build(
+          POS(), make_string_item("idx_missing_diskann_accelerate"),
+          new Item_int(1)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_shuffle_build(
+          POS(), make_string_item("idx_missing_diskann_shuffle"),
+          new Item_int(1)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_use_bfs_cache(
+          POS(), make_string_item("idx_missing_diskann_bfs"),
+          new Item_int(1)));
 }
 
 TEST_F(ItemVectorFuncFixture, ItemAdminItemsRejectNullStringValues) {
@@ -1958,9 +1974,22 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsRejectNullStringValues) {
   expect_wrong_arguments_int(
       new Item_func_vec_index_set_diskann_pq_code_budget_size(
           POS(), make_null_string_value_item(), new Item_int(0)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_disk_pq_dims(
+          POS(), make_null_string_value_item(), new Item_int(12)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_accelerate_build(
+          POS(), make_null_string_value_item(), new Item_int(1)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_shuffle_build(
+          POS(), make_null_string_value_item(), new Item_int(1)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_use_bfs_cache(
+          POS(), make_null_string_value_item(), new Item_int(1)));
 
-  expect_wrong_arguments_int(new Item_func_vec_index_drop(
-      POS(), make_item_list({make_null_string_value_item()})));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_drop(POS(),
+                                   make_item_list({make_null_string_value_item()})));
   expect_wrong_arguments_int(new Item_func_vec_index_rebuild(
       POS(), make_item_list({make_null_string_value_item()})));
   expect_wrong_arguments_int(new Item_func_vec_index_bulk_load_begin(
@@ -1983,6 +2012,8 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsCoverAdditionalInvalidArguments) {
       static_cast<longlong>(std::numeric_limits<uint32_t>::max()) + 1LL;
   const longlong build_threads_overflow =
       static_cast<longlong>(vector_index::k_max_build_threads) + 1LL;
+  const longlong disk_pq_dims_overflow =
+      static_cast<longlong>(vector_index::k_max_diskann_disk_pq_dims) + 1LL;
   auto expect_wrong_arguments_int = [this](Item *item) {
     Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
     fix_item(thd(), item);
@@ -2057,6 +2088,19 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsCoverAdditionalInvalidArguments) {
       POS(), make_item_list({make_string_item("idx_any"), new Item_int(64),
                              new Item_int(100),
                              new Item_int(build_threads_overflow)})));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_disk_pq_dims(
+          POS(), make_string_item("idx_any"),
+          new Item_int(disk_pq_dims_overflow)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_accelerate_build(
+          POS(), make_string_item("idx_any"), new Item_int(2)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_shuffle_build(
+          POS(), make_string_item("idx_any"), new Item_int(-1)));
+  expect_wrong_arguments_int(
+      new Item_func_vec_index_set_diskann_use_bfs_cache(
+          POS(), make_string_item("idx_any"), new Item_int(2)));
 
   expect_wrong_arguments_int(new Item_func_vec_index_set_diskann_build_mode(
       POS(), make_null_marked_string_item("idx_any"),

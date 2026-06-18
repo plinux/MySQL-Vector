@@ -6,7 +6,6 @@
 --echo #
 
 --disable_query_log
---disable_result_log
 SET @old_vector_diskann_pq_runtime = @@GLOBAL.vector_diskann_pq_runtime;
 SET GLOBAL vector_diskann_pq_runtime = 'native_strict';
 --let $vector_diskann_pq_runtime_accelerated_csv=$MYSQLTEST_VARDIR/vector_diskann_pq_runtime_accelerated.csv
@@ -52,16 +51,6 @@ SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime', 2, 'EUCLIDEAN',
                         'EXTERNAL', 'DISKANN');
 SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime', 1, VEC_FROMTEXT('[1,1]'));
 SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime');
-
---let $diskann_pq_runtime=`SELECT COALESCE(JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime'), '$.diskann_pq_runtime')), '')`
-if (!$diskann_pq_runtime)
-{
-  SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime');
-  SET GLOBAL vector_diskann_pq_runtime = @old_vector_diskann_pq_runtime;
-  --skip Test requires native DISKANN PQ runtime support
-}
---enable_result_log
---enable_query_log
 
 SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime'),
   '$.diskann_pq_runtime')) AS diskann_pq_runtime,

@@ -42,7 +42,7 @@ bool Item_func_vec_index_txn_begin::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_txn_begin::val_int() {
-  assert(fixed && arg_count == 0);
+  assert_fixed_arg_count(fixed, arg_count, 0);
   null_value = false;
   return static_cast<longlong>(vector_index_registry::begin_txn());
 }
@@ -54,7 +54,7 @@ bool Item_func_vec_index_txn_pending::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_txn_pending::val_int() {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   ulonglong txn_id = 0;
@@ -76,7 +76,7 @@ bool Item_func_vec_index_stage_upsert::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_stage_upsert::val_int() {
-  assert(fixed && arg_count == 4);
+  assert_fixed_arg_count(fixed, arg_count, 4);
   null_value = true;
 
   String name_buf;
@@ -121,7 +121,7 @@ bool Item_func_vec_index_stage_erase::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_stage_erase::val_int() {
-  assert(fixed && arg_count == 3);
+  assert_fixed_arg_count(fixed, arg_count, 3);
   null_value = true;
 
   String name_buf;
@@ -158,7 +158,7 @@ bool Item_func_vec_index_txn_commit::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_txn_commit::val_int() {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   ulonglong txn_id = 0;
@@ -183,7 +183,7 @@ bool Item_func_vec_index_txn_rollback::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_txn_rollback::val_int() {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   ulonglong txn_id = 0;
@@ -208,7 +208,7 @@ bool Item_func_vec_index_txn_savepoint::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_txn_savepoint::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;
@@ -236,7 +236,7 @@ bool Item_func_vec_index_txn_rollback_to::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_txn_rollback_to::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;
@@ -264,7 +264,7 @@ bool Item_func_vec_index_txn_release_savepoint::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_index_txn_release_savepoint::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   String name_buf;
@@ -296,7 +296,7 @@ bool Item_func_vec_debug_truth_store_get_hex::resolve_type(THD *thd) {
 
 String *Item_func_vec_debug_truth_store_get_hex::val_str(
     String *str [[maybe_unused]]) {
-  assert(fixed && arg_count == 1);
+  assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
   if (!require_process_access(current_thd)) {
@@ -338,7 +338,7 @@ bool Item_func_vec_debug_truth_store_set_hex::resolve_type(THD *thd) {
 }
 
 longlong Item_func_vec_debug_truth_store_set_hex::val_int() {
-  assert(fixed && arg_count == 2);
+  assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
   if (!require_process_access(current_thd)) {

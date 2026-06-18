@@ -607,7 +607,6 @@ SET(SQL_SHARED_SOURCES
   sql_union.cc
   sql_update.cc
   sql_view.cc
-  vector/sql_vector_load.cc
   ssl_acceptor_context_iterator.cc
   ssl_acceptor_context_data.cc
   ssl_acceptor_context_operator.cc
@@ -629,6 +628,7 @@ SET(SQL_SHARED_SOURCES
   trigger.cc
   trigger_creation_ctx.cc
   trigger_chain.cc
+  vector/sql_vector_load.cc
   tztime.cc
   uniques.cc
   xa.cc
@@ -654,7 +654,6 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_diskann_artifact_layout.cc
     vector/vector_diskann_graph_cache_bridge.cc
     vector/vector_diskann_pq_runtime.cc
-    vector/vector_diskann_scheduler.cc
     vector/vector_elkan_kmeans.cc
     vector/vector_pq_centroid_scan.cc
     vector/vector_simd_distance.cc
@@ -666,9 +665,10 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_runtime_config.cc
     vector/vector_index_runtime_thread_pool.cc
     vector/vector_index_status_fields.cc
-    vector/vector_segmented_search.cc
+    vector/vector_diskann_scheduler.cc
     vector/vector_segment_task.cc
     vector/vector_segment_runtime_scheduler.cc
+    vector/vector_segmented_search.cc
     vector/vector_status.cc
     vector/vector_index_metadata_store.cc
     vector/vector_index_metadata_store_codec.cc
@@ -714,6 +714,7 @@ IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
     vector/vector_index_registry_lifecycle.cc
     vector/vector_index_runtime_thread_pool.cc
     vector/vector_mapped_search.cc
+    vector/vector_index_service.cc
     vector/vector_index_truth_store.cc
     vector/vector_index_truth_store_api.cc
     vector/vector_trx_participant.cc

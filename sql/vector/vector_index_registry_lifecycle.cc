@@ -87,8 +87,6 @@ bool index_config_matches(
          lhs.diskann_max_degree == rhs.diskann_max_degree &&
          lhs.diskann_build_complexity == rhs.diskann_build_complexity &&
          lhs.diskann_build_threads == rhs.diskann_build_threads &&
-         lhs.diskann_build_blas_threads ==
-             rhs.diskann_build_blas_threads &&
          lhs.diskann_build_mode_value == rhs.diskann_build_mode_value &&
          lhs.diskann_build_mode_specified ==
              rhs.diskann_build_mode_specified &&
@@ -840,7 +838,6 @@ bool reset_mapped_indexes_for_table(const std::string &db_name,
     spec.info.diskann_max_degree = config.diskann_max_degree;
     spec.info.diskann_build_complexity = config.diskann_build_complexity;
     spec.info.diskann_build_threads = config.diskann_build_threads;
-    spec.info.diskann_build_blas_threads = config.diskann_build_blas_threads;
     spec.info.diskann_build_mode_value = config.diskann_build_mode_value;
     spec.info.diskann_build_mode_specified =
         config.diskann_build_mode_specified;
@@ -1860,7 +1857,6 @@ bool get_index_info(const std::string &index_name, index_info *info) {
   info->diskann_max_degree = config.diskann_max_degree;
   info->diskann_build_complexity = config.diskann_build_complexity;
   info->diskann_build_threads = config.diskann_build_threads;
-  info->diskann_build_blas_threads = config.diskann_build_blas_threads;
   info->diskann_build_mode_value = config.diskann_build_mode_value;
   info->diskann_build_mode_specified = config.diskann_build_mode_specified;
   info->diskann_search_complexity = config.diskann_search_complexity;

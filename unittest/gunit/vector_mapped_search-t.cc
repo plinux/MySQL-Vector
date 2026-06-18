@@ -162,7 +162,6 @@ TEST(VectorMappedSearchTest, TestingWrappersParseDocIdColumnShapes) {
       "42", 2, nullptr));
   EXPECT_FALSE(vector_mapped_search::parse_doc_id_column_for_testing(
       "", 0, &doc_id));
-
   std::array<uchar, 8> bytes{};
   bytes[0] = 7;
   ASSERT_TRUE(vector_mapped_search::parse_doc_id_column_for_testing(

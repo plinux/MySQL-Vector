@@ -940,6 +940,11 @@ bool apply_index_tuning_locked(const std::string &index_name,
                                                  info.diskann_build_threads)) {
     return false;
   }
+  if (info.diskann_build_mode_specified &&
+      !g_index_service.set_diskann_build_mode(
+          index_name, info.diskann_build_mode_value)) {
+    return false;
+  }
   if (info.diskann_search_complexity != 0 &&
       !g_index_service.set_diskann_search_complexity(
           index_name, info.diskann_search_complexity)) {
@@ -969,13 +974,13 @@ bool apply_index_tuning_locked(const std::string &index_name,
     return false;
   }
   if (provider_value == vector_index::backend_provider::kDiskAnn &&
-      !g_index_service.set_diskann_shuffle_build(
-          index_name, info.diskann_shuffle_build)) {
+      !g_index_service.set_diskann_shuffle_build(index_name,
+                                                 info.diskann_shuffle_build)) {
     return false;
   }
   if (provider_value == vector_index::backend_provider::kDiskAnn &&
-      !g_index_service.set_diskann_use_bfs_cache(
-          index_name, info.diskann_use_bfs_cache)) {
+      !g_index_service.set_diskann_use_bfs_cache(index_name,
+                                                 info.diskann_use_bfs_cache)) {
     return false;
   }
   return true;
@@ -998,6 +1003,8 @@ bool reapply_metadata_tuning_locked(
     info.diskann_max_degree = row.diskann_max_degree;
     info.diskann_build_complexity = row.diskann_build_complexity;
     info.diskann_build_threads = row.diskann_build_threads;
+    info.diskann_build_mode_value = row.diskann_build_mode_value;
+    info.diskann_build_mode_specified = row.diskann_build_mode_specified;
     info.diskann_search_complexity = row.diskann_search_complexity;
     info.diskann_search_beamwidth = row.diskann_search_beamwidth;
     info.diskann_pq_code_budget_size = row.diskann_pq_code_budget_size;
@@ -1059,6 +1066,8 @@ bool snapshot_metadata_locked(
     row.diskann_max_degree = config.diskann_max_degree;
     row.diskann_build_complexity = config.diskann_build_complexity;
     row.diskann_build_threads = config.diskann_build_threads;
+    row.diskann_build_mode_value = config.diskann_build_mode_value;
+    row.diskann_build_mode_specified = config.diskann_build_mode_specified;
     row.diskann_search_complexity = config.diskann_search_complexity;
     row.diskann_search_beamwidth = config.diskann_search_beamwidth;
     row.diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
@@ -1327,6 +1336,8 @@ bool persist_index_config_manifest_locked(
     row.diskann_max_degree = config.diskann_max_degree;
     row.diskann_build_complexity = config.diskann_build_complexity;
     row.diskann_build_threads = config.diskann_build_threads;
+    row.diskann_build_mode_value = config.diskann_build_mode_value;
+    row.diskann_build_mode_specified = config.diskann_build_mode_specified;
     row.diskann_search_complexity = config.diskann_search_complexity;
     row.diskann_search_beamwidth = config.diskann_search_beamwidth;
     row.diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
@@ -2122,6 +2133,36 @@ bool restore_runtime_state_for_testing(
       metadata_rows, committed_state, change_log_rows, lagging_index_names);
   if (ok) g_metadata_loaded = true;
   return ok;
+}
+
+effective_index_options_for_testing effective_options_for_testing(
+    const std::string &provider, const create_index_options &options) {
+  effective_index_options_for_testing effective;
+  effective.hnsw_build_threads =
+      effective_hnsw_build_threads(provider, options);
+  effective.faiss_build_threads =
+      effective_faiss_build_threads(provider, options);
+  effective.diskann_build_threads =
+      effective_diskann_build_threads(provider, options);
+  effective.diskann_max_degree =
+      effective_diskann_max_degree(provider, options);
+  effective.diskann_build_complexity =
+      effective_diskann_build_complexity(provider, options);
+  effective.diskann_pq_code_budget_size =
+      effective_diskann_pq_code_budget_size(provider);
+  effective.diskann_disk_pq_dims =
+      effective_diskann_disk_pq_dims(provider, options);
+  effective.diskann_accelerate_build =
+      effective_diskann_accelerate_build(provider, options);
+  effective.diskann_shuffle_build =
+      effective_diskann_shuffle_build(provider, options);
+  effective.diskann_use_bfs_cache =
+      effective_diskann_use_bfs_cache(provider, options);
+  effective.diskann_search_complexity =
+      effective_diskann_search_complexity(provider);
+  effective.diskann_search_beamwidth =
+      effective_diskann_search_beamwidth(provider);
+  return effective;
 }
 
 void set_change_log_compact_threshold_for_testing(size_t threshold) {

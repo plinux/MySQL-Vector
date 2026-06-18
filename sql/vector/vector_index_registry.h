@@ -73,7 +73,6 @@ struct index_info {
   uint32_t diskann_max_degree{0};
   uint32_t diskann_build_complexity{0};
   uint32_t diskann_build_threads{0};
-  uint32_t diskann_build_blas_threads{0};
   vector_index::diskann_build_mode diskann_build_mode_value{
       vector_index::diskann_build_mode::kAuto};
   uint32_t diskann_search_complexity{0};
@@ -340,6 +339,25 @@ bool restore_runtime_state_for_testing(
 bool build_backend_from_config_for_testing(
     const std::string &index_name,
     const vector_index::index_service::index_config &config);
+
+struct effective_index_options_for_testing {
+  uint32_t hnsw_build_threads{0};
+  uint32_t faiss_build_threads{0};
+  uint32_t diskann_build_threads{0};
+  uint32_t diskann_max_degree{0};
+  uint32_t diskann_build_complexity{0};
+  uint64_t diskann_pq_code_budget_size{0};
+  uint32_t diskann_disk_pq_dims{0};
+  bool diskann_accelerate_build{false};
+  bool diskann_shuffle_build{false};
+  bool diskann_use_bfs_cache{false};
+  uint32_t diskann_search_complexity{0};
+  uint32_t diskann_search_beamwidth{0};
+};
+
+effective_index_options_for_testing effective_options_for_testing(
+    const std::string &provider, const create_index_options &options);
+
 void set_change_log_compact_threshold_for_testing(size_t threshold);
 
 /**

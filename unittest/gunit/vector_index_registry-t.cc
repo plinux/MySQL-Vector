@@ -715,7 +715,7 @@ class BoolGuard {
     *m_value = replacement;
   }
 
-  ~BoolGuard() { *m_value = m_original; }
+ ~BoolGuard() { *m_value = m_original; }
 
  private:
   bool *m_value;
@@ -6155,5 +6155,451 @@ TEST_F(VectorIndexRegistryTest,
 
   ASSERT_TRUE(vector_index_registry::drop_index("dbdrop_multi.t1.v2"));
 }
+
+TEST_F(VectorIndexRegistryTest,
+       EffectiveOptionsRespectProviderGlobalsAndStatementOverrides) {
+  UlongGuard hnsw_threads(&opt_vector_hnsw_build_threads, 3);
+  UlongGuard faiss_threads(&opt_vector_faiss_build_threads, 4);
+  UlongGuard diskann_threads(&opt_vector_diskann_build_threads, 5);
+  UlongGuard max_degree(&opt_vector_diskann_max_degree, 48);
+  UlongGuard build_complexity(&opt_vector_diskann_build_complexity, 96);
+  UlonglongGuard pq_budget(&opt_vector_diskann_pq_code_budget_size, 4096);
+  UlongGuard disk_pq_dims(&opt_vector_diskann_disk_pq_dims, 12);
+  BoolGuard accelerate(&opt_vector_diskann_accelerate_build, true);
+  BoolGuard shuffle(&opt_vector_diskann_shuffle_build, true);
+  BoolGuard bfs(&opt_vector_diskann_use_bfs_cache, true);
+  UlongGuard search_complexity(&opt_vector_diskann_search_complexity, 144);
+  UlongGuard search_beamwidth(&opt_vector_diskann_search_beamwidth, 28);
+
+  vector_index_registry::create_index_options options;
+  auto hnsw =
+      vector_index_registry::effective_options_for_testing("hnswlib", options);
+  EXPECT_EQ(3U, hnsw.hnsw_build_threads);
+  EXPECT_EQ(0U, hnsw.faiss_build_threads);
+  EXPECT_EQ(0U, hnsw.diskann_build_threads);
+  EXPECT_FALSE(hnsw.diskann_accelerate_build);
+
+  auto faiss =
+      vector_index_registry::effective_options_for_testing("faiss", options);
+  EXPECT_EQ(0U, faiss.hnsw_build_threads);
+  EXPECT_EQ(4U, faiss.faiss_build_threads);
+  EXPECT_EQ(0U, faiss.diskann_build_threads);
+  EXPECT_EQ(0U, faiss.diskann_search_complexity);
+
+  auto diskann =
+      vector_index_registry::effective_options_for_testing("diskann", options);
+  EXPECT_EQ(0U, diskann.hnsw_build_threads);
+  EXPECT_EQ(0U, diskann.faiss_build_threads);
+  EXPECT_EQ(5U, diskann.diskann_build_threads);
+  EXPECT_EQ(48U, diskann.diskann_max_degree);
+  EXPECT_EQ(96U, diskann.diskann_build_complexity);
+  EXPECT_EQ(4096U, diskann.diskann_pq_code_budget_size);
+  EXPECT_EQ(12U, diskann.diskann_disk_pq_dims);
+  EXPECT_TRUE(diskann.diskann_accelerate_build);
+  EXPECT_TRUE(diskann.diskann_shuffle_build);
+  EXPECT_TRUE(diskann.diskann_use_bfs_cache);
+  EXPECT_EQ(144U, diskann.diskann_search_complexity);
+  EXPECT_EQ(28U, diskann.diskann_search_beamwidth);
+
+  options.build_threads_specified = true;
+  options.build_threads = 9;
+  options.diskann_max_degree = 64;
+  options.diskann_build_complexity = 128;
+  options.diskann_disk_pq_dims = 16;
+  options.diskann_accelerate_build_specified = true;
+  options.diskann_accelerate_build = false;
+  options.diskann_shuffle_build_specified = true;
+  options.diskann_shuffle_build = false;
+  options.diskann_use_bfs_cache_specified = true;
+  options.diskann_use_bfs_cache = false;
+
+  hnsw =
+      vector_index_registry::effective_options_for_testing("hnswlib", options);
+  EXPECT_EQ(9U, hnsw.hnsw_build_threads);
+  faiss =
+      vector_index_registry::effective_options_for_testing("faiss", options);
+  EXPECT_EQ(9U, faiss.faiss_build_threads);
+  diskann =
+      vector_index_registry::effective_options_for_testing("diskann", options);
+  EXPECT_EQ(9U, diskann.diskann_build_threads);
+  EXPECT_EQ(64U, diskann.diskann_max_degree);
+  EXPECT_EQ(128U, diskann.diskann_build_complexity);
+  EXPECT_EQ(16U, diskann.diskann_disk_pq_dims);
+  EXPECT_FALSE(diskann.diskann_accelerate_build);
+  EXPECT_FALSE(diskann.diskann_shuffle_build);
+  EXPECT_FALSE(diskann.diskann_use_bfs_cache);
+
+  options.build_threads = 0;
+  hnsw =
+      vector_index_registry::effective_options_for_testing("hnswlib", options);
+  EXPECT_EQ(3U, hnsw.hnsw_build_threads);
+
+  const auto native =
+      vector_index_registry::effective_options_for_testing("native", options);
+  EXPECT_EQ(0U, native.hnsw_build_threads);
+  EXPECT_EQ(0U, native.faiss_build_threads);
+  EXPECT_EQ(0U, native.diskann_build_threads);
+  EXPECT_FALSE(native.diskann_use_bfs_cache);
+
+  const auto invalid =
+      vector_index_registry::effective_options_for_testing("missing", options);
+  EXPECT_EQ(0U, invalid.hnsw_build_threads);
+  EXPECT_EQ(0U, invalid.faiss_build_threads);
+  EXPECT_EQ(0U, invalid.diskann_build_threads);
+  EXPECT_EQ(0U, invalid.diskann_max_degree);
+  EXPECT_FALSE(invalid.diskann_accelerate_build);
+}
+
+TEST(VectorIndexRegistryInternalTest,
+     IndexConfigMatchesComparesEveryTuningField) {
+  namespace detail = vector_index_registry::detail;
+
+  vector_index::index_service::index_config base =
+      make_backend_config(vector_index::backend_mode::kExternal,
+                          vector_index::backend_provider::kDiskAnn);
+  base.search_ef = 32;
+  base.hnsw_m = 16;
+  base.hnsw_ef_construction = 200;
+  base.hnsw_build_threads = 2;
+  base.faiss_nlist = 64;
+  base.faiss_nprobe = 8;
+  base.faiss_pq_m = 4;
+  base.faiss_pq_bits = 8;
+  base.faiss_build_threads = 2;
+  base.diskann_max_degree = 32;
+  base.diskann_build_complexity = 96;
+  base.diskann_build_threads = 3;
+  base.diskann_build_mode_value = vector_index::diskann_build_mode::kOffline;
+  base.diskann_build_mode_specified = true;
+  base.diskann_search_complexity = 80;
+  base.diskann_search_beamwidth = 16;
+  base.diskann_pq_code_budget_size = 1048576;
+  base.diskann_disk_pq_dims = 12;
+  base.diskann_accelerate_build = true;
+  base.diskann_shuffle_build = true;
+  base.diskann_use_bfs_cache = true;
+
+  EXPECT_TRUE(detail::index_config_matches_for_testing(base, base));
+
+  auto expect_mismatch = [&](auto mutate) {
+    vector_index::index_service::index_config changed = base;
+    mutate(&changed);
+    EXPECT_FALSE(detail::index_config_matches_for_testing(base, changed));
+  };
+
+  expect_mismatch([](auto *config) { config->dimension = 3; });
+  expect_mismatch([](auto *config) {
+    config->metric = vector_index::metric_type::kCosine;
+  });
+  expect_mismatch(
+      [](auto *config) { config->mode = vector_index::backend_mode::kMemory; });
+  expect_mismatch([](auto *config) {
+    config->provider = vector_index::backend_provider::kFaiss;
+  });
+  expect_mismatch([](auto *config) {
+    config->consistency_mode =
+        vector_index::index_consistency_mode::kStandalone;
+  });
+  expect_mismatch([](auto *config) { config->search_ef = 33; });
+  expect_mismatch([](auto *config) { config->hnsw_m = 17; });
+  expect_mismatch([](auto *config) { config->hnsw_ef_construction = 201; });
+  expect_mismatch([](auto *config) { config->hnsw_build_threads = 4; });
+  expect_mismatch([](auto *config) { config->faiss_nlist = 65; });
+  expect_mismatch([](auto *config) { config->faiss_nprobe = 9; });
+  expect_mismatch([](auto *config) { config->faiss_pq_m = 5; });
+  expect_mismatch([](auto *config) { config->faiss_pq_bits = 9; });
+  expect_mismatch([](auto *config) { config->faiss_build_threads = 3; });
+  expect_mismatch([](auto *config) { config->diskann_max_degree = 33; });
+  expect_mismatch([](auto *config) { config->diskann_build_complexity = 97; });
+  expect_mismatch([](auto *config) { config->diskann_build_threads = 4; });
+  expect_mismatch([](auto *config) {
+    config->diskann_build_mode_value =
+        vector_index::diskann_build_mode::kSerial;
+  });
+  expect_mismatch(
+      [](auto *config) { config->diskann_build_mode_specified = false; });
+  expect_mismatch([](auto *config) { config->diskann_search_complexity = 81; });
+  expect_mismatch([](auto *config) { config->diskann_search_beamwidth = 17; });
+  expect_mismatch(
+      [](auto *config) { config->diskann_pq_code_budget_size = 2097152; });
+  expect_mismatch([](auto *config) { config->diskann_disk_pq_dims = 13; });
+  expect_mismatch(
+      [](auto *config) { config->diskann_accelerate_build = false; });
+  expect_mismatch([](auto *config) { config->diskann_shuffle_build = false; });
+  expect_mismatch([](auto *config) { config->diskann_use_bfs_cache = false; });
+}
+
+TEST_F(VectorIndexRegistryTest,
+       TransactionalDiskAnnAcceptsFirstCommittedUpsert) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    GTEST_SKIP() << "DiskANN provider is not compiled in";
+  }
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/registry_diskann_first_upsert_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  external_snapshot_root_guard root_guard(root);
+
+  const std::string index_name = "idx_registry_diskann_first_upsert";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "external", "diskann"));
+  ASSERT_TRUE(
+      vector_index_registry::set_diskann_build_params(index_name, 48, 96, 0));
+  ASSERT_TRUE(
+      vector_index_registry::set_diskann_search_complexity(index_name, 80));
+  ASSERT_TRUE(vector_index_registry::set_diskann_pq_code_budget_size(
+      index_name, 1024 * 1024));
+  const uint64_t txn_id = vector_index_registry::begin_txn();
+  ASSERT_NE(0U, txn_id);
+  ASSERT_TRUE(
+      vector_index_registry::stage_upsert(txn_id, index_name, 1, {1.0F, 2.0F}));
+  ASSERT_TRUE(vector_index_registry::commit_txn(txn_id));
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {1.0F, 2.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(VectorIndexRegistryTest, SetDiskAnnBuildModePersistsOnlyMetadata) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    GTEST_SKIP() << "DiskANN provider is not compiled in";
+  }
+  const std::string index_name = "idx_registry_diskann_mode_metadata_only";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "external", "diskann"));
+
+  store_.ResetPersistCountersForTesting();
+  ASSERT_TRUE(vector_index_registry::set_diskann_build_mode(
+      index_name, vector_index::diskann_build_mode::kOffline));
+
+  expect_metadata_only_persist(store_);
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+            info.diskann_build_mode_value);
+  EXPECT_TRUE(info.diskann_build_mode_specified);
+
+  std::vector<vector_index_metadata_store::metadata_row> metadata_rows;
+  ASSERT_TRUE(store_.load_metadata(&metadata_rows));
+  ASSERT_EQ(1U, metadata_rows.size());
+  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+            metadata_rows[0].diskann_build_mode_value);
+  EXPECT_TRUE(metadata_rows[0].diskann_build_mode_specified);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       InternalBindingAndTuningHelpersCoverFallbackBranches) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss) ||
+      !vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn) ||
+      !vector_index::backend_provider_supported(
+          vector_index::backend_provider::kNative)) {
+    GTEST_SKIP() << "tuning fallback coverage requires FAISS, DiskANN, and "
+                    "native providers";
+  }
+  {
+    std::lock_guard<std::shared_mutex> guard(
+        vector_index_registry::detail::g_registry_mutex);
+    vector_index_registry::detail::set_index_binding_locked(
+        "plain_binding", "db_original", "t_original", "v_original", "id");
+    vector_index_registry::detail::rename_index_binding_locked(
+        "plain_binding", "plain_binding_renamed");
+    const vector_index_registry::detail::index_binding binding =
+        vector_index_registry::detail::binding_for_index_locked(
+            "plain_binding_renamed");
+    EXPECT_EQ("db_original", binding.schema_name);
+    EXPECT_EQ("t_original", binding.table_name);
+    EXPECT_EQ("v_original", binding.column_name);
+
+    const std::string mapped_index_name =
+        vector_index_registry::detail::make_mapped_index_name("db_new", "t_new",
+                                                              "v_new");
+    vector_index_registry::detail::set_index_binding_locked(
+        "plain_binding_with_mapped_target", "db_original", "t_original",
+        "v_original", "id");
+    vector_index_registry::detail::rename_index_binding_locked(
+        "plain_binding_with_mapped_target", mapped_index_name);
+    const vector_index_registry::detail::index_binding mapped_binding =
+        vector_index_registry::detail::binding_for_index_locked(
+            mapped_index_name);
+    EXPECT_EQ("db_new", mapped_binding.schema_name);
+    EXPECT_EQ("t_new", mapped_binding.table_name);
+    EXPECT_EQ("v_new", mapped_binding.column_name);
+    EXPECT_EQ("id", mapped_binding.doc_id_column_name);
+
+    std::vector<vector_index_metadata_store::metadata_row> metadata_rows;
+    EXPECT_FALSE(
+        vector_index_registry::detail::snapshot_metadata_locked(nullptr));
+    EXPECT_TRUE(vector_index_registry::detail::snapshot_metadata_locked(
+        &metadata_rows));
+  }
+
+  ASSERT_TRUE(vector_index_registry::create_index(
+      "idx_apply_tuning_faiss", 2, "euclidean", "external", "faiss"));
+  ASSERT_TRUE(vector_index_registry::create_index(
+      "idx_apply_tuning_diskann", 2, "euclidean", "external", "diskann"));
+  ASSERT_TRUE(vector_index_registry::create_index(
+      "idx_apply_tuning_native", 2, "euclidean", "memory", "native"));
+
+  {
+    std::lock_guard<std::shared_mutex> guard(
+        vector_index_registry::detail::g_registry_mutex);
+    vector_index_registry::index_info info;
+    info.search_ef = 64;
+    EXPECT_TRUE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.hnsw_m = 16;
+    info.hnsw_ef_construction = 200;
+    EXPECT_TRUE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.search_ef = 64;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_native", info));
+
+    info = vector_index_registry::index_info{};
+    info.hnsw_ef_construction = 200;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.hnsw_build_threads = 65536;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.faiss_build_threads = 65536;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.faiss_nlist = 2;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.faiss_nprobe = 1;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.faiss_nlist = 2;
+    info.faiss_nprobe = 1;
+    info.faiss_pq_m = 2;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.faiss_pq_bits = 8;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.diskann_max_degree = 32;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_diskann", info));
+
+    info = vector_index_registry::index_info{};
+    info.diskann_build_complexity = 96;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_diskann", info));
+
+    info = vector_index_registry::index_info{};
+    info.diskann_build_threads = 65536;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_diskann", info));
+
+    info = vector_index_registry::index_info{};
+    info.diskann_build_mode_value = vector_index::diskann_build_mode::kSerial;
+    info.diskann_build_mode_specified = true;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_faiss", info));
+
+    info = vector_index_registry::index_info{};
+    info.diskann_search_complexity = 80;
+    EXPECT_FALSE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_native", info));
+
+    info = vector_index_registry::index_info{};
+    info.diskann_search_complexity = 80;
+    EXPECT_TRUE(vector_index_registry::detail::apply_index_tuning_locked(
+        "idx_apply_tuning_diskann", info));
+  }
+
+  ASSERT_TRUE(vector_index_registry::drop_index("idx_apply_tuning_faiss"));
+  ASSERT_TRUE(vector_index_registry::drop_index("idx_apply_tuning_diskann"));
+  ASSERT_TRUE(vector_index_registry::drop_index("idx_apply_tuning_native"));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       RebuildAndRecoverAllRoundTripStandaloneSegments) {
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+
+  ASSERT_TRUE(vector_index_registry::create_index("idx_registry_standalone_all",
+                                                  2, "euclidean", "memory",
+                                                  "native", options));
+  ASSERT_TRUE(vector_index_registry::upsert("idx_registry_standalone_all", 10,
+                                            {1.0F, 1.0F}));
+  ASSERT_TRUE(vector_index_registry::upsert("idx_registry_standalone_all", 20,
+                                            {2.0F, 2.0F}));
+  ASSERT_TRUE(vector_index_registry::erase("idx_registry_standalone_all", 20));
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(
+      "idx_registry_standalone_all", &info));
+  EXPECT_EQ("standalone", info.consistency_mode);
+  EXPECT_FALSE(info.truth_store_enabled);
+  EXPECT_EQ("delta_replay", info.build_source);
+  EXPECT_EQ(0U, info.entry_count);
+  EXPECT_EQ(0U, info.committed_entry_count);
+  EXPECT_GT(info.standalone_segment_count, 0U);
+  EXPECT_GT(info.standalone_segment_bytes, 0U);
+
+  size_t rebuilt_count = 0;
+  ASSERT_TRUE(vector_index_registry::rebuild_all_indexes(&rebuilt_count));
+  EXPECT_EQ(1U, rebuilt_count);
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(vector_index_registry::search("idx_registry_standalone_all",
+                                            {1.0F, 1.0F}, 2, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(10U, result[0].doc_id);
+  ASSERT_TRUE(vector_index_registry::get_index_info(
+      "idx_registry_standalone_all", &info));
+  EXPECT_EQ("raw_segments_compacted", info.build_source);
+  EXPECT_EQ(1U, info.entry_count);
+  EXPECT_EQ(1U, info.standalone_raw_segment_count);
+
+  size_t recovered_count = 0;
+  ASSERT_TRUE(vector_index_registry::recover_all_indexes(&recovered_count));
+  EXPECT_EQ(1U, recovered_count);
+  ASSERT_TRUE(vector_index_registry::search("idx_registry_standalone_all",
+                                            {1.0F, 1.0F}, 2, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(10U, result[0].doc_id);
+
+  ASSERT_TRUE(vector_index_registry::drop_index("idx_registry_standalone_all"));
+}
+
 
 }  // namespace vector_index_registry_unittest

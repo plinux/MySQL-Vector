@@ -7420,10 +7420,10 @@ static Sys_var_bool Sys_vector_diskann_use_bfs_cache(
 static Sys_var_bool Sys_vector_diskann_segmented_serving(
     "vector_diskann_segmented_serving",
     "Allow DiskANN raw-only standalone/offline builds to keep one serving "
-    "backend per raw segment and fan out search across segments. The default "
-    "keeps one logical DiskANN index for all raw segments.",
+    "backend per raw segment and fan out search across segments. Disable this "
+    "only for single-index diagnostic fallback builds.",
     GLOBAL_VAR(opt_vector_diskann_segmented_serving), CMD_LINE(OPT_ARG),
-    DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG);
+    DEFAULT(true), NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static bool check_vector_uint32_positive(sys_var *self, THD *, set_var *var) {
   if (var->value == nullptr) return false;

@@ -334,7 +334,8 @@ class Item_func_vec_index_set_diskann_pq_code_budget_size final
 class Item_func_vec_index_set_diskann_disk_pq_dims final
     : public Item_int_func {
  public:
-  Item_func_vec_index_set_diskann_disk_pq_dims(const POS &pos, Item *a, Item *b)
+  Item_func_vec_index_set_diskann_disk_pq_dims(const POS &pos, Item *a,
+                                               Item *b)
       : Item_int_func(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;

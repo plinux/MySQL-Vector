@@ -38,7 +38,7 @@ std::unique_ptr<backend> build_backend_from_config(
 
 template <typename... Bools>
 inline bool all_true(Bools... values) {
-  return (... && static_cast<bool>(values));
+  return (... & static_cast<bool>(values));
 }
 
 inline bool can_rebuild_after_search_failure(

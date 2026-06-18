@@ -644,6 +644,12 @@ TEST(VectorIndexBackendTest,
   info.build_diagnostics.pq_train_threads = 8;
   info.build_diagnostics.pq_compress_threads = 8;
   info.build_diagnostics.candidates_per_segment = 1024;
+  info.build_diagnostics.search_fanout_segments = 3;
+  info.build_diagnostics.search_fanout_threads = 2;
+  info.build_diagnostics.search_global_top_k = 10;
+  info.build_diagnostics.search_per_segment_top_k = 30;
+  info.build_diagnostics.search_result_budget = 1000;
+  info.build_diagnostics.search_candidate_count = 90;
   info.build_diagnostics.single_index_build = true;
   info.build_diagnostics.pq_chunks = 8;
   info.build_diagnostics.cache_nodes = 5;
@@ -809,6 +815,30 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "scheduler_candidates_per_segment");
   ASSERT_NE(nullptr, scheduler_candidates);
   EXPECT_EQ(1024U, scheduler_candidates->uint_value);
+  const auto *search_segments =
+      find_status_field(fields, "scheduler_search_fanout_segments");
+  ASSERT_NE(nullptr, search_segments);
+  EXPECT_EQ(3U, search_segments->uint_value);
+  const auto *search_threads =
+      find_status_field(fields, "scheduler_search_fanout_threads");
+  ASSERT_NE(nullptr, search_threads);
+  EXPECT_EQ(2U, search_threads->uint_value);
+  const auto *search_global_top_k =
+      find_status_field(fields, "scheduler_search_global_top_k");
+  ASSERT_NE(nullptr, search_global_top_k);
+  EXPECT_EQ(10U, search_global_top_k->uint_value);
+  const auto *search_per_segment_top_k =
+      find_status_field(fields, "scheduler_search_per_segment_top_k");
+  ASSERT_NE(nullptr, search_per_segment_top_k);
+  EXPECT_EQ(30U, search_per_segment_top_k->uint_value);
+  const auto *search_result_budget =
+      find_status_field(fields, "scheduler_search_result_budget");
+  ASSERT_NE(nullptr, search_result_budget);
+  EXPECT_EQ(1000U, search_result_budget->uint_value);
+  const auto *search_candidate_count =
+      find_status_field(fields, "scheduler_search_candidate_count");
+  ASSERT_NE(nullptr, search_candidate_count);
+  EXPECT_EQ(90U, search_candidate_count->uint_value);
 }
 
 TEST(VectorIndexBackendTest,
@@ -2229,6 +2259,10 @@ TEST(VectorIndexRuntimeThreadPoolTest,
       4, 2, [](size_t begin, size_t, size_t) {
         if (begin != 0) throw std::runtime_error("visitor failure");
         return true;
+      }));
+  EXPECT_FALSE(vector_index::parallel_for_queries(
+      1, 1, [](size_t, size_t, size_t) -> bool {
+        throw std::runtime_error("single visitor failure");
       }));
   vector_index::reset_runtime_worker_pool_for_testing();
 }

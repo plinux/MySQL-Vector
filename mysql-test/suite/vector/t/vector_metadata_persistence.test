@@ -18,8 +18,10 @@ SELECT VEC_INDEX_UPSERT('idx_persist_ext', 7, VEC_FROMTEXT('[1,0,0,1]'));
 
 SELECT VEC_INDEX_LIST();
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_persist_mem');
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/ /external_manifest_generation":[0-9]+/external_manifest_generation":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_persist_ext');
 SELECT VEC_INDEX_SEARCH('idx_persist_mem', VEC_FROMTEXT('[1,2,3]'), 1);
 SELECT VEC_INDEX_SEARCH('idx_persist_ext', VEC_FROMTEXT('[1,0,0,1]'), 1);
@@ -36,8 +38,10 @@ SELECT @change_log_ckpt_after > @change_log_ckpt_before;
 
 SELECT VEC_INDEX_LIST();
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_persist_mem');
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/ /external_manifest_generation":[0-9]+/external_manifest_generation":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_persist_ext');
 SELECT VEC_INDEX_SEARCH('idx_persist_mem', VEC_FROMTEXT('[1,2,3]'), 1);
 SELECT VEC_INDEX_SEARCH('idx_persist_ext', VEC_FROMTEXT('[1,0,0,1]'), 1);

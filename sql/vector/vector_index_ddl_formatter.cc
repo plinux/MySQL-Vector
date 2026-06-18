@@ -112,17 +112,6 @@ bool emit_diskann_search_complexity(
              vector_index::k_default_diskann_search_complexity;
 }
 
-bool emit_diskann_build_mode(const vector_index_registry::index_info &info,
-                             tuning_emit_policy emit_policy) {
-  if (!info.diskann_build_mode_specified ||
-      info.diskann_build_mode_value ==
-          vector_index::diskann_build_mode::kAuto) {
-    return false;
-  }
-  return emit_policy == tuning_emit_policy::k_emit_nonzero ||
-         provider_is(info, "diskann");
-}
-
 bool emit_diskann_search_beamwidth(
     const vector_index_registry::index_info &info,
     tuning_emit_policy emit_policy) {
@@ -159,6 +148,10 @@ bool emit_diskann_boolean_tuning(const vector_index_registry::index_info &info,
     return value;
   }
   return provider_is(info, "diskann") && value;
+}
+
+bool emit_diskann_build_mode(const vector_index_registry::index_info &info) {
+  return provider_is(info, "diskann") && info.diskann_build_mode_specified;
 }
 
 }  // namespace
@@ -268,14 +261,16 @@ void append_tuning_statements(
     query->append(STRING_WITH_LEN(")"));
   }
 
-  if (emit_diskann_build_mode(info, emit_policy)) {
+  if (emit_diskann_build_mode(info)) {
     append_set_call_prefix(thd, query, "VEC_INDEX_SET_DISKANN_BUILD_MODE",
                            index_name);
     query->append(STRING_WITH_LEN(", "));
-    const char *build_mode =
+    append_unescaped(
+        query,
         vector_index::diskann_build_mode_to_string(
-            info.diskann_build_mode_value);
-    append_unescaped(query, build_mode, std::strlen(build_mode));
+            info.diskann_build_mode_value),
+        std::strlen(vector_index::diskann_build_mode_to_string(
+            info.diskann_build_mode_value)));
     query->append(STRING_WITH_LEN(")"));
   }
 

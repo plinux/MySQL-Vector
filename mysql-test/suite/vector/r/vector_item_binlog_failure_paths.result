@@ -34,6 +34,15 @@ VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_item_binlog_fail_ext', 48, 96)
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_item_binlog_fail_ext', 80);
 VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_item_binlog_fail_ext', 80)
 0
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_item_binlog_fail_ext', 16);
+VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_item_binlog_fail_ext', 16)
+0
+SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_item_binlog_fail_ext', 1048576);
+VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_item_binlog_fail_ext', 1048576)
+0
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_item_binlog_fail_ext', 'offline');
+VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_item_binlog_fail_ext', 'offline')
+0
 SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_max_degree');
 JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_max_degree')
 48
@@ -43,6 +52,15 @@ JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_build_comple
 SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_search_complexity');
 JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_search_complexity')
 80
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_search_beamwidth');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_search_beamwidth')
+16
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_pq_code_budget_size');
+JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_pq_code_budget_size')
+1048576
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_build_mode'));
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_build_mode'))
+offline
 SELECT VEC_INDEX_CREATE('idx_item_binlog_fail_faiss', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
 VEC_INDEX_CREATE('idx_item_binlog_fail_faiss', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
 0
