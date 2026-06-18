@@ -312,6 +312,7 @@ IF(HAVE_VECTOR_INDEX)
   LIST(APPEND SERVER_TESTS
     item_vectorfunc
     vector_build_pipeline_policy
+    vector_elkan_kmeans
     vector_index_backend
     vector_index_diagnostics
     vector_index_metadata_store
@@ -319,6 +320,7 @@ IF(HAVE_VECTOR_INDEX)
     vector_index_service
     vector_segment_runtime_scheduler
     vector_segmented_search
+    vector_simd_distance
     vector_load_file
     vector_dml_sync
     vector_mapped_search

@@ -651,6 +651,7 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_backend_hnswlib.cc
     vector/vector_index_backend_diskann.cc
     vector/vector_index_backend_faiss.cc
+    vector/vector_elkan_kmeans.cc
     vector/vector_build_pipeline_policy.cc
     vector/vector_index_build_options.cc
     vector/vector_index_ddl_formatter.cc
@@ -676,6 +677,7 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_dml_sync.cc
     vector/vector_trx_participant.cc
     vector/vector_mapped_search.cc
+    vector/vector_simd_distance.cc
     vector/vector_utils.cc
     vector/item_vectorfunc.cc
     vector/item_vectorfunc_internal.cc
