@@ -68,6 +68,7 @@ std::vector<recovery_action> g_recovery_actions;
 
 std::unordered_map<uint64_t, thd_txn_context> g_thd_txn_contexts;
 std::unordered_map<std::string, index_binding> g_index_bindings;
+std::unordered_map<std::string, std::string> g_index_owner_schemas;
 
 namespace {
 
@@ -397,6 +398,11 @@ index_binding binding_for_index_locked(const std::string &index_name) {
   return index_binding();
 }
 
+std::string owner_schema_for_index_locked(const std::string &index_name) {
+  const auto it = g_index_owner_schemas.find(index_name);
+  return it == g_index_owner_schemas.end() ? std::string() : it->second;
+}
+
 void set_index_binding_locked(const std::string &index_name,
                               const std::string &schema_name,
                               const std::string &table_name,
@@ -406,8 +412,10 @@ void set_index_binding_locked(const std::string &index_name,
       index_binding{schema_name, table_name, column_name, doc_id_column_name};
 }
 
-void erase_index_binding_locked(const std::string &index_name) {
+void erase_index_binding_and_owner_schema_locked(
+    const std::string &index_name) {
   g_index_bindings.erase(index_name);
+  g_index_owner_schemas.erase(index_name);
 }
 
 void rename_index_binding_locked(const std::string &old_index_name,
@@ -419,16 +427,35 @@ void rename_index_binding_locked(const std::string &old_index_name,
   const index_binding fallback = binding_from_name(new_index_name);
   if (!fallback.schema_name.empty() || !fallback.table_name.empty() ||
       !fallback.column_name.empty()) {
-    binding = fallback;
+    binding.schema_name = fallback.schema_name;
+    binding.table_name = fallback.table_name;
+    binding.column_name = fallback.column_name;
   }
   g_index_bindings.erase(it);
   g_index_bindings.emplace(new_index_name, std::move(binding));
+}
+
+void set_index_binding_and_owner_schema_locked(
+    const std::string &index_name, const index_binding &binding,
+    const std::string &owner_schema) {
+  set_index_binding_locked(index_name, binding.schema_name, binding.table_name,
+                           binding.column_name, binding.doc_id_column_name);
+  g_index_owner_schemas[index_name] = owner_schema;
+}
+
+void rename_index_binding_and_owner_schema_locked(
+    const std::string &old_index_name, const std::string &new_index_name,
+    const std::string &owner_schema) {
+  rename_index_binding_locked(old_index_name, new_index_name);
+  g_index_owner_schemas.erase(old_index_name);
+  g_index_owner_schemas[new_index_name] = owner_schema;
 }
 
 bool create_index_locked(const std::string &index_name, size_t dimension,
                          const std::string &metric, const std::string &mode,
                          const std::string &provider,
                          const index_binding *binding,
+                         const std::string &owner_schema,
                          const vector_index_registry::create_index_options
                              &options) {
   std::vector<vector_index_metadata_store::metadata_row> metadata_before;
@@ -440,6 +467,7 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
                                      &lagging_indexes_before)) {
     return false;
   }
+  if (owner_schema.empty()) return false;
   if (binding != nullptr && options.consistency_mode_specified &&
       options.consistency_mode ==
           vector_index::index_consistency_mode::kStandalone) {
@@ -566,13 +594,9 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
     }
     return false;
   }
-  if (binding != nullptr) {
-    set_index_binding_locked(index_name, binding->schema_name,
-                             binding->table_name, binding->column_name,
-                             binding->doc_id_column_name);
-  } else {
-    set_index_binding_locked(index_name, "", "", "", "");
-  }
+  set_index_binding_and_owner_schema_locked(
+      index_name, binding == nullptr ? index_binding{} : *binding,
+      owner_schema);
   if (!persist_registry_state_locked()) {
     vector_status::record_truth_store_persist_failure();
     if (!rollback_runtime_state_locked(metadata_before, committed_before,
@@ -733,6 +757,7 @@ bool snapshot_metadata_locked(
     row.table_name = binding.table_name;
     row.column_name = binding.column_name;
     row.doc_id_column_name = binding.doc_id_column_name;
+    row.owner_schema = owner_schema_for_index_locked(index_name);
     row.lifecycle_state = lifecycle_state;
     row.lifecycle_version = lifecycle_version;
     row.last_error_code = last_error_code;
@@ -808,7 +833,9 @@ bool apply_metadata_rows_locked(
     const std::vector<vector_index_metadata_store::metadata_row> &rows) {
   g_index_service = vector_index::index_service();
   g_index_bindings.clear();
+  g_index_owner_schemas.clear();
   for (const auto &row : rows) {
+    if (row.owner_schema.empty()) return false;
     vector_index::index_service::index_config config;
     config.dimension = row.dimension;
     config.metric = row.metric;
@@ -818,8 +845,11 @@ bool apply_metadata_rows_locked(
     if (!g_index_service.register_index(row.index_name, config)) {
       return false;
     }
-    set_index_binding_locked(row.index_name, row.schema_name, row.table_name,
-                             row.column_name, row.doc_id_column_name);
+    set_index_binding_and_owner_schema_locked(
+        row.index_name,
+        index_binding{row.schema_name, row.table_name, row.column_name,
+                      row.doc_id_column_name},
+        row.owner_schema);
     if (!g_index_service.set_lifecycle_info(
             row.index_name, row.lifecycle_state, row.lifecycle_version,
             row.last_error_code, row.last_error_ts, row.recover_fallback_count,
@@ -1768,6 +1798,7 @@ void reset_for_testing() {
   g_prepared_change_rows.clear();
   g_thd_txn_contexts.clear();
   g_index_bindings.clear();
+  g_index_owner_schemas.clear();
   g_change_log_compact_threshold_for_testing = 0;
   vector_status::set_registered_indexes(0);
   vector_status::set_committed_snapshot_rows(0);

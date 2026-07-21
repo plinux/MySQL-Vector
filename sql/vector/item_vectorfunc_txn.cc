@@ -57,8 +57,8 @@ longlong Item_func_vec_index_txn_pending::val_int() {
   assert(fixed && arg_count == 1);
   null_value = true;
 
-  const longlong txn_id_ll = args[0]->val_int();
-  if (args[0]->null_value || txn_id_ll < 0) {
+  ulonglong txn_id = 0;
+  if (!eval_uint_arg(args[0], txn_id)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -66,7 +66,7 @@ longlong Item_func_vec_index_txn_pending::val_int() {
   null_value = false;
   return static_cast<longlong>(
       vector_index_registry::pending_txn_changes(
-          static_cast<uint64_t>(txn_id_ll)));
+          static_cast<uint64_t>(txn_id)));
 }
 
 bool Item_func_vec_index_stage_upsert::resolve_type(THD *thd) {
@@ -81,10 +81,11 @@ longlong Item_func_vec_index_stage_upsert::val_int() {
 
   String name_buf;
   const String *name = args[0]->val_str(&name_buf);
-  const longlong txn_id_ll = args[1]->val_int();
-  const longlong doc_id_ll = args[2]->val_int();
-  if (name == nullptr || args[0]->null_value || args[1]->null_value ||
-      args[2]->null_value || txn_id_ll < 0 || doc_id_ll < 0) {
+  ulonglong txn_id = 0;
+  ulonglong doc_id = 0;
+  if (name == nullptr || args[0]->null_value ||
+      !eval_uint_arg(args[1], txn_id) ||
+      !eval_uint_arg(args[2], doc_id)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -98,12 +99,12 @@ longlong Item_func_vec_index_stage_upsert::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_ddl_access(
+  if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::stage_upsert(static_cast<uint64_t>(txn_id_ll),
+  if (!vector_index_registry::stage_upsert(static_cast<uint64_t>(txn_id),
                                            index_name,
-                                           static_cast<uint64_t>(doc_id_ll),
+                                           static_cast<uint64_t>(doc_id),
                                            vector)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -125,22 +126,23 @@ longlong Item_func_vec_index_stage_erase::val_int() {
 
   String name_buf;
   const String *name = args[0]->val_str(&name_buf);
-  const longlong txn_id_ll = args[1]->val_int();
-  const longlong doc_id_ll = args[2]->val_int();
-  if (name == nullptr || args[0]->null_value || args[1]->null_value ||
-      args[2]->null_value || txn_id_ll < 0 || doc_id_ll < 0) {
+  ulonglong txn_id = 0;
+  ulonglong doc_id = 0;
+  if (name == nullptr || args[0]->null_value ||
+      !eval_uint_arg(args[1], txn_id) ||
+      !eval_uint_arg(args[2], doc_id)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_ddl_access(
+  if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::stage_erase(static_cast<uint64_t>(txn_id_ll),
+  if (!vector_index_registry::stage_erase(static_cast<uint64_t>(txn_id),
                                           index_name,
-                                          static_cast<uint64_t>(doc_id_ll))) {
+                                          static_cast<uint64_t>(doc_id))) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -159,13 +161,13 @@ longlong Item_func_vec_index_txn_commit::val_int() {
   assert(fixed && arg_count == 1);
   null_value = true;
 
-  const longlong txn_id_ll = args[0]->val_int();
-  if (args[0]->null_value || txn_id_ll < 0) {
+  ulonglong txn_id = 0;
+  if (!eval_uint_arg(args[0], txn_id)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  if (!vector_index_registry::commit_txn(static_cast<uint64_t>(txn_id_ll))) {
+  if (!vector_index_registry::commit_txn(static_cast<uint64_t>(txn_id))) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -184,13 +186,13 @@ longlong Item_func_vec_index_txn_rollback::val_int() {
   assert(fixed && arg_count == 1);
   null_value = true;
 
-  const longlong txn_id_ll = args[0]->val_int();
-  if (args[0]->null_value || txn_id_ll < 0) {
+  ulonglong txn_id = 0;
+  if (!eval_uint_arg(args[0], txn_id)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  if (!vector_index_registry::rollback_txn(static_cast<uint64_t>(txn_id_ll))) {
+  if (!vector_index_registry::rollback_txn(static_cast<uint64_t>(txn_id))) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }

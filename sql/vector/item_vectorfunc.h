@@ -303,6 +303,46 @@ class Item_func_vec_index_set_diskann_search_complexity final
   }
 };
 
+class Item_func_vec_index_set_diskann_search_beamwidth final
+    : public Item_int_func {
+ public:
+  Item_func_vec_index_set_diskann_search_beamwidth(const POS &pos, Item *a,
+                                                   Item *b)
+      : Item_int_func(pos, a, b) {}
+
+  bool resolve_type(THD *thd) override;
+  longlong val_int() override;
+  const char *func_name() const override {
+    return "vec_index_set_diskann_search_beamwidth";
+  }
+};
+
+class Item_func_vec_index_set_diskann_pq_code_budget_size final
+    : public Item_int_func {
+ public:
+  Item_func_vec_index_set_diskann_pq_code_budget_size(const POS &pos, Item *a,
+                                                      Item *b)
+      : Item_int_func(pos, a, b) {}
+
+  bool resolve_type(THD *thd) override;
+  longlong val_int() override;
+  const char *func_name() const override {
+    return "vec_index_set_diskann_pq_code_budget_size";
+  }
+};
+
+class Item_func_vec_index_set_diskann_build_mode final : public Item_int_func {
+ public:
+  Item_func_vec_index_set_diskann_build_mode(const POS &pos, Item *a, Item *b)
+      : Item_int_func(pos, a, b) {}
+
+  bool resolve_type(THD *thd) override;
+  longlong val_int() override;
+  const char *func_name() const override {
+    return "vec_index_set_diskann_build_mode";
+  }
+};
+
 class Item_func_vec_index_list final : public Item_str_func {
   String m_value;
 
@@ -322,6 +362,16 @@ class Item_func_vec_index_upsert final : public Item_int_func {
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_upsert"; }
+};
+
+class Item_func_vec_index_upsert_batch final : public Item_int_func {
+ public:
+  Item_func_vec_index_upsert_batch(const POS &pos, PT_item_list *arg_list)
+      : Item_int_func(pos, arg_list) {}
+
+  bool resolve_type(THD *thd) override;
+  longlong val_int() override;
+  const char *func_name() const override { return "vec_index_upsert_batch"; }
 };
 
 class Item_func_vec_index_erase final : public Item_int_func {

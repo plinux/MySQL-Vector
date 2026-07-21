@@ -32,6 +32,7 @@
 #include "mysqld_error.h"
 #include "sql/sql_class.h"
 #include "sql/vector/item_vectorfunc_internal.h"
+#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_utils.h"
@@ -73,29 +74,27 @@ bool decode_vector_batch_arg(Item *arg, String *buf, size_t query_count,
   return true;
 }
 
-bool parse_search_top_k(longlong top_k_ll, size_t *top_k) {
-  if (top_k == nullptr || top_k_ll < 0 ||
-      static_cast<uint64_t>(top_k_ll) > vector_index::k_max_search_top_k) {
+bool parse_search_top_k(ulonglong top_k_value, size_t *top_k) {
+  if (top_k == nullptr || top_k_value > vector_index::k_max_search_top_k) {
     return false;
   }
 
-  *top_k = static_cast<size_t>(top_k_ll);
+  *top_k = static_cast<size_t>(top_k_value);
   return true;
 }
 
-bool parse_search_batch_bounds(longlong query_count_ll, longlong top_k_ll,
+bool parse_search_batch_bounds(ulonglong query_count_value,
+                               ulonglong top_k_value,
                                size_t *query_count, size_t *top_k) {
-  if (query_count == nullptr || query_count_ll <= 0 ||
-      static_cast<uint64_t>(query_count_ll) >
-          vector_index::k_max_search_batch_count) {
+  if (query_count == nullptr || query_count_value == 0 ||
+      query_count_value > opt_vector_search_batch_count) {
     return false;
   }
-  if (!parse_search_top_k(top_k_ll, top_k)) return false;
+  if (!parse_search_top_k(top_k_value, top_k)) return false;
 
-  const size_t parsed_query_count = static_cast<size_t>(query_count_ll);
-  if (*top_k != 0 &&
-      parsed_query_count >
-          vector_index::k_max_search_batch_results / *top_k) {
+  const size_t parsed_query_count = static_cast<size_t>(query_count_value);
+  if (*top_k != 0 && parsed_query_count >
+                         opt_vector_search_batch_result_count / *top_k) {
     return false;
   }
 
@@ -132,7 +131,7 @@ String *Item_func_vec_index_info::val_str(String *str [[maybe_unused]]) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_str();
   }
-  if (check_vector_table_ddl_access(current_thd, info, SELECT_ACL)) {
+  if (check_vector_index_access(current_thd, info, SELECT_ACL)) {
     return error_str();
   }
 
@@ -197,10 +196,11 @@ String *Item_func_vec_index_search::val_str(String *str [[maybe_unused]]) {
 
   String name_buf;
   const String *name = args[0]->val_str(&name_buf);
-  const longlong top_k_ll = args[2]->val_int();
+  ulonglong top_k_value = 0;
   size_t top_k = 0;
-  if (name == nullptr || args[0]->null_value || args[2]->null_value ||
-      !parse_search_top_k(top_k_ll, &top_k)) {
+  if (name == nullptr || args[0]->null_value ||
+      !eval_uint_arg(args[2], top_k_value) ||
+      !parse_search_top_k(top_k_value, &top_k)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_str();
   }
@@ -214,7 +214,7 @@ String *Item_func_vec_index_search::val_str(String *str [[maybe_unused]]) {
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_ddl_access(
+  if (check_vector_existing_index_access(
           current_thd, index_name, SELECT_ACL, func_name(), false)) {
     return error_str();
   }
@@ -228,8 +228,7 @@ String *Item_func_vec_index_search::val_str(String *str [[maybe_unused]]) {
   }
 
   m_value.set_charset(default_charset());
-  if (!format_vector_search_result_doc_ids(results, &m_value,
-                                                &m_number_buf)) {
+  if (!format_vector_search_result_doc_ids(results, &m_value, &m_number_buf)) {
     return error_str();
   }
   null_value = false;
@@ -252,13 +251,14 @@ String *Item_func_vec_index_search_batch::val_str(
 
   String name_buf;
   const String *name = args[0]->val_str(&name_buf);
-  const longlong query_count_ll = args[2]->val_int();
-  const longlong top_k_ll = args[3]->val_int();
+  ulonglong query_count_value = 0;
+  ulonglong top_k_value = 0;
   size_t query_count = 0;
   size_t top_k = 0;
-  if (name == nullptr || args[0]->null_value || args[2]->null_value ||
-      args[3]->null_value ||
-      !parse_search_batch_bounds(query_count_ll, top_k_ll, &query_count,
+  if (name == nullptr || args[0]->null_value ||
+      !eval_uint_arg(args[2], query_count_value) ||
+      !eval_uint_arg(args[3], top_k_value) ||
+      !parse_search_batch_bounds(query_count_value, top_k_value, &query_count,
                                  &top_k)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_str();
@@ -273,7 +273,7 @@ String *Item_func_vec_index_search_batch::val_str(
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_ddl_access(
+  if (check_vector_existing_index_access(
           current_thd, index_name, SELECT_ACL, func_name(), false)) {
     return error_str();
   }
@@ -310,10 +310,11 @@ String *Item_func_vec_index_search_with_distance::val_str(
 
   String name_buf;
   const String *name = args[0]->val_str(&name_buf);
-  const longlong top_k_ll = args[2]->val_int();
+  ulonglong top_k_value = 0;
   size_t top_k = 0;
-  if (name == nullptr || args[0]->null_value || args[2]->null_value ||
-      !parse_search_top_k(top_k_ll, &top_k)) {
+  if (name == nullptr || args[0]->null_value ||
+      !eval_uint_arg(args[2], top_k_value) ||
+      !parse_search_top_k(top_k_value, &top_k)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_str();
   }
@@ -327,7 +328,7 @@ String *Item_func_vec_index_search_with_distance::val_str(
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_ddl_access(
+  if (check_vector_existing_index_access(
           current_thd, index_name, SELECT_ACL, func_name(), false)) {
     return error_str();
   }

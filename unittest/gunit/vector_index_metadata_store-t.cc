@@ -100,7 +100,8 @@ std::vector<std::string> current_metadata_fields_for_test() {
       "5",
       "9",
       "offline",
-      "1"};
+      "1",
+      encode_hex_for_test("owner_db")};
 }
 
 std::string join_metadata_fields_for_test(
@@ -131,6 +132,13 @@ bool deserialize_current_metadata_fields_for_test(
     std::vector<vector_index_metadata_store::metadata_row> *loaded) {
   return vector_index_metadata_store::deserialize_metadata_rows(
       current_metadata_payload_for_test(fields), loaded);
+}
+
+void assign_metadata_owner_for_test(
+    std::vector<vector_index_metadata_store::metadata_row> *rows,
+    const std::string &owner_schema = "test") {
+  ASSERT_NE(nullptr, rows);
+  for (auto &row : *rows) row.owner_schema = owner_schema;
 }
 
 }  // namespace
@@ -240,6 +248,7 @@ TEST_F(MetadataStoreTest, DeserializersSkipBlankLinesAroundRows) {
       &metadata_rows));
   ASSERT_EQ(1U, metadata_rows.size());
   EXPECT_EQ("idx_v1", metadata_rows[0].index_name);
+  EXPECT_EQ("owner_db", metadata_rows[0].owner_schema);
 
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
   ASSERT_TRUE(vector_index_metadata_store::deserialize_committed_rows(
@@ -399,6 +408,7 @@ TEST_F(MetadataStoreTest, DefaultDataHomeStoreRoundTripWithoutOverride) {
        0,
        vector_index::diskann_build_mode::kAuto,
        ""}};
+  assign_metadata_owner_for_test(&metadata_rows);
   ASSERT_TRUE(vector_index_metadata_store::save_all(metadata_rows));
   std::vector<vector_index_metadata_store::metadata_row> loaded_metadata;
   ASSERT_TRUE(vector_index_metadata_store::load_all(&loaded_metadata));
@@ -513,6 +523,7 @@ TEST_F(MetadataStoreTest, DefaultDataHomeEmptyUsesRelativeStoreDirectory) {
        0,
        vector_index::diskann_build_mode::kAuto,
        ""}};
+  assign_metadata_owner_for_test(&metadata_rows);
   ASSERT_TRUE(vector_index_metadata_store::save_all(metadata_rows));
 
   std::vector<vector_index_metadata_store::committed_row> committed_rows{
@@ -596,6 +607,7 @@ TEST_F(MetadataStoreTest, RelativePathRoundTripUsesEmptyParentBranch) {
        0,
        vector_index::diskann_build_mode::kAuto,
        ""}};
+  assign_metadata_owner_for_test(&metadata_rows);
   ASSERT_TRUE(vector_index_metadata_store::save_all(metadata_rows));
   std::vector<vector_index_metadata_store::metadata_row> loaded_metadata;
   ASSERT_TRUE(vector_index_metadata_store::load_all(&loaded_metadata));
@@ -716,6 +728,7 @@ TEST_F(MetadataStoreTest, SaveThenLoadRoundTrip) {
        vector_index::diskann_build_mode::kAuto,
        ""}};
 
+  assign_metadata_owner_for_test(&rows);
   ASSERT_TRUE(vector_index_metadata_store::save_all(rows));
 
   std::vector<vector_index_metadata_store::metadata_row> loaded;
@@ -812,6 +825,7 @@ TEST_F(MetadataStoreTest, MetadataSerializationRoundTrip) {
        vector_index::diskann_build_mode::kAuto,
        ""}};
 
+  assign_metadata_owner_for_test(&rows);
   rows[1].hnsw_build_threads = 3;
   rows[1].faiss_build_threads = 4;
   rows[1].diskann_build_threads = 2;
@@ -984,6 +998,7 @@ TEST_F(MetadataStoreTest, SerializeCurrentMetadataKeepsInitialHeader) {
        5,
        9}};
 
+  assign_metadata_owner_for_test(&rows);
   std::string payload;
   ASSERT_TRUE(
       vector_index_metadata_store::serialize_metadata_rows(rows, &payload));
@@ -996,6 +1011,42 @@ TEST_F(MetadataStoreTest, LoadRejectsCurrentMetadataWrongFieldCount) {
 
   std::vector<vector_index_metadata_store::metadata_row> loaded;
   EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+}
+
+TEST_F(MetadataStoreTest, MetadataRejectsEmptyOwnerSchema) {
+  std::vector<std::string> fields = current_metadata_fields_for_test();
+  fields.back().clear();
+
+  std::vector<vector_index_metadata_store::metadata_row> loaded;
+  EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+
+  vector_index_metadata_store::metadata_row row;
+  row.index_name = "idx_missing_owner";
+  row.dimension = 2;
+  std::string payload;
+  EXPECT_FALSE(
+      vector_index_metadata_store::serialize_metadata_rows({row}, &payload));
+}
+
+TEST_F(MetadataStoreTest,
+       MetadataOwnerSchemaRoundTripsIndependentlyOfBinding) {
+  vector_index_metadata_store::metadata_row row;
+  row.index_name = "idx_owner";
+  row.dimension = 2;
+  row.owner_schema = "owner_db";
+
+  std::string payload;
+  ASSERT_TRUE(
+      vector_index_metadata_store::serialize_metadata_rows({row}, &payload));
+
+  std::vector<vector_index_metadata_store::metadata_row> loaded;
+  ASSERT_TRUE(
+      vector_index_metadata_store::deserialize_metadata_rows(payload, &loaded));
+  ASSERT_EQ(1U, loaded.size());
+  EXPECT_EQ("owner_db", loaded[0].owner_schema);
+  EXPECT_TRUE(loaded[0].schema_name.empty());
+  EXPECT_TRUE(loaded[0].table_name.empty());
+  EXPECT_TRUE(loaded[0].column_name.empty());
 }
 
 TEST_F(MetadataStoreTest, LoadRejectsInvalidBackendModeInCurrentRow) {
@@ -1165,6 +1216,7 @@ TEST_F(MetadataStoreTest, SaveEmptyRowsRemovesStoreFile) {
        0,
        vector_index::diskann_build_mode::kAuto,
        ""}};
+  assign_metadata_owner_for_test(&rows);
   ASSERT_TRUE(vector_index_metadata_store::save_all(rows));
 
   std::ifstream exists_before(m_path);
@@ -1208,6 +1260,7 @@ TEST_F(MetadataStoreTest, SaveEmptyRowsFailsWhenRemovalIsInjected) {
        0,
        vector_index::diskann_build_mode::kAuto,
        ""}};
+  assign_metadata_owner_for_test(&rows);
   ASSERT_TRUE(vector_index_metadata_store::save_all(rows));
   rows.clear();
   {

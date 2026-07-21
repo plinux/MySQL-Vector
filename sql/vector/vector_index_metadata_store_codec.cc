@@ -51,7 +51,7 @@ bool deserialize_metadata_rows_impl(const std::string &payload,
 
     std::vector<std::string> fields;
     split_tab_fields(line, &fields);
-    if (fields.size() != 33) return false;
+    if (fields.size() != 34) return false;
 
     auto parse_uint32_field = [](const std::string &field, uint32_t *value) {
       uint64_t parsed = 0;
@@ -133,6 +133,10 @@ bool deserialize_metadata_rows_impl(const std::string &payload,
     } else {
       return false;
     }
+    if (!decode_hex(fields[33], &row.owner_schema) ||
+        row.owner_schema.empty()) {
+      return false;
+    }
 
     rows->push_back(std::move(row));
   }
@@ -147,6 +151,7 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
   std::ostringstream stream;
   stream << kMetadataHeaderV1 << "\n";
   for (const metadata_row &row : rows) {
+    if (row.owner_schema.empty()) return false;
     stream << encode_hex(row.index_name) << "\t" << row.dimension << "\t"
            << vector_index::metric_to_string(row.metric) << "\t"
            << vector_index::backend_mode_to_string(row.mode) << "\t"
@@ -172,7 +177,8 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
            << row.diskann_build_threads << "\t" << row.faiss_build_threads << "\t"
            << vector_index::diskann_build_mode_to_string(
                   row.diskann_build_mode_value)
-           << "\t" << (row.diskann_build_mode_specified ? 1 : 0)
+           << "\t" << (row.diskann_build_mode_specified ? 1 : 0) << "\t"
+           << encode_hex(row.owner_schema)
            << "\n";
   }
   if (!stream) return false;

@@ -45,24 +45,34 @@ ERROR HY000: Incorrect arguments to vec_index_create
 SELECT VEC_INDEX_CREATE('idx_item_err_dim_null', NULL);
 ERROR HY000: Incorrect arguments to vec_index_create
 SELECT VEC_INDEX_CREATE('idx_item_err_null_optional', 2, NULL, NULL, NULL);
-VEC_INDEX_CREATE('idx_item_err_null_optional', 2, NULL, NULL, NULL)
-0
+ERROR HY000: Incorrect arguments to vec_index_create
 SELECT VEC_INDEX_CREATE('idx_item_err_mode_null', 2, 'EUCLIDEAN', NULL, 'NATIVE');
-VEC_INDEX_CREATE('idx_item_err_mode_null', 2, 'EUCLIDEAN', NULL, 'NATIVE')
-0
+ERROR HY000: Incorrect arguments to vec_index_create
 SELECT VEC_INDEX_CREATE('idx_item_err_provider_null', 2, 'EUCLIDEAN', 'MEMORY', NULL);
-VEC_INDEX_CREATE('idx_item_err_provider_null', 2, 'EUCLIDEAN', 'MEMORY', NULL)
-0
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_CREATE('idx_item_err_build_threads_null', 2, 'EUCLIDEAN',
+'MEMORY', 'NATIVE', NULL);
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_CREATE('idx_item_err_build_threads_overflow', 2, 'EUCLIDEAN',
+'MEMORY', 'NATIVE', 65536);
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_CREATE('idx_item_err_consistency_invalid', 2, 'EUCLIDEAN',
+'MEMORY', 'NATIVE', 0, 'invalid');
+ERROR HY000: Incorrect arguments to vec_index_create
 SELECT VEC_INDEX_CREATE('idx_item_err', 2);
 VEC_INDEX_CREATE('idx_item_err', 2)
 1
 SELECT VEC_INDEX_DROP(NULL);
-VEC_INDEX_DROP(NULL)
-0
+ERROR HY000: Incorrect arguments to vec_index_drop
 SELECT VEC_INDEX_UPSERT(NULL, 1, VEC_FROMTEXT('[1,1]'));
 ERROR HY000: Incorrect arguments to vec_index_upsert
 SELECT VEC_INDEX_UPSERT('idx_item_err', -1, VEC_FROMTEXT('[1,1]'));
 ERROR HY000: Incorrect arguments to vec_index_upsert
+SELECT VEC_INDEX_UPSERT('idx_item_err', 18446744073709551615,
+VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_item_err', 18446744073709551615,
+VEC_FROMTEXT('[1,1]'))
+1
 SELECT VEC_INDEX_UPSERT('idx_item_err', 1, 'bad-vector');
 ERROR HY000: Incorrect arguments to vec_index_upsert
 SELECT VEC_INDEX_ERASE(NULL, 1);
@@ -71,6 +81,9 @@ SELECT VEC_INDEX_ERASE('idx_item_err', NULL);
 ERROR HY000: Incorrect arguments to vec_index_erase
 SELECT VEC_INDEX_ERASE('idx_item_err', -1);
 ERROR HY000: Incorrect arguments to vec_index_erase
+SELECT VEC_INDEX_ERASE('idx_item_err', 18446744073709551615);
+VEC_INDEX_ERASE('idx_item_err', 18446744073709551615)
+1
 SELECT VEC_INDEX_SEARCH(NULL, VEC_FROMTEXT('[1,1]'), 1);
 ERROR HY000: Incorrect arguments to vec_index_search
 SELECT VEC_INDEX_SEARCH('idx_item_err', NULL, 1);
@@ -125,6 +138,9 @@ SELECT VEC_INDEX_TXN_PENDING(-1);
 ERROR HY000: Incorrect arguments to vec_index_txn_pending
 SELECT VEC_INDEX_TXN_PENDING(NULL);
 ERROR HY000: Incorrect arguments to vec_index_txn_pending
+SELECT VEC_INDEX_TXN_PENDING(18446744073709551615);
+VEC_INDEX_TXN_PENDING(18446744073709551615)
+0
 SELECT VEC_INDEX_TXN_PENDING(99999);
 VEC_INDEX_TXN_PENDING(99999)
 0
@@ -142,6 +158,11 @@ SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, NULL, VEC_FROMTEXT('[1,
 ERROR HY000: Incorrect arguments to vec_index_stage_upsert
 SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, -1, VEC_FROMTEXT('[1,1]'));
 ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item,
+18446744073709551615, VEC_FROMTEXT('[6,6]'));
+VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item,
+18446744073709551615, VEC_FROMTEXT('[6,6]'))
+1
 SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, 1, 'bad-vector');
 ERROR HY000: Incorrect arguments to vec_index_stage_upsert
 SELECT VEC_INDEX_STAGE_UPSERT('idx_item_missing', @txn_item, 1, VEC_FROMTEXT('[1,1]'));
@@ -159,6 +180,11 @@ SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, NULL);
 ERROR HY000: Incorrect arguments to vec_index_stage_erase
 SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, -1);
 ERROR HY000: Incorrect arguments to vec_index_stage_erase
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item,
+18446744073709551615);
+VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item,
+18446744073709551615)
+1
 SELECT VEC_INDEX_STAGE_ERASE('idx_item_missing', @txn_item, 5);
 ERROR HY000: Incorrect arguments to vec_index_stage_erase
 SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, 5);
@@ -166,7 +192,7 @@ VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, 5)
 1
 SELECT VEC_INDEX_TXN_PENDING(@txn_item);
 VEC_INDEX_TXN_PENDING(@txn_item)
-2
+4
 SELECT VEC_INDEX_REBUILD_ALL();
 ERROR HY000: Incorrect arguments to vec_index_rebuild_all
 SELECT VEC_INDEX_RECOVER_ALL();

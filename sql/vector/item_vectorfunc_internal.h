@@ -49,18 +49,21 @@ bool eval_uint_arg(Item *arg, ulonglong &value);
 bool eval_uint32_arg(Item *arg, uint32_t min_value, uint32_t max_value,
                      uint32_t &value);
 bool require_process_access(THD *thd);
+bool resolve_vector_current_db(THD *thd, std::string *db_name);
+bool check_vector_schema_access(THD *thd, const std::string &schema_name,
+                                Access_bitmask privilege);
 bool check_vector_current_db_ddl_access(THD *thd, Access_bitmask privilege);
-bool check_vector_table_ddl_access(
+bool check_vector_index_access(
     THD *thd, const vector_index_registry::index_info &info,
     Access_bitmask privilege);
 /** Return whether an index privilege is granted without raising ACL errors. */
 bool has_vector_index_access(THD *thd,
                              const vector_index_registry::index_info &info,
                              Access_bitmask privilege);
-bool check_vector_existing_index_ddl_access(
+bool check_vector_existing_index_access(
     THD *thd, const std::string &index_name, Access_bitmask privilege,
     const char *func_name, bool missing_index_uses_current_db);
-bool check_vector_all_indexes_ddl_access(THD *thd, Access_bitmask privilege,
+bool check_vector_all_indexes_access(THD *thd, Access_bitmask privilege,
                                          const char *func_name);
 bool maybe_binlog_vector_write_query(THD *thd);
 bool decode_vector_arg(Item *arg, String *buf, std::vector<float> *out);

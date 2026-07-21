@@ -11,7 +11,9 @@ SELECT VEC_INDEX_CREATE('idx_item_api_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SELECT VEC_INDEX_CREATE('idx_item_api_ext', 2, 'COSINE', 'EXTERNAL', 'FAISS');
 SELECT VEC_INDEX_LIST();
 
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_item_api_mem');
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_item_api_ext');
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_INFO('idx_item_api_missing');
@@ -111,6 +113,58 @@ SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api2, 9, '[9,9]');
 SELECT VEC_INDEX_TXN_ROLLBACK(@txn_item_api2);
 SELECT VEC_INDEX_SEARCH('idx_item_api_mem', VEC_FROMTEXT('[9,9]'), 5);
 
+--echo # item transaction functions reject malformed user input
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_PENDING(NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_PENDING(-1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_UPSERT(NULL, @txn_item_api2, 1, '[1,1]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', NULL, 1, '[1,1]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api2, NULL, '[1,1]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api2, 1, NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_mem', @txn_item_api2, 1, '[1]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_missing', @txn_item_api2, 1, '[1,1]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_ERASE(NULL, @txn_item_api2, 1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_api_mem', NULL, 1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_api_mem', @txn_item_api2, NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_api_missing', @txn_item_api2, 1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_COMMIT(NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_COMMIT(-1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_ROLLBACK(NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_ROLLBACK(-1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_SAVEPOINT(NULL, 'sp_bad');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_item_api2, NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_SAVEPOINT(@txn_item_api2, '');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(NULL, 'sp_bad');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_item_api2, NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_item_api2, '');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(NULL, 'sp_bad');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_item_api2, NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_item_api2, '');
+
 SELECT VEC_INDEX_REBUILD('idx_item_api_mem');
 SELECT VEC_INDEX_RECOVER('idx_item_api_mem');
 SELECT VEC_INDEX_REBUILD_ALL();
@@ -122,10 +176,12 @@ SELECT VEC_INDEX_STAGE_UPSERT('idx_item_api_fail', @txn_item_api_fail, 11, '[11,
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_REBUILD('idx_item_api_fail');
 --replace_regex /"lifecycle_version":[0-9]+/"lifecycle_version":<num>/ /"last_error_ts":[0-9]+/"last_error_ts":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/ /"last_recover_fallback_ts":[0-9]+/"last_recover_fallback_ts":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_item_api_fail');
 SELECT VEC_INDEX_TXN_ROLLBACK(@txn_item_api_fail);
 SELECT VEC_INDEX_RECOVER('idx_item_api_fail');
 --replace_regex /"lifecycle_version":[0-9]+/"lifecycle_version":<num>/ /"last_error_ts":[0-9]+/"last_error_ts":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/ /"last_recover_fallback_ts":[0-9]+/"last_recover_fallback_ts":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_item_api_fail');
 SELECT VEC_INDEX_DROP('idx_item_api_fail');
 

@@ -98,19 +98,46 @@ bool require_process_access(THD *thd) {
   return thd != nullptr && thd->security_context()->check_access(PROCESS_ACL);
 }
 
-bool check_vector_current_db_ddl_access(THD *thd, Access_bitmask privilege) {
-  return thd == nullptr ||
-         check_access(thd, privilege, nullptr, nullptr, nullptr, false, false);
+bool resolve_vector_current_db(THD *thd, std::string *db_name) {
+  if (thd == nullptr || db_name == nullptr) return true;
+  if (thd->db().str == nullptr || thd->db().length == 0) {
+    my_error(ER_NO_DB_ERROR, MYF(0));
+    return true;
+  }
+  db_name->assign(thd->db().str, thd->db().length);
+  return false;
 }
 
-static bool check_vector_table_ddl_access_impl(
+bool check_vector_schema_access(THD *thd, const std::string &schema_name,
+                                Access_bitmask privilege) {
+  if (thd == nullptr) return true;
+  if (schema_name.empty()) {
+    my_error(ER_NO_DB_ERROR, MYF(0));
+    return true;
+  }
+  Access_bitmask effective_access = 0;
+  return check_access(thd, privilege, schema_name.c_str(), &effective_access,
+                      nullptr, true, false);
+}
+
+bool check_vector_current_db_ddl_access(THD *thd, Access_bitmask privilege) {
+  std::string db_name;
+  if (resolve_vector_current_db(thd, &db_name)) return true;
+  return check_vector_schema_access(thd, db_name, privilege);
+}
+
+static bool check_vector_index_access_impl(
     THD *thd, const vector_index_registry::index_info &info,
     Access_bitmask privilege, bool no_errors) {
   if (thd == nullptr) return true;
   if (info.schema_name.empty() || info.table_name.empty()) {
+    if (info.owner_schema.empty()) {
+      if (!no_errors) my_error(ER_NO_DB_ERROR, MYF(0));
+      return true;
+    }
     Access_bitmask effective_access = 0;
-    return check_access(thd, privilege, nullptr, &effective_access, nullptr,
-                        false, no_errors);
+    return check_access(thd, privilege, info.owner_schema.c_str(),
+                        &effective_access, nullptr, true, no_errors);
   }
 
   Table_ref table_ref(info.schema_name.c_str(), info.schema_name.length(),
@@ -123,19 +150,19 @@ static bool check_vector_table_ddl_access_impl(
   return check_grant(thd, privilege, &table_ref, false, 1, no_errors);
 }
 
-bool check_vector_table_ddl_access(
+bool check_vector_index_access(
     THD *thd, const vector_index_registry::index_info &info,
     Access_bitmask privilege) {
-  return check_vector_table_ddl_access_impl(thd, info, privilege, false);
+  return check_vector_index_access_impl(thd, info, privilege, false);
 }
 
 bool has_vector_index_access(THD *thd,
                              const vector_index_registry::index_info &info,
                              Access_bitmask privilege) {
-  return !check_vector_table_ddl_access_impl(thd, info, privilege, true);
+  return !check_vector_index_access_impl(thd, info, privilege, true);
 }
 
-bool check_vector_existing_index_ddl_access(
+bool check_vector_existing_index_access(
     THD *thd, const std::string &index_name, Access_bitmask privilege,
     const char *func_name, bool missing_index_uses_current_db) {
   vector_index_registry::index_info info;
@@ -146,10 +173,10 @@ bool check_vector_existing_index_ddl_access(
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name);
     return true;
   }
-  return check_vector_table_ddl_access(thd, info, privilege);
+  return check_vector_index_access(thd, info, privilege);
 }
 
-bool check_vector_all_indexes_ddl_access(THD *thd, Access_bitmask privilege,
+bool check_vector_all_indexes_access(THD *thd, Access_bitmask privilege,
                                          const char *func_name) {
   std::vector<std::string> index_names;
   if (!vector_index_registry::list_indexes(&index_names)) {
@@ -157,7 +184,7 @@ bool check_vector_all_indexes_ddl_access(THD *thd, Access_bitmask privilege,
     return true;
   }
   for (const std::string &index_name : index_names) {
-    if (check_vector_existing_index_ddl_access(
+    if (check_vector_existing_index_access(
             thd, index_name, privilege, func_name, false)) {
       return true;
     }

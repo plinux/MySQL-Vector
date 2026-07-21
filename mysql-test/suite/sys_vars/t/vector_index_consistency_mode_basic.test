@@ -1,0 +1,42 @@
+--source include/have_vector_debug_native.inc
+
+--echo #
+--echo # Variable name : vector_index_consistency_mode
+--echo #
+
+SELECT @@global.vector_index_consistency_mode;
+SHOW GLOBAL VARIABLES LIKE 'vector_index_consistency_mode';
+SHOW SESSION VARIABLES LIKE 'vector_index_consistency_mode';
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='vector_index_consistency_mode';
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.session_variables
+WHERE VARIABLE_NAME='vector_index_consistency_mode';
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_index_consistency_mode;
+
+--Error ER_BAD_FIELD_ERROR
+SELECT vector_index_consistency_mode;
+
+SET GLOBAL vector_index_consistency_mode='standalone';
+SELECT @@global.vector_index_consistency_mode;
+
+SELECT VEC_INDEX_CREATE('idx_consistency_global', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_consistency_global'),
+                    '$.consistency_mode')) AS inherited_consistency_mode;
+
+SELECT VEC_INDEX_CREATE('idx_consistency_explicit', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'transactional');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_consistency_explicit'),
+                    '$.consistency_mode')) AS explicit_consistency_mode;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_index_consistency_mode='invalid';
+
+SELECT VEC_INDEX_DROP('idx_consistency_global');
+SELECT VEC_INDEX_DROP('idx_consistency_explicit');
+SET GLOBAL vector_index_consistency_mode=DEFAULT;
+SELECT @@global.vector_index_consistency_mode;

@@ -7050,6 +7050,21 @@ static Sys_var_enum Sys_vector_default_library(
     vector_default_library_names,
     DEFAULT(vector_default_library_compile_default()), NO_MUTEX_GUARD,
     NOT_IN_BINLOG, ON_CHECK(check_vector_default_library));
+
+static const char *vector_index_consistency_mode_names[] = {
+    "transactional", "standalone", nullptr};
+
+static Sys_var_enum Sys_vector_index_consistency_mode(
+    "vector_index_consistency_mode",
+    "Default consistency mode for new named vector indexes. TRANSACTIONAL "
+    "uses the MySQL truth-store and transaction path. STANDALONE builds an "
+    "independent non-transactional vector index and does not persist vector "
+    "payload rows in the truth-store.",
+    GLOBAL_VAR(opt_vector_index_consistency_mode), CMD_LINE(REQUIRED_ARG),
+    vector_index_consistency_mode_names,
+    DEFAULT(static_cast<ulong>(
+        vector_index::index_consistency_mode::kTransactional)),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG);
 #endif
 
 static Sys_var_enum Sys_block_encryption_mode(

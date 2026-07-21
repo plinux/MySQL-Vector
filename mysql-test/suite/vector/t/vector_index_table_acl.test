@@ -7,6 +7,9 @@
 
 DROP USER IF EXISTS 'vec_table_acl_user'@'localhost';
 DROP DATABASE IF EXISTS vector_acl_db;
+DROP USER IF EXISTS 'vec_standalone_acl_user'@'localhost';
+DROP DATABASE IF EXISTS vector_acl_owner;
+DROP DATABASE IF EXISTS vector_acl_other;
 
 CREATE USER 'vec_table_acl_user'@'localhost';
 CREATE DATABASE vector_acl_db;
@@ -82,3 +85,77 @@ DROP VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v);
 --connection default
 DROP DATABASE vector_acl_db;
 DROP USER 'vec_table_acl_user'@'localhost';
+
+--echo #
+--echo # Standalone owner schema remains stable across USE and restart
+--echo #
+
+CREATE USER 'vec_standalone_acl_user'@'localhost';
+CREATE DATABASE vector_acl_owner;
+CREATE DATABASE vector_acl_other;
+GRANT CREATE ON vector_acl_owner.* TO
+  'vec_standalone_acl_user'@'localhost';
+GRANT ALTER, SELECT, DROP ON vector_acl_other.* TO
+  'vec_standalone_acl_user'@'localhost';
+
+--connect (con_standalone_acl,localhost,vec_standalone_acl_user,,*NO-ONE*)
+--error ER_NO_DB_ERROR
+SELECT VEC_INDEX_CREATE('idx_standalone_acl', 2, 'EUCLIDEAN', 'MEMORY',
+                        'HNSWLIB', 0, 'standalone');
+USE vector_acl_owner;
+SELECT VEC_INDEX_CREATE('idx_standalone_acl', 2, 'EUCLIDEAN', 'MEMORY',
+                        'HNSWLIB', 0, 'standalone');
+USE vector_acl_other;
+--error ER_DBACCESS_DENIED_ERROR
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_standalone_acl', 32);
+--error ER_DBACCESS_DENIED_ERROR
+SELECT VEC_INDEX_INFO('idx_standalone_acl');
+--error ER_DBACCESS_DENIED_ERROR
+SELECT VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1);
+--error ER_DBACCESS_DENIED_ERROR
+SELECT VEC_INDEX_DROP('idx_standalone_acl');
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_standalone_acl'))
+  AS owner_index_hidden;
+--disconnect con_standalone_acl
+
+--connection default
+GRANT ALTER, SELECT ON vector_acl_owner.* TO
+  'vec_standalone_acl_user'@'localhost';
+
+--connect (con_standalone_acl,localhost,vec_standalone_acl_user,,vector_acl_other)
+SELECT VEC_INDEX_UPSERT('idx_standalone_acl', 1, '[1,1]');
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_standalone_acl', 32);
+SELECT VEC_INDEX_REBUILD('idx_standalone_acl');
+SELECT VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1);
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_standalone_acl'))
+  AS owner_index_visible;
+--error ER_DBACCESS_DENIED_ERROR
+SELECT VEC_INDEX_DROP('idx_standalone_acl');
+--disconnect con_standalone_acl
+
+--connection default
+--source include/restart_mysqld.inc
+
+--connect (con_standalone_acl,localhost,vec_standalone_acl_user,,vector_acl_other)
+SELECT VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1);
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_standalone_acl'))
+  AS owner_index_visible_after_restart;
+--disconnect con_standalone_acl
+
+--connection default
+GRANT DROP ON vector_acl_owner.* TO
+  'vec_standalone_acl_user'@'localhost';
+
+--connect (con_standalone_acl,localhost,vec_standalone_acl_user,,vector_acl_other)
+SELECT VEC_INDEX_DROP('idx_standalone_acl');
+USE vector_acl_owner;
+SELECT VEC_INDEX_CREATE('idx_standalone_drop_db', 2, 'EUCLIDEAN', 'MEMORY',
+                        'HNSWLIB', 0, 'standalone');
+--disconnect con_standalone_acl
+
+--connection default
+DROP DATABASE vector_acl_owner;
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_INFO('idx_standalone_drop_db');
+DROP DATABASE vector_acl_other;
+DROP USER 'vec_standalone_acl_user'@'localhost';

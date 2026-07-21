@@ -7,6 +7,15 @@ Note	3162	Authorization ID 'vec_table_acl_user'@'localhost' does not exist.
 DROP DATABASE IF EXISTS vector_acl_db;
 Warnings:
 Note	1008	Can't drop database 'vector_acl_db'; database doesn't exist
+DROP USER IF EXISTS 'vec_standalone_acl_user'@'localhost';
+Warnings:
+Note	3162	Authorization ID 'vec_standalone_acl_user'@'localhost' does not exist.
+DROP DATABASE IF EXISTS vector_acl_owner;
+Warnings:
+Note	1008	Can't drop database 'vector_acl_owner'; database doesn't exist
+DROP DATABASE IF EXISTS vector_acl_other;
+Warnings:
+Note	1008	Can't drop database 'vector_acl_other'; database doesn't exist
 CREATE USER 'vec_table_acl_user'@'localhost';
 CREATE DATABASE vector_acl_db;
 CREATE TABLE vector_acl_db.t_vec_table_acl (
@@ -54,3 +63,79 @@ GRANT INDEX ON vector_acl_db.t_vec_table_acl TO 'vec_table_acl_user'@'localhost'
 DROP VECTOR INDEX ON vector_acl_db.t_vec_table_acl(v);
 DROP DATABASE vector_acl_db;
 DROP USER 'vec_table_acl_user'@'localhost';
+#
+# Standalone owner schema remains stable across USE and restart
+#
+CREATE USER 'vec_standalone_acl_user'@'localhost';
+CREATE DATABASE vector_acl_owner;
+CREATE DATABASE vector_acl_other;
+GRANT CREATE ON vector_acl_owner.* TO
+'vec_standalone_acl_user'@'localhost';
+GRANT ALTER, SELECT, DROP ON vector_acl_other.* TO
+'vec_standalone_acl_user'@'localhost';
+SELECT VEC_INDEX_CREATE('idx_standalone_acl', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'standalone');
+ERROR 3D000: No database selected
+USE vector_acl_owner;
+SELECT VEC_INDEX_CREATE('idx_standalone_acl', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'standalone');
+VEC_INDEX_CREATE('idx_standalone_acl', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'standalone')
+1
+USE vector_acl_other;
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_standalone_acl', 32);
+ERROR 42000: Access denied for user 'vec_standalone_acl_user'@'localhost' to database 'vector_acl_owner'
+SELECT VEC_INDEX_INFO('idx_standalone_acl');
+ERROR 42000: Access denied for user 'vec_standalone_acl_user'@'localhost' to database 'vector_acl_owner'
+SELECT VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1);
+ERROR 42000: Access denied for user 'vec_standalone_acl_user'@'localhost' to database 'vector_acl_owner'
+SELECT VEC_INDEX_DROP('idx_standalone_acl');
+ERROR 42000: Access denied for user 'vec_standalone_acl_user'@'localhost' to database 'vector_acl_owner'
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_standalone_acl'))
+AS owner_index_hidden;
+owner_index_hidden
+0
+GRANT ALTER, SELECT ON vector_acl_owner.* TO
+'vec_standalone_acl_user'@'localhost';
+SELECT VEC_INDEX_UPSERT('idx_standalone_acl', 1, '[1,1]');
+VEC_INDEX_UPSERT('idx_standalone_acl', 1, '[1,1]')
+1
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_standalone_acl', 32);
+VEC_INDEX_SET_SEARCH_EF('idx_standalone_acl', 32)
+1
+SELECT VEC_INDEX_REBUILD('idx_standalone_acl');
+VEC_INDEX_REBUILD('idx_standalone_acl')
+1
+SELECT VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1);
+VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1)
+[1]
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_standalone_acl'))
+AS owner_index_visible;
+owner_index_visible
+1
+SELECT VEC_INDEX_DROP('idx_standalone_acl');
+ERROR 42000: Access denied for user 'vec_standalone_acl_user'@'localhost' to database 'vector_acl_owner'
+# restart
+SELECT VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1);
+VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1)
+[]
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_standalone_acl'))
+AS owner_index_visible_after_restart;
+owner_index_visible_after_restart
+1
+GRANT DROP ON vector_acl_owner.* TO
+'vec_standalone_acl_user'@'localhost';
+SELECT VEC_INDEX_DROP('idx_standalone_acl');
+VEC_INDEX_DROP('idx_standalone_acl')
+1
+USE vector_acl_owner;
+SELECT VEC_INDEX_CREATE('idx_standalone_drop_db', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'standalone');
+VEC_INDEX_CREATE('idx_standalone_drop_db', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'standalone')
+1
+DROP DATABASE vector_acl_owner;
+SELECT VEC_INDEX_INFO('idx_standalone_drop_db');
+ERROR HY000: Incorrect arguments to vec_index_info
+DROP DATABASE vector_acl_other;
+DROP USER 'vec_standalone_acl_user'@'localhost';

@@ -1,0 +1,60 @@
+#
+# Variable name : vector_index_consistency_mode
+#
+SELECT @@global.vector_index_consistency_mode;
+@@global.vector_index_consistency_mode
+transactional
+SHOW GLOBAL VARIABLES LIKE 'vector_index_consistency_mode';
+Variable_name	Value
+vector_index_consistency_mode	transactional
+SHOW SESSION VARIABLES LIKE 'vector_index_consistency_mode';
+Variable_name	Value
+vector_index_consistency_mode	transactional
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='vector_index_consistency_mode';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_index_consistency_mode	transactional
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.session_variables
+WHERE VARIABLE_NAME='vector_index_consistency_mode';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_index_consistency_mode	transactional
+SELECT @@session.vector_index_consistency_mode;
+ERROR HY000: Variable 'vector_index_consistency_mode' is a GLOBAL variable
+SELECT vector_index_consistency_mode;
+ERROR 42S22: Unknown column 'vector_index_consistency_mode' in 'field list'
+SET GLOBAL vector_index_consistency_mode='standalone';
+SELECT @@global.vector_index_consistency_mode;
+@@global.vector_index_consistency_mode
+standalone
+SELECT VEC_INDEX_CREATE('idx_consistency_global', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE');
+VEC_INDEX_CREATE('idx_consistency_global', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_consistency_global'),
+'$.consistency_mode')) AS inherited_consistency_mode;
+inherited_consistency_mode
+standalone
+SELECT VEC_INDEX_CREATE('idx_consistency_explicit', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'transactional');
+VEC_INDEX_CREATE('idx_consistency_explicit', 2, 'EUCLIDEAN', 'MEMORY',
+'NATIVE', 0, 'transactional')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_consistency_explicit'),
+'$.consistency_mode')) AS explicit_consistency_mode;
+explicit_consistency_mode
+transactional
+SET GLOBAL vector_index_consistency_mode='invalid';
+ERROR 42000: Variable 'vector_index_consistency_mode' can't be set to the value of 'invalid'
+SELECT VEC_INDEX_DROP('idx_consistency_global');
+VEC_INDEX_DROP('idx_consistency_global')
+1
+SELECT VEC_INDEX_DROP('idx_consistency_explicit');
+VEC_INDEX_DROP('idx_consistency_explicit')
+1
+SET GLOBAL vector_index_consistency_mode=DEFAULT;
+SELECT @@global.vector_index_consistency_mode;
+@@global.vector_index_consistency_mode
+transactional

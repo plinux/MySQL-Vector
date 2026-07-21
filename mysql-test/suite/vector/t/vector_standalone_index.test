@@ -1,0 +1,81 @@
+--source include/have_vector_debug_native.inc
+
+--echo #
+--echo # WL#Vector: standalone vector index consistency mode
+--echo #
+
+SET @old_vector_index_consistency_mode = @@global.vector_index_consistency_mode;
+SET @old_vector_entry_cache_size = @@global.vector_entry_cache_size;
+
+SELECT VEC_INDEX_CREATE('idx_txn_default', 2);
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_default'),
+  '$.consistency_mode')) AS consistency_mode,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_default'),
+  '$.truth_store_enabled') AS truth_store_enabled,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_default'),
+  '$.build_source')) AS build_source;
+SELECT VEC_INDEX_UPSERT('idx_txn_default', 1, '[1,1]');
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_default'), '$.entry_count')
+  AS entry_count,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_default'), '$.committed_entry_count')
+  AS committed_entry_count;
+
+SELECT VEC_INDEX_CREATE('idx_standalone_arg', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'standalone');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_arg'),
+  '$.consistency_mode')) AS consistency_mode,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_arg'),
+  '$.truth_store_enabled') AS truth_store_enabled,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_arg'),
+  '$.build_source')) AS build_source;
+SELECT VEC_INDEX_UPSERT('idx_standalone_arg', 10, '[1,0]');
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_arg'), '$.entry_count')
+  AS entry_count,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_arg'), '$.committed_entry_count')
+  AS committed_entry_count,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_arg'),
+  '$.lifecycle_state')) AS lifecycle_state;
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH('idx_standalone_arg', '[1,0]', 1);
+SELECT VEC_INDEX_REBUILD('idx_standalone_arg');
+SELECT VEC_INDEX_SEARCH('idx_standalone_arg', '[1,0]', 1);
+SELECT VEC_INDEX_ERASE('idx_standalone_arg', 10);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH('idx_standalone_arg', '[1,0]', 1);
+SELECT VEC_INDEX_REBUILD('idx_standalone_arg');
+SELECT VEC_INDEX_SEARCH('idx_standalone_arg', '[1,0]', 1);
+
+SET GLOBAL vector_entry_cache_size = 0;
+SELECT VEC_INDEX_CREATE('idx_standalone_spill', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'standalone');
+SELECT VEC_INDEX_UPSERT('idx_standalone_spill', 20, '[1,0]');
+SELECT VEC_INDEX_UPSERT('idx_standalone_spill', 21, '[0,1]');
+SELECT VEC_INDEX_ERASE('idx_standalone_spill', 20);
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_spill'),
+  '$.standalone_ingest_memory_bytes') AS ingest_memory_bytes,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_spill'),
+  '$.standalone_segment_count') > 0 AS has_segments,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_spill'),
+  '$.standalone_segment_bytes') > 0 AS has_segment_bytes,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_spill'),
+  '$.build_source')) AS build_source;
+SELECT VEC_INDEX_REBUILD('idx_standalone_spill');
+SELECT VEC_INDEX_SEARCH('idx_standalone_spill', '[0,1]', 2);
+
+SET GLOBAL vector_index_consistency_mode='standalone';
+SELECT VEC_INDEX_CREATE('idx_standalone_global', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_standalone_global'),
+  '$.consistency_mode')) AS consistency_mode;
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_CREATE('idx_bad_consistency', 2, 'EUCLIDEAN', 'MEMORY',
+                        'NATIVE', 0, 'durable');
+
+SET GLOBAL vector_index_consistency_mode = @old_vector_index_consistency_mode;
+SET GLOBAL vector_entry_cache_size = @old_vector_entry_cache_size;
+
+SELECT VEC_INDEX_DROP('idx_txn_default');
+SELECT VEC_INDEX_DROP('idx_standalone_arg');
+SELECT VEC_INDEX_DROP('idx_standalone_spill');
+SELECT VEC_INDEX_DROP('idx_standalone_global');

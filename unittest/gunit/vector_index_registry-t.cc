@@ -75,6 +75,7 @@ vector_index_metadata_store::metadata_row make_metadata_row_for_testing(
   row.metric = vector_index::metric_type::kEuclidean;
   row.mode = vector_index::backend_mode::kMemory;
   row.provider = vector_index::backend_provider::kNative;
+  row.owner_schema = "test";
   row.lifecycle_state = lifecycle_state;
   row.lifecycle_version = lifecycle_state == "ready" ? 1 : 2;
   return row;
@@ -1401,6 +1402,7 @@ TEST_F(VectorIndexRegistryTest,
     EXPECT_EQ("db_new", mapped_binding.schema_name);
     EXPECT_EQ("t_new", mapped_binding.table_name);
     EXPECT_EQ("v_new", mapped_binding.column_name);
+    EXPECT_EQ("id", mapped_binding.doc_id_column_name);
 
     std::vector<vector_index_metadata_store::metadata_row> metadata_rows;
     EXPECT_FALSE(vector_index_registry::detail::snapshot_metadata_locked(
@@ -2075,13 +2077,16 @@ TEST_F(VectorIndexRegistryTest,
   EXPECT_FALSE(vector_index_registry::has_prepared_xid(xid));
 }
 
-TEST_F(VectorIndexRegistryTest, DropIndexesForTableRemovesMatchingPrefix) {
-  ASSERT_TRUE(vector_index_registry::create_index("db1.t1.c1", 2, "euclidean",
-                                                  "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::create_index("db1.t1.c2", 2, "euclidean",
-                                                  "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::create_index("db1.t2.c1", 2, "euclidean",
-                                                  "memory", "native"));
+TEST_F(VectorIndexRegistryTest, DropIndexesForTableRemovesMatchingBindings) {
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db1.t1.c1", 2, "euclidean", "memory", "native", "db1", "t1", "c1",
+      "id"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db1.t1.c2", 2, "euclidean", "memory", "native", "db1", "t1", "c2",
+      "id"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db1.t2.c1", 2, "euclidean", "memory", "native", "db1", "t2", "c1",
+      "id"));
 
   std::vector<std::string> index_names;
   ASSERT_TRUE(vector_index_registry::list_indexes(&index_names));
@@ -2097,10 +2102,12 @@ TEST_F(VectorIndexRegistryTest, DropIndexesForTableRemovesMatchingPrefix) {
 
 TEST_F(VectorIndexRegistryTest,
        DropIndexesForTableRollbackOnPersistFailureKeepsRuntimeState) {
-  ASSERT_TRUE(vector_index_registry::create_index("db2.t1.c1", 2, "euclidean",
-                                                  "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::create_index("db2.t1.c2", 2, "euclidean",
-                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db2.t1.c1", 2, "euclidean", "memory", "native", "db2", "t1", "c1",
+      "id"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db2.t1.c2", 2, "euclidean", "memory", "native", "db2", "t1", "c2",
+      "id"));
 
   store_.fail_save_manifest = true;
   EXPECT_FALSE(vector_index_registry::drop_indexes_for_table("db2", "t1"));
@@ -2138,13 +2145,13 @@ TEST_F(VectorIndexRegistryTest, DropIndexesForTableNoMatchPreservesState) {
   ASSERT_TRUE(vector_index_registry::drop_index("dbkeep_table.t1.v"));
 }
 
-TEST_F(VectorIndexRegistryTest, DropIndexesForDatabaseRemovesMatchingPrefix) {
+TEST_F(VectorIndexRegistryTest, DropIndexesForDatabaseRemovesMatchingOwners) {
   ASSERT_TRUE(vector_index_registry::create_index(
-      "dbdrop.t1.c1", 2, "euclidean", "memory", "native"));
+      "dbdrop.t1.c1", 2, "euclidean", "memory", "native", "dbdrop"));
   ASSERT_TRUE(vector_index_registry::create_index(
-      "dbdrop.t2.c1", 2, "euclidean", "memory", "native"));
+      "dbdrop.t2.c1", 2, "euclidean", "memory", "native", "dbdrop"));
   ASSERT_TRUE(vector_index_registry::create_index(
-      "dbkeep.t1.c1", 2, "euclidean", "memory", "native"));
+      "dbkeep.t1.c1", 2, "euclidean", "memory", "native", "dbkeep"));
 
   ASSERT_TRUE(vector_index_registry::drop_indexes_for_database("dbdrop"));
 
@@ -2159,9 +2166,11 @@ TEST_F(VectorIndexRegistryTest, DropIndexesForDatabaseRemovesMatchingPrefix) {
 TEST_F(VectorIndexRegistryTest,
        DropIndexesForDatabaseRollbackOnPersistFailureKeepsRuntimeState) {
   ASSERT_TRUE(vector_index_registry::create_index(
-      "dbdropfail.t1.c1", 2, "euclidean", "memory", "native"));
+      "dbdropfail.t1.c1", 2, "euclidean", "memory", "native",
+      "dbdropfail"));
   ASSERT_TRUE(vector_index_registry::create_index(
-      "dbdropfail.t2.c1", 2, "euclidean", "memory", "native"));
+      "dbdropfail.t2.c1", 2, "euclidean", "memory", "native",
+      "dbdropfail"));
 
   store_.fail_save_metadata = true;
   EXPECT_FALSE(vector_index_registry::drop_indexes_for_database("dbdropfail"));
@@ -2295,8 +2304,9 @@ TEST_F(VectorIndexRegistryTest, ResetMappedIndexesForTableNoMatchIsNoop) {
 
 TEST_F(VectorIndexRegistryTest,
        RenameIndexesForTableMovesMetadataAndCommittedEntries) {
-  ASSERT_TRUE(vector_index_registry::create_index("db3.t1.v", 2, "euclidean",
-                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db3.t1.v", 2, "euclidean", "memory", "native", "db3", "t1", "v",
+      "id"));
   ASSERT_TRUE(vector_index_registry::upsert("db3.t1.v", 11, {1.0F, 1.0F}));
 
   ASSERT_TRUE(vector_index_registry::rename_indexes_for_table(
@@ -2306,6 +2316,10 @@ TEST_F(VectorIndexRegistryTest,
   ASSERT_FALSE(vector_index_registry::get_index_info("db3.t1.v", &info));
   ASSERT_TRUE(vector_index_registry::get_index_info("db3.t1_renamed.v", &info));
   EXPECT_EQ(1U, info.committed_entry_count);
+  std::string doc_id_column_name;
+  ASSERT_TRUE(vector_index_registry::get_index_binding_for_testing(
+      "db3.t1_renamed.v", nullptr, nullptr, nullptr, &doc_id_column_name));
+  EXPECT_EQ("id", doc_id_column_name);
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(vector_index_registry::search("db3.t1_renamed.v", {1.0F, 1.0F}, 1,
@@ -2318,8 +2332,9 @@ TEST_F(VectorIndexRegistryTest,
 
 TEST_F(VectorIndexRegistryTest,
        RenameIndexesForTableRollbackOnPersistFailureKeepsRuntimeState) {
-  ASSERT_TRUE(vector_index_registry::create_index("db4.t1.v", 2, "euclidean",
-                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db4.t1.v", 2, "euclidean", "memory", "native", "db4", "t1", "v",
+      "id"));
   ASSERT_TRUE(vector_index_registry::upsert("db4.t1.v", 22, {2.0F, 2.0F}));
 
   store_.fail_save_manifest = true;
@@ -2370,8 +2385,9 @@ TEST_F(VectorIndexRegistryTest,
 
 TEST_F(VectorIndexRegistryTest,
        RenameIndexesForTableKeepsOtherPendingTxnChanges) {
-  ASSERT_TRUE(vector_index_registry::create_index("db5.t1.v", 2, "euclidean",
-                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db5.t1.v", 2, "euclidean", "memory", "native", "db5", "t1", "v",
+      "id"));
   ASSERT_TRUE(vector_index_registry::create_index("db5.other.v", 2, "euclidean",
                                                   "memory", "native"));
 
@@ -2442,8 +2458,9 @@ TEST_F(VectorIndexRegistryTest, RenameIndexesForTableRejectsTargetCollision) {
 
 TEST_F(VectorIndexRegistryTest,
        RenameIndexForColumnMovesMetadataAndCommittedEntries) {
-  ASSERT_TRUE(vector_index_registry::create_index("db6.t1.v", 2, "euclidean",
-                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db6.t1.v", 2, "euclidean", "memory", "native", "db6", "t1", "v",
+      "id"));
   ASSERT_TRUE(vector_index_registry::upsert("db6.t1.v", 44, {4.0F, 4.0F}));
 
   ASSERT_TRUE(vector_index_registry::rename_index_for_column("db6", "t1", "v",
@@ -2453,6 +2470,10 @@ TEST_F(VectorIndexRegistryTest,
   ASSERT_FALSE(vector_index_registry::get_index_info("db6.t1.v", &info));
   ASSERT_TRUE(vector_index_registry::get_index_info("db6.t1.vec_col", &info));
   EXPECT_EQ(1U, info.committed_entry_count);
+  std::string doc_id_column_name;
+  ASSERT_TRUE(vector_index_registry::get_index_binding_for_testing(
+      "db6.t1.vec_col", nullptr, nullptr, nullptr, &doc_id_column_name));
+  EXPECT_EQ("id", doc_id_column_name);
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(vector_index_registry::search("db6.t1.vec_col", {4.0F, 4.0F}, 1,
@@ -2465,8 +2486,9 @@ TEST_F(VectorIndexRegistryTest,
 
 TEST_F(VectorIndexRegistryTest,
        RenameIndexForColumnRollbackOnPersistFailureKeepsRuntimeState) {
-  ASSERT_TRUE(vector_index_registry::create_index("db7.t1.v", 2, "euclidean",
-                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db7.t1.v", 2, "euclidean", "memory", "native", "db7", "t1", "v",
+      "id"));
   ASSERT_TRUE(vector_index_registry::upsert("db7.t1.v", 55, {5.0F, 5.0F}));
 
   store_.fail_save_manifest = true;
@@ -2512,10 +2534,12 @@ TEST_F(VectorIndexRegistryTest, RenameIndexForColumnSameNameIsNoop) {
 }
 
 TEST_F(VectorIndexRegistryTest, RenameIndexForColumnRejectsExistingTarget) {
-  ASSERT_TRUE(vector_index_registry::create_index("db7b.t1.v", 2, "euclidean",
-                                                  "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::create_index(
-      "db7b.t1.vec_col", 2, "euclidean", "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db7b.t1.v", 2, "euclidean", "memory", "native", "db7b", "t1", "v",
+      "id"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db7b.t1.vec_col", 2, "euclidean", "memory", "native", "db7b", "t1",
+      "vec_col", "id"));
 
   EXPECT_FALSE(vector_index_registry::rename_index_for_column("db7b", "t1", "v",
                                                               "vec_col"));
@@ -2543,10 +2567,12 @@ TEST_F(VectorIndexRegistryTest, RenameIndexForColumnMissingSourceIsNoop) {
 }
 
 TEST_F(VectorIndexRegistryTest, DropIndexForColumnRemovesMappedIndexOnly) {
-  ASSERT_TRUE(vector_index_registry::create_index("db8.t1.v", 2, "euclidean",
-                                                  "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::create_index(
-      "db8.t1.other", 2, "euclidean", "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db8.t1.v", 2, "euclidean", "memory", "native", "db8", "t1", "v",
+      "id"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db8.t1.other", 2, "euclidean", "memory", "native", "db8", "t1",
+      "other", "id"));
 
   ASSERT_TRUE(vector_index_registry::drop_index_for_column("db8", "t1", "v"));
 
@@ -2560,8 +2586,9 @@ TEST_F(VectorIndexRegistryTest, DropIndexForColumnRemovesMappedIndexOnly) {
 
 TEST_F(VectorIndexRegistryTest,
        DropIndexForColumnRollbackOnPersistFailureKeepsRuntimeState) {
-  ASSERT_TRUE(vector_index_registry::create_index("db8b.t1.v", 2, "euclidean",
-                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      "db8b.t1.v", 2, "euclidean", "memory", "native", "db8b", "t1", "v",
+      "id"));
   ASSERT_TRUE(vector_index_registry::upsert("db8b.t1.v", 12, {2.0F, 2.0F}));
 
   store_.fail_save_metadata = true;
@@ -5012,7 +5039,7 @@ TEST_F(VectorIndexRegistryTest,
   EXPECT_EQ("dbnew", schema_name);
   EXPECT_EQ("t2", table_name);
   EXPECT_EQ("vec2", column_name);
-  EXPECT_TRUE(doc_id_column_name.empty());
+  EXPECT_EQ("id", doc_id_column_name);
 
   vector_index_registry::rename_index_binding_for_testing("missing.index",
                                                           "other.index");
@@ -5137,6 +5164,7 @@ TEST_F(VectorIndexRegistryTest,
   row.metric = vector_index::metric_type::kEuclidean;
   row.mode = vector_index::backend_mode::kMemory;
   row.provider = vector_index::backend_provider::kNative;
+  row.owner_schema = "dbrestore";
   row.schema_name = "dbrestore";
   row.table_name = "t1";
   row.column_name = "v";
@@ -5464,11 +5492,11 @@ TEST_F(VectorIndexRegistryTest,
 TEST_F(VectorIndexRegistryTest,
        DropIndexesForDatabaseRemovesMultipleMatchingIndexesOnly) {
   ASSERT_TRUE(vector_index_registry::create_index(
-      "dbpurge.t1.v1", 2, "euclidean", "memory", "native"));
+      "dbpurge.t1.v1", 2, "euclidean", "memory", "native", "dbpurge"));
   ASSERT_TRUE(vector_index_registry::create_index(
-      "dbpurge.t2.v2", 2, "euclidean", "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::create_index("dbkeep.t1.v", 2, "euclidean",
-                                                  "memory", "native"));
+      "dbpurge.t2.v2", 2, "euclidean", "memory", "native", "dbpurge"));
+  ASSERT_TRUE(vector_index_registry::create_index(
+      "dbkeep.t1.v", 2, "euclidean", "memory", "native", "dbkeep"));
   ASSERT_TRUE(vector_index_registry::upsert("dbpurge.t1.v1", 31, {3.0F, 1.0F}));
   ASSERT_TRUE(vector_index_registry::upsert("dbpurge.t2.v2", 32, {3.0F, 2.0F}));
   ASSERT_TRUE(vector_index_registry::upsert("dbkeep.t1.v", 33, {3.0F, 3.0F}));

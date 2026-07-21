@@ -1,0 +1,36 @@
+#
+# Variable name : vector_index_consistency_mode
+# Persistence   : SET PERSIST / RESET PERSIST
+#
+# Vector index consistency mode variable is registered.
+SELECT VARIABLE_NAME
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vector_index_consistency_mode';
+VARIABLE_NAME
+vector_index_consistency_mode
+include/assert.inc [Expect vector_index_consistency_mode to be registered.]
+include/assert.inc [Expect vector_index_consistency_mode not to be persisted before SET PERSIST.]
+# Persist vector_index_consistency_mode.
+SET PERSIST vector_index_consistency_mode='standalone';
+include/assert.inc [Expect vector_index_consistency_mode to be persisted before restart.]
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME = 'vector_index_consistency_mode';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_index_consistency_mode	standalone
+# Restart and verify vector_index_consistency_mode survives.
+# restart
+include/assert.inc [Expect vector_index_consistency_mode to be persisted after restart.]
+SELECT vi.VARIABLE_NAME, vi.VARIABLE_SOURCE, pv.VARIABLE_VALUE, gv.VARIABLE_VALUE
+FROM performance_schema.variables_info vi
+JOIN performance_schema.persisted_variables pv
+ON vi.VARIABLE_NAME=pv.VARIABLE_NAME
+JOIN performance_schema.global_variables gv
+ON vi.VARIABLE_NAME=gv.VARIABLE_NAME
+WHERE vi.VARIABLE_NAME = 'vector_index_consistency_mode';
+VARIABLE_NAME	VARIABLE_SOURCE	VARIABLE_VALUE	VARIABLE_VALUE
+vector_index_consistency_mode	PERSISTED	standalone	standalone
+# Reset persisted vector_index_consistency_mode.
+RESET PERSIST IF EXISTS vector_index_consistency_mode;
+include/assert.inc [Expect vector_index_consistency_mode persistence to be reset.]
+# restart

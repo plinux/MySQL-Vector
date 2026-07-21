@@ -1690,7 +1690,7 @@ static const std::pair<const char *, Create_func *> func_array[] = {
     {"VEC_DEBUG_TRUTH_STORE_SET_HEX",
      SQL_FN_V_LIST(Item_func_vec_debug_truth_store_set_hex, 2, 2)},
 #endif
-    {"VEC_INDEX_CREATE", SQL_FN_V_LIST(Item_func_vec_index_create, 2, 6)},
+    {"VEC_INDEX_CREATE", SQL_FN_V_LIST(Item_func_vec_index_create, 2, 7)},
     {"VEC_INDEX_SET_HNSW_BUILD_PARAMS",
      SQL_FN_V_LIST(Item_func_vec_index_set_hnsw_build_params, 3, 3)},
     {"VEC_INDEX_SET_FAISS_IVF_PARAMS",

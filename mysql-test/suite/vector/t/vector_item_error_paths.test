@@ -27,16 +27,31 @@ SELECT VEC_INDEX_CREATE('idx_item_err_zero_dim', 0);
 SELECT VEC_INDEX_CREATE(NULL, 2);
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_CREATE('idx_item_err_dim_null', NULL);
+--error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_CREATE('idx_item_err_null_optional', 2, NULL, NULL, NULL);
+--error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_CREATE('idx_item_err_mode_null', 2, 'EUCLIDEAN', NULL, 'NATIVE');
+--error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_CREATE('idx_item_err_provider_null', 2, 'EUCLIDEAN', 'MEMORY', NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_CREATE('idx_item_err_build_threads_null', 2, 'EUCLIDEAN',
+                        'MEMORY', 'NATIVE', NULL);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_CREATE('idx_item_err_build_threads_overflow', 2, 'EUCLIDEAN',
+                        'MEMORY', 'NATIVE', 65536);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_CREATE('idx_item_err_consistency_invalid', 2, 'EUCLIDEAN',
+                        'MEMORY', 'NATIVE', 0, 'invalid');
 
 SELECT VEC_INDEX_CREATE('idx_item_err', 2);
+--error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_DROP(NULL);
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_UPSERT(NULL, 1, VEC_FROMTEXT('[1,1]'));
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_UPSERT('idx_item_err', -1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_UPSERT('idx_item_err', 18446744073709551615,
+                        VEC_FROMTEXT('[1,1]'));
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_UPSERT('idx_item_err', 1, 'bad-vector');
 --error ER_WRONG_ARGUMENTS
@@ -45,6 +60,7 @@ SELECT VEC_INDEX_ERASE(NULL, 1);
 SELECT VEC_INDEX_ERASE('idx_item_err', NULL);
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_ERASE('idx_item_err', -1);
+SELECT VEC_INDEX_ERASE('idx_item_err', 18446744073709551615);
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_SEARCH(NULL, VEC_FROMTEXT('[1,1]'), 1);
 --error ER_WRONG_ARGUMENTS
@@ -101,6 +117,7 @@ SELECT VEC_INDEX_RECOVER('idx_item_missing');
 SELECT VEC_INDEX_TXN_PENDING(-1);
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_TXN_PENDING(NULL);
+SELECT VEC_INDEX_TXN_PENDING(18446744073709551615);
 SELECT VEC_INDEX_TXN_PENDING(99999);
 
 SET @txn_item = VEC_INDEX_TXN_BEGIN();
@@ -115,6 +132,8 @@ SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', -1, 1, VEC_FROMTEXT('[1,1]'));
 SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, NULL, VEC_FROMTEXT('[1,1]'));
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, -1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item,
+                              18446744073709551615, VEC_FROMTEXT('[6,6]'));
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_STAGE_UPSERT('idx_item_err', @txn_item, 1, 'bad-vector');
 --error ER_WRONG_ARGUMENTS
@@ -130,6 +149,8 @@ SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', -1, 5);
 SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, NULL);
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, -1);
+SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item,
+                             18446744073709551615);
 --error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_STAGE_ERASE('idx_item_missing', @txn_item, 5);
 SELECT VEC_INDEX_STAGE_ERASE('idx_item_err', @txn_item, 5);

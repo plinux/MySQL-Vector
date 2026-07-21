@@ -59,6 +59,8 @@ class ItemVectorFuncFixture : public ::testing::Test {
   void SetUp() override {
     initializer.SetUp();
     ASSERT_FALSE(thd()->set_db({STRING_WITH_LEN("test")}));
+    thd()->security_context()->set_master_access(CREATE_ACL | ALTER_ACL |
+                                                 DROP_ACL | SELECT_ACL);
     vector_index_registry::reset_for_testing();
   }
   void TearDown() override {
@@ -1328,9 +1330,7 @@ TEST_F(ItemVectorFuncFixture,
     auto *item = new Item_func_vec_index_create(
         POS(), make_item_list({make_string_item("idx_create_null_metric"),
                                new Item_int(2), new Item_null()}));
-    fix_item(thd(), item);
-    EXPECT_EQ(0, item->val_int());
-    EXPECT_FALSE(item->null_value);
+    expect_wrong_arguments_int(item);
   }
 
   {
@@ -1338,9 +1338,7 @@ TEST_F(ItemVectorFuncFixture,
         POS(), make_item_list({make_string_item("idx_create_null_mode"),
                                new Item_int(2), make_string_item("euclidean"),
                                new Item_null()}));
-    fix_item(thd(), item);
-    EXPECT_EQ(0, item->val_int());
-    EXPECT_FALSE(item->null_value);
+    expect_wrong_arguments_int(item);
   }
 
   {
@@ -1349,9 +1347,7 @@ TEST_F(ItemVectorFuncFixture,
         make_item_list({make_string_item("idx_create_null_provider"),
                         new Item_int(2), make_string_item("euclidean"),
                         make_string_item("memory"), new Item_null()}));
-    fix_item(thd(), item);
-    EXPECT_EQ(0, item->val_int());
-    EXPECT_FALSE(item->null_value);
+    expect_wrong_arguments_int(item);
   }
 
   {
@@ -1679,22 +1675,16 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsRejectNullStringValues) {
     thd()->clear_error();
     Server_initializer::set_expected_error(0);
   };
-  auto expect_error_int_without_diagnostic = [this](Item *item) {
-    fix_item(thd(), item);
-    EXPECT_EQ(0, item->val_int());
-    EXPECT_FALSE(item->null_value);
-  };
-
   expect_wrong_arguments_int(new Item_func_vec_index_create(
       POS(), make_item_list({make_null_string_value_item(), new Item_int(2)})));
-  expect_error_int_without_diagnostic(new Item_func_vec_index_create(
+  expect_wrong_arguments_int(new Item_func_vec_index_create(
       POS(), make_item_list({make_string_item("idx_null_metric"),
                              new Item_int(2), make_null_string_value_item()})));
-  expect_error_int_without_diagnostic(new Item_func_vec_index_create(
+  expect_wrong_arguments_int(new Item_func_vec_index_create(
       POS(), make_item_list({make_string_item("idx_null_mode"),
                              new Item_int(2), make_string_item("euclidean"),
                              make_null_string_value_item()})));
-  expect_error_int_without_diagnostic(new Item_func_vec_index_create(
+  expect_wrong_arguments_int(new Item_func_vec_index_create(
       POS(), make_item_list({make_string_item("idx_null_provider"),
                              new Item_int(2), make_string_item("euclidean"),
                              make_string_item("memory"),
@@ -1718,9 +1708,8 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsRejectNullStringValues) {
       new Item_func_vec_index_set_diskann_search_complexity(
           POS(), make_null_string_value_item(), new Item_int(100)));
 
-  expect_error_int_without_diagnostic(
-      new Item_func_vec_index_drop(POS(),
-                                   make_item_list({make_null_string_value_item()})));
+  expect_wrong_arguments_int(new Item_func_vec_index_drop(
+      POS(), make_item_list({make_null_string_value_item()})));
   expect_wrong_arguments_int(new Item_func_vec_index_rebuild(
       POS(), make_item_list({make_null_string_value_item()})));
   expect_wrong_arguments_int(new Item_func_vec_index_bulk_load_begin(

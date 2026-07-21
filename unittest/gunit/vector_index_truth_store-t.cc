@@ -1060,6 +1060,7 @@ TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {
   metadata_row.metric = vector_index::metric_type::kEuclidean;
   metadata_row.mode = vector_index::backend_mode::kMemory;
   metadata_row.provider = vector_index::backend_provider::kNative;
+  metadata_row.owner_schema = "test";
 
   std::vector<vector_index_metadata_store::metadata_row> metadata_rows{
       metadata_row};

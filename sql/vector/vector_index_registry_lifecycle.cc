@@ -48,6 +48,21 @@ using vector_index::detail::build_backend_from_config;
 
 constexpr size_t k_backfill_committed_persist_batch_rows = 256;
 
+bool binding_matches_table(const index_binding &binding,
+                           const std::string &schema_name,
+                           const std::string &table_name) {
+  return binding.schema_name == schema_name &&
+         binding.table_name == table_name && !binding.column_name.empty();
+}
+
+bool binding_matches_column(const index_binding &binding,
+                            const std::string &schema_name,
+                            const std::string &table_name,
+                            const std::string &column_name) {
+  return binding_matches_table(binding, schema_name, table_name) &&
+         binding.column_name == column_name;
+}
+
 bool snapshot_index_config_locked(
     const std::string &index_name,
     vector_index::index_service::index_config *config) {
@@ -492,21 +507,39 @@ bool apply_persisted_index_config_change_locked(const std::string &index_name,
 
 bool create_index(const std::string &index_name, size_t dimension,
                   const std::string &metric, const std::string &mode,
+                  const std::string &provider,
+                  const std::string &owner_schema) {
+  return create_index(index_name, dimension, metric, mode, provider,
+                      owner_schema, create_index_options{});
+}
+
+bool create_index(const std::string &index_name, size_t dimension,
+                  const std::string &metric, const std::string &mode,
+                  const std::string &provider, const std::string &owner_schema,
+                  const create_index_options &options) {
+  vector_status::record_index_create_request();
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  return create_index_locked(index_name, dimension, metric, mode, provider,
+                             nullptr, owner_schema, options);
+}
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool create_index(const std::string &index_name, size_t dimension,
+                  const std::string &metric, const std::string &mode,
                   const std::string &provider) {
   return create_index(index_name, dimension, metric, mode, provider,
-                      create_index_options{});
+                      "vector_test_owner");
 }
 
 bool create_index(const std::string &index_name, size_t dimension,
                   const std::string &metric, const std::string &mode,
                   const std::string &provider,
                   const create_index_options &options) {
-  vector_status::record_index_create_request();
-  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
-  return create_index_locked(index_name, dimension, metric, mode, provider,
-                             nullptr, options);
+  return create_index(index_name, dimension, metric, mode, provider,
+                      "vector_test_owner", options);
 }
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 bool create_mapped_index(const std::string &index_name, size_t dimension,
                          const std::string &metric, const std::string &mode,
@@ -534,7 +567,7 @@ bool create_mapped_index(const std::string &index_name, size_t dimension,
   const index_binding binding{schema_name, table_name, column_name,
                               doc_id_column_name};
   return create_index_locked(index_name, dimension, metric, mode, provider,
-                             &binding, options);
+                             &binding, schema_name, options);
 }
 
 bool drop_index_impl(const std::string &index_name,
@@ -564,7 +597,7 @@ bool drop_index_impl(const std::string &index_name,
     if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan))
       return false;
     if (!g_index_service.unregister_index(index_name)) return false;
-    erase_index_binding_locked(index_name);
+    erase_index_binding_and_owner_schema_locked(index_name);
     prune_change_log_for_index_locked(index_name);
     refresh_committed_checkpoint_from_runtime_locked();
     if (!persist_metadata_manifest_locked(true)) {
@@ -640,8 +673,8 @@ bool drop_indexes_for_table(const std::string &db_name,
     if (!g_index_service.list_indexes(&index_names)) return false;
 
     for (const std::string &index_name : index_names) {
-      if (!vector_index_identity::matches_table(index_name, db_name,
-                                                table_name)) {
+      if (!binding_matches_table(binding_for_index_locked(index_name), db_name,
+                                 table_name)) {
         continue;
       }
 
@@ -650,7 +683,7 @@ bool drop_indexes_for_table(const std::string &db_name,
         return false;
       vector_status::record_index_drop_request();
       if (!g_index_service.unregister_index(index_name)) return false;
-      erase_index_binding_locked(index_name);
+      erase_index_binding_and_owner_schema_locked(index_name);
       prune_change_log_for_index_locked(index_name);
       drop_artifacts.push_back(std::move(artifact_plan));
       ++dropped_count;
@@ -695,15 +728,16 @@ bool drop_indexes_for_database(const std::string &db_name) {
     if (!g_index_service.list_indexes(&index_names)) return false;
 
     for (const std::string &index_name : index_names) {
-      if (!vector_index_identity::matches_schema(index_name, db_name))
+      if (owner_schema_for_index_locked(index_name) != db_name) {
         continue;
+      }
 
       drop_artifact_plan artifact_plan;
       if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan))
         return false;
       vector_status::record_index_drop_request();
       if (!g_index_service.unregister_index(index_name)) return false;
-      erase_index_binding_locked(index_name);
+      erase_index_binding_and_owner_schema_locked(index_name);
       prune_change_log_for_index_locked(index_name);
       drop_artifacts.push_back(std::move(artifact_plan));
       ++dropped_count;
@@ -739,14 +773,14 @@ bool reset_mapped_indexes_for_table(const std::string &db_name,
   std::vector<mapped_index_reset_spec> reset_specs;
   reset_specs.reserve(index_names.size());
   for (const std::string &index_name : index_names) {
-    if (!vector_index_identity::matches_table(index_name, db_name,
-                                              table_name)) {
+    const index_binding binding = binding_for_index_locked(index_name);
+    if (!binding_matches_table(binding, db_name, table_name)) {
       continue;
     }
 
     mapped_index_reset_spec spec;
     spec.index_name = index_name;
-    spec.binding = binding_for_index_locked(index_name);
+    spec.binding = binding;
     vector_index::index_service::index_config config;
     bool supports_mutations = false;
     size_t entry_count = 0;
@@ -797,15 +831,14 @@ bool reset_mapped_indexes_for_table(const std::string &db_name,
 
   for (const mapped_index_reset_spec &spec : reset_specs) {
     if (!g_index_service.drop_index(spec.index_name)) return false;
-    erase_index_binding_locked(spec.index_name);
+    erase_index_binding_and_owner_schema_locked(spec.index_name);
     if (!g_index_service.register_index_from_strings(
             spec.index_name, spec.info.dimension, spec.info.metric,
             spec.info.mode, spec.info.provider)) {
       return false;
     }
-    set_index_binding_locked(spec.index_name, spec.binding.schema_name,
-                             spec.binding.table_name, spec.binding.column_name,
-                             spec.binding.doc_id_column_name);
+    set_index_binding_and_owner_schema_locked(
+        spec.index_name, spec.binding, spec.binding.schema_name);
     if (!apply_index_tuning_locked(spec.index_name, spec.info)) return false;
   }
 
@@ -838,10 +871,15 @@ bool rename_indexes_for_table(const std::string &old_db_name,
 
   for (const std::string &index_name : index_names) {
     std::string renamed_index_name;
-    if (!vector_index_identity::replace_table_name(
-            index_name, old_db_name, old_table_name, new_db_name,
-            new_table_name, &renamed_index_name)) {
-      return false;
+    const index_binding binding = binding_for_index_locked(index_name);
+    if (binding_matches_table(binding, old_db_name, old_table_name)) {
+      if (!vector_index_identity::replace_table_name(
+              index_name, old_db_name, old_table_name, new_db_name,
+              new_table_name, &renamed_index_name)) {
+        return false;
+      }
+    } else {
+      renamed_index_name = index_name;
     }
     if (renamed_index_name != index_name) {
       has_renamed_index = true;
@@ -863,12 +901,14 @@ bool rename_indexes_for_table(const std::string &old_db_name,
 
   std::vector<std::pair<std::string, std::string>> applied_pairs;
   applied_pairs.reserve(rename_pairs.size());
-  auto rollback_applied_pairs = [&applied_pairs]() {
+  auto rollback_applied_pairs = [&applied_pairs, &old_db_name]() {
     for (auto it = applied_pairs.rbegin(); it != applied_pairs.rend(); ++it) {
       if (!g_index_service.rename_index(it->second, it->first)) {
         vector_status::record_runtime_state_rollback_failure();
         return false;
       }
+      rename_index_binding_and_owner_schema_locked(it->second, it->first,
+                                                   old_db_name);
     }
     vector_status::record_runtime_state_rollback();
     return true;
@@ -879,7 +919,8 @@ bool rename_indexes_for_table(const std::string &old_db_name,
       if (!rollback_applied_pairs()) return false;
       return false;
     }
-    rename_index_binding_locked(pair.first, pair.second);
+    rename_index_binding_and_owner_schema_locked(pair.first, pair.second,
+                                                 new_db_name);
     applied_pairs.push_back(pair);
   }
 
@@ -924,6 +965,11 @@ bool drop_index_for_column(const std::string &db_name,
     if (!g_metadata_loaded) return true;
     if (!ensure_metadata_loaded_locked()) return false;
 
+    const index_binding binding = binding_for_index_locked(index_name);
+    if (!binding_matches_column(binding, db_name, table_name, column_name)) {
+      return true;
+    }
+
     drop_artifact_plan artifact_plan;
     if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan)) {
       return true;
@@ -941,7 +987,7 @@ bool drop_index_for_column(const std::string &db_name,
 
     vector_status::record_index_drop_request();
     if (!g_index_service.unregister_index(index_name)) return false;
-    erase_index_binding_locked(index_name);
+    erase_index_binding_and_owner_schema_locked(index_name);
     prune_change_log_for_index_locked(index_name);
 
     if (!persist_registry_state_locked()) {
@@ -975,6 +1021,11 @@ bool rename_index_for_column(const std::string &db_name,
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!g_metadata_loaded) return true;
   if (!ensure_metadata_loaded_locked()) return false;
+
+  const index_binding binding = binding_for_index_locked(old_index_name);
+  if (!binding_matches_column(binding, db_name, table_name, old_column_name)) {
+    return true;
+  }
 
   vector_index::index_service::index_config old_config;
   bool supports_mutations = false;
@@ -1016,7 +1067,8 @@ bool rename_index_for_column(const std::string &db_name,
   if (!g_index_service.rename_index(old_index_name, new_index_name)) {
     return false;
   }
-  rename_index_binding_locked(old_index_name, new_index_name);
+  rename_index_binding_and_owner_schema_locked(old_index_name, new_index_name,
+                                               db_name);
   for (auto &row : g_change_log_rows) {
     if (row.index_name == old_index_name) row.index_name = new_index_name;
   }
@@ -1699,6 +1751,7 @@ bool get_index_info(const std::string &index_name, index_info *info) {
   info->diskann_search_beamwidth = config.diskann_search_beamwidth;
   info->diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
   const index_binding binding = binding_for_index_locked(index_name);
+  info->owner_schema = owner_schema_for_index_locked(index_name);
   info->schema_name = binding.schema_name;
   info->table_name = binding.table_name;
   info->column_name = binding.column_name;

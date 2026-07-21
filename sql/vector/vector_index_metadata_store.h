@@ -76,6 +76,7 @@ struct metadata_row {
   uint32_t faiss_build_threads{0};
   bool diskann_build_mode_specified{false};
   uint64_t diskann_pq_code_budget_size{0};
+  std::string owner_schema;
 };
 
 /**

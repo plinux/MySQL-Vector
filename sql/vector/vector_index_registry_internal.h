@@ -151,6 +151,7 @@ extern std::vector<vector_index_metadata_store::prepared_change_row>
 extern std::vector<recovery_action> g_recovery_actions;
 extern std::unordered_map<uint64_t, thd_txn_context> g_thd_txn_contexts;
 extern std::unordered_map<std::string, index_binding> g_index_bindings;
+extern std::unordered_map<std::string, std::string> g_index_owner_schemas;
 
 xa_status_code apply_prepared_xid_locked(const XID &xid, bool commit,
                                          uint64_t thd_id_to_clear);
@@ -228,18 +229,27 @@ bool parse_mapped_index_name(const std::string &index_name,
                              std::string *column_name);
 index_binding binding_from_name(const std::string &index_name);
 index_binding binding_for_index_locked(const std::string &index_name);
+std::string owner_schema_for_index_locked(const std::string &index_name);
 void set_index_binding_locked(const std::string &index_name,
                               const std::string &schema_name,
                               const std::string &table_name,
                               const std::string &column_name,
                               const std::string &doc_id_column_name);
-void erase_index_binding_locked(const std::string &index_name);
+void erase_index_binding_and_owner_schema_locked(
+    const std::string &index_name);
 void rename_index_binding_locked(const std::string &old_index_name,
                                  const std::string &new_index_name);
+void set_index_binding_and_owner_schema_locked(
+    const std::string &index_name, const index_binding &binding,
+    const std::string &owner_schema);
+void rename_index_binding_and_owner_schema_locked(
+    const std::string &old_index_name, const std::string &new_index_name,
+    const std::string &owner_schema);
 bool create_index_locked(const std::string &index_name, size_t dimension,
                          const std::string &metric, const std::string &mode,
                          const std::string &provider,
                          const index_binding *binding,
+                         const std::string &owner_schema,
                          const vector_index_registry::create_index_options
                              &options);
 bool apply_index_tuning_locked(const std::string &index_name,

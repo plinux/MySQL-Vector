@@ -33,7 +33,6 @@
 #include "my_dbug.h"
 #include "mysqld_error.h"
 #include "sql/item.h"
-#include "sql/vector/item_vectorfunc_internal.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql_string.h"
 

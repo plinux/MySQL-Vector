@@ -84,6 +84,7 @@ struct index_info {
   bool supports_mutations{false};
   size_t entry_count{0};
   size_t committed_entry_count{0};
+  std::string owner_schema;
 };
 
 struct create_index_options {
@@ -114,11 +115,20 @@ struct dropped_index_artifacts {
 
 bool create_index(const std::string &index_name, size_t dimension,
                   const std::string &metric, const std::string &mode,
+                  const std::string &provider, const std::string &owner_schema);
+bool create_index(const std::string &index_name, size_t dimension,
+                  const std::string &metric, const std::string &mode,
+                  const std::string &provider, const std::string &owner_schema,
+                  const create_index_options &options);
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool create_index(const std::string &index_name, size_t dimension,
+                  const std::string &metric, const std::string &mode,
                   const std::string &provider);
 bool create_index(const std::string &index_name, size_t dimension,
                   const std::string &metric, const std::string &mode,
                   const std::string &provider,
                   const create_index_options &options);
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 bool create_mapped_index(const std::string &index_name, size_t dimension,
                          const std::string &metric, const std::string &mode,
                          const std::string &provider,

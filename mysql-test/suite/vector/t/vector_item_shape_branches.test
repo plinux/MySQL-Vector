@@ -44,6 +44,8 @@ SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.external_manif
 SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.entry_count');
 SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.committed_entry_count');
 SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_item_shape_map.v'), '$.pending_apply_count');
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_item_shape_map.v',
+  CONCAT(VEC_FROMTEXT('[1,1]'), VEC_FROMTEXT('[0,0]')), 2, 1);
 
 SELECT VEC_INDEX_CREATE('idx_item_shape_txn', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SET @txn_shape = VEC_INDEX_TXN_BEGIN();
