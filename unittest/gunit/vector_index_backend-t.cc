@@ -207,6 +207,23 @@ void write_raw_docid_file(const std::string &path,
   ASSERT_TRUE(file);
 }
 
+void install_diskann_offline_test_adapter() {
+#ifdef MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB
+  vector_index::diskann_reset_offline_adapter_path_for_testing();
+  vector_index::diskann_set_offline_adapter_path_for_testing(
+      MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB);
+#endif
+}
+
+struct diskann_offline_test_adapter_installer {
+  diskann_offline_test_adapter_installer() {
+    install_diskann_offline_test_adapter();
+  }
+};
+
+[[maybe_unused]] diskann_offline_test_adapter_installer
+    install_diskann_offline_test_adapter_before_tests;
+
 #ifdef HAVE_FAISS
 void write_faiss_index_file(const std::string &path,
                             std::unique_ptr<faiss::Index> index) {

@@ -61,6 +61,30 @@ constexpr uint32_t kDiskAnnVectorValueFp32 = 1;
 constexpr uint32_t kDiskAnnBuildComplexity = 64;
 constexpr uint32_t kDiskAnnMaxDegree = 32;
 constexpr size_t kDiskAnnBulkBuildBatchSize = 8192;
+constexpr const char *kDiskAnnOfflineBuildSymbol =
+    "mysql_vector_diskann_offline_build";
+constexpr const char *kDiskAnnOfflineBuildFromManifestSymbol =
+    "mysql_vector_diskann_offline_build_from_manifest";
+constexpr const char *kDiskAnnOfflineBuildFromNativePqSymbol =
+    "mysql_vector_diskann_offline_build_from_native_pq";
+constexpr const char *kDiskAnnOfflineLoadSymbol =
+    "mysql_vector_diskann_offline_load";
+constexpr const char *kDiskAnnOfflineSearchSymbol =
+    "mysql_vector_diskann_offline_search";
+constexpr const char *kDiskAnnOfflineSearchBatchSymbol =
+    "mysql_vector_diskann_offline_search_batch";
+constexpr const char *kDiskAnnOfflineCardSymbol =
+    "mysql_vector_diskann_offline_card";
+constexpr const char *kDiskAnnOfflineDropSymbol =
+    "mysql_vector_diskann_offline_drop";
+
+#if defined(EXTRA_CODE_FOR_UNIT_TESTING) && \
+    !defined(MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED)
+std::string &diskann_offline_adapter_path_for_testing() {
+  static std::string path;
+  return path;
+}
+#endif
 
 using diskann_read_data_callback =
     void (*)(uint32_t, void *, const uint8_t *, size_t);
@@ -97,6 +121,61 @@ using diskann_search_vector_fn =
                 float *, size_t, void *);
 using diskann_remove_fn = bool (*)(uint64_t, const void *, const uint8_t *, size_t);
 using diskann_card_fn = uint64_t (*)(uint64_t, const void *);
+using diskann_offline_build_fn = bool (*)(const char *, const uint8_t *, size_t,
+                                          size_t, const uint8_t *, size_t,
+                                          size_t, size_t, int32_t, uint32_t,
+                                          uint32_t, uint32_t, double,
+                                          uint32_t, uint32_t, uint32_t,
+                                          uint32_t, uint32_t, uint32_t);
+using diskann_offline_build_from_manifest_fn = bool (*)(const char *,
+                                                        const char *, uint32_t,
+                                                        int32_t, uint32_t,
+                                                        uint32_t, uint32_t,
+                                                        double, uint32_t,
+                                                        uint32_t, uint32_t,
+                                                        uint32_t, uint32_t,
+                                                        uint32_t);
+using diskann_offline_build_from_native_pq_fn = bool (*)(
+    const char *, const char *, const char *, const char *, const char *,
+    const char *, uint32_t, int32_t, uint32_t, uint32_t, uint32_t, double,
+    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+using diskann_offline_load_fn = const void *(*)(const char *, int32_t, uint32_t,
+                                                uint32_t, uint32_t, uint32_t);
+using diskann_offline_search_fn = int32_t (*)(const void *, const float *,
+                                              size_t, uint32_t, uint32_t,
+                                              uint32_t, uint64_t *, float *);
+using diskann_offline_search_batch_fn =
+    int32_t (*)(const void *, const float *, size_t, size_t, uint32_t,
+                uint32_t, uint32_t, uint32_t, uint64_t *, float *, uint32_t *);
+using diskann_offline_card_fn = uint64_t (*)(const void *);
+using diskann_offline_drop_fn = void (*)(const void *);
+
+#ifdef MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED
+extern "C" {
+bool mysql_vector_diskann_offline_build(
+    const char *, const uint8_t *, size_t, size_t, const uint8_t *, size_t,
+    size_t, size_t, int32_t, uint32_t, uint32_t, uint32_t, double, uint32_t,
+    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+bool mysql_vector_diskann_offline_build_from_manifest(
+    const char *, const char *, uint32_t, int32_t, uint32_t, uint32_t,
+    uint32_t, double, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+    uint32_t);
+bool mysql_vector_diskann_offline_build_from_native_pq(
+    const char *, const char *, const char *, const char *, const char *,
+    const char *, uint32_t, int32_t, uint32_t, uint32_t, uint32_t, double,
+    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+const void *mysql_vector_diskann_offline_load(const char *, int32_t, uint32_t,
+                                              uint32_t, uint32_t, uint32_t);
+int32_t mysql_vector_diskann_offline_search(
+    const void *, const float *, size_t, uint32_t, uint32_t, uint32_t,
+    uint64_t *, float *);
+int32_t mysql_vector_diskann_offline_search_batch(
+    const void *, const float *, size_t, size_t, uint32_t, uint32_t, uint32_t,
+    uint32_t, uint64_t *, float *, uint32_t *);
+uint64_t mysql_vector_diskann_offline_card(const void *);
+void mysql_vector_diskann_offline_drop(const void *);
+}
+#endif
 
 struct diskann_api {
   void *handle{nullptr};
@@ -210,8 +289,124 @@ struct diskann_api {
   }
 };
 
+struct diskann_offline_api {
+  void *handle{nullptr};
+  diskann_offline_build_fn build{nullptr};
+  diskann_offline_build_from_manifest_fn build_from_manifest{nullptr};
+  diskann_offline_build_from_native_pq_fn build_from_native_pq{nullptr};
+  diskann_offline_load_fn load_index{nullptr};
+  diskann_offline_search_fn search{nullptr};
+  diskann_offline_search_batch_fn search_batch{nullptr};
+  diskann_offline_card_fn card{nullptr};
+  diskann_offline_drop_fn drop_index{nullptr};
+
+  bool load() {
+    DBUG_EXECUTE_IF("vector_backend_fail_diskann_offline_api_load",
+                    return false;);
+    if (handle != nullptr) return available();
+
+#ifdef MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED
+    handle = this;
+    build = mysql_vector_diskann_offline_build;
+    build_from_manifest = mysql_vector_diskann_offline_build_from_manifest;
+    build_from_native_pq = mysql_vector_diskann_offline_build_from_native_pq;
+    load_index = mysql_vector_diskann_offline_load;
+    search = mysql_vector_diskann_offline_search;
+    search_batch = mysql_vector_diskann_offline_search_batch;
+    card = mysql_vector_diskann_offline_card;
+    drop_index = mysql_vector_diskann_offline_drop;
+    DBUG_EXECUTE_IF("vector_backend_fail_diskann_offline_api_symbol",
+                    { card = nullptr; });
+    return available();
+#else
+    std::vector<std::string> candidates;
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+    if (!diskann_offline_adapter_path_for_testing().empty()) {
+      candidates.emplace_back(diskann_offline_adapter_path_for_testing());
+    }
+#endif
+#ifdef MYSQL_VECTOR_DISKANN_OFFLINE_DEFAULT_LIB
+    candidates.emplace_back(MYSQL_VECTOR_DISKANN_OFFLINE_DEFAULT_LIB);
+#endif
+#ifdef MYSQL_VECTOR_DISKANN_OFFLINE_DEFAULT_LIB_DIR
+    {
+      const std::filesystem::path lib_dir(
+          MYSQL_VECTOR_DISKANN_OFFLINE_DEFAULT_LIB_DIR);
+      candidates.emplace_back(
+          (lib_dir / "libmysql_vector_diskann_offline_adapter.dylib").string());
+      candidates.emplace_back(
+          (lib_dir / "libmysql_vector_diskann_offline_adapter.so").string());
+    }
+#endif
+    candidates.emplace_back("libmysql_vector_diskann_offline_adapter.dylib");
+    candidates.emplace_back("libmysql_vector_diskann_offline_adapter.so");
+
+    for (const std::string &candidate : candidates) {
+      if (candidate.empty()) continue;
+      handle = dlopen(candidate.c_str(), RTLD_NOW | RTLD_LOCAL);
+      if (handle == nullptr) continue;
+      build = reinterpret_cast<diskann_offline_build_fn>(
+          dlsym(handle, kDiskAnnOfflineBuildSymbol));
+      build_from_manifest =
+          reinterpret_cast<diskann_offline_build_from_manifest_fn>(
+              dlsym(handle, kDiskAnnOfflineBuildFromManifestSymbol));
+      build_from_native_pq =
+          reinterpret_cast<diskann_offline_build_from_native_pq_fn>(
+              dlsym(handle, kDiskAnnOfflineBuildFromNativePqSymbol));
+      load_index = reinterpret_cast<diskann_offline_load_fn>(
+          dlsym(handle, kDiskAnnOfflineLoadSymbol));
+      search = reinterpret_cast<diskann_offline_search_fn>(
+          dlsym(handle, kDiskAnnOfflineSearchSymbol));
+      search_batch = reinterpret_cast<diskann_offline_search_batch_fn>(
+          dlsym(handle, kDiskAnnOfflineSearchBatchSymbol));
+      card = reinterpret_cast<diskann_offline_card_fn>(
+          dlsym(handle, kDiskAnnOfflineCardSymbol));
+      drop_index = reinterpret_cast<diskann_offline_drop_fn>(
+          dlsym(handle, kDiskAnnOfflineDropSymbol));
+      DBUG_EXECUTE_IF("vector_backend_fail_diskann_offline_api_symbol",
+                      { card = nullptr; });
+      if (available()) return true;
+      dlclose(handle);
+      handle = nullptr;
+      build = nullptr;
+      build_from_manifest = nullptr;
+      build_from_native_pq = nullptr;
+      load_index = nullptr;
+      search = nullptr;
+      search_batch = nullptr;
+      card = nullptr;
+      drop_index = nullptr;
+    }
+
+    return false;
+#endif
+  }
+
+  bool available() const {
+    return handle != nullptr && build != nullptr &&
+           build_from_manifest != nullptr && load_index != nullptr &&
+           search != nullptr && card != nullptr && drop_index != nullptr;
+  }
+
+  bool manifest_build_available() const {
+    DBUG_EXECUTE_IF("vector_backend_diskann_manifest_unavailable",
+                    return false;);
+    return available();
+  }
+
+  bool native_pq_build_available() const {
+    return available() && build_from_native_pq != nullptr;
+  }
+};
+
 diskann_api &get_diskann_api() {
   static diskann_api api;
+  if (!api.available()) (void)api.load();
+  return api;
+}
+
+diskann_offline_api &get_diskann_offline_api() {
+  static diskann_offline_api api;
   if (!api.available()) (void)api.load();
   return api;
 }
@@ -1549,6 +1744,92 @@ bool diskann_api_create_index_route_for_testing(
   return handle != nullptr &&
          (g_diskann_serial_create_called_for_testing !=
           g_diskann_parallel_create_called_for_testing);
+}
+
+bool diskann_offline_api_load_for_testing() {
+  diskann_offline_api api;
+  return api.load();
+}
+
+#ifndef MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED
+void diskann_set_offline_adapter_path_for_testing(const std::string &path) {
+  diskann_offline_adapter_path_for_testing() = path;
+}
+
+void diskann_reset_offline_adapter_path_for_testing() {
+  diskann_offline_adapter_path_for_testing().clear();
+}
+#endif
+
+std::vector<std::string> diskann_offline_api_symbol_names_for_testing() {
+  return {kDiskAnnOfflineBuildSymbol,
+          kDiskAnnOfflineBuildFromManifestSymbol,
+          kDiskAnnOfflineBuildFromNativePqSymbol,
+          kDiskAnnOfflineLoadSymbol,
+          kDiskAnnOfflineSearchSymbol,
+          kDiskAnnOfflineSearchBatchSymbol,
+          kDiskAnnOfflineCardSymbol,
+          kDiskAnnOfflineDropSymbol};
+}
+
+bool diskann_offline_api_available_for_testing(bool has_handle, bool has_build,
+                                               bool has_build_from_manifest,
+                                               bool has_load_index,
+                                               bool has_search,
+                                               bool has_search_batch,
+                                               bool has_card,
+                                               bool has_drop_index) {
+  diskann_offline_api api;
+  api.handle = has_handle ? reinterpret_cast<void *>(1) : nullptr;
+  api.build = has_build ? reinterpret_cast<diskann_offline_build_fn>(1)
+                        : nullptr;
+  api.build_from_manifest =
+      has_build_from_manifest
+          ? reinterpret_cast<diskann_offline_build_from_manifest_fn>(1)
+          : nullptr;
+  api.load_index =
+      has_load_index ? reinterpret_cast<diskann_offline_load_fn>(1) : nullptr;
+  api.search =
+      has_search ? reinterpret_cast<diskann_offline_search_fn>(1) : nullptr;
+  api.search_batch = has_search_batch
+                         ? reinterpret_cast<diskann_offline_search_batch_fn>(1)
+                         : nullptr;
+  api.card = has_card ? reinterpret_cast<diskann_offline_card_fn>(1) : nullptr;
+  api.drop_index = has_drop_index
+                       ? reinterpret_cast<diskann_offline_drop_fn>(1)
+                       : nullptr;
+  return api.available();
+}
+
+bool diskann_offline_api_manifest_build_load_for_testing() {
+  diskann_offline_api api;
+  return api.load() && api.manifest_build_available();
+}
+
+bool diskann_offline_api_manifest_build_available_for_testing(
+    bool has_handle, bool has_build, bool has_build_from_manifest,
+    bool has_load_index, bool has_search, bool has_search_batch,
+    bool has_card, bool has_drop_index) {
+  diskann_offline_api api;
+  api.handle = has_handle ? reinterpret_cast<void *>(1) : nullptr;
+  api.build = has_build ? reinterpret_cast<diskann_offline_build_fn>(1)
+                        : nullptr;
+  api.build_from_manifest =
+      has_build_from_manifest
+          ? reinterpret_cast<diskann_offline_build_from_manifest_fn>(1)
+          : nullptr;
+  api.load_index =
+      has_load_index ? reinterpret_cast<diskann_offline_load_fn>(1) : nullptr;
+  api.search =
+      has_search ? reinterpret_cast<diskann_offline_search_fn>(1) : nullptr;
+  api.search_batch = has_search_batch
+                         ? reinterpret_cast<diskann_offline_search_batch_fn>(1)
+                         : nullptr;
+  api.card = has_card ? reinterpret_cast<diskann_offline_card_fn>(1) : nullptr;
+  api.drop_index = has_drop_index
+                       ? reinterpret_cast<diskann_offline_drop_fn>(1)
+                       : nullptr;
+  return api.manifest_build_available();
 }
 
 int32_t diskann_metric_code_for_testing(metric_type metric) {

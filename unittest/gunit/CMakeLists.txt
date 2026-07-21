@@ -327,6 +327,14 @@ IF(HAVE_VECTOR_INDEX)
     vector_trx_participant
     vector_utils
   )
+  ADD_LIBRARY(vector_diskann_offline_fake_adapter MODULE
+    vector_diskann_offline_fake_adapter.cc
+  )
+  SET_TARGET_PROPERTIES(vector_diskann_offline_fake_adapter PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "libmysql_vector_diskann_offline_fake_adapter"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/runtime_output_directory"
+  )
 ENDIF()
 
 # Endless loop in FatalSignalDeathTest
@@ -446,6 +454,28 @@ FOREACH(test ${SERVER_TESTS})
   )
   IF(test MATCHES "^vector_index_backend$|^vector_index_service$")
     MYSQL_VECTOR_LINK_BACKEND_TESTS(${test}-t)
+  ENDIF()
+  IF(test MATCHES "^vector_index_backend$|^vector_index_service$")
+    # Backend unit tests use the fake adapter to avoid the real builder's large
+    # minimum workspace for tiny orchestration fixtures.
+    IF(test STREQUAL "vector_index_backend" AND
+       TARGET vector_diskann_offline_fake_adapter)
+      ADD_DEPENDENCIES(${test}-t vector_diskann_offline_fake_adapter)
+      TARGET_COMPILE_DEFINITIONS(
+        ${test}-t PRIVATE
+        MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB="$<TARGET_FILE:vector_diskann_offline_fake_adapter>")
+    ELSEIF(MYSQL_VECTOR_DISKANN_OFFLINE_TARGET AND
+           NOT MYSQL_VECTOR_DISKANN_STATIC)
+      TARGET_COMPILE_DEFINITIONS(
+        ${test}-t PRIVATE
+        MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB="$<TARGET_FILE:${MYSQL_VECTOR_DISKANN_OFFLINE_TARGET}>")
+    ELSEIF(TARGET vector_diskann_offline_fake_adapter AND
+           NOT MYSQL_VECTOR_DISKANN_OFFLINE_TARGET)
+      ADD_DEPENDENCIES(${test}-t vector_diskann_offline_fake_adapter)
+      TARGET_COMPILE_DEFINITIONS(
+        ${test}-t PRIVATE
+        MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB="$<TARGET_FILE:vector_diskann_offline_fake_adapter>")
+    ENDIF()
   ENDIF()
 ENDFOREACH()
 
