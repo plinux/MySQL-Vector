@@ -100,6 +100,9 @@ bool has_build_diagnostics(
   present |= !diagnostics.segment_parallel_reason.empty();
   present |= diagnostics.search_fanout_segments != 0;
   present |= diagnostics.search_fanout_threads != 0;
+  present |= diagnostics.search_worker_budget != 0;
+  present |= diagnostics.search_active_requests != 0;
+  present |= diagnostics.search_work_items != 0;
   present |= diagnostics.search_global_top_k != 0;
   present |= diagnostics.search_per_segment_top_k != 0;
   present |= diagnostics.search_result_budget != 0;
@@ -323,6 +326,9 @@ void append_build_diagnostics(
   const bool has_search_diagnostics =
       diagnostics.search_fanout_segments != 0 ||
       diagnostics.search_fanout_threads != 0 ||
+      diagnostics.search_worker_budget != 0 ||
+      diagnostics.search_active_requests != 0 ||
+      diagnostics.search_work_items != 0 ||
       diagnostics.search_global_top_k != 0 ||
       diagnostics.search_per_segment_top_k != 0 ||
       diagnostics.search_result_budget != 0 ||
@@ -350,6 +356,12 @@ void append_build_diagnostics(
                 diagnostics.search_fanout_segments);
     append_uint(fields, "scheduler_search_fanout_threads",
                 diagnostics.search_fanout_threads);
+    append_uint(fields, "scheduler_search_worker_budget",
+                diagnostics.search_worker_budget);
+    append_uint(fields, "scheduler_search_active_requests",
+                diagnostics.search_active_requests);
+    append_uint(fields, "scheduler_search_work_items",
+                diagnostics.search_work_items);
     append_uint(fields, "scheduler_search_global_top_k",
                 diagnostics.search_global_top_k);
     append_uint(fields, "scheduler_search_per_segment_top_k",

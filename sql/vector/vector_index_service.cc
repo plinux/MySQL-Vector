@@ -2794,6 +2794,25 @@ size_t segmented_search_threads(const index_service::index_config &config,
   return 1;
 }
 
+bool uses_shared_segmented_search_pool(backend_provider provider) {
+  return provider == backend_provider::kHnswlib ||
+         provider == backend_provider::kFaiss;
+}
+
+size_t shared_segmented_search_thread_budget(
+    const index_service::index_config &config, size_t work_item_count) {
+  switch (config.provider) {
+    case backend_provider::kHnswlib:
+      return effective_hnsw_search_thread_budget();
+    case backend_provider::kFaiss:
+      return effective_faiss_search_threads(work_item_count);
+    case backend_provider::kDiskAnn:
+    case backend_provider::kNative:
+      return 1;
+  }
+  return 1;
+}
+
 class segmented_backend final : public backend {
  public:
   segmented_backend(index_service::index_config config,
@@ -2851,28 +2870,47 @@ class segmented_backend final : public backend {
     if (diskann_config_lock.owns_lock()) diskann_config_lock.unlock();
 
     std::vector<std::vector<search_result>> segment_results(m_segments.size());
-    const size_t worker_count =
+    const auto search_segment = [&](size_t segment_index) {
+      const auto &segment = m_segments[segment_index];
+      if (segment == nullptr) return false;
+      if (exact_rerank_candidates &&
+          collect_full_segment_candidates_for_rerank(
+              *segment, budget.segment_top_k[segment_index],
+              &segment_results[segment_index])) {
+        return true;
+      }
+      return segment->search(query, budget.segment_top_k[segment_index],
+                             &segment_results[segment_index]);
+    };
+
+    size_t worker_count =
         segmented_search_threads(m_config, m_segments.size());
-    record_search_budget(worker_count, top_k, 1, budget);
-    const bool search_ok = parallel_for_ranges_scoped(
-        m_segments.size(), worker_count,
-        [&](size_t begin, size_t end, size_t) {
-          for (size_t i = begin; i < end; ++i) {
-            const auto &segment = m_segments[i];
-            if (segment == nullptr) return false;
-            if (exact_rerank_candidates &&
-                collect_full_segment_candidates_for_rerank(
-                    *segment, budget.segment_top_k[i],
-                    &segment_results[i])) {
-              continue;
+    shared_search_execution execution;
+    bool search_ok = false;
+    const bool use_shared_search_pool =
+        uses_shared_segmented_search_pool(m_config.provider);
+    if (use_shared_search_pool) {
+      search_ok = parallel_for_shared_search_items(
+          m_segments.size(),
+          shared_segmented_search_thread_budget(m_config, m_segments.size()),
+          [&](size_t item_index, size_t) {
+            return search_segment(item_index);
+          },
+          &execution);
+      worker_count = execution.effective_workers;
+    } else {
+      search_ok = parallel_for_ranges_scoped(
+          m_segments.size(), worker_count,
+          [&](size_t begin, size_t end, size_t) {
+            for (size_t i = begin; i < end; ++i) {
+              if (!search_segment(i)) return false;
             }
-            if (!segment->search(query, budget.segment_top_k[i],
-                                 &segment_results[i])) {
-              return false;
-            }
-          }
-          return true;
-        });
+            return true;
+          });
+    }
+    record_search_budget(
+        worker_count, top_k, 1, budget,
+        use_shared_search_pool ? &execution : nullptr);
     if (!search_ok) return false;
     return merge_segment_topk(segment_results, merge_top_k, results);
   }
@@ -2940,28 +2978,68 @@ class segmented_backend final : public backend {
 
     std::vector<std::vector<std::vector<search_result>>> segment_batch_results(
         m_segments.size());
-    const size_t worker_count =
+    size_t worker_count =
         segmented_search_threads(m_config, m_segments.size());
-    record_search_budget(worker_count, top_k, queries.size(), budget);
-    const bool search_ok = parallel_for_ranges_scoped(
-        m_segments.size(), worker_count,
-        [&](size_t begin, size_t end, size_t) {
-          for (size_t i = begin; i < end; ++i) {
-            const auto &segment = m_segments[i];
+    shared_search_execution execution;
+    bool search_ok = false;
+    const bool use_shared_search_pool =
+        uses_shared_segmented_search_pool(m_config.provider);
+    if (use_shared_search_pool) {
+      if (!queries.empty() &&
+          m_segments.size() >
+              std::numeric_limits<size_t>::max() / queries.size()) {
+        return false;
+      }
+      for (auto &segment_results : segment_batch_results) {
+        segment_results.resize(queries.size());
+      }
+      const size_t work_items = m_segments.size() * queries.size();
+      search_ok = parallel_for_shared_search_items(
+          work_items,
+          shared_segmented_search_thread_budget(m_config, work_items),
+          [&](size_t item_index, size_t) {
+            const size_t segment_index = item_index / queries.size();
+            const size_t query_index = item_index % queries.size();
+            const auto &segment = m_segments[segment_index];
             if (segment == nullptr) return false;
+            auto &query_results =
+                segment_batch_results[segment_index][query_index];
             if (exact_rerank_candidates &&
-                collect_full_segment_batch_candidates_for_rerank(
-                    *segment, budget.segment_top_k[i], queries.size(),
-                    &segment_batch_results[i])) {
-              continue;
+                collect_full_segment_candidates_for_rerank(
+                    *segment, budget.segment_top_k[segment_index],
+                    &query_results)) {
+              return true;
             }
-            if (!segment->search_batch(queries, budget.segment_top_k[i],
-                                       &segment_batch_results[i])) {
-              return false;
+            return segment->search(queries[query_index],
+                                   budget.segment_top_k[segment_index],
+                                   &query_results);
+          },
+          &execution);
+      worker_count = execution.effective_workers;
+    } else {
+      search_ok = parallel_for_ranges_scoped(
+          m_segments.size(), worker_count,
+          [&](size_t begin, size_t end, size_t) {
+            for (size_t i = begin; i < end; ++i) {
+              const auto &segment = m_segments[i];
+              if (segment == nullptr) return false;
+              if (exact_rerank_candidates &&
+                  collect_full_segment_batch_candidates_for_rerank(
+                      *segment, budget.segment_top_k[i], queries.size(),
+                      &segment_batch_results[i])) {
+                continue;
+              }
+              if (!segment->search_batch(queries, budget.segment_top_k[i],
+                                         &segment_batch_results[i])) {
+                return false;
+              }
             }
-          }
-          return true;
-        });
+            return true;
+          });
+    }
+    record_search_budget(
+        worker_count, top_k, queries.size(), budget,
+        use_shared_search_pool ? &execution : nullptr);
     if (!search_ok) return false;
     return merge_segment_batch_topk(segment_batch_results, merge_top_k, results);
   }
@@ -3079,6 +3157,12 @@ class segmented_backend final : public backend {
         m_search_fanout_segments.load(std::memory_order_relaxed);
     diagnostics.search_fanout_threads =
         m_search_fanout_threads.load(std::memory_order_relaxed);
+    diagnostics.search_worker_budget =
+        m_search_worker_budget.load(std::memory_order_relaxed);
+    diagnostics.search_active_requests =
+        m_search_active_requests.load(std::memory_order_relaxed);
+    diagnostics.search_work_items =
+        m_search_work_items.load(std::memory_order_relaxed);
     diagnostics.search_global_top_k =
         m_search_global_top_k.load(std::memory_order_relaxed);
     diagnostics.search_per_segment_top_k =
@@ -3488,13 +3572,27 @@ class segmented_backend final : public backend {
     return true;
   }
 
-  void record_search_budget(size_t worker_count, size_t top_k,
-                            size_t query_count,
-                            const search_budget_summary &budget) const {
+  void record_search_budget(
+      size_t worker_count, size_t top_k, size_t query_count,
+      const search_budget_summary &budget,
+      const shared_search_execution *execution = nullptr) const {
     m_search_fanout_segments.store(
         static_cast<uint64_t>(m_segments.size()), std::memory_order_relaxed);
     m_search_fanout_threads.store(static_cast<uint64_t>(worker_count),
                                   std::memory_order_relaxed);
+    m_search_worker_budget.store(
+        static_cast<uint64_t>(execution == nullptr ? worker_count
+                                                   : execution->worker_budget),
+        std::memory_order_relaxed);
+    m_search_active_requests.store(
+        static_cast<uint64_t>(execution == nullptr
+                                  ? 1
+                                  : execution->active_requests),
+        std::memory_order_relaxed);
+    m_search_work_items.store(
+        static_cast<uint64_t>(execution == nullptr ? m_segments.size()
+                                                   : execution->work_items),
+        std::memory_order_relaxed);
     m_search_global_top_k.store(static_cast<uint64_t>(top_k),
                                 std::memory_order_relaxed);
     m_search_per_segment_top_k.store(
@@ -3550,6 +3648,9 @@ class segmented_backend final : public backend {
   mutable std::mutex m_segment_search_config_mutex;
   mutable std::atomic<uint64_t> m_search_fanout_segments{0};
   mutable std::atomic<uint64_t> m_search_fanout_threads{0};
+  mutable std::atomic<uint64_t> m_search_worker_budget{0};
+  mutable std::atomic<uint64_t> m_search_active_requests{0};
+  mutable std::atomic<uint64_t> m_search_work_items{0};
   mutable std::atomic<uint64_t> m_search_global_top_k{0};
   mutable std::atomic<uint64_t> m_search_per_segment_top_k{0};
   mutable std::atomic<uint64_t> m_search_result_budget{0};

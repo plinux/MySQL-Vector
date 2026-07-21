@@ -23,10 +23,15 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <thread>
@@ -501,6 +506,120 @@ class BoolGuard {
  private:
   bool *m_value;
   bool m_original;
+};
+
+struct segmented_search_concurrency_probe {
+  void enter() {
+    const size_t active = active_searches.fetch_add(1) + 1;
+    size_t peak = peak_searches.load();
+    while (active > peak &&
+           !peak_searches.compare_exchange_weak(peak, active)) {
+    }
+
+    std::unique_lock<std::mutex> lock(m_gate_mutex);
+    m_gate_cv.notify_all();
+    m_gate_cv.wait(lock, [this]() { return !m_block_searches; });
+  }
+
+  void leave() { active_searches.fetch_sub(1); }
+
+  void block_searches() {
+    std::lock_guard<std::mutex> lock(m_gate_mutex);
+    m_block_searches = true;
+  }
+
+  bool wait_for_active_searches(size_t count,
+                                std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(m_gate_mutex);
+    return m_gate_cv.wait_for(lock, timeout, [this, count]() {
+      return active_searches.load() >= count;
+    });
+  }
+
+  void release_searches() {
+    {
+      std::lock_guard<std::mutex> lock(m_gate_mutex);
+      m_block_searches = false;
+    }
+    m_gate_cv.notify_all();
+  }
+
+  std::atomic<size_t> active_searches{0};
+  std::atomic<size_t> peak_searches{0};
+  std::atomic<size_t> search_calls{0};
+  std::atomic<size_t> search_batch_calls{0};
+
+ private:
+  std::mutex m_gate_mutex;
+  std::condition_variable m_gate_cv;
+  bool m_block_searches{false};
+};
+
+class segmented_search_probe_backend final : public vector_index::backend {
+ public:
+  segmented_search_probe_backend(
+      uint64_t doc_id,
+      std::shared_ptr<segmented_search_concurrency_probe> probe,
+      vector_index::backend_provider provider =
+          vector_index::backend_provider::kHnswlib)
+      : m_doc_id(doc_id), m_probe(std::move(probe)), m_provider(provider) {}
+
+  bool upsert(uint64_t doc_id [[maybe_unused]],
+              const vector_index::vector_data &vector
+                  [[maybe_unused]]) override {
+    return false;
+  }
+
+  bool erase(uint64_t doc_id [[maybe_unused]]) override { return false; }
+
+  bool search(
+      const vector_index::vector_data &query, size_t top_k,
+      std::vector<vector_index::search_result> *results) const override {
+    if (results == nullptr || query.size() != dimension()) return false;
+    m_probe->search_calls.fetch_add(1);
+    m_probe->enter();
+    m_probe->leave();
+    results->clear();
+    if (top_k != 0) results->push_back({m_doc_id, 0.0});
+    return true;
+  }
+
+  bool search_batch(
+      const std::vector<vector_index::vector_data> &queries, size_t top_k,
+      std::vector<std::vector<vector_index::search_result>> *results)
+      const override {
+    m_probe->search_batch_calls.fetch_add(1);
+    return backend::search_batch(queries, top_k, results);
+  }
+
+  size_t entry_count() const override { return 1; }
+  size_t dimension() const override { return 2; }
+  vector_index::metric_type metric() const override {
+    return vector_index::metric_type::kEuclidean;
+  }
+  vector_index::backend_mode mode() const override {
+    return vector_index::backend_mode::kMemory;
+  }
+  vector_index::backend_provider provider() const override {
+    return m_provider;
+  }
+  bool supports_mutations() const override { return false; }
+
+ private:
+  uint64_t m_doc_id;
+  std::shared_ptr<segmented_search_concurrency_probe> m_probe;
+  vector_index::backend_provider m_provider;
+};
+
+class shared_search_worker_pool_guard {
+ public:
+  shared_search_worker_pool_guard() {
+    vector_index::reset_shared_search_worker_pool_for_testing();
+  }
+
+  ~shared_search_worker_pool_guard() {
+    vector_index::reset_shared_search_worker_pool_for_testing();
+  }
 };
 
 class UlonglongGuard {
@@ -1693,6 +1812,184 @@ TEST(VectorIndexServiceTest,
 }
 
 TEST(VectorIndexServiceTest,
+     SegmentedHnswBatchUsesOneFlattenedSearchExecutionLayer) {
+  shared_search_worker_pool_guard search_pool_guard;
+  UlongGuard hnsw_search_threads_guard(&opt_vector_hnsw_search_threads, 4);
+  auto probe = std::make_shared<segmented_search_concurrency_probe>();
+  auto first_segment =
+      std::make_shared<segmented_search_probe_backend>(1, probe);
+  auto second_segment =
+      std::make_shared<segmented_search_probe_backend>(2, probe);
+
+  vector_index::index_service::index_config config;
+  config.dimension = 2;
+  config.metric = vector_index::metric_type::kEuclidean;
+  config.mode = vector_index::backend_mode::kMemory;
+  config.provider = vector_index::backend_provider::kHnswlib;
+  auto segmented = vector_index::make_segmented_backend_for_testing(
+      config, {first_segment, second_segment});
+
+  std::vector<std::vector<vector_index::search_result>> results;
+  ASSERT_TRUE(segmented->search_batch(
+      {{1.0F, 1.0F}, {2.0F, 2.0F}, {3.0F, 3.0F}}, 1, &results));
+  ASSERT_EQ(3U, results.size());
+  EXPECT_EQ(0U, probe->search_batch_calls.load());
+  EXPECT_EQ(6U, probe->search_calls.load());
+  EXPECT_LE(probe->peak_searches.load(), 4U);
+  const auto diagnostics = segmented->build_diagnostics();
+  EXPECT_EQ(4U, diagnostics.search_worker_budget);
+  EXPECT_EQ(1U, diagnostics.search_active_requests);
+  EXPECT_EQ(6U, diagnostics.search_work_items);
+  EXPECT_EQ(4U, diagnostics.search_fanout_threads);
+}
+
+TEST(VectorIndexServiceTest,
+     ConcurrentSegmentedHnswSearchesShareGlobalWorkerBudget) {
+  shared_search_worker_pool_guard search_pool_guard;
+  constexpr size_t kRequestCount = 8;
+  constexpr size_t kWorkerBudget = 4;
+  UlongGuard hnsw_search_threads_guard(&opt_vector_hnsw_search_threads,
+                                       kWorkerBudget);
+  auto probe = std::make_shared<segmented_search_concurrency_probe>();
+  probe->block_searches();
+  auto first_segment =
+      std::make_shared<segmented_search_probe_backend>(1, probe);
+  auto second_segment =
+      std::make_shared<segmented_search_probe_backend>(2, probe);
+
+  vector_index::index_service::index_config config;
+  config.dimension = 2;
+  config.metric = vector_index::metric_type::kEuclidean;
+  config.mode = vector_index::backend_mode::kMemory;
+  config.provider = vector_index::backend_provider::kHnswlib;
+  auto segmented = vector_index::make_segmented_backend_for_testing(
+      config, {first_segment, second_segment});
+
+  std::atomic<size_t> ready{0};
+  std::atomic<bool> start{false};
+  std::vector<std::future<bool>> searches;
+  searches.reserve(kRequestCount);
+  vector_index::backend *const segmented_backend = segmented.get();
+  for (size_t i = 0; i < kRequestCount; ++i) {
+    searches.push_back(
+        std::async(std::launch::async, [&, segmented_backend]() {
+          ready.fetch_add(1);
+          while (!start.load()) std::this_thread::yield();
+          std::vector<vector_index::search_result> results;
+          return segmented_backend->search({1.0F, 1.0F}, 1, &results) &&
+                 results.size() == 1;
+        }));
+  }
+
+  const auto ready_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (ready.load() != kRequestCount &&
+         std::chrono::steady_clock::now() < ready_deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_EQ(kRequestCount, ready.load());
+  start.store(true);
+  EXPECT_TRUE(probe->wait_for_active_searches(
+      2, std::chrono::seconds(2)));
+  probe->release_searches();
+  for (auto &search : searches) EXPECT_TRUE(search.get());
+
+  EXPECT_GE(probe->peak_searches.load(), 2U);
+  EXPECT_LE(probe->peak_searches.load(), kWorkerBudget);
+}
+
+TEST(VectorIndexServiceTest,
+     SegmentedFaissBatchUsesOneFlattenedSearchExecutionLayer) {
+  shared_search_worker_pool_guard search_pool_guard;
+  UlongGuard faiss_search_threads_guard(&opt_vector_faiss_search_threads, 4);
+  auto probe = std::make_shared<segmented_search_concurrency_probe>();
+  auto first_segment = std::make_shared<segmented_search_probe_backend>(
+      1, probe, vector_index::backend_provider::kFaiss);
+  auto second_segment = std::make_shared<segmented_search_probe_backend>(
+      2, probe, vector_index::backend_provider::kFaiss);
+
+  vector_index::index_service::index_config config;
+  config.dimension = 2;
+  config.metric = vector_index::metric_type::kEuclidean;
+  config.mode = vector_index::backend_mode::kExternal;
+  config.provider = vector_index::backend_provider::kFaiss;
+  auto segmented = vector_index::make_segmented_backend_for_testing(
+      config, {first_segment, second_segment});
+
+  std::vector<std::vector<vector_index::search_result>> results;
+  ASSERT_TRUE(segmented->search_batch(
+      {{1.0F, 1.0F}, {2.0F, 2.0F}, {3.0F, 3.0F}}, 1, &results));
+  ASSERT_EQ(3U, results.size());
+  EXPECT_EQ(0U, probe->search_batch_calls.load());
+  EXPECT_EQ(6U, probe->search_calls.load());
+  EXPECT_LE(probe->peak_searches.load(), 4U);
+  const auto diagnostics = segmented->build_diagnostics();
+  EXPECT_EQ(4U, diagnostics.search_worker_budget);
+  EXPECT_EQ(1U, diagnostics.search_active_requests);
+  EXPECT_EQ(6U, diagnostics.search_work_items);
+  EXPECT_EQ(4U, diagnostics.search_fanout_threads);
+}
+
+TEST(VectorIndexServiceTest,
+     ConcurrentSegmentedFaissSearchesShareGlobalWorkerBudget) {
+  shared_search_worker_pool_guard search_pool_guard;
+  constexpr size_t kRequestCount = 8;
+  constexpr size_t kWorkerBudget = 4;
+  UlongGuard faiss_search_threads_guard(&opt_vector_faiss_search_threads,
+                                        kWorkerBudget);
+  auto probe = std::make_shared<segmented_search_concurrency_probe>();
+  probe->block_searches();
+  auto first_segment = std::make_shared<segmented_search_probe_backend>(
+      1, probe, vector_index::backend_provider::kFaiss);
+  auto second_segment = std::make_shared<segmented_search_probe_backend>(
+      2, probe, vector_index::backend_provider::kFaiss);
+
+  vector_index::index_service::index_config config;
+  config.dimension = 2;
+  config.metric = vector_index::metric_type::kEuclidean;
+  config.mode = vector_index::backend_mode::kExternal;
+  config.provider = vector_index::backend_provider::kFaiss;
+  auto segmented = vector_index::make_segmented_backend_for_testing(
+      config, {first_segment, second_segment});
+
+  std::atomic<size_t> ready{0};
+  std::atomic<bool> start{false};
+  std::vector<std::future<bool>> searches;
+  searches.reserve(kRequestCount);
+  vector_index::backend *const segmented_backend = segmented.get();
+  for (size_t i = 0; i < kRequestCount; ++i) {
+    searches.push_back(
+        std::async(std::launch::async, [&, segmented_backend]() {
+          ready.fetch_add(1);
+          while (!start.load()) std::this_thread::yield();
+          std::vector<vector_index::search_result> results;
+          return segmented_backend->search({1.0F, 1.0F}, 1, &results) &&
+                 results.size() == 1;
+        }));
+  }
+
+  const auto ready_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (ready.load() != kRequestCount &&
+         std::chrono::steady_clock::now() < ready_deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_EQ(kRequestCount, ready.load());
+  start.store(true);
+  const bool reached_parallel_search = probe->wait_for_active_searches(
+      2, std::chrono::seconds(2));
+  const bool exceeded_budget = probe->wait_for_active_searches(
+      kWorkerBudget + 1, std::chrono::milliseconds(100));
+  probe->release_searches();
+  for (auto &search : searches) EXPECT_TRUE(search.get());
+
+  EXPECT_TRUE(reached_parallel_search);
+  EXPECT_FALSE(exceeded_budget);
+  EXPECT_GE(probe->peak_searches.load(), 2U);
+  EXPECT_LE(probe->peak_searches.load(), kWorkerBudget);
+}
+
+TEST(VectorIndexServiceTest,
      DiskAnnStandaloneOfflineRawSegmentsUseSegmentedBackendByDefault) {
   vector_index::index_service::index_config config;
   config.provider = vector_index::backend_provider::kDiskAnn;
@@ -2600,6 +2897,7 @@ TEST(VectorStandaloneEntryStoreTest,
 }
 
 TEST(VectorIndexServiceTest, SegmentedSearchHandlesNestedParallelBackend) {
+  shared_search_worker_pool_guard search_pool_guard;
   build_pipeline_options_guard guard;
   const char *provider = segmented_memory_provider_for_testing();
   if (provider == nullptr) {
@@ -2664,10 +2962,13 @@ TEST(VectorIndexServiceTest, SegmentedSearchHandlesNestedParallelBackend) {
   ASSERT_EQ(1U, batch_result[1].size());
   EXPECT_EQ(11U, batch_result[0][0].doc_id);
   EXPECT_EQ(22U, batch_result[1][0].doc_id);
+  EXPECT_EQ(0U, vector_index::runtime_worker_pool_size_for_testing());
   if (std::string(provider) == "hnsw") {
-    EXPECT_EQ(2U, vector_index::runtime_worker_pool_size_for_testing());
+    EXPECT_EQ(2U,
+              vector_index::shared_search_worker_pool_size_for_testing());
   } else {
-    EXPECT_EQ(0U, vector_index::runtime_worker_pool_size_for_testing());
+    EXPECT_EQ(0U,
+              vector_index::shared_search_worker_pool_size_for_testing());
   }
 
   vector_index::reset_runtime_worker_pool_for_testing();

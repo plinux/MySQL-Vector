@@ -217,6 +217,12 @@ size_t effective_hnsw_search_threads(size_t query_count) {
                                         opt_vector_hnsw_search_threads);
 }
 
+size_t effective_hnsw_search_thread_budget() {
+  ulong configured = opt_vector_hnsw_search_threads;
+  if (configured == 0) configured = opt_vector_batch_search_threads;
+  return effective_build_scheduler_thread_budget(configured);
+}
+
 size_t effective_faiss_search_threads(size_t query_count) {
   return effective_batch_search_threads(query_count,
                                         opt_vector_faiss_search_threads);

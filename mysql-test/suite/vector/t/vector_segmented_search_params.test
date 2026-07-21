@@ -86,6 +86,22 @@ SET @segmented_search_query_count =
   CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
                                  '$.scheduler_search_query_count'))
        AS UNSIGNED);
+SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_fanout_threads'))
+            AS UNSIGNED) <=
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_worker_budget'))
+            AS UNSIGNED) AS fanout_threads_within_budget,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_active_requests'))
+            AS UNSIGNED) >= 1 AS active_requests_visible,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_work_items'))
+            AS UNSIGNED) =
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_fanout_segments'))
+            AS UNSIGNED) * @segmented_search_query_count
+         AS flattened_work_items_visible;
 SELECT @segmented_search_query_count = 2 AS query_count_visible,
        CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
                                       '$.scheduler_search_segment_min_entries'))

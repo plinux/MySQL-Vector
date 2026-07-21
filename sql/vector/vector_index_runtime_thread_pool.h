@@ -33,6 +33,16 @@ namespace vector_index {
 using range_visitor =
     std::function<bool(size_t begin, size_t end, size_t worker_id)>;
 using query_range_visitor = range_visitor;
+using search_item_visitor =
+    std::function<bool(size_t item_index, size_t worker_id)>;
+
+/** Execution plan observed when a request enters the shared search pool. */
+struct shared_search_execution {
+  size_t worker_budget{0};
+  size_t active_requests{0};
+  size_t effective_workers{0};
+  size_t work_items{0};
+};
 
 /**
   Return the effective number of workers for a fixed amount of work.
@@ -44,7 +54,11 @@ size_t effective_runtime_worker_count(size_t item_count,
                                       size_t configured_threads);
 
 /**
-  Execute independent item ranges in parallel.
+  Execute independent item ranges in a process-wide bounded worker pool.
+
+  Concurrent callers keep independent completion and failure state. Their
+  ranges are interleaved across the shared workers instead of serializing an
+  entire request behind another request.
 
   @retval true All query ranges succeeded.
   @retval false Invalid visitor or at least one worker reported failure.
@@ -68,8 +82,26 @@ bool parallel_for_ranges_scoped(size_t item_count, size_t configured_threads,
 bool parallel_for_queries(size_t query_count, size_t configured_threads,
                           const query_range_visitor &visitor);
 
+/**
+  Execute independent search items in a process-wide bounded worker pool.
+
+  Concurrent requests share one worker budget. Work from different requests is
+  interleaved instead of creating one complete worker group per SQL request.
+
+  @retval true All search items succeeded.
+  @retval false Invalid visitor, worker setup failure, or item failure.
+*/
+bool parallel_for_shared_search_items(
+    size_t item_count, size_t configured_threads,
+    const search_item_visitor &visitor,
+    shared_search_execution *execution = nullptr);
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 size_t runtime_worker_pool_size_for_testing();
 void reset_runtime_worker_pool_for_testing();
+size_t shared_search_worker_pool_size_for_testing();
+void reset_shared_search_worker_pool_for_testing();
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 /**
   Temporarily override OpenMP thread count for libraries that use OpenMP/MKL.
@@ -83,10 +115,8 @@ class scoped_omp_threads {
   scoped_omp_threads &operator=(const scoped_omp_threads &) = delete;
 
  private:
-#ifdef _OPENMP
   int m_previous_threads{0};
   bool m_active{false};
-#endif
 };
 
 }  // namespace vector_index

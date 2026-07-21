@@ -36,6 +36,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(HAVE_FAISS) && defined(MYSQL_VECTOR_FAISS_OPENMP_RUNTIME)
+#include <omp.h>
+#endif
+
 #ifdef HAVE_FAISS
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexHNSW.h>
@@ -229,7 +233,8 @@ void expect_official_diskann_build_options_if_used(
 }
 
 void install_diskann_offline_test_adapter() {
-#ifdef MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB
+#if defined(MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB) && \
+    !defined(MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED)
   vector_index::diskann_reset_offline_adapter_path_for_testing();
   vector_index::diskann_set_offline_adapter_path_for_testing(
       MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB);
@@ -704,6 +709,9 @@ TEST(VectorIndexBackendTest,
   info.build_diagnostics.candidates_per_segment = 1024;
   info.build_diagnostics.search_fanout_segments = 3;
   info.build_diagnostics.search_fanout_threads = 2;
+  info.build_diagnostics.search_worker_budget = 8;
+  info.build_diagnostics.search_active_requests = 4;
+  info.build_diagnostics.search_work_items = 12;
   info.build_diagnostics.search_global_top_k = 10;
   info.build_diagnostics.search_per_segment_top_k = 40;
   info.build_diagnostics.search_result_budget = 1000;
@@ -967,6 +975,18 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "scheduler_search_fanout_threads");
   ASSERT_NE(nullptr, search_threads);
   EXPECT_EQ(2U, search_threads->uint_value);
+  const auto *search_worker_budget =
+      find_status_field(fields, "scheduler_search_worker_budget");
+  ASSERT_NE(nullptr, search_worker_budget);
+  EXPECT_EQ(8U, search_worker_budget->uint_value);
+  const auto *search_active_requests =
+      find_status_field(fields, "scheduler_search_active_requests");
+  ASSERT_NE(nullptr, search_active_requests);
+  EXPECT_EQ(4U, search_active_requests->uint_value);
+  const auto *search_work_items =
+      find_status_field(fields, "scheduler_search_work_items");
+  ASSERT_NE(nullptr, search_work_items);
+  EXPECT_EQ(12U, search_work_items->uint_value);
   const auto *search_global_top_k =
       find_status_field(fields, "scheduler_search_global_top_k");
   ASSERT_NE(nullptr, search_global_top_k);
@@ -1129,6 +1149,10 @@ TEST(VectorIndexBackendTest,
       {"scheduler_search_fanout_segments",
        &diagnostics::search_fanout_segments},
       {"scheduler_search_fanout_threads", &diagnostics::search_fanout_threads},
+      {"scheduler_search_worker_budget", &diagnostics::search_worker_budget},
+      {"scheduler_search_active_requests",
+       &diagnostics::search_active_requests},
+      {"scheduler_search_work_items", &diagnostics::search_work_items},
       {"scheduler_search_global_top_k", &diagnostics::search_global_top_k},
       {"scheduler_search_per_segment_top_k",
        &diagnostics::search_per_segment_top_k},
@@ -1777,7 +1801,8 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove_all(root, ec);
 }
 
-#ifdef MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB
+#if defined(MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB) && \
+    !defined(MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED)
 TEST(VectorIndexBackendTest,
      DiskAnnOfflineApiInvalidPreferredPathPreservesDefaultFallback) {
   vector_index::diskann_reset_offline_adapter_path_for_testing();
@@ -2662,6 +2687,7 @@ TEST(VectorIndexBuildOptionsTest,
   opt_vector_faiss_search_threads = 3;
   opt_vector_diskann_search_threads = 4;
   EXPECT_EQ(2U, vector_index::effective_hnsw_search_threads(64));
+  EXPECT_EQ(2U, vector_index::effective_hnsw_search_thread_budget());
   EXPECT_EQ(3U, vector_index::effective_faiss_search_threads(64));
   EXPECT_EQ(4U, vector_index::effective_diskann_search_threads(64));
 
@@ -2691,6 +2717,20 @@ TEST(VectorIndexRuntimeThreadPoolTest,
   EXPECT_GE(auto_threads, 1U);
   EXPECT_LE(auto_threads, 64U);
 }
+
+#if defined(HAVE_FAISS) && defined(MYSQL_VECTOR_FAISS_OPENMP_RUNTIME)
+TEST(VectorIndexRuntimeThreadPoolTest,
+     ScopedOpenmpThreadsOverridesAndRestoresRuntimeDefault) {
+  const int original_threads = omp_get_max_threads();
+  omp_set_num_threads(1);
+  {
+    vector_index::scoped_omp_threads thread_scope(3);
+    EXPECT_EQ(3, omp_get_max_threads());
+  }
+  EXPECT_EQ(1, omp_get_max_threads());
+  omp_set_num_threads(original_threads);
+}
+#endif
 
 TEST(VectorIndexRuntimeThreadPoolTest,
      ParallelForQueriesVisitsRangesAndPropagatesFailure) {
@@ -2821,6 +2861,44 @@ TEST(VectorIndexRuntimeThreadPoolTest,
   for (int value : seen) EXPECT_EQ(1, value);
   EXPECT_EQ(2U, vector_index::runtime_worker_pool_size_for_testing());
   vector_index::reset_runtime_worker_pool_for_testing();
+}
+
+TEST(VectorIndexRuntimeThreadPoolTest,
+     SharedSearchItemsReuseBoundedPoolAndPropagateFailure) {
+  vector_index::reset_shared_search_worker_pool_for_testing();
+  EXPECT_EQ(0U, vector_index::shared_search_worker_pool_size_for_testing());
+
+  vector_index::shared_search_execution execution;
+  std::vector<int> seen(5, 0);
+  EXPECT_TRUE(vector_index::parallel_for_shared_search_items(
+      seen.size(), 2,
+      [&](size_t item_index, size_t) {
+        ++seen[item_index];
+        return true;
+      },
+      &execution));
+  for (int value : seen) EXPECT_EQ(1, value);
+  EXPECT_EQ(2U, execution.worker_budget);
+  EXPECT_EQ(1U, execution.active_requests);
+  EXPECT_EQ(2U, execution.effective_workers);
+  EXPECT_EQ(5U, execution.work_items);
+  EXPECT_EQ(2U, vector_index::shared_search_worker_pool_size_for_testing());
+
+  vector_index::reset_shared_search_worker_pool_for_testing();
+  EXPECT_TRUE(vector_index::parallel_for_shared_search_items(
+      1, vector_index::k_max_build_threads,
+      [](size_t, size_t) { return true; }));
+  EXPECT_EQ(1U, vector_index::shared_search_worker_pool_size_for_testing());
+
+  EXPECT_FALSE(vector_index::parallel_for_shared_search_items(
+      1, 2, vector_index::search_item_visitor{}));
+  EXPECT_TRUE(vector_index::parallel_for_shared_search_items(
+      0, 2, [](size_t, size_t) { return false; }));
+  EXPECT_FALSE(vector_index::parallel_for_shared_search_items(
+      4, 2, [](size_t item_index, size_t) { return item_index != 1; }));
+
+  vector_index::reset_shared_search_worker_pool_for_testing();
+  EXPECT_EQ(0U, vector_index::shared_search_worker_pool_size_for_testing());
 }
 
 TEST(VectorIndexRuntimeConfigTest,

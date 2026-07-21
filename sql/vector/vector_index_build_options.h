@@ -143,6 +143,9 @@ size_t effective_build_scheduler_thread_budget(
 /** Return the effective hnswlib batch search worker count. */
 size_t effective_hnsw_search_threads(size_t query_count);
 
+/** Return the process-wide hnswlib search worker budget. */
+size_t effective_hnsw_search_thread_budget();
+
 /** Return the effective FAISS batch search worker count. */
 size_t effective_faiss_search_threads(size_t query_count);
 
