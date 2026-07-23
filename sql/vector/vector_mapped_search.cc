@@ -30,6 +30,7 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -248,6 +249,18 @@ bool collect_visible_rows(THD *thd, const vector_mapped_search::search_spec &spe
   return true;
 }
 
+void sort_and_trim_results(
+    size_t top_k, std::vector<vector_index::search_result> *results) {
+  std::sort(results->begin(), results->end(),
+            [](const vector_index::search_result &lhs,
+               const vector_index::search_result &rhs) {
+              if (lhs.distance != rhs.distance)
+                return lhs.distance < rhs.distance;
+              return lhs.doc_id < rhs.doc_id;
+            });
+  if (results->size() > top_k) results->resize(top_k);
+}
+
 }  // namespace
 
 namespace vector_mapped_search {
@@ -268,14 +281,48 @@ bool rank_visible_candidates(const vector_index::vector_data &query,
         row.doc_id, compute_distance(row.vector, query, metric)});
   }
 
-  std::sort(reranked.begin(), reranked.end(),
-            [](const vector_index::search_result &lhs,
-               const vector_index::search_result &rhs) {
-              if (lhs.distance != rhs.distance) return lhs.distance < rhs.distance;
-              return lhs.doc_id < rhs.doc_id;
-            });
-  if (reranked.size() > top_k) reranked.resize(top_k);
+  sort_and_trim_results(top_k, &reranked);
   *results = std::move(reranked);
+  return true;
+}
+
+bool rank_visible_candidate_batches(
+    const std::vector<vector_index::vector_data> &queries,
+    vector_index::metric_type metric,
+    const std::vector<std::vector<vector_index::search_result>> &candidates,
+    const std::vector<visible_candidate> &visible_rows, size_t top_k,
+    std::vector<std::vector<vector_index::search_result>> *results) {
+  if (results == nullptr || queries.size() != candidates.size()) return false;
+
+  std::unordered_map<uint64_t, const vector_index::vector_data *>
+      visible_by_doc_id;
+  visible_by_doc_id.reserve(visible_rows.size());
+  for (const visible_candidate &row : visible_rows) {
+    visible_by_doc_id.emplace(row.doc_id, &row.vector);
+  }
+
+  results->clear();
+  results->resize(queries.size());
+  for (size_t query_index = 0; query_index < queries.size(); ++query_index) {
+    const vector_index::vector_data &query = queries[query_index];
+    std::vector<vector_index::search_result> &query_results =
+        (*results)[query_index];
+    query_results.reserve(std::min(top_k, candidates[query_index].size()));
+
+    std::unordered_set<uint64_t> seen_doc_ids;
+    seen_doc_ids.reserve(candidates[query_index].size());
+    for (const vector_index::search_result &candidate :
+         candidates[query_index]) {
+      if (!seen_doc_ids.insert(candidate.doc_id).second) continue;
+      const auto visible_it = visible_by_doc_id.find(candidate.doc_id);
+      if (visible_it == visible_by_doc_id.end()) continue;
+      const vector_index::vector_data &visible_vector = *visible_it->second;
+      if (visible_vector.size() != query.size()) return false;
+      query_results.push_back(vector_index::search_result{
+          candidate.doc_id, compute_distance(visible_vector, query, metric)});
+    }
+    sort_and_trim_results(top_k, &query_results);
+  }
   return true;
 }
 
@@ -289,6 +336,37 @@ bool filter_visible_results(THD *thd, const search_spec &spec,
   if (!collect_visible_rows(thd, spec, *results, &visible_rows)) return false;
   return rank_visible_candidates(query, spec.metric, visible_rows, spec.top_k,
                                results);
+}
+
+bool filter_visible_results_batch(
+    THD *thd, const search_spec &spec,
+    const std::vector<vector_index::vector_data> &queries,
+    const std::vector<std::vector<vector_index::search_result>> &candidates,
+    std::vector<std::vector<vector_index::search_result>> *results) {
+  if (results == nullptr || queries.size() != candidates.size()) return false;
+
+  size_t candidate_count = 0;
+  for (const auto &query_candidates : candidates) {
+    candidate_count += query_candidates.size();
+  }
+  if (candidate_count == 0) {
+    return rank_visible_candidate_batches(queries, spec.metric, candidates, {},
+                                          spec.top_k, results);
+  }
+
+  std::vector<vector_index::search_result> flattened_candidates;
+  flattened_candidates.reserve(candidate_count);
+  for (const auto &query_candidates : candidates) {
+    flattened_candidates.insert(flattened_candidates.end(),
+                                query_candidates.begin(),
+                                query_candidates.end());
+  }
+
+  std::vector<visible_candidate> visible_rows;
+  if (!collect_visible_rows(thd, spec, flattened_candidates, &visible_rows))
+    return false;
+  return rank_visible_candidate_batches(queries, spec.metric, candidates,
+                                        visible_rows, spec.top_k, results);
 }
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING

@@ -1,0 +1,69 @@
+#
+# WL#Vector: mapped MVCC batch search keeps the backend batch path
+#
+DROP TABLE IF EXISTS t_vec_mvcc_batch;
+Warnings:
+Note	1051	Unknown table 'test.t_vec_mvcc_batch'
+CREATE TABLE t_vec_mvcc_batch (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_mvcc_batch(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+INSERT INTO t_vec_mvcc_batch VALUES
+(1, VEC_FROMTEXT('[1,1]')),
+(2, VEC_FROMTEXT('[9,9]'));
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[1,1]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[1,1]'), VEC_FROMTEXT('[9,9]')), 2, 1)
+[[1],[2]]
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+START TRANSACTION WITH CONSISTENT SNAPSHOT;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[2,2]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[2,2]'), VEC_FROMTEXT('[9,9]')), 2, 1)
+[[1],[2]]
+INSERT INTO t_vec_mvcc_batch VALUES (3, VEC_FROMTEXT('[2,2]'));
+UPDATE t_vec_mvcc_batch SET v=VEC_FROMTEXT('[9,9]') WHERE id=1;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[2,2]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[2,2]'), VEC_FROMTEXT('[9,9]')), 2, 1)
+[[1],[2]]
+COMMIT;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[2,2]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[2,2]'), VEC_FROMTEXT('[9,9]')), 2, 1)
+[[3],[1]]
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+START TRANSACTION;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[3,3]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[3,3]'), VEC_FROMTEXT('[9,9]')), 2, 1)
+[[3],[1]]
+INSERT INTO t_vec_mvcc_batch VALUES (4, VEC_FROMTEXT('[3,3]'));
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[3,3]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[3,3]'), VEC_FROMTEXT('[9,9]')), 2, 1)
+[[4],[1]]
+ROLLBACK;
+START TRANSACTION;
+INSERT INTO t_vec_mvcc_batch VALUES (5, VEC_FROMTEXT('[4,4]'));
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[4,4]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[4,4]'), VEC_FROMTEXT('[9,9]')), 2, 1)
+[[5],[1]]
+ROLLBACK;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[4,4]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+CONCAT(VEC_FROMTEXT('[4,4]'), VEC_FROMTEXT('[9,9]')), 2, 1)
+[[4],[1]]
+DROP VECTOR INDEX ON t_vec_mvcc_batch(v);
+DROP TABLE t_vec_mvcc_batch;

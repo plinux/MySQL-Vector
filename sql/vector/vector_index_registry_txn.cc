@@ -1019,6 +1019,7 @@ bool search_for_thd_txn(THD *thd, uint64_t thd_id, const std::string &index_name
                      const vector_index::vector_data &query, size_t top_k,
                      std::vector<vector_index::search_result> *results) {
   vector_status::record_search_request();
+  DBUG_EXECUTE_IF("vector_fail_single_mapped_batch_fallback", return false;);
   if (results == nullptr) {
     vector_status::record_search_failure();
     return false;
@@ -1157,6 +1158,11 @@ bool search_batch_for_thd_txn(
   }
 
   bool fallback_to_single_search = false;
+  bool use_mapped_filter = false;
+  vector_mapped_search::search_spec mapped_spec;
+  size_t candidate_top_k = top_k;
+  size_t candidate_limit = top_k;
+  bool candidate_hard_limit = false;
   bool ok = false;
   {
     std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
@@ -1172,10 +1178,23 @@ bool search_batch_for_thd_txn(
         g_index_service.describe_index(index_name, &config, &supports_mutations,
                                       &entry_count, &committed_entry_count)) {
       const index_binding binding = binding_for_index_locked(index_name);
-      fallback_to_single_search =
+      use_mapped_filter =
           !binding.schema_name.empty() && !binding.table_name.empty() &&
           !binding.column_name.empty() &&
           !binding.doc_id_column_name.empty() && thd != nullptr;
+      if (use_mapped_filter) {
+        mapped_spec.schema_name = binding.schema_name;
+        mapped_spec.table_name = binding.table_name;
+        mapped_spec.column_name = binding.column_name;
+        mapped_spec.doc_id_column_name = binding.doc_id_column_name;
+        mapped_spec.metric = config.metric;
+        mapped_spec.top_k = top_k;
+        candidate_hard_limit =
+            mapped_search_candidate_limit_is_hard(entry_count, 0);
+        candidate_limit = mapped_search_candidate_limit(top_k, entry_count, 0);
+        candidate_top_k =
+            mapped_search_initial_candidate_top_k(top_k, entry_count, 0);
+      }
     }
 
     if (!fallback_to_single_search) {
@@ -1195,7 +1214,52 @@ bool search_batch_for_thd_txn(
     return true;
   }
 
-  if (!ok) {
+  if (use_mapped_filter && candidate_limit == 0) {
+    results->resize(queries.size());
+    ok = true;
+  }
+
+  while (use_mapped_filter && !ok && candidate_limit > 0) {
+    std::vector<std::vector<vector_index::search_result>> candidate_results;
+    if (!search_committed_runtime_batch_loaded(
+            index_name, queries, candidate_top_k, &candidate_results)) {
+      break;
+    }
+    for (const auto &query_candidates : candidate_results) {
+      vector_status::record_search_mvcc_candidate_rows(
+          query_candidates.size());
+    }
+
+    std::vector<std::vector<vector_index::search_result>> filtered_results;
+    if (!vector_mapped_search::filter_visible_results_batch(
+            thd, mapped_spec, queries, candidate_results,
+            &filtered_results)) {
+      break;
+    }
+
+    size_t incomplete_query_count = 0;
+    for (const auto &query_results : filtered_results) {
+      if (query_results.size() < top_k) ++incomplete_query_count;
+    }
+    if (incomplete_query_count == 0 || candidate_top_k >= candidate_limit) {
+      if (candidate_hard_limit && candidate_top_k >= candidate_limit) {
+        for (const auto &query_results : filtered_results) {
+          if (query_results.size() < top_k)
+            vector_status::record_search_mvcc_limit_hit();
+        }
+      }
+      *results = std::move(filtered_results);
+      ok = true;
+      break;
+    }
+
+    for (size_t i = 0; i < incomplete_query_count; ++i)
+      vector_status::record_search_mvcc_expansion();
+    candidate_top_k = mapped_search_next_candidate_top_k(
+        candidate_top_k, top_k, candidate_limit);
+  }
+
+  if (!use_mapped_filter) {
     ok = search_committed_runtime_batch_loaded(index_name, queries, top_k,
                                                results);
   }

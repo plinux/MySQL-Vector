@@ -63,12 +63,34 @@ bool rank_visible_candidates(const vector_index::vector_data &query,
                            std::vector<vector_index::search_result> *results);
 
 /**
+  Rank each query's visible ANN candidates without mixing candidate sets.
+
+  The visible rows are shared across the batch so callers can perform one
+  MVCC lookup for the union of candidate document identifiers.
+*/
+bool rank_visible_candidate_batches(
+    const std::vector<vector_index::vector_data> &queries,
+    vector_index::metric_type metric,
+    const std::vector<std::vector<vector_index::search_result>> &candidates,
+    const std::vector<visible_candidate> &visible_rows, size_t top_k,
+    std::vector<std::vector<vector_index::search_result>> *results);
+
+/**
   Filter ANN candidates through the current THD read view and recompute
   exact distance from the visible row version.
 */
 bool filter_visible_results(THD *thd, const search_spec &spec,
                           const vector_index::vector_data &query,
                           std::vector<vector_index::search_result> *results);
+
+/**
+  Filter a batch of ANN candidate sets through one current-THD MVCC lookup.
+*/
+bool filter_visible_results_batch(
+    THD *thd, const search_spec &spec,
+    const std::vector<vector_index::vector_data> &queries,
+    const std::vector<std::vector<vector_index::search_result>> &candidates,
+    std::vector<std::vector<vector_index::search_result>> *results);
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 bool decode_binary_vector_for_testing(const String *value,

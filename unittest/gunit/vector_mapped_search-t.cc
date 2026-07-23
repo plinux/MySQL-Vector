@@ -108,6 +108,49 @@ TEST(VectorMappedSearchTest, RankVisibleCandidatesCoversCosineZeroNorm) {
   ASSERT_EQ(2U, results.size());
 }
 
+TEST(VectorMappedSearchTest,
+     RankVisibleCandidateBatchesKeepsPerQueryCandidateSets) {
+  const std::vector<vector_index::vector_data> queries{{0.0F, 0.0F},
+                                                        {10.0F, 10.0F}};
+  const std::vector<std::vector<vector_index::search_result>> candidates{
+      {{1, 100.0}, {2, 0.0}, {3, 0.0}, {1, 50.0}},
+      {{2, 0.0}, {3, 0.0}, {4, 100.0}}};
+  const std::vector<vector_mapped_search::visible_candidate> visible_rows{
+      {1, {0.0F, 0.0F}}, {3, {9.0F, 9.0F}}, {4, {10.0F, 10.0F}}};
+
+  std::vector<std::vector<vector_index::search_result>> results;
+  ASSERT_TRUE(vector_mapped_search::rank_visible_candidate_batches(
+      queries, vector_index::metric_type::kEuclidean, candidates, visible_rows,
+      1, &results));
+  ASSERT_EQ(2U, results.size());
+  ASSERT_EQ(1U, results[0].size());
+  EXPECT_EQ(1U, results[0][0].doc_id);
+  ASSERT_EQ(1U, results[1].size());
+  EXPECT_EQ(4U, results[1][0].doc_id);
+}
+
+TEST(VectorMappedSearchTest, RankVisibleCandidateBatchesCoversGuards) {
+  std::vector<std::vector<vector_index::search_result>> results{{{99, 99.0}}};
+
+  EXPECT_FALSE(vector_mapped_search::rank_visible_candidate_batches(
+      {}, vector_index::metric_type::kEuclidean, {}, {}, 1, nullptr));
+  EXPECT_FALSE(vector_mapped_search::rank_visible_candidate_batches(
+      {{1.0F}}, vector_index::metric_type::kEuclidean, {}, {}, 1, &results));
+  EXPECT_FALSE(vector_mapped_search::rank_visible_candidate_batches(
+      {{1.0F}}, vector_index::metric_type::kEuclidean, {{{7, 0.0}}},
+      {{7, {1.0F, 2.0F}}}, 1, &results));
+
+  ASSERT_TRUE(vector_mapped_search::rank_visible_candidate_batches(
+      {}, vector_index::metric_type::kEuclidean, {}, {}, 1, &results));
+  EXPECT_TRUE(results.empty());
+
+  ASSERT_TRUE(vector_mapped_search::rank_visible_candidate_batches(
+      {{1.0F}}, vector_index::metric_type::kEuclidean, {{{7, 0.0}}},
+      {{7, {1.0F}}}, 0, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_TRUE(results[0].empty());
+}
+
 TEST(VectorMappedSearchTest, FilterVisibleResultsRejectsNullAndKeepsEmptyInput) {
   vector_mapped_search::search_spec spec;
   std::vector<vector_index::search_result> results;

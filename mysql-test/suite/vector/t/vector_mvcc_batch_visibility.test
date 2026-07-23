@@ -1,0 +1,79 @@
+--source include/have_vector_debug_native.inc
+
+--echo #
+--echo # WL#Vector: mapped MVCC batch search keeps the backend batch path
+--echo #
+
+DROP TABLE IF EXISTS t_vec_mvcc_batch;
+CREATE TABLE t_vec_mvcc_batch (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vec_mvcc_batch(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+INSERT INTO t_vec_mvcc_batch VALUES
+  (1, VEC_FROMTEXT('[1,1]')),
+  (2, VEC_FROMTEXT('[9,9]'));
+
+--disable_query_log
+SET SESSION debug='+d,vector_fail_single_mapped_batch_fallback';
+--enable_query_log
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+  CONCAT(VEC_FROMTEXT('[1,1]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+--disable_query_log
+SET SESSION debug='-d,vector_fail_single_mapped_batch_fallback';
+--enable_query_log
+
+connect (con1,localhost,root,,test,,);
+connect (con2,localhost,root,,test,,);
+
+connection con2;
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+START TRANSACTION WITH CONSISTENT SNAPSHOT;
+--disable_query_log
+SET SESSION debug='+d,vector_fail_single_mapped_batch_fallback';
+--enable_query_log
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+  CONCAT(VEC_FROMTEXT('[2,2]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+
+connection con1;
+INSERT INTO t_vec_mvcc_batch VALUES (3, VEC_FROMTEXT('[2,2]'));
+UPDATE t_vec_mvcc_batch SET v=VEC_FROMTEXT('[9,9]') WHERE id=1;
+
+connection con2;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+  CONCAT(VEC_FROMTEXT('[2,2]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+COMMIT;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+  CONCAT(VEC_FROMTEXT('[2,2]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+START TRANSACTION;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+  CONCAT(VEC_FROMTEXT('[3,3]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+
+connection con1;
+INSERT INTO t_vec_mvcc_batch VALUES (4, VEC_FROMTEXT('[3,3]'));
+
+connection con2;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+  CONCAT(VEC_FROMTEXT('[3,3]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+ROLLBACK;
+--disable_query_log
+SET SESSION debug='-d,vector_fail_single_mapped_batch_fallback';
+--enable_query_log
+
+START TRANSACTION;
+INSERT INTO t_vec_mvcc_batch VALUES (5, VEC_FROMTEXT('[4,4]'));
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+  CONCAT(VEC_FROMTEXT('[4,4]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+ROLLBACK;
+SELECT VEC_INDEX_SEARCH_BATCH('test.t_vec_mvcc_batch.v',
+  CONCAT(VEC_FROMTEXT('[4,4]'), VEC_FROMTEXT('[9,9]')), 2, 1);
+
+connection default;
+disconnect con1;
+disconnect con2;
+
+DROP VECTOR INDEX ON t_vec_mvcc_batch(v);
+DROP TABLE t_vec_mvcc_batch;
