@@ -170,6 +170,12 @@ class standalone_entry_store {
   size_t segment_bytes(const std::string &index_name) const;
   size_t raw_segment_count(const std::string &index_name) const;
   size_t raw_segment_bytes(const std::string &index_name) const;
+  /** Number of immutable runs in the derived non-dense raw locator. */
+  size_t raw_locator_run_count(const std::string &index_name) const;
+  /** Number of non-dense raw rows covered by the derived locator. */
+  size_t raw_locator_entry_count(const std::string &index_name) const;
+  /** Bytes used by the derived raw locator, excluding vector payloads. */
+  size_t raw_locator_bytes(const std::string &index_name) const;
   std::string build_source(const std::string &index_name) const;
   uint64_t generation(const std::string &index_name) const;
 
@@ -189,12 +195,23 @@ class standalone_entry_store {
     uint64_t first_doc_id{0};
   };
 
+  struct raw_entry_location {
+    uint64_t doc_id{0};
+    uint32_t segment_index{0};
+    uint32_t row{0};
+  };
+
+  static_assert(sizeof(raw_entry_location) == 16);
+  using raw_entry_locator = std::vector<raw_entry_location>;
+
   struct index_state {
     size_t dimension{0};
     std::unordered_set<uint64_t> live_doc_ids;
     committed_entries memory_entries;
     std::unordered_set<uint64_t> memory_erases;
     std::vector<standalone_segment> segments;
+    // Derived from non-dense raw doc-id files; vectors remain file-backed.
+    std::vector<std::shared_ptr<const raw_entry_locator>> raw_locator_runs;
     size_t entry_count{0};
     size_t memory_bytes{0};
     uint64_t generation{0};
@@ -215,6 +232,11 @@ class standalone_entry_store {
   bool assign_raw_segments(
       index_state *state,
       const std::vector<raw_vector_segment> &raw_segments) const;
+  bool build_raw_locator_run(
+      const std::vector<standalone_segment> &segments,
+      size_t first_segment_index,
+      std::shared_ptr<const raw_entry_locator> *locator) const;
+  bool consolidate_raw_locator_runs(index_state *state) const;
   bool materialized_rebuild_fits_budget(const index_state &state) const;
   bool read_raw_segments(const index_state &state,
                          const raw_vector_segment_visitor &visitor) const;

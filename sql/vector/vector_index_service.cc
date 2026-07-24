@@ -930,7 +930,6 @@ bool standalone_entry_store::bulk_upsert_raw_files(
   }
 
   if (!flush_index(index_name, &state_it->second)) return false;
-  const index_state before_bulk = state_it->second;
 
   std::vector<std::string> created_files;
   std::vector<standalone_segment> new_segments;
@@ -1009,7 +1008,6 @@ bool standalone_entry_store::bulk_upsert_raw_files(
     if (!file_size_as_size(segment.vector_path, &vector_bytes) ||
         !file_size_as_size(segment.docid_path, &docid_bytes) ||
         vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes) {
-      state_it->second = before_bulk;
       cleanup_created_files();
       return false;
     }
@@ -1094,28 +1092,71 @@ bool standalone_entry_store::bulk_upsert_raw_files(
           return true;
         });
     if (!split_ok || rows_seen != row_count || rows_in_segment != 0) {
-      state_it->second = before_bulk;
       cleanup_created_files();
       return false;
     }
   }
 
+  std::shared_ptr<const raw_entry_locator> new_locator_run;
+  if (!build_raw_locator_run(new_segments, state_it->second.segments.size(),
+                             &new_locator_run)) {
+    cleanup_created_files();
+    return false;
+  }
+
+  struct raw_bulk_publish_journal {
+    size_t segment_count;
+    size_t locator_run_count;
+    size_t entry_count;
+    uint64_t generation;
+    uint64_t next_segment_id;
+    std::string build_source;
+    std::vector<uint64_t> inserted_live_doc_ids;
+  } journal{state_it->second.segments.size(),
+            state_it->second.raw_locator_runs.size(),
+            state_it->second.entry_count,
+            state_it->second.generation,
+            state_it->second.next_segment_id,
+            state_it->second.build_source,
+            {}};
+  const auto rollback_publish = [&state_it, &journal]() {
+    for (const uint64_t doc_id : journal.inserted_live_doc_ids) {
+      state_it->second.live_doc_ids.erase(doc_id);
+    }
+    state_it->second.segments.resize(journal.segment_count);
+    state_it->second.raw_locator_runs.resize(journal.locator_run_count);
+    state_it->second.entry_count = journal.entry_count;
+    state_it->second.generation = journal.generation;
+    state_it->second.next_segment_id = journal.next_segment_id;
+    state_it->second.build_source = journal.build_source;
+  };
+
   state_it->second.segments.insert(state_it->second.segments.end(),
                                    new_segments.begin(), new_segments.end());
   state_it->second.next_segment_id += new_segments.size();
+  if (new_locator_run != nullptr && !new_locator_run->empty()) {
+    state_it->second.raw_locator_runs.push_back(std::move(new_locator_run));
+  }
 
   if (loaded_doc_ids != nullptr) {
-    state_it->second.live_doc_ids.merge(*loaded_doc_ids);
-    loaded_doc_ids->clear();
+    journal.inserted_live_doc_ids.reserve(loaded_doc_ids->size());
+    while (!loaded_doc_ids->empty()) {
+      auto node = loaded_doc_ids->extract(loaded_doc_ids->begin());
+      const uint64_t doc_id = node.value();
+      auto result = state_it->second.live_doc_ids.insert(std::move(node));
+      if (result.inserted) journal.inserted_live_doc_ids.push_back(doc_id);
+    }
   } else {
     for (const standalone_segment &segment : new_segments) {
       if (!read_docid_values(
               segment.docid_path, segment.record_count, &load_error,
-              [&state_it](uint64_t doc_id) {
-                state_it->second.live_doc_ids.insert(doc_id);
+              [&state_it, &journal](uint64_t doc_id) {
+                if (state_it->second.live_doc_ids.insert(doc_id).second) {
+                  journal.inserted_live_doc_ids.push_back(doc_id);
+                }
                 return true;
               })) {
-        state_it->second = before_bulk;
+        rollback_publish();
         cleanup_created_files();
         return false;
       }
@@ -1125,8 +1166,11 @@ bool standalone_entry_store::bulk_upsert_raw_files(
   state_it->second.generation = state_it->second.segments.back().generation;
   state_it->second.build_source = build_source_for_state(state_it->second);
 
-  if (!save_manifest(index_name, state_it->second)) {
-    state_it->second = before_bulk;
+  bool fail_manifest_save = false;
+  DBUG_EXECUTE_IF("vector_standalone_bulk_fail_manifest_save",
+                  fail_manifest_save = true;);
+  if (fail_manifest_save || !save_manifest(index_name, state_it->second)) {
+    rollback_publish();
     cleanup_created_files();
     return false;
   }
@@ -1530,7 +1574,116 @@ bool standalone_entry_store::assign_raw_segments(
     }
     segments.push_back(std::move(segment));
   }
+  std::shared_ptr<const raw_entry_locator> locator_run;
+  if (!build_raw_locator_run(segments, 0, &locator_run)) return false;
   state->segments = std::move(segments);
+  state->raw_locator_runs.clear();
+  if (locator_run != nullptr && !locator_run->empty()) {
+    state->raw_locator_runs.push_back(std::move(locator_run));
+  }
+  return true;
+}
+
+bool standalone_entry_store::build_raw_locator_run(
+    const std::vector<standalone_segment> &segments, size_t first_segment_index,
+    std::shared_ptr<const raw_entry_locator> *locator) const {
+  if (locator == nullptr ||
+      first_segment_index > std::numeric_limits<uint32_t>::max() ||
+      segments.size() >
+          std::numeric_limits<uint32_t>::max() - first_segment_index) {
+    return false;
+  }
+
+  size_t entry_count = 0;
+  for (const standalone_segment &segment : segments) {
+    if (segment.kind != standalone_segment_kind::kRawFbin ||
+        segment.dense_doc_ids) {
+      continue;
+    }
+    if (segment.record_count > std::numeric_limits<uint32_t>::max() ||
+        segment.record_count >
+            std::numeric_limits<size_t>::max() - entry_count) {
+      return false;
+    }
+    entry_count += segment.record_count;
+  }
+
+  // Each bulk publish adds one immutable run so rollback snapshots only copy
+  // shared handles instead of all previously ingested locator entries.
+  auto next_locator = std::make_shared<raw_entry_locator>();
+  next_locator->reserve(entry_count);
+  std::string load_error;
+  for (size_t segment_index = 0; segment_index < segments.size();
+       ++segment_index) {
+    const standalone_segment &segment = segments[segment_index];
+    if (segment.kind != standalone_segment_kind::kRawFbin ||
+        segment.dense_doc_ids) {
+      continue;
+    }
+
+    uint32_t row = 0;
+    if (!read_docid_values(
+            segment.docid_path, segment.record_count, &load_error,
+            [&next_locator, first_segment_index, segment_index,
+             &row](uint64_t doc_id) {
+              next_locator->push_back(raw_entry_location{
+                  doc_id,
+                  static_cast<uint32_t>(first_segment_index + segment_index),
+                  row});
+              ++row;
+              return true;
+            }) ||
+        row != segment.record_count) {
+      return false;
+    }
+  }
+
+  std::sort(
+      next_locator->begin(), next_locator->end(),
+      [](const raw_entry_location &left, const raw_entry_location &right) {
+        if (left.doc_id != right.doc_id) return left.doc_id < right.doc_id;
+        if (left.segment_index != right.segment_index)
+          return left.segment_index < right.segment_index;
+        return left.row < right.row;
+      });
+  *locator = std::move(next_locator);
+  return true;
+}
+
+bool standalone_entry_store::consolidate_raw_locator_runs(
+    index_state *state) const {
+  if (state == nullptr) return false;
+  if (state->raw_locator_runs.size() <= 1) return true;
+
+  size_t entry_count = 0;
+  for (const std::shared_ptr<const raw_entry_locator> &run :
+       state->raw_locator_runs) {
+    if (run == nullptr ||
+        run->size() > std::numeric_limits<size_t>::max() - entry_count) {
+      return false;
+    }
+    entry_count += run->size();
+  }
+
+  auto consolidated = std::make_shared<raw_entry_locator>();
+  consolidated->reserve(entry_count);
+  for (const std::shared_ptr<const raw_entry_locator> &run :
+       state->raw_locator_runs) {
+    consolidated->insert(consolidated->end(), run->begin(), run->end());
+  }
+  std::sort(
+      consolidated->begin(), consolidated->end(),
+      [](const raw_entry_location &left, const raw_entry_location &right) {
+        if (left.doc_id != right.doc_id) return left.doc_id < right.doc_id;
+        if (left.segment_index != right.segment_index)
+          return left.segment_index < right.segment_index;
+        return left.row < right.row;
+      });
+
+  state->raw_locator_runs.clear();
+  if (!consolidated->empty()) {
+    state->raw_locator_runs.push_back(std::move(consolidated));
+  }
   return true;
 }
 
@@ -1544,6 +1697,7 @@ bool standalone_entry_store::compact_to_raw_segment(const std::string &index_nam
   const index_state before_compact = *state;
   if (entries.empty()) {
     state->segments.clear();
+    state->raw_locator_runs.clear();
     state->memory_entries.clear();
     state->memory_erases.clear();
     state->memory_bytes = 0;
@@ -1560,7 +1714,6 @@ bool standalone_entry_store::compact_to_raw_segment(const std::string &index_nam
 
   std::vector<std::string> created_files;
   std::vector<raw_vector_segment> raw_segments;
-  std::vector<standalone_segment> new_segments;
   if (!write_entries_to_raw_segments(
           state->dimension, state->next_segment_id, state->generation + 1,
           entries,
@@ -1579,21 +1732,11 @@ bool standalone_entry_store::compact_to_raw_segment(const std::string &index_nam
     for (const std::string &path : created_files) remove_file_if_exists(path);
     return false;
   }
-  new_segments.reserve(raw_segments.size());
-  for (const raw_vector_segment &raw_segment : raw_segments) {
-    standalone_segment segment;
-    segment.kind = standalone_segment_kind::kRawFbin;
-    segment.vector_path = raw_segment.vector_path;
-    segment.docid_path = raw_segment.docid_path;
-    segment.record_count = raw_segment.row_count;
-    segment.dimension = raw_segment.dimension;
-    segment.bytes = raw_segment.bytes;
-    segment.generation = raw_segment.generation;
-    new_segments.push_back(std::move(segment));
+  if (!assign_raw_segments(state, raw_segments)) {
+    *state = before_compact;
+    for (const std::string &path : created_files) remove_file_if_exists(path);
+    return false;
   }
-
-  state->segments.clear();
-  state->segments = std::move(new_segments);
   state->memory_entries.clear();
   state->memory_erases.clear();
   state->memory_bytes = 0;
@@ -1636,6 +1779,7 @@ bool standalone_entry_store::prepare_raw_segments_for_rebuild(
       return false;
     }
   }
+  if (!consolidate_raw_locator_runs(&state_it->second)) return false;
 
   const bool compacted =
       state_it->second.build_source == "raw_segments_compacted";
@@ -1740,10 +1884,61 @@ bool standalone_entry_store::find_entries(
     return false;
   }
 
-  for (const standalone_segment &segment : state.segments) {
+  using candidate_row = std::pair<uint64_t, uint32_t>;
+  std::vector<std::vector<candidate_row>> raw_candidates(state.segments.size());
+  for (const std::shared_ptr<const raw_entry_locator> &locator_run :
+       state.raw_locator_runs) {
+    if (locator_run == nullptr) return false;
+    const raw_entry_locator &locator = *locator_run;
+    for (const uint64_t doc_id : doc_ids) {
+      auto location_it = std::lower_bound(
+          locator.begin(), locator.end(), doc_id,
+          [](const raw_entry_location &location, uint64_t target_doc_id) {
+            return location.doc_id < target_doc_id;
+          });
+      while (location_it != locator.end() && location_it->doc_id == doc_id) {
+        const size_t segment_index = location_it->segment_index;
+        if (segment_index >= state.segments.size() ||
+            state.segments[segment_index].kind !=
+                standalone_segment_kind::kRawFbin ||
+            state.segments[segment_index].dense_doc_ids ||
+            location_it->row >= state.segments[segment_index].record_count) {
+          return false;
+        }
+        raw_candidates[segment_index].emplace_back(doc_id, location_it->row);
+        ++location_it;
+      }
+    }
+  }
+  for (std::vector<candidate_row> &candidates : raw_candidates) {
+    std::sort(candidates.begin(), candidates.end(),
+              [](const candidate_row &left, const candidate_row &right) {
+                return left.second < right.second;
+              });
+  }
+
+  for (size_t segment_index = 0; segment_index < state.segments.size();
+       ++segment_index) {
+    const standalone_segment &segment = state.segments[segment_index];
     if (segment.dimension != state.dimension) return false;
 
     if (segment.kind == standalone_segment_kind::kRawFbin) {
+      constexpr uint64_t fbin_header_bytes =
+          sizeof(uint32_t) + sizeof(uint32_t);
+      if (segment.record_count >
+          (std::numeric_limits<uint64_t>::max() - fbin_header_bytes) /
+              vector_bytes) {
+        return false;
+      }
+      const uint64_t expected_vector_bytes =
+          fbin_header_bytes + segment.record_count * vector_bytes;
+      size_t actual_vector_bytes = 0;
+      if (expected_vector_bytes > std::numeric_limits<size_t>::max() ||
+          !file_size_as_size(segment.vector_path, &actual_vector_bytes) ||
+          actual_vector_bytes != expected_vector_bytes) {
+        return false;
+      }
+
       std::ifstream vector_file(segment.vector_path,
                                 std::ios::in | std::ios::binary);
       if (!vector_file.is_open()) return false;
@@ -1757,8 +1952,6 @@ bool standalone_entry_store::find_entries(
         return false;
       }
 
-      constexpr uint64_t fbin_header_bytes =
-          sizeof(uint32_t) + sizeof(uint32_t);
       if (segment.dense_doc_ids) {
         const uint64_t last_doc_id =
             segment.record_count == 0
@@ -1796,6 +1989,21 @@ bool standalone_entry_store::find_entries(
         continue;
       }
 
+      constexpr uint64_t docid_header_bytes = sizeof(uint64_t);
+      if (segment.record_count >
+          (std::numeric_limits<uint64_t>::max() - docid_header_bytes) /
+              sizeof(uint64_t)) {
+        return false;
+      }
+      const uint64_t expected_docid_bytes =
+          docid_header_bytes + segment.record_count * sizeof(uint64_t);
+      size_t actual_docid_bytes = 0;
+      if (expected_docid_bytes > std::numeric_limits<size_t>::max() ||
+          !file_size_as_size(segment.docid_path, &actual_docid_bytes) ||
+          actual_docid_bytes != expected_docid_bytes) {
+        return false;
+      }
+
       std::ifstream docid_file(segment.docid_path,
                                std::ios::in | std::ios::binary);
       if (!docid_file.is_open()) return false;
@@ -1805,11 +2013,12 @@ bool standalone_entry_store::find_entries(
           docid_rows != segment.record_count) {
         return false;
       }
-      for (uint64_t row = 0; row < docid_rows; ++row) {
-        uint64_t doc_id = 0;
-        if (!read_plain_value(docid_file, doc_id)) return false;
-        if (doc_ids.find(doc_id) == doc_ids.end()) continue;
-
+      if (docid_rows != 0 && state.raw_locator_runs.empty()) {
+        return false;
+      }
+      for (const candidate_row &candidate : raw_candidates[segment_index]) {
+        const uint64_t doc_id = candidate.first;
+        const uint64_t row = candidate.second;
         if (row > (std::numeric_limits<uint64_t>::max() -
                    fbin_header_bytes) /
                       vector_bytes) {
@@ -1945,6 +2154,40 @@ size_t standalone_entry_store::raw_segment_bytes(
     }
   }
   return bytes;
+}
+
+size_t standalone_entry_store::raw_locator_run_count(
+    const std::string &index_name) const {
+  const auto state_it = m_indexes.find(index_name);
+  return state_it == m_indexes.end() ? 0
+                                     : state_it->second.raw_locator_runs.size();
+}
+
+size_t standalone_entry_store::raw_locator_entry_count(
+    const std::string &index_name) const {
+  const auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return 0;
+
+  size_t entry_count = 0;
+  for (const std::shared_ptr<const raw_entry_locator> &run :
+       state_it->second.raw_locator_runs) {
+    if (run == nullptr ||
+        run->size() > std::numeric_limits<size_t>::max() - entry_count) {
+      return std::numeric_limits<size_t>::max();
+    }
+    entry_count += run->size();
+  }
+  return entry_count;
+}
+
+size_t standalone_entry_store::raw_locator_bytes(
+    const std::string &index_name) const {
+  const size_t entry_count = raw_locator_entry_count(index_name);
+  if (entry_count >
+      std::numeric_limits<size_t>::max() / sizeof(raw_entry_location)) {
+    return std::numeric_limits<size_t>::max();
+  }
+  return entry_count * sizeof(raw_entry_location);
 }
 
 std::string standalone_entry_store::build_source(
@@ -2215,6 +2458,11 @@ bool standalone_entry_store::load_manifest(const std::string &index_name,
   loaded.entry_count = loaded.live_doc_ids.size();
   if (loaded.build_source.empty()) {
     loaded.build_source = build_source_for_state(loaded);
+  }
+  std::shared_ptr<const raw_entry_locator> locator_run;
+  if (!build_raw_locator_run(loaded.segments, 0, &locator_run)) return false;
+  if (locator_run != nullptr && !locator_run->empty()) {
+    loaded.raw_locator_runs.push_back(std::move(locator_run));
   }
   *state = std::move(loaded);
   return true;

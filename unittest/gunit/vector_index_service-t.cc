@@ -4000,6 +4000,116 @@ TEST(VectorStandaloneEntryStoreTest, RawSegmentCanReuseValidatedDocIdSet) {
 }
 
 TEST(VectorStandaloneEntryStoreTest,
+     RawBulkManifestFailureRestoresPublishedState) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_publish_rollback_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string first_vector_path = root + "/first.fbin";
+  const std::string first_docid_path = root + "/first.u64";
+  const std::string second_vector_path = root + "/second.fbin";
+  const std::string second_docid_path = root + "/second.u64";
+  write_raw_fbin_file(first_vector_path, 2, 2, {1.0F, 0.0F, 2.0F, 0.0F});
+  write_raw_docid_file(first_docid_path, {10, 20});
+  write_raw_fbin_file(second_vector_path, 2, 2, {20.0F, 0.0F, 3.0F, 0.0F});
+  write_raw_docid_file(second_docid_path, {20, 30});
+
+  const auto count_files_with_extension = [&root](
+                                              const std::string &extension) {
+    std::error_code iterator_error;
+    size_t count = 0;
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(
+             root, std::filesystem::directory_options::skip_permission_denied,
+             iterator_error)) {
+      if (iterator_error) return size_t{0};
+      if (entry.is_regular_file(iterator_error) && !iterator_error &&
+          entry.path().extension().string() == extension) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_raw_publish_rollback", 2));
+  std::unordered_set<uint64_t> first_doc_ids{10, 20};
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_publish_rollback",
+                                          first_vector_path, first_docid_path,
+                                          2, 2, 2, &first_doc_ids));
+  ASSERT_TRUE(first_doc_ids.empty());
+
+  const std::string manifest = find_manifest_file(root, "manifest.v1");
+  ASSERT_FALSE(manifest.empty());
+  std::ifstream manifest_before_file(manifest);
+  ASSERT_TRUE(manifest_before_file.is_open());
+  const std::string manifest_before(
+      (std::istreambuf_iterator<char>(manifest_before_file)),
+      std::istreambuf_iterator<char>());
+  ASSERT_FALSE(manifest_before.empty());
+  const size_t fbin_files_before = count_files_with_extension(".fbin");
+  const size_t docid_files_before = count_files_with_extension(".u64");
+
+  std::unordered_set<uint64_t> failed_doc_ids{20, 30};
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_standalone_bulk_fail_manifest_save");
+    EXPECT_FALSE(store.bulk_upsert_raw_files(
+        "idx_raw_publish_rollback", second_vector_path, second_docid_path, 2, 2,
+        2, &failed_doc_ids));
+  }
+  EXPECT_TRUE(failed_doc_ids.empty());
+  EXPECT_EQ(2U, store.entry_count("idx_raw_publish_rollback"));
+  EXPECT_EQ(1U, store.raw_segment_count("idx_raw_publish_rollback"));
+  EXPECT_EQ(1U, store.raw_locator_run_count("idx_raw_publish_rollback"));
+  EXPECT_EQ("raw_segments_direct",
+            store.build_source("idx_raw_publish_rollback"));
+  EXPECT_EQ(fbin_files_before, count_files_with_extension(".fbin"));
+  EXPECT_EQ(docid_files_before, count_files_with_extension(".u64"));
+
+  std::ifstream manifest_after_file(manifest);
+  ASSERT_TRUE(manifest_after_file.is_open());
+  const std::string manifest_after(
+      (std::istreambuf_iterator<char>(manifest_after_file)),
+      std::istreambuf_iterator<char>());
+  EXPECT_EQ(manifest_before, manifest_after);
+
+  const auto entries_after_failure =
+      collect_entries(&store, "idx_raw_publish_rollback");
+  ASSERT_EQ(2U, entries_after_failure.size());
+  EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}),
+            entries_after_failure.at(10));
+  EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}),
+            entries_after_failure.at(20));
+  EXPECT_EQ(entries_after_failure.end(), entries_after_failure.find(30));
+
+  std::unordered_set<uint64_t> retry_doc_ids{20, 30};
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_publish_rollback",
+                                          second_vector_path, second_docid_path,
+                                          2, 2, 2, &retry_doc_ids));
+  EXPECT_TRUE(retry_doc_ids.empty());
+  EXPECT_EQ(3U, store.entry_count("idx_raw_publish_rollback"));
+  EXPECT_EQ(2U, store.raw_segment_count("idx_raw_publish_rollback"));
+  EXPECT_EQ(2U, store.raw_locator_run_count("idx_raw_publish_rollback"));
+
+  const auto entries_after_retry =
+      collect_entries(&store, "idx_raw_publish_rollback");
+  ASSERT_EQ(3U, entries_after_retry.size());
+  EXPECT_EQ((vector_index::vector_data{20.0F, 0.0F}),
+            entries_after_retry.at(20));
+  EXPECT_EQ((vector_index::vector_data{3.0F, 0.0F}),
+            entries_after_retry.at(30));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
      RawSegmentSplitReadsDocIdsWhenNoValidatedSetIsProvided) {
   build_pipeline_options_guard guard;
   opt_vector_build_segment_max_rows = 1;
@@ -4267,6 +4377,8 @@ TEST(VectorStandaloneEntryStoreTest, FindEntriesReadsRawAndDeltaCandidates) {
   ASSERT_TRUE(store.register_index("idx_find_entries", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_find_entries", vector_path,
                                           docid_path, 2, 2, 2));
+  EXPECT_EQ(2U, store.raw_locator_entry_count("idx_find_entries"));
+  EXPECT_EQ(2U * 16U, store.raw_locator_bytes("idx_find_entries"));
   ASSERT_TRUE(store.upsert("idx_find_entries", 20, {2.0F, 0.0F}, 0));
   ASSERT_TRUE(store.erase("idx_find_entries", 30, 0));
 
@@ -4277,6 +4389,198 @@ TEST(VectorStandaloneEntryStoreTest, FindEntriesReadsRawAndDeltaCandidates) {
   ASSERT_NE(vectors.end(), vectors.find(10));
   ASSERT_NE(vectors.end(), vectors.find(20));
   EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), vectors.at(10));
+  EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}), vectors.at(20));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     FindEntriesUsesLatestRawLocationAndRestoresLocator) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_locator_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string first_vector_path = root + "/first.fbin";
+  const std::string first_docid_path = root + "/first.u64";
+  write_raw_fbin_file(first_vector_path, 2, 2, {3.0F, 0.0F, 1.0F, 0.0F});
+  write_raw_docid_file(first_docid_path, {30, 10});
+
+  const std::string second_vector_path = root + "/second.fbin";
+  const std::string second_docid_path = root + "/second.u64";
+  write_raw_fbin_file(second_vector_path, 2, 2, {9.0F, 0.0F, 4.0F, 0.0F});
+  write_raw_docid_file(second_docid_path, {10, 40});
+
+  const std::string index_name = "idx_raw_locator";
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, first_vector_path,
+                                          first_docid_path, 2, 2, 2));
+  ASSERT_TRUE(store.upsert(index_name, 10, {5.0F, 0.0F}, 0));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, second_vector_path,
+                                          second_docid_path, 2, 2, 2));
+  EXPECT_EQ(4U, store.raw_locator_entry_count(index_name));
+
+  vector_index::committed_entries vectors;
+  ASSERT_TRUE(store.find_entries(index_name, {10, 30, 40}, &vectors));
+  ASSERT_EQ(3U, vectors.size());
+  EXPECT_EQ((vector_index::vector_data{9.0F, 0.0F}), vectors.at(10));
+  EXPECT_EQ((vector_index::vector_data{3.0F, 0.0F}), vectors.at(30));
+  EXPECT_EQ((vector_index::vector_data{4.0F, 0.0F}), vectors.at(40));
+
+  ASSERT_TRUE(store.upsert(index_name, 10, {11.0F, 0.0F}, 0));
+  ASSERT_TRUE(store.find_entries(index_name, {10}, &vectors));
+  ASSERT_EQ(1U, vectors.size());
+  EXPECT_EQ((vector_index::vector_data{11.0F, 0.0F}), vectors.at(10));
+
+  vector_index::standalone_entry_store recovered;
+  ASSERT_TRUE(recovered.register_index(index_name, 2));
+  EXPECT_EQ(4U, recovered.raw_locator_entry_count(index_name));
+  ASSERT_TRUE(recovered.find_entries(index_name, {10, 30, 40}, &vectors));
+  ASSERT_EQ(3U, vectors.size());
+  EXPECT_EQ((vector_index::vector_data{11.0F, 0.0F}), vectors.at(10));
+  EXPECT_EQ((vector_index::vector_data{3.0F, 0.0F}), vectors.at(30));
+  EXPECT_EQ((vector_index::vector_data{4.0F, 0.0F}), vectors.at(40));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     BulkRawLocatorRunsConsolidateBeforeRebuild) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_raw_locator_runs_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string first_vector_path = root + "/first.fbin";
+  const std::string first_docid_path = root + "/first.u64";
+  write_raw_fbin_file(first_vector_path, 2, 2, {3.0F, 0.0F, 1.0F, 0.0F});
+  write_raw_docid_file(first_docid_path, {30, 10});
+
+  const std::string second_vector_path = root + "/second.fbin";
+  const std::string second_docid_path = root + "/second.u64";
+  write_raw_fbin_file(second_vector_path, 2, 2, {2.0F, 0.0F, 4.0F, 0.0F});
+  write_raw_docid_file(second_docid_path, {20, 40});
+
+  const std::string index_name = "idx_raw_locator_runs";
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, first_vector_path,
+                                          first_docid_path, 2, 2, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, second_vector_path,
+                                          second_docid_path, 2, 2, 2));
+  EXPECT_EQ(2U, store.raw_locator_run_count(index_name));
+  EXPECT_EQ(4U, store.raw_locator_entry_count(index_name));
+
+  vector_index::committed_entries before_rebuild;
+  ASSERT_TRUE(
+      store.find_entries(index_name, {10, 20, 30, 40}, &before_rebuild));
+  ASSERT_EQ(4U, before_rebuild.size());
+
+  ASSERT_TRUE(store.prepare_raw_segments_for_rebuild(index_name));
+  EXPECT_EQ(1U, store.raw_locator_run_count(index_name));
+  EXPECT_EQ(4U, store.raw_locator_entry_count(index_name));
+
+  vector_index::committed_entries after_rebuild;
+  ASSERT_TRUE(store.find_entries(index_name, {10, 20, 30, 40}, &after_rebuild));
+  EXPECT_EQ(before_rebuild, after_rebuild);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     FindEntriesOverlaysResidentUpdatesAndErases) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_find_resident_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 2.0F, 0.0F});
+  write_raw_docid_file(docid_path, {10, 20});
+
+  vector_index::standalone_entry_store store;
+  const std::string index_name = "idx_find_resident";
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, vector_path, docid_path,
+                                          2, 2, 2));
+  ASSERT_TRUE(store.upsert(index_name, 10, {9.0F, 0.0F},
+                           std::numeric_limits<size_t>::max()));
+  ASSERT_TRUE(store.upsert(index_name, 30, {3.0F, 0.0F},
+                           std::numeric_limits<size_t>::max()));
+  ASSERT_TRUE(store.erase(index_name, 20, std::numeric_limits<size_t>::max()));
+  EXPECT_EQ(1U, store.segment_count(index_name));
+
+  vector_index::committed_entries vectors;
+  ASSERT_TRUE(store.find_entries(index_name, {10, 20, 99}, &vectors));
+  ASSERT_EQ(1U, vectors.size());
+  EXPECT_EQ((vector_index::vector_data{9.0F, 0.0F}), vectors.at(10));
+
+  ASSERT_TRUE(store.find_entries(index_name, {30}, &vectors));
+  ASSERT_EQ(1U, vectors.size());
+  EXPECT_EQ((vector_index::vector_data{3.0F, 0.0F}), vectors.at(30));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest, FindEntriesRejectsMissingRawArtifacts) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_find_missing_raw_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 2.0F, 0.0F});
+  write_raw_docid_file(docid_path, {10, 20});
+
+  vector_index::standalone_entry_store store;
+  const std::string index_name = "idx_find_missing_raw";
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, vector_path, docid_path,
+                                          2, 2, 2));
+
+  const std::string manifest = find_manifest_file(root, "manifest.v1");
+  ASSERT_FALSE(manifest.empty());
+  const std::string segment_directory =
+      std::filesystem::path(manifest).parent_path().string();
+  const std::string stored_fbin =
+      find_standalone_file_with_extension(segment_directory, ".fbin");
+  const std::string stored_docid =
+      find_standalone_file_with_extension(segment_directory, ".u64");
+  ASSERT_FALSE(stored_fbin.empty());
+  ASSERT_FALSE(stored_docid.empty());
+
+  const std::string saved_fbin = stored_fbin + ".saved";
+  std::filesystem::rename(stored_fbin, saved_fbin, ec);
+  ASSERT_FALSE(ec);
+  vector_index::committed_entries vectors;
+  EXPECT_FALSE(store.find_entries(index_name, {10}, &vectors));
+  std::filesystem::rename(saved_fbin, stored_fbin, ec);
+  ASSERT_FALSE(ec);
+
+  const std::string saved_docid = stored_docid + ".saved";
+  std::filesystem::rename(stored_docid, saved_docid, ec);
+  ASSERT_FALSE(ec);
+  EXPECT_FALSE(store.find_entries(index_name, {10}, &vectors));
+  std::filesystem::rename(saved_docid, stored_docid, ec);
+  ASSERT_FALSE(ec);
+
+  ASSERT_TRUE(store.find_entries(index_name, {20}, &vectors));
+  ASSERT_EQ(1U, vectors.size());
   EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}), vectors.at(20));
 
   std::filesystem::remove_all(root, ec);
@@ -4299,6 +4603,7 @@ TEST(VectorStandaloneEntryStoreTest, FindEntriesUsesDenseRawDocidOffsets) {
   ASSERT_TRUE(store.register_index("idx_dense_find_entries", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_dense_find_entries",
                                           vector_path, "", 3, 2, 3));
+  EXPECT_EQ(0U, store.raw_locator_entry_count("idx_dense_find_entries"));
 
   const std::string stored_docid =
       find_standalone_file_with_extension(root, ".u64");
@@ -4599,6 +4904,39 @@ TEST(VectorStandaloneEntryStoreTest, MixedSegmentsCompactBeforeRawRebuild) {
   ASSERT_EQ(2U, entries.size());
   EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), entries.at(10));
   EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}), entries.at(20));
+}
+
+TEST(VectorStandaloneEntryStoreTest, EmptyCompactionClearsDerivedRawLocator) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_empty_compact_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 3.0F, 0.0F});
+  write_raw_docid_file(docid_path, {10, 30});
+
+  const std::string index_name = "idx_empty_compact";
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, vector_path, docid_path,
+                                          2, 2, 2));
+  ASSERT_EQ(2U, store.raw_locator_entry_count(index_name));
+  ASSERT_TRUE(store.erase(index_name, 10, 0));
+  ASSERT_TRUE(store.erase(index_name, 30, 0));
+  ASSERT_TRUE(store.prepare_raw_segments_for_rebuild(index_name));
+  EXPECT_EQ(0U, store.segment_count(index_name));
+  EXPECT_EQ(0U, store.raw_locator_entry_count(index_name));
+
+  vector_index::committed_entries vectors;
+  EXPECT_TRUE(store.find_entries(index_name, {10, 30}, &vectors));
+  EXPECT_TRUE(vectors.empty());
+
+  std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorStandaloneEntryStoreTest,
