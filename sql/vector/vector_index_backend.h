@@ -31,6 +31,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "sql/vector/vector_index_limits.h"
@@ -53,6 +54,13 @@ using committed_entry_visitor =
     std::function<bool(uint64_t doc_id, const vector_data &vector)>;
 using committed_entry_reader =
     std::function<bool(const committed_entry_visitor &visitor)>;
+
+/** Streaming committed entries plus an optional exact cardinality hint. */
+struct committed_entry_source {
+  committed_entry_reader reader;
+  size_t exact_row_count{0};
+  bool has_exact_row_count{false};
+};
 
 struct raw_vector_segment {
   std::string vector_path;
@@ -103,29 +111,78 @@ struct backend_build_diagnostics {
   uint32_t pq_train_threads{0};
   uint32_t pq_compress_threads{0};
   uint32_t candidates_per_segment{0};
+  uint32_t effective_segment_tasks{0};
+  uint64_t segment_memory_estimate{0};
+  uint64_t segment_memory_budget{0};
+  std::string segment_parallel_reason;
+  uint64_t search_fanout_segments{0};
+  uint64_t search_fanout_threads{0};
+  uint64_t search_worker_budget{0};
+  uint64_t search_active_requests{0};
+  uint64_t search_work_items{0};
+  uint64_t search_global_top_k{0};
+  uint64_t search_per_segment_top_k{0};
+  uint64_t search_result_budget{0};
+  uint64_t search_candidate_count{0};
+  uint64_t search_query_count{0};
+  uint64_t search_segment_min_entries{0};
+  uint64_t search_segment_max_entries{0};
+  uint64_t search_segment_total_entries{0};
+  uint64_t search_diskann_search_list{0};
+  uint64_t search_diskann_beamwidth{0};
+  uint64_t search_effective_complexity{0};
+  uint64_t search_total_candidate_rows{0};
+  std::string search_profile;
+  std::string search_profile_reason;
   bool single_index_build{false};
   uint64_t pq_chunks{0};
   uint64_t cache_nodes{0};
+  uint64_t requested_disk_pq_dims{0};
+  uint64_t effective_disk_pq_dims{0};
   uint64_t build_wall_ms{0};
   uint64_t manifest_ms{0};
   uint64_t offline_build_ms{0};
   uint64_t load_ms{0};
+  uint64_t reader_count_ms{0};
+  uint64_t training_copy_ms{0};
+  uint64_t train_ms{0};
+  uint64_t add_ms{0};
+  uint64_t persist_ms{0};
+  uint64_t training_rows{0};
   uint64_t reader_passes{0};
   std::string diskann_pq_runtime;
   std::string native_pq_runtime_selected_path;
   uint64_t native_pq_runtime_elapsed_ms{0};
   uint64_t native_pq_runtime_raw_reader_ms{0};
+  uint64_t native_pq_runtime_train_ms{0};
+  uint64_t native_pq_runtime_encode_ms{0};
+  uint64_t native_pq_runtime_artifact_validation_ms{0};
   uint64_t native_pq_runtime_distance_calls{0};
   uint64_t native_pq_runtime_train_rows{0};
   uint64_t native_pq_runtime_compressed_rows{0};
+  uint64_t native_pq_runtime_encode_block_rows{0};
+  uint64_t native_pq_runtime_memory_estimate{0};
+  uint64_t native_pq_runtime_memory_budget{0};
+  uint32_t native_pq_runtime_effective_threads{0};
   bool native_pq_runtime_artifacts_written{false};
   bool native_pq_runtime_artifacts_consumed{false};
   bool native_pq_runtime_official_pq_used{false};
   std::string native_pq_runtime_bridge;
+  std::string native_pq_runtime_centroid_scan_kernel;
+  std::string native_pq_runtime_memory_adjustment;
   uint64_t native_pq_runtime_bridge_ms{0};
   uint64_t native_pq_runtime_graph_ms{0};
   uint64_t native_pq_runtime_cache_ms{0};
   std::string native_pq_runtime_artifact_validation;
+  bool native_pq_runtime_validation_failed{false};
+  std::string native_pq_runtime_validation_failed_doc_id;
+  std::string native_pq_runtime_validation_best_doc_id;
+  uint64_t native_pq_runtime_validation_result_count{0};
+  std::string native_pq_runtime_validation_best_search_distance;
+  std::string native_pq_runtime_validation_best_exact_distance;
+  std::string native_pq_runtime_validation_self_pq_distance;
+  std::string native_pq_runtime_validation_pivots_checksum;
+  std::string native_pq_runtime_validation_compressed_checksum;
   std::string fallback_reason;
 };
 
@@ -200,6 +257,39 @@ class backend {
       std::vector<std::vector<search_result>> *results) const;
 
   /**
+    Search candidates for a following exact rerank step.
+
+    @param query Query vector.
+    @param top_k User requested final topK. Segmented backends use this value to
+      size per-segment ANN work.
+    @param candidate_top_k Maximum candidates returned to the exact reranker.
+    @param results Search results before exact rerank.
+
+    @retval true Succeeded.
+    @retval false Invalid input or backend error.
+  */
+  virtual bool search_for_rerank(
+      const vector_data &query, size_t top_k, size_t candidate_top_k,
+      std::vector<search_result> *results) const;
+
+  /**
+    Batch form of search_for_rerank().
+  */
+  virtual bool search_batch_for_rerank(
+      const std::vector<vector_data> &queries, size_t top_k,
+      size_t candidate_top_k,
+      std::vector<std::vector<search_result>> *results) const;
+
+  /**
+    Collect all document ids currently addressable by this backend.
+
+    This is an optional support hook for exact-rerank callers that need an
+    authoritative candidate list when ANN search is asked to cover an entire
+    segment. Backends that cannot enumerate serving doc ids return false.
+  */
+  virtual bool collect_doc_ids(std::vector<uint64_t> *doc_ids) const;
+
+  /**
     load serving state from committed entries snapshot.
 
     Default behavior replays entries through mutation APIs. Read-only backends
@@ -241,6 +331,15 @@ class backend {
   */
   virtual bool rebuild_from_committed_entries_from_reader(
       const committed_entry_reader &reader);
+
+  /**
+    Rebuild serving state from a committed-entry source.
+
+    Backends may use an exact row count to avoid a separate count pass. The
+    default implementation ignores the hint and delegates to the reader API.
+  */
+  virtual bool rebuild_from_committed_entry_source(
+      const committed_entry_source &source);
 
   /**
     Rebuild serving state from standalone raw vector segments.
@@ -673,6 +772,7 @@ class diskann_backend final : public backend {
   bool search_batch(const std::vector<vector_data> &queries, size_t top_k,
                     std::vector<std::vector<search_result>> *results) const
       override;
+  bool collect_doc_ids(std::vector<uint64_t> *doc_ids) const override;
   bool load_committed_entries(
       const std::unordered_map<uint64_t, vector_data> &entries) override;
   bool rebuild_from_committed_entries_from_reader(
@@ -769,10 +869,23 @@ class diskann_backend final : public backend {
   bool m_native_runtime_enabled{false};
   bool m_external_adapter_active{true};
   size_t m_entry_count{0};
+  bool m_entries_complete{true};
+  bool m_streaming_doc_ids_loaded{false};
+  std::vector<uint64_t> m_streaming_base_doc_ids;
+  std::unordered_set<uint64_t> m_streaming_added_doc_ids;
+  std::unordered_set<uint64_t> m_streaming_removed_doc_ids;
   backend_build_diagnostics m_last_build_diagnostics;
 
-  bool search_entries_exact(const vector_data &query, size_t top_k,
-                            std::vector<search_result> *results) const;
+  std::unique_ptr<diskann_native_state> create_native_state() const;
+  bool configure_native_state_for_serving(diskann_native_state *state);
+  void install_native_state(std::unique_ptr<diskann_native_state> state,
+                            size_t entry_count, bool entries_complete);
+  bool activate_empty_mutable_sidecar();
+  void reset_streaming_doc_id_tracking();
+  bool prepare_streaming_doc_id_tracking();
+  bool streaming_doc_id_exists(uint64_t doc_id) const;
+  void record_streaming_upsert(uint64_t doc_id, bool existed);
+  void record_streaming_erase(uint64_t doc_id);
   void capture_native_build_diagnostics();
   void clear_build_diagnostics();
 };
@@ -1055,6 +1168,8 @@ bool diskann_offline_api_manifest_build_available_for_testing(
     bool has_handle, bool has_build, bool has_build_from_manifest,
     bool has_load_index, bool has_search, bool has_search_batch,
     bool has_card, bool has_drop_index);
+bool diskann_offline_api_native_pq_build_available_for_testing(
+    bool api_available, bool has_native_pq_build);
 bool diskann_vendored_runtime_api_load_for_testing();
 uint64_t diskann_vendored_runtime_capabilities_for_testing();
 bool diskann_vendored_build_config_valid_for_testing(
@@ -1065,6 +1180,7 @@ bool diskann_vendored_search_config_valid_for_testing(
     uint32_t top_k, uint32_t search_complexity, uint32_t beamwidth,
     std::string *error);
 bool diskann_vendored_batch_search_available_for_testing();
+bool diskann_vendored_allocation_failure_drops_handle_for_testing();
 bool diskann_vendored_load_config_budget_for_testing(size_t row_count,
                                                      double *build_memory_gb,
                                                      uint32_t *pq_chunks,
@@ -1075,11 +1191,6 @@ uint64_t diskann_available_build_memory_size_for_testing();
 bool diskann_flatten_memory_budget_allows_for_testing(size_t entry_count,
                                                       size_t dimension,
                                                       uint64_t budget_size);
-uint32_t diskann_pq_chunks_for_build_for_testing(size_t dimension,
-                                                 size_t row_count,
-                                                 uint64_t pq_code_budget_size,
-                                                 double pq_code_budget_ratio,
-                                                 uint32_t disk_pq_dims = 0);
 uint32_t diskann_cache_nodes_for_build_for_testing(
     size_t row_count, size_t dimension, uint32_t explicit_cache_nodes,
     uint64_t search_cache_size, double search_cache_ratio,

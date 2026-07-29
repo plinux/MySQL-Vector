@@ -172,6 +172,27 @@ bool read_diskann_pq_float_artifact(const std::string &path,
                                     std::string *error);
 
 /**
+  Reconstruct one source vector from its native PQ code.
+
+  This diagnostic helper reads only the requested compressed-code row. The
+  pivots, centroid and chunk offsets are validated through the common artifact
+  layout before reconstruction.
+
+  @param[in] paths Artifact path set.
+  @param[in] metadata Expected artifact metadata.
+  @param[in] ordinal Zero-based source row ordinal.
+  @param[out] vector Reconstructed vector.
+  @param[out] error Optional failure message.
+
+  @retval true The vector was reconstructed.
+  @retval false The artifacts or ordinal are invalid.
+*/
+bool reconstruct_diskann_pq_vector(const diskann_pq_artifact_paths &paths,
+                                   const diskann_pq_artifact_metadata &metadata,
+                                   uint64_t ordinal, std::vector<float> *vector,
+                                   std::string *error);
+
+/**
   Build a bridge manifest by checksumming artifacts on disk.
 
   @retval true Manifest was populated.

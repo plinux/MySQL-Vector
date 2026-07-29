@@ -50,6 +50,7 @@ struct diskann_segment_budget {
   uint64_t pq_code_budget_size{0};
   double pq_code_budget_gb{0.0};
   uint32_t cache_nodes{0};
+  uint64_t build_memory_size{0};
   double build_memory_gb{0.0};
 };
 

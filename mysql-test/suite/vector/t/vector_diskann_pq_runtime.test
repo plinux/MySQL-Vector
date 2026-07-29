@@ -1,0 +1,232 @@
+--source include/have_vector_diskann.inc
+--source include/big_test.inc
+
+--echo #
+--echo # WL#Vector: DISKANN PQ runtime selector is observable
+--echo #
+
+--disable_query_log
+--disable_result_log
+SET @old_vector_diskann_pq_runtime = @@GLOBAL.vector_diskann_pq_runtime;
+SET GLOBAL vector_diskann_pq_runtime = 'native_strict';
+--let $vector_diskann_pq_runtime_accelerated_csv=$MYSQLTEST_VARDIR/vector_diskann_pq_runtime_accelerated.csv
+--exec rm -f $vector_diskann_pq_runtime_accelerated_csv
+--write_file $vector_diskann_pq_runtime_accelerated_csv
+doc_id,vector
+1,"[1,0,0,0]"
+2,"[2,0,0,0]"
+3,"[3,0,0,0]"
+4,"[4,0,0,0]"
+5,"[5,0,0,0]"
+6,"[6,0,0,0]"
+7,"[7,0,0,0]"
+8,"[8,0,0,0]"
+9,"[9,0,0,0]"
+10,"[10,0,0,0]"
+11,"[11,0,0,0]"
+12,"[12,0,0,0]"
+13,"[13,0,0,0]"
+14,"[14,0,0,0]"
+15,"[15,0,0,0]"
+16,"[16,0,0,0]"
+17,"[17,0,0,0]"
+18,"[18,0,0,0]"
+19,"[19,0,0,0]"
+20,"[20,0,0,0]"
+21,"[21,0,0,0]"
+22,"[22,0,0,0]"
+23,"[23,0,0,0]"
+24,"[24,0,0,0]"
+25,"[25,0,0,0]"
+26,"[26,0,0,0]"
+27,"[27,0,0,0]"
+28,"[28,0,0,0]"
+29,"[29,0,0,0]"
+30,"[30,0,0,0]"
+31,"[31,0,0,0]"
+32,"[32,0,0,0]"
+EOF
+--enable_query_log
+
+SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime', 2, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime');
+
+--let $diskann_pq_runtime=`SELECT COALESCE(JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime'), '$.diskann_pq_runtime')), '')`
+if (!$diskann_pq_runtime)
+{
+  SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime');
+  SET GLOBAL vector_diskann_pq_runtime = @old_vector_diskann_pq_runtime;
+  --skip Test requires native DISKANN PQ runtime support
+}
+--enable_result_log
+--enable_query_log
+
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime'),
+  '$.diskann_pq_runtime')) AS diskann_pq_runtime,
+  JSON_CONTAINS(
+    VEC_INDEX_SEARCH('idx_diskann_pq_runtime', VEC_FROMTEXT('[1,1]'), 1),
+    CAST(1 AS JSON)) AS found_doc;
+
+SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime');
+
+--echo #
+--echo # WL#Vector: DISKANN native_strict consumes disk-PQ bridge artifacts
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime_diskpq', 4, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_pq_runtime_diskpq',
+                                        'offline');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_pq_runtime_diskpq',
+                                          4, 16, 1);
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_diskann_pq_runtime_diskpq',
+                                          2);
+
+--disable_query_log
+--disable_result_log
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 1, VEC_FROMTEXT('[1,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 2, VEC_FROMTEXT('[2,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 3, VEC_FROMTEXT('[3,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 4, VEC_FROMTEXT('[4,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 5, VEC_FROMTEXT('[5,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 6, VEC_FROMTEXT('[6,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 7, VEC_FROMTEXT('[7,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 8, VEC_FROMTEXT('[8,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 9, VEC_FROMTEXT('[9,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 10, VEC_FROMTEXT('[10,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 11, VEC_FROMTEXT('[11,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 12, VEC_FROMTEXT('[12,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 13, VEC_FROMTEXT('[13,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 14, VEC_FROMTEXT('[14,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 15, VEC_FROMTEXT('[15,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 16, VEC_FROMTEXT('[16,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 17, VEC_FROMTEXT('[17,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 18, VEC_FROMTEXT('[18,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 19, VEC_FROMTEXT('[19,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 20, VEC_FROMTEXT('[20,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 21, VEC_FROMTEXT('[21,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 22, VEC_FROMTEXT('[22,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 23, VEC_FROMTEXT('[23,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 24, VEC_FROMTEXT('[24,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 25, VEC_FROMTEXT('[25,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 26, VEC_FROMTEXT('[26,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 27, VEC_FROMTEXT('[27,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 28, VEC_FROMTEXT('[28,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 29, VEC_FROMTEXT('[29,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 30, VEC_FROMTEXT('[30,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 31, VEC_FROMTEXT('[31,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 32, VEC_FROMTEXT('[32,0,0,0]'));
+--enable_result_log
+--enable_query_log
+
+# A compiled DiskANN provider may expose only the serial ABI. Probe the
+# optional offline Native-PQ bridge before asserting its artifacts.
+--disable_query_log
+--disable_result_log
+--disable_abort_on_error
+SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime_diskpq');
+--let $diskann_native_pq_rebuild_errno = $mysql_errno
+--enable_abort_on_error
+if ($diskann_native_pq_rebuild_errno)
+{
+  SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime_diskpq');
+  SET GLOBAL vector_diskann_pq_runtime = @old_vector_diskann_pq_runtime;
+  --remove_file $vector_diskann_pq_runtime_accelerated_csv
+  --skip Test requires DiskANN offline Native-PQ build support
+}
+--enable_result_log
+--enable_query_log
+
+SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime_diskpq');
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+  '$.diskann_disk_pq_dims') AS disk_pq_dims,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+  '$.native_pq_runtime_artifacts_consumed') AS artifacts_consumed,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+  '$.native_pq_runtime_official_pq_used') AS official_pq_used,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+  '$.native_pq_runtime_bridge')) AS native_bridge,
+  JSON_CONTAINS(
+    VEC_INDEX_SEARCH('idx_diskann_pq_runtime_diskpq',
+                     VEC_FROMTEXT('[1,0,0,0]'), 1),
+    CAST(1 AS JSON)) AS found_doc;
+
+SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime_diskpq');
+
+--echo #
+--echo # WL#Vector: COSINE native_strict uses normalized native-PQ artifacts
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime_cosine', 4, 'COSINE',
+                        'EXTERNAL', 'DISKANN', 0, 'standalone');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_pq_runtime_cosine',
+                                        'offline');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_pq_runtime_cosine',
+                                          4, 16, 1);
+
+--disable_query_log
+--disable_result_log
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_cosine', 1, VEC_FROMTEXT('[1,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_cosine', 2, VEC_FROMTEXT('[0,1,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_cosine', 3, VEC_FROMTEXT('[0,0,1,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_cosine', 4, VEC_FROMTEXT('[0,0,0,1]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_cosine', 5, VEC_FROMTEXT('[1,1,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_cosine', 6, VEC_FROMTEXT('[0,1,1,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_cosine', 7, VEC_FROMTEXT('[0,0,1,1]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_cosine', 8, VEC_FROMTEXT('[1,0,0,1]'));
+--enable_result_log
+--enable_query_log
+
+SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime_cosine');
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_cosine'),
+  '$.native_pq_runtime_artifacts_consumed') AS artifacts_consumed,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_cosine'),
+  '$.native_pq_runtime_official_pq_used') AS official_pq_used,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_cosine'),
+  '$.native_pq_runtime_artifact_validation')) AS artifact_validation,
+  JSON_CONTAINS(
+    VEC_INDEX_SEARCH('idx_diskann_pq_runtime_cosine',
+                     VEC_FROMTEXT('[1,0,0,0]'), 8),
+    CAST(1 AS JSON)) AS found_doc;
+
+SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime_cosine');
+
+--echo #
+--echo # WL#Vector: unsupported build flags fall back before publication
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime_accelerated', 4, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN', 0, 'standalone');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_pq_runtime_accelerated',
+                                        'offline');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_pq_runtime_accelerated',
+                                          4, 16, 1);
+SELECT VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD(
+  'idx_diskann_pq_runtime_accelerated', 1);
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_diskann_pq_runtime_accelerated.csv'
+  INTO VECTOR INDEX idx_diskann_pq_runtime_accelerated
+  FORMAT CSV
+  REBUILD;
+
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_accelerated'),
+  '$.diskann_accelerate_build') AS accelerate_build,
+  JSON_UNQUOTE(JSON_EXTRACT(
+    VEC_INDEX_INFO('idx_diskann_pq_runtime_accelerated'),
+    '$.lifecycle_state')) AS lifecycle_state,
+  JSON_UNQUOTE(JSON_EXTRACT(
+    VEC_INDEX_INFO('idx_diskann_pq_runtime_accelerated'),
+    '$.backend_build_fallback_reason')) AS fallback_reason,
+  JSON_CONTAINS(
+    VEC_INDEX_SEARCH('idx_diskann_pq_runtime_accelerated',
+                     VEC_FROMTEXT('[1,0,0,0]'), 1),
+    CAST(1 AS JSON)) AS found_doc;
+
+SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime_accelerated');
+
+--disable_query_log
+SET GLOBAL vector_diskann_pq_runtime = @old_vector_diskann_pq_runtime;
+--remove_file $vector_diskann_pq_runtime_accelerated_csv
+--enable_query_log

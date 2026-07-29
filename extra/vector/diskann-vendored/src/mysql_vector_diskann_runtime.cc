@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 
 struct mysql_vector_diskann_runtime_handle {
   const void *offline_handle{nullptr};
@@ -80,6 +81,26 @@ bool validate_path(const char *path, const char *field_name, char *error_buffer,
   if (path != nullptr && path[0] != '\0') return true;
   copy_error(field_name, error_buffer, error_buffer_size);
   return false;
+}
+
+using offline_drop_function = void (*)(const void *);
+
+mysql_vector_diskann_runtime_handle *wrap_offline_handle(
+    const void *offline_handle, offline_drop_function drop_handle,
+    char *error_buffer, size_t error_buffer_size,
+    bool allocate_handle = true) noexcept {
+  auto *handle = allocate_handle
+                     ? new (std::nothrow) mysql_vector_diskann_runtime_handle()
+                     : nullptr;
+  if (handle == nullptr) {
+    if (drop_handle != nullptr) drop_handle(offline_handle);
+    copy_error("runtime handle allocation failed", error_buffer,
+               error_buffer_size);
+    return nullptr;
+  }
+  handle->offline_handle = offline_handle;
+  if (error_buffer != nullptr && error_buffer_size > 0) error_buffer[0] = '\0';
+  return handle;
 }
 
 }  // namespace
@@ -261,15 +282,28 @@ mysql_vector_diskann_runtime_handle *mysql_vector_diskann_runtime_load(
     copy_error("offline adapter load failed", error_buffer, error_buffer_size);
     return nullptr;
   }
-  auto *handle = new mysql_vector_diskann_runtime_handle();
-  handle->offline_handle = offline_handle;
-  if (error_buffer != nullptr && error_buffer_size > 0) error_buffer[0] = '\0';
-  return handle;
+  return wrap_offline_handle(offline_handle, mysql_vector_diskann_offline_drop,
+                             error_buffer, error_buffer_size);
 #else
   copy_error("runtime load is unavailable", error_buffer, error_buffer_size);
   return nullptr;
 #endif
 }
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool mysql_vector_diskann_runtime_allocation_failure_drops_handle_for_testing(
+    void) {
+  uint8_t dropped = 0;
+  const auto drop_handle = [](const void *handle) {
+    *static_cast<uint8_t *>(const_cast<void *>(handle)) = 1;
+  };
+  char error_buffer[64]{};
+  mysql_vector_diskann_runtime_handle *handle = wrap_offline_handle(
+      &dropped, drop_handle, error_buffer, sizeof(error_buffer), false);
+  return handle == nullptr && dropped == 1 &&
+         std::strcmp(error_buffer, "runtime handle allocation failed") == 0;
+}
+#endif
 
 int32_t mysql_vector_diskann_runtime_search(
     const mysql_vector_diskann_runtime_handle *handle, const float *query,

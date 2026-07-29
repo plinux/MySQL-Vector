@@ -148,7 +148,11 @@ SELECT VEC_INDEX_SEARCH('test.t_vector_ddl_renamed.v', VEC_FROMTEXT('[5,5]'), 1)
 VEC_INDEX_SEARCH('test.t_vector_ddl_renamed.v', VEC_FROMTEXT('[5,5]'), 1)
 [5]
 SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
-  WHERE Variable_name != 'test.t_vector_ddl_renamed.v.apply_latency_ms';
+  WHERE Variable_name != 'test.t_vector_ddl_renamed.v.apply_latency_ms'
+  AND Variable_name NOT LIKE
+'test.t_vector_ddl_renamed.v.backend_build_%_ms'
+  AND Variable_name NOT LIKE
+'test.t_vector_ddl_renamed.v.diskann_segment_build_%_ms';
 Section	Variable_name	Value
 INDEX_STATE	test.t_vector_ddl_renamed.v.dimension	2
 INDEX_STATE	test.t_vector_ddl_renamed.v.metric	cosine
@@ -214,9 +218,6 @@ BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_compress_threads	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_single_index	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_chunks	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_cache_nodes	0
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_manifest_ms	0
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_offline_ms	0
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_load_ms	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_fallback_reason	
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_path	faiss_scheduler
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_segment_count	1
@@ -232,8 +233,6 @@ BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_single_index_build	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_candidates_per_segment	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_pq_chunks	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_cache_nodes	0
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_build_wall_ms	0
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_build_sum_ms	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.diskann_segment_fallback_reason	not_applicable
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.mode	external
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.consistency_mode	transactional

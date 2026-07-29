@@ -266,6 +266,10 @@ TEST(VectorDiskannPqRuntimeTest, TrainsChunksFromFbinPayload) {
   EXPECT_EQ(2U, result.pq_chunks);
   EXPECT_EQ(256U, result.centroid_count);
   EXPECT_GT(result.distance_calls, 0U);
+  EXPECT_LE(result.train_ms, result.elapsed_ms);
+  EXPECT_LE(result.encode_ms, result.elapsed_ms);
+  EXPECT_LE(result.artifact_validation_ms, result.elapsed_ms);
+  EXPECT_FALSE(result.centroid_scan_kernel.empty());
   EXPECT_TRUE(result.artifacts_written);
   EXPECT_TRUE(result.selected_path == "scalar_fallback" ||
               result.selected_path == "avx2" ||

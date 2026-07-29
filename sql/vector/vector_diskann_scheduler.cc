@@ -178,6 +178,7 @@ bool make_diskann_segment_budget(const diskann_segment_budget_input &input,
           : (input.available_build_memory_size != 0
                  ? input.available_build_memory_size
                  : input.payload_size);
+  budget->build_memory_size = build_memory_size;
   budget->build_memory_gb =
       static_cast<double>(build_memory_size) / k_bytes_per_gib;
   return budget->pq_chunks != 0;

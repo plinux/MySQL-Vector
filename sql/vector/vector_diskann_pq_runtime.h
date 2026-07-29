@@ -83,6 +83,9 @@ struct diskann_pq_runtime_result {
   uint64_t row_count{0};
   uint64_t elapsed_ms{0};
   uint64_t raw_reader_ms{0};
+  uint64_t train_ms{0};
+  uint64_t encode_ms{0};
+  uint64_t artifact_validation_ms{0};
   uint64_t distance_calls{0};
   uint64_t skipped_distance_calls{0};
   uint64_t wait_cycles_hint{0};
@@ -97,6 +100,7 @@ struct diskann_pq_runtime_result {
   bool artifacts_written{false};
   bool disk_artifacts_written{false};
   std::string selected_path;
+  std::string centroid_scan_kernel;
   std::string memory_budget_adjustment;
 };
 

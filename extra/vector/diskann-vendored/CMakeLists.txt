@@ -18,6 +18,11 @@ TARGET_INCLUDE_DIRECTORIES(mysql_vector_diskann_runtime
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
+IF(WITH_UNIT_TESTS)
+  TARGET_COMPILE_DEFINITIONS(mysql_vector_diskann_runtime
+    PRIVATE EXTRA_CODE_FOR_UNIT_TESTING)
+ENDIF()
+
 IF(TARGET mysql_vector_diskann_offline_adapter)
   TARGET_COMPILE_DEFINITIONS(mysql_vector_diskann_runtime
     PRIVATE MYSQL_VECTOR_DISKANN_RUNTIME_WITH_OFFLINE_ADAPTER=1)

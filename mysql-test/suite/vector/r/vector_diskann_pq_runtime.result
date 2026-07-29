@@ -1,0 +1,140 @@
+#
+# WL#Vector: DISKANN PQ runtime selector is observable
+#
+SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime', 2, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime'),
+'$.diskann_pq_runtime')) AS diskann_pq_runtime,
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_pq_runtime', VEC_FROMTEXT('[1,1]'), 1),
+CAST(1 AS JSON)) AS found_doc;
+diskann_pq_runtime	found_doc
+native_strict	1
+SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime');
+VEC_INDEX_DROP('idx_diskann_pq_runtime')
+1
+#
+# WL#Vector: DISKANN native_strict consumes disk-PQ bridge artifacts
+#
+SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime_diskpq', 4, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_diskann_pq_runtime_diskpq', 4, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN')
+1
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_pq_runtime_diskpq',
+'offline');
+VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_pq_runtime_diskpq',
+'offline')
+1
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_pq_runtime_diskpq',
+4, 16, 1);
+VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_pq_runtime_diskpq',
+4, 16, 1)
+1
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_diskann_pq_runtime_diskpq',
+2);
+VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_diskann_pq_runtime_diskpq',
+2)
+1
+SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime_diskpq');
+VEC_INDEX_REBUILD('idx_diskann_pq_runtime_diskpq')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+'$.diskann_disk_pq_dims') AS disk_pq_dims,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+'$.native_pq_runtime_artifacts_consumed') AS artifacts_consumed,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+'$.native_pq_runtime_official_pq_used') AS official_pq_used,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+'$.native_pq_runtime_bridge')) AS native_bridge,
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_pq_runtime_diskpq',
+VEC_FROMTEXT('[1,0,0,0]'), 1),
+CAST(1 AS JSON)) AS found_doc;
+disk_pq_dims	artifacts_consumed	official_pq_used	native_bridge	found_doc
+2	1	0	native_pq_graph_cache	1
+SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime_diskpq');
+VEC_INDEX_DROP('idx_diskann_pq_runtime_diskpq')
+1
+#
+# WL#Vector: COSINE native_strict uses normalized native-PQ artifacts
+#
+SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime_cosine', 4, 'COSINE',
+'EXTERNAL', 'DISKANN', 0, 'standalone');
+VEC_INDEX_CREATE('idx_diskann_pq_runtime_cosine', 4, 'COSINE',
+'EXTERNAL', 'DISKANN', 0, 'standalone')
+1
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_pq_runtime_cosine',
+'offline');
+VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_pq_runtime_cosine',
+'offline')
+1
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_pq_runtime_cosine',
+4, 16, 1);
+VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_pq_runtime_cosine',
+4, 16, 1)
+1
+SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime_cosine');
+VEC_INDEX_REBUILD('idx_diskann_pq_runtime_cosine')
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_cosine'),
+'$.native_pq_runtime_artifacts_consumed') AS artifacts_consumed,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_cosine'),
+'$.native_pq_runtime_official_pq_used') AS official_pq_used,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_cosine'),
+'$.native_pq_runtime_artifact_validation')) AS artifact_validation,
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_pq_runtime_cosine',
+VEC_FROMTEXT('[1,0,0,0]'), 8),
+CAST(1 AS JSON)) AS found_doc;
+artifacts_consumed	official_pq_used	artifact_validation	found_doc
+1	0	ok	1
+SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime_cosine');
+VEC_INDEX_DROP('idx_diskann_pq_runtime_cosine')
+1
+#
+# WL#Vector: unsupported build flags fall back before publication
+#
+SELECT VEC_INDEX_CREATE('idx_diskann_pq_runtime_accelerated', 4, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN', 0, 'standalone');
+VEC_INDEX_CREATE('idx_diskann_pq_runtime_accelerated', 4, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN', 0, 'standalone')
+1
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_pq_runtime_accelerated',
+'offline');
+VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_pq_runtime_accelerated',
+'offline')
+1
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_pq_runtime_accelerated',
+4, 16, 1);
+VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_pq_runtime_accelerated',
+4, 16, 1)
+1
+SELECT VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD(
+'idx_diskann_pq_runtime_accelerated', 1);
+VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD(
+'idx_diskann_pq_runtime_accelerated', 1)
+1
+LOAD VECTOR DATA INFILE 'MYSQLTEST_VARDIR/vector_diskann_pq_runtime_accelerated.csv'
+  INTO VECTOR INDEX idx_diskann_pq_runtime_accelerated
+FORMAT CSV
+REBUILD;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_accelerated'),
+'$.diskann_accelerate_build') AS accelerate_build,
+JSON_UNQUOTE(JSON_EXTRACT(
+VEC_INDEX_INFO('idx_diskann_pq_runtime_accelerated'),
+'$.lifecycle_state')) AS lifecycle_state,
+JSON_UNQUOTE(JSON_EXTRACT(
+VEC_INDEX_INFO('idx_diskann_pq_runtime_accelerated'),
+'$.backend_build_fallback_reason')) AS fallback_reason,
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_pq_runtime_accelerated',
+VEC_FROMTEXT('[1,0,0,0]'), 1),
+CAST(1 AS JSON)) AS found_doc;
+accelerate_build	lifecycle_state	fallback_reason	found_doc
+1	ready	DiskANN offline adapter does not support accelerated or shuffled build	1
+SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime_accelerated');
+VEC_INDEX_DROP('idx_diskann_pq_runtime_accelerated')
+1

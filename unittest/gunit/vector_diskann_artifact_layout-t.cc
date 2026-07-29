@@ -621,6 +621,44 @@ TEST(VectorDiskannArtifactLayoutTest, ReadsBackFloatArtifactPayload) {
   EXPECT_EQ(1.0F, values[0]);
 }
 
+TEST(VectorDiskannArtifactLayoutTest, ReconstructsOneNativePqVector) {
+  vector_index::diskann_pq_artifact_paths paths;
+  ASSERT_TRUE(vector_index::make_diskann_pq_artifact_paths(
+      test_prefix("reconstruct_vector"), &paths));
+
+  vector_index::diskann_pq_artifact_metadata metadata;
+  metadata.row_count = 2;
+  metadata.dimension = 4;
+  metadata.pq_chunks = 2;
+  metadata.centroid_count = 2;
+
+  vector_index::diskann_pq_artifact_payload payload;
+  payload.pivots = {1.0F, 2.0F, 10.0F, 20.0F, 3.0F, 4.0F, 30.0F, 40.0F};
+  payload.compressed_codes = {0, 1, 1, 0};
+  payload.centroid = {0.5F, 0.5F, 0.5F, 0.5F};
+  payload.chunk_offsets = {0, 2, 4};
+  payload.docid_ordinals = {0, 1};
+  std::string error;
+  ASSERT_TRUE(vector_index::write_diskann_pq_artifacts(paths, metadata, payload,
+                                                       &error))
+      << error;
+
+  std::vector<float> reconstructed;
+  ASSERT_TRUE(vector_index::reconstruct_diskann_pq_vector(
+      paths, metadata, 0, &reconstructed, &error))
+      << error;
+  EXPECT_EQ((std::vector<float>{1.5F, 2.5F, 30.5F, 40.5F}), reconstructed);
+
+  EXPECT_FALSE(vector_index::reconstruct_diskann_pq_vector(
+      paths, metadata, metadata.row_count, &reconstructed, &error));
+  EXPECT_EQ("pq_compressed ordinal is out of range", error);
+
+  rewrite_first_payload_byte(paths.compressed_path, 7);
+  EXPECT_FALSE(vector_index::reconstruct_diskann_pq_vector(
+      paths, metadata, 0, &reconstructed, &error));
+  EXPECT_EQ("pq_compressed code exceeds centroid count", error);
+}
+
 TEST(VectorDiskannArtifactLayoutTest, WritesAndValidatesBridgeManifest) {
   vector_index::diskann_pq_artifact_paths paths;
   ASSERT_TRUE(vector_index::make_diskann_pq_artifact_paths(

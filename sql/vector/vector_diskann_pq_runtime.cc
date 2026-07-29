@@ -272,12 +272,12 @@ bool read_fbin_sample_rows(const std::string &input_file,
   return true;
 }
 
-bool for_each_fbin_block(
-    const std::string &input_file, uint32_t expected_dimension,
-    uint64_t expected_row_count, uint64_t block_rows,
-    const char *row_count_mismatch_error,
-    const std::function<bool(float *, uint64_t)> &visitor,
-    std::string *error) {
+bool for_each_fbin_block(const std::string &input_file,
+                         uint32_t expected_dimension,
+                         uint64_t expected_row_count, uint64_t block_rows,
+                         const char *row_count_mismatch_error,
+                         const std::function<bool(float *, uint64_t)> &visitor,
+                         std::string *error) {
   if (block_rows == 0) {
     set_error(error, "fbin block row count is zero");
     return false;
@@ -1144,6 +1144,7 @@ bool build_diskann_pq_runtime(const diskann_pq_runtime_config &config,
   std::vector<pq_chunk_runtime_result> chunk_results(config.pq_chunks);
   std::vector<pq_chunk_model> chunk_models(config.pq_chunks);
   const uint32_t worker_count = std::min(threads, config.pq_chunks);
+  const pq_runtime_clock::time_point train_start = pq_runtime_clock::now();
   if (worker_count <= 1) {
     for (uint32_t chunk = 0; chunk < config.pq_chunks; ++chunk) {
       if (!train_pq_chunk(training_vectors, training_rows, config.dimension,
@@ -1193,6 +1194,7 @@ bool build_diskann_pq_runtime(const diskann_pq_runtime_config &config,
     result->distance_calls += chunk_result.distance_calls;
     result->skipped_distance_calls += chunk_result.skipped_distance_calls;
   }
+  result->train_ms = elapsed_ms(train_start);
 
   diskann_pq_artifact_metadata metadata;
   metadata.row_count = inspected_rows;
@@ -1210,6 +1212,7 @@ bool build_diskann_pq_runtime(const diskann_pq_runtime_config &config,
   }
 
   diskann_compressed_artifact_writer compressed_writer;
+  const pq_runtime_clock::time_point encode_start = pq_runtime_clock::now();
   if (!compressed_writer.open(result->artifacts.compressed_path,
                               static_cast<uint32_t>(inspected_rows),
                               config.pq_chunks, error)) {
@@ -1244,14 +1247,21 @@ bool build_diskann_pq_runtime(const diskann_pq_runtime_config &config,
       error);
   if (!encoded) return false;
   if (!compressed_writer.close(error)) return false;
+  result->encode_ms = elapsed_ms(encode_start);
   result->distance_calls += compression_stats.distance_evaluations;
+  result->centroid_scan_kernel =
+      compression_stats.distance_evaluations == 0
+          ? "not_run"
+          : pq_centroid_scan_kernel_name(compression_stats.kernel);
   result->compressed_rows = compressed_rows;
   if (compressed_rows != inspected_rows) {
     set_error(error, "raw input row count changed during training");
     return false;
   }
+  const pq_runtime_clock::time_point validation_start = pq_runtime_clock::now();
   if (!validate_diskann_pq_artifacts(result->artifacts, metadata, error))
     return false;
+  result->artifact_validation_ms = elapsed_ms(validation_start);
   result->artifacts_written = true;
 
   if (config.disk_pq_chunks != 0) {
@@ -1278,6 +1288,9 @@ bool build_diskann_pq_runtime(const diskann_pq_runtime_config &config,
       result->disk_artifacts = std::move(disk_result.artifacts);
       result->disk_artifacts_written = disk_result.artifacts_written;
       result->raw_reader_ms += disk_result.raw_reader_ms;
+      result->train_ms += disk_result.train_ms;
+      result->encode_ms += disk_result.encode_ms;
+      result->artifact_validation_ms += disk_result.artifact_validation_ms;
       result->distance_calls += disk_result.distance_calls;
       result->skipped_distance_calls += disk_result.skipped_distance_calls;
       result->wait_cycles_hint += disk_result.wait_cycles_hint;

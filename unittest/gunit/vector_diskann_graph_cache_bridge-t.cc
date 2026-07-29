@@ -478,4 +478,26 @@ TEST(VectorDiskannGraphCacheBridgeTest, WritesManifestAfterBuilderSucceeds) {
   EXPECT_EQ(config.pq_chunks, manifest.pq_chunks);
 }
 
+TEST(VectorDiskannGraphCacheBridgeTest,
+     AcceptsZeroMeanArtifactsForCosineGraphBuild) {
+  fake_build_context context;
+  vector_index::diskann_graph_cache_bridge_result result;
+  std::string error;
+  vector_index::diskann_graph_cache_bridge_config config =
+      make_config("cosine_zero_mean", &context);
+  config.metric = vector_index::metric_type::kCosine;
+
+  EXPECT_TRUE(vector_index::build_diskann_graph_cache_from_native_pq(
+      config, &result, &error))
+      << error;
+  EXPECT_TRUE(context.called);
+  EXPECT_TRUE(result.artifacts_consumed);
+
+  vector_index::diskann_pq_bridge_manifest manifest;
+  ASSERT_TRUE(vector_index::read_diskann_pq_bridge_manifest(config.artifacts,
+                                                            &manifest, &error))
+      << error;
+  EXPECT_TRUE(manifest.zero_mean);
+}
+
 }  // namespace vector_diskann_graph_cache_bridge_unittest

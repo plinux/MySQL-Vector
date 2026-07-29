@@ -119,6 +119,11 @@ uint64_t mysql_vector_diskann_runtime_card(
 void mysql_vector_diskann_runtime_drop(
     const struct mysql_vector_diskann_runtime_handle *handle);
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool mysql_vector_diskann_runtime_allocation_failure_drops_handle_for_testing(
+    void);
+#endif
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

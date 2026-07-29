@@ -502,6 +502,11 @@ bool backend::rebuild_from_committed_entries_from_reader(
   return rebuild_from_committed_entries(entries);
 }
 
+bool backend::rebuild_from_committed_entry_source(
+    const committed_entry_source &source) {
+  return rebuild_from_committed_entries_from_reader(source.reader);
+}
+
 bool backend::rebuild_from_raw_segments(
     const raw_vector_segment_reader &reader) {
   if (!reader) return false;
@@ -577,6 +582,24 @@ bool backend::search_batch(
     if (!search(queries[i], top_k, &(*results)[i])) return false;
   }
   return true;
+}
+
+bool backend::search_for_rerank(
+    const vector_data &query, size_t top_k, size_t candidate_top_k,
+    std::vector<search_result> *results) const {
+  return search(query, std::max(top_k, candidate_top_k), results);
+}
+
+bool backend::search_batch_for_rerank(
+    const std::vector<vector_data> &queries, size_t top_k,
+    size_t candidate_top_k,
+    std::vector<std::vector<search_result>> *results) const {
+  return search_batch(queries, std::max(top_k, candidate_top_k), results);
+}
+
+bool backend::collect_doc_ids(std::vector<uint64_t> *doc_ids
+                              [[maybe_unused]]) const {
+  return false;
 }
 
 memory_backend::memory_backend(size_t dimension, metric_type metric)

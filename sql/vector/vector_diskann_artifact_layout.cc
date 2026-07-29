@@ -194,6 +194,48 @@ bool write_bin_artifact(const std::string &path, uint32_t rows,
   return true;
 }
 
+template <typename T>
+bool read_bin_artifact(const std::string &path, uint32_t rows, uint32_t columns,
+                       const char *label, std::vector<T> *values,
+                       std::string *error) {
+  static_assert(std::is_trivially_copyable<T>::value,
+                "DiskANN artifact payload must be trivially copyable");
+  if (values == nullptr) {
+    set_error(error, std::string(label) + " output is null");
+    return false;
+  }
+  values->clear();
+  if (!check_header(path, rows, columns, sizeof(T), label, error)) return false;
+
+  const uint64_t value_count =
+      static_cast<uint64_t>(rows) * static_cast<uint64_t>(columns);
+  if (value_count > std::numeric_limits<size_t>::max() ||
+      value_count >
+          static_cast<uint64_t>(std::numeric_limits<std::streamsize>::max()) /
+              sizeof(T)) {
+    set_error(error, std::string(label) + " payload too large");
+    return false;
+  }
+
+  std::ifstream file(path, std::ios::in | std::ios::binary);
+  if (!file.is_open()) {
+    set_error(error, std::string(label) + " artifact is missing");
+    return false;
+  }
+  file.seekg(sizeof(uint32_t) + sizeof(uint32_t), std::ios::beg);
+  values->resize(static_cast<size_t>(value_count));
+  if (!values->empty()) {
+    file.read(reinterpret_cast<char *>(values->data()),
+              static_cast<std::streamsize>(values->size() * sizeof(T)));
+  }
+  if (!file.good()) {
+    values->clear();
+    set_error(error, std::string(label) + " artifact payload is truncated");
+    return false;
+  }
+  return true;
+}
+
 void write_manifest_bool(std::ostream &stream, const char *name, bool value) {
   stream << name << '\t' << (value ? 1 : 0) << '\n';
 }
@@ -531,6 +573,94 @@ bool read_diskann_pq_float_artifact(const std::string &path,
     set_error(error, "float artifact payload is truncated");
     return false;
   }
+  return true;
+}
+
+bool reconstruct_diskann_pq_vector(const diskann_pq_artifact_paths &paths,
+                                   const diskann_pq_artifact_metadata &metadata,
+                                   uint64_t ordinal, std::vector<float> *vector,
+                                   std::string *error) {
+  if (vector == nullptr) {
+    set_error(error, "reconstructed vector output is null");
+    return false;
+  }
+  vector->clear();
+  if (ordinal >= metadata.row_count) {
+    set_error(error, "pq_compressed ordinal is out of range");
+    return false;
+  }
+  if (metadata.centroid_count == 0 || metadata.centroid_count > 256) {
+    set_error(error, "pq centroid count is unsupported");
+    return false;
+  }
+  if (!validate_diskann_pq_artifacts(paths, metadata, error)) return false;
+
+  std::vector<float> pivots;
+  std::vector<float> centroid;
+  std::vector<uint32_t> chunk_offsets;
+  if (!read_diskann_pq_float_artifact(paths.pivot_path, metadata.centroid_count,
+                                      metadata.dimension, &pivots, error) ||
+      !read_diskann_pq_float_artifact(paths.centroid_path, metadata.dimension,
+                                      1, &centroid, error) ||
+      !read_bin_artifact(paths.chunk_offsets_path, metadata.pq_chunks + 1, 1,
+                         "chunk_offsets", &chunk_offsets, error)) {
+    return false;
+  }
+  if (chunk_offsets.empty() || chunk_offsets.front() != 0 ||
+      chunk_offsets.back() != metadata.dimension) {
+    set_error(error, "chunk_offsets artifact is invalid");
+    return false;
+  }
+  for (size_t chunk = 1; chunk < chunk_offsets.size(); ++chunk) {
+    if (chunk_offsets[chunk] <= chunk_offsets[chunk - 1]) {
+      set_error(error, "chunk_offsets artifact is not strictly increasing");
+      return false;
+    }
+  }
+
+  if (ordinal > (std::numeric_limits<uint64_t>::max() - 2 * sizeof(uint32_t)) /
+                    metadata.pq_chunks) {
+    set_error(error, "pq_compressed row offset overflow");
+    return false;
+  }
+  const uint64_t row_offset =
+      2 * sizeof(uint32_t) + ordinal * metadata.pq_chunks;
+  if (row_offset >
+      static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+    set_error(error, "pq_compressed row offset exceeds stream limit");
+    return false;
+  }
+
+  std::ifstream compressed(paths.compressed_path,
+                           std::ios::in | std::ios::binary);
+  if (!compressed.is_open()) {
+    set_error(error, "pq_compressed artifact is missing");
+    return false;
+  }
+  compressed.seekg(static_cast<std::streamoff>(row_offset), std::ios::beg);
+  std::vector<uint8_t> codes(metadata.pq_chunks, 0);
+  compressed.read(reinterpret_cast<char *>(codes.data()),
+                  static_cast<std::streamsize>(codes.size()));
+  if (!compressed.good()) {
+    set_error(error, "pq_compressed row is truncated");
+    return false;
+  }
+
+  vector->resize(metadata.dimension);
+  for (uint32_t chunk = 0; chunk < metadata.pq_chunks; ++chunk) {
+    const uint32_t center = codes[chunk];
+    if (center >= metadata.centroid_count) {
+      vector->clear();
+      set_error(error, "pq_compressed code exceeds centroid count");
+      return false;
+    }
+    const size_t pivot_base = static_cast<size_t>(center) * metadata.dimension;
+    for (uint32_t dim = chunk_offsets[chunk]; dim < chunk_offsets[chunk + 1];
+         ++dim) {
+      (*vector)[dim] = pivots[pivot_base + dim] + centroid[dim];
+    }
+  }
+  if (error != nullptr) error->clear();
   return true;
 }
 

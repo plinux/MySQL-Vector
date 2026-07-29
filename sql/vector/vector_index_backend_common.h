@@ -78,6 +78,27 @@ inline bool compute_distance(metric_type metric, const vector_data &lhs, const v
   return true;
 }
 
+inline bool search_exact_entries(
+    const std::unordered_map<uint64_t, vector_data> &entries,
+    metric_type metric, const vector_data &query, size_t top_k,
+    std::vector<search_result> *results) {
+  for (const auto &entry : entries) {
+    double distance = 0.0;
+    if (!compute_distance(metric, query, entry.second, &distance)) return false;
+    results->push_back(search_result{entry.first, distance});
+  }
+
+  const size_t count = std::min(top_k, results->size());
+  std::partial_sort(results->begin(), results->begin() + count, results->end(),
+                    [](const search_result &lhs, const search_result &rhs) {
+                      if (lhs.distance != rhs.distance)
+                        return lhs.distance < rhs.distance;
+                      return lhs.doc_id < rhs.doc_id;
+                    });
+  results->resize(count);
+  return true;
+}
+
 inline std::string normalize_token(const std::string &input) {
   size_t begin = 0;
   while (begin < input.size() &&

@@ -101,6 +101,24 @@ struct offline_index {
   uint32_t search_io_limit{0};
 };
 
+class scoped_directory_cleanup {
+ public:
+  explicit scoped_directory_cleanup(std::filesystem::path path)
+      : m_path(std::move(path)) {}
+
+  ~scoped_directory_cleanup() {
+    std::error_code ec;
+    std::filesystem::remove_all(m_path, ec);
+  }
+
+  scoped_directory_cleanup(const scoped_directory_cleanup &) = delete;
+  scoped_directory_cleanup &operator=(const scoped_directory_cleanup &) =
+      delete;
+
+ private:
+  std::filesystem::path m_path;
+};
+
 /*
   Keep MySQL process ownership over I/O errors. The official C++ Linux reader
   calls exit() on libaio failures, while this adapter must surface failures
@@ -656,6 +674,69 @@ bool merge_manifest_inputs(const raw_manifest &manifest,
   return raw_file.good() && docid_file.good();
 }
 
+bool normalize_fbin_for_cosine(const std::filesystem::path &input_path,
+                               const std::filesystem::path &output_path,
+                               uint64_t expected_rows,
+                               uint32_t expected_dimension) {
+  constexpr uint64_t kNormalizeBlockRows = 131072;
+  if (expected_rows == 0 ||
+      expected_rows > std::numeric_limits<uint32_t>::max() ||
+      expected_dimension == 0) {
+    return false;
+  }
+
+  std::ifstream input(input_path, std::ios::in | std::ios::binary);
+  std::ofstream output(output_path,
+                       std::ios::out | std::ios::binary | std::ios::trunc);
+  uint32_t rows = 0;
+  uint32_t dimension = 0;
+  if (!input.is_open() || !output.is_open() ||
+      !read_raw_header(&input, &rows, &dimension) || rows != expected_rows ||
+      dimension != expected_dimension || !write_binary_value(&output, rows) ||
+      !write_binary_value(&output, dimension)) {
+    return false;
+  }
+
+  uint64_t remaining_rows = expected_rows;
+  std::vector<float> block;
+  while (remaining_rows != 0) {
+    const uint64_t block_rows = std::min(remaining_rows, kNormalizeBlockRows);
+    const uint64_t value_count = block_rows * expected_dimension;
+    if (value_count > std::numeric_limits<size_t>::max() / sizeof(float) ||
+        value_count >
+            static_cast<uint64_t>(std::numeric_limits<std::streamsize>::max()) /
+                sizeof(float)) {
+      return false;
+    }
+    block.resize(static_cast<size_t>(value_count));
+    const size_t block_size = static_cast<size_t>(value_count) * sizeof(float);
+    if (!read_exact(&input, block.data(), block_size) ||
+        std::any_of(block.begin(), block.end(),
+                    [](float value) { return !std::isfinite(value); })) {
+      return false;
+    }
+    for (uint64_t row = 0; row < block_rows; ++row) {
+      float *vector = block.data() + row * expected_dimension;
+      float norm = std::numeric_limits<float>::epsilon();
+      for (uint32_t dim = 0; dim < expected_dimension; ++dim) {
+        norm += vector[dim] * vector[dim];
+      }
+      norm = std::sqrt(norm);
+      for (uint32_t dim = 0; dim < expected_dimension; ++dim) {
+        vector[dim] /= norm;
+      }
+    }
+    if (!write_exact(&output, block.data(), block_size)) {
+      return false;
+    }
+    remaining_rows -= block_rows;
+  }
+
+  char extra = 0;
+  input.read(&extra, 1);
+  return input.eof() && output.good();
+}
+
 bool validate_manifest_segment(const raw_manifest &manifest,
                                const raw_segment &segment) {
   if (segment.row_count > std::numeric_limits<uint32_t>::max()) return false;
@@ -1176,9 +1257,9 @@ bool build_index_from_native_pq_files(
       !ensure_parent_directory(index_prefix)) {
     return false;
   }
-  if (metric_from_code(metric_type) != diskann::L2 ||
-      disk_pq_dims > dimension || accelerate_build != 0 ||
-      shuffle_build != 0) {
+  const diskann::Metric metric = metric_from_code(metric_type);
+  if ((metric != diskann::L2 && metric != diskann::COSINE) ||
+      disk_pq_dims > dimension || accelerate_build != 0 || shuffle_build != 0) {
     return false;
   }
 
@@ -1300,39 +1381,58 @@ bool build_from_native_pq_manifest_impl(
       disk_pq_compressed_path_text == nullptr
           ? std::filesystem::path{}
           : std::filesystem::path(disk_pq_compressed_path_text);
-  if (manifest.segments.size() == 1) {
+  const std::filesystem::path prefix(index_prefix);
+  const diskann::Metric metric = metric_from_code(metric_type);
+  const bool normalize_input = metric == diskann::COSINE;
+  if (metric != diskann::L2 && !normalize_input) return false;
+
+  if (manifest.segments.size() == 1 && !normalize_input) {
     const raw_segment &segment = manifest.segments.front();
     if (!validate_manifest_segment(manifest, segment)) return false;
     return build_index_from_native_pq_files(
-        std::filesystem::path(index_prefix), segment.vector_path,
-        segment.docid_path, source_pq_pivots, source_pq_compressed,
-        source_disk_pq_pivots, source_disk_pq_compressed, manifest.count,
-        dimension, metric_type, max_degree, search_list_size, build_threads,
-        build_blas_threads, index_mem_gb, pq_chunks, num_nodes_to_cache,
-        disk_pq_dims, accelerate_build, shuffle_build);
+        prefix, segment.vector_path, segment.docid_path, source_pq_pivots,
+        source_pq_compressed, source_disk_pq_pivots, source_disk_pq_compressed,
+        manifest.count, dimension, metric_type, max_degree, search_list_size,
+        build_threads, build_blas_threads, index_mem_gb, pq_chunks,
+        num_nodes_to_cache, disk_pq_dims, accelerate_build, shuffle_build);
   }
 
-  const std::filesystem::path prefix(index_prefix);
   const std::filesystem::path work_dir = work_dir_path(prefix);
+  const scoped_directory_cleanup work_dir_cleanup(work_dir);
   std::error_code ec;
   std::filesystem::remove_all(work_dir, ec);
   std::filesystem::create_directories(work_dir, ec);
   if (ec) return false;
 
-  const std::filesystem::path merged_raw = work_dir / "base.fbin";
-  const std::filesystem::path merged_doc_ids = work_dir / "docids.bin";
-  bool ok = merge_manifest_inputs(manifest, merged_raw, merged_doc_ids);
-  if (ok) {
-    ok = build_index_from_native_pq_files(
-        prefix, merged_raw, merged_doc_ids, source_pq_pivots,
-        source_pq_compressed, source_disk_pq_pivots,
-        source_disk_pq_compressed, manifest.count, dimension, metric_type,
-        max_degree, search_list_size, build_threads, build_blas_threads,
-        index_mem_gb, pq_chunks, num_nodes_to_cache, disk_pq_dims,
-        accelerate_build, shuffle_build);
+  std::filesystem::path input_raw;
+  std::filesystem::path input_doc_ids;
+  bool ok = true;
+  if (manifest.segments.size() == 1) {
+    const raw_segment &segment = manifest.segments.front();
+    ok = validate_manifest_segment(manifest, segment);
+    input_raw = segment.vector_path;
+    input_doc_ids = segment.docid_path;
+  } else {
+    input_raw = work_dir / "base.fbin";
+    input_doc_ids = work_dir / "docids.bin";
+    ok = merge_manifest_inputs(manifest, input_raw, input_doc_ids);
   }
 
-  std::filesystem::remove_all(work_dir, ec);
+  std::filesystem::path build_raw = input_raw;
+  if (ok && normalize_input) {
+    build_raw = work_dir / "base.cosine.fbin";
+    ok = normalize_fbin_for_cosine(input_raw, build_raw, manifest.count,
+                                   dimension);
+  }
+  if (ok) {
+    ok = build_index_from_native_pq_files(
+        prefix, build_raw, input_doc_ids, source_pq_pivots,
+        source_pq_compressed, source_disk_pq_pivots, source_disk_pq_compressed,
+        manifest.count, dimension, metric_type, max_degree, search_list_size,
+        build_threads, build_blas_threads, index_mem_gb, pq_chunks,
+        num_nodes_to_cache, disk_pq_dims, accelerate_build, shuffle_build);
+  }
+
   return ok;
 }
 
