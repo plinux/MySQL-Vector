@@ -920,6 +920,20 @@ bool release_savepoint_thd_txn(uint64_t thd_id, const std::string &name) {
 
 bool upsert(const std::string &index_name, uint64_t doc_id,
             const vector_index::vector_data &vector) {
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    vector_index::index_service::index_config config;
+    if (!g_index_service.describe_index(index_name, &config, nullptr, nullptr,
+                                        nullptr)) {
+      return false;
+    }
+    if (config.consistency_mode ==
+        vector_index::index_consistency_mode::kStandalone) {
+      return g_index_service.direct_upsert(index_name, doc_id, vector);
+    }
+  }
+
   const uint64_t txn_id = allocate_txn_id();
   if (!stage_upsert(txn_id, index_name, doc_id, vector)) return false;
   if (!commit_txn(txn_id)) {
@@ -930,6 +944,20 @@ bool upsert(const std::string &index_name, uint64_t doc_id,
 }
 
 bool erase(const std::string &index_name, uint64_t doc_id) {
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    vector_index::index_service::index_config config;
+    if (!g_index_service.describe_index(index_name, &config, nullptr, nullptr,
+                                        nullptr)) {
+      return false;
+    }
+    if (config.consistency_mode ==
+        vector_index::index_consistency_mode::kStandalone) {
+      return g_index_service.direct_erase(index_name, doc_id);
+    }
+  }
+
   const uint64_t txn_id = allocate_txn_id();
   if (!stage_erase(txn_id, index_name, doc_id)) return false;
   if (!commit_txn(txn_id)) {

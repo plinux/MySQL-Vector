@@ -3376,9 +3376,8 @@ share_found:
     }
 
 #ifdef HAVE_VECTOR_INDEX
-    if (!vector_index_truth_store::internal_truth_store_access_allowed(thd) &&
-        vector_index_truth_store::is_truth_store_table(share->db.str,
-                                                      share->table_name.str)) {
+    if (vector_index_truth_store::is_truth_store_table(share->db.str,
+                                                       share->table_name.str)) {
       my_error(ER_NO_SUCH_TABLE, MYF(0), table_list->db,
                table_list->table_name);
       goto err_lock;

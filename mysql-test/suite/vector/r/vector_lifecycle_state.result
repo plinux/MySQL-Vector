@@ -17,7 +17,7 @@ INDEX_STATE	idx_lifecycle.lifecycle_state	ready
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_lifecycle.lifecycle_version';
 Section	Variable_name	Value
-INDEX_STATE	idx_lifecycle.lifecycle_version	1
+INDEX_STATE	idx_lifecycle.lifecycle_version	2
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name = 'idx_lifecycle.last_error_code';
 Section	Variable_name	Value
@@ -46,7 +46,7 @@ INDEX_STATE	idx_lifecycle.lifecycle_state	ready
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_lifecycle.lifecycle_version';
 Section	Variable_name	Value
-INDEX_STATE	idx_lifecycle.lifecycle_version	1
+INDEX_STATE	idx_lifecycle.lifecycle_version	2
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name = 'idx_lifecycle.last_error_code';
 Section	Variable_name	Value
@@ -77,7 +77,7 @@ INDEX_STATE	idx_lifecycle.lifecycle_state	ready
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_lifecycle.lifecycle_version';
 Section	Variable_name	Value
-INDEX_STATE	idx_lifecycle.lifecycle_version	2
+INDEX_STATE	idx_lifecycle.lifecycle_version	3
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name = 'idx_lifecycle.last_error_code';
 Section	Variable_name	Value

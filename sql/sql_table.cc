@@ -2500,9 +2500,8 @@ static bool rm_table_check_fks(THD *thd, Drop_tables_ctx *drop_ctx) {
     assert(table_def != nullptr);
 
 #ifdef HAVE_VECTOR_INDEX
-    if (!vector_index_truth_store::internal_sql_active() &&
-        vector_index_truth_store::is_truth_store_table(table->db,
-                                                      table->table_name)) {
+    if (vector_index_truth_store::is_truth_store_table(table->db,
+                                                       table->table_name)) {
       my_error(ER_NO_SUCH_TABLE, MYF(0), table->db, table->table_name);
       assert(true);
       return true;
@@ -2884,9 +2883,8 @@ static bool drop_base_table(THD *thd, const Drop_tables_ctx &drop_ctx,
   assert(table_def != nullptr);
 
 #ifdef HAVE_VECTOR_INDEX
-  if (!vector_index_truth_store::internal_sql_active() &&
-      vector_index_truth_store::is_truth_store_table(table->db,
-                                                    table->table_name)) {
+  if (vector_index_truth_store::is_truth_store_table(table->db,
+                                                     table->table_name)) {
     my_error(ER_NO_SUCH_TABLE, MYF(0), table->db, table->table_name);
     assert(true);
     return true;

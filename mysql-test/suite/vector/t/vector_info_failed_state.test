@@ -14,5 +14,6 @@ SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', @meta_failed);
 
 --source include/restart_mysqld.inc
 
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_info_failed');
 SELECT VEC_INDEX_DROP('idx_info_failed');

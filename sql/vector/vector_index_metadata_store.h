@@ -46,6 +46,8 @@ struct metadata_row {
   vector_index::metric_type metric{vector_index::metric_type::kEuclidean};
   vector_index::backend_mode mode{vector_index::backend_mode::kMemory};
   vector_index::backend_provider provider{vector_index::backend_provider::kNative};
+  vector_index::index_consistency_mode consistency_mode{
+      vector_index::index_consistency_mode::kTransactional};
   std::string schema_name;
   std::string table_name;
   std::string column_name;
@@ -65,18 +67,22 @@ struct metadata_row {
   uint32_t diskann_max_degree{0};
   uint32_t diskann_build_complexity{0};
   uint32_t diskann_search_complexity{0};
+  uint32_t diskann_search_beamwidth{0};
+  vector_index::diskann_build_mode diskann_build_mode_value{
+      vector_index::diskann_build_mode::kAuto};
   std::string doc_id_column_name;
   uint32_t hnsw_build_threads{0};
   uint32_t diskann_build_threads{0};
   uint32_t faiss_build_threads{0};
+  bool diskann_build_mode_specified{false};
+  uint64_t diskann_pq_code_budget_size{0};
 };
 
 /**
   Persisted committed vector entry row.
 
-  This row stores one committed doc_id -> vector mapping for an index. The
-  snapshot is used as a v1 transitional recovery path and does not replace the
-  long-term InnoDB truth design.
+  This row stores one committed doc_id -> vector mapping for an index. It is the
+  SQL-layer recovery source for rebuildable vector serving state.
 */
 struct committed_row {
   std::string index_name;
@@ -87,9 +93,8 @@ struct committed_row {
 /**
   Persisted manifest row for vector-index truth checkpoints.
 
-  The manifest tracks coarse checkpoints for metadata/committed/changelog
-  objects. This model is a transitional shape that can later be mapped to
-  hidden InnoDB objects without changing the SQL-layer contract.
+  The manifest tracks coarse checkpoints for metadata, committed rows and
+  change-log objects so recovery can detect the latest durable registry state.
 */
 struct manifest_row {
   std::string state{"ready"};

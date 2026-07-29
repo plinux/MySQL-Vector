@@ -23,11 +23,23 @@
 
 #include "sql/vector/vector_index_build_options.h"
 
+#include "sql/vector/vector_index_limits.h"
+
 ulong opt_vector_hnsw_build_threads = 0;
 ulong opt_vector_faiss_build_threads = 0;
 ulong opt_vector_diskann_build_threads = 0;
+ulong opt_vector_diskann_build_mode =
+    static_cast<ulong>(vector_index::diskann_build_mode::kAuto);
+ulong opt_vector_search_batch_count =
+    vector_index::k_default_search_batch_count;
+ulong opt_vector_search_batch_result_count =
+    vector_index::k_default_search_batch_result_count;
+ulong opt_vector_batch_search_threads =
+    vector_index::k_default_batch_search_threads;
 ulong opt_vector_default_library =
     static_cast<ulong>(vector_index::vector_default_library::kNone);
+ulong opt_vector_index_consistency_mode =
+    static_cast<ulong>(vector_index::index_consistency_mode::kTransactional);
 ulonglong opt_vector_entry_cache_size = 256ULL * 1024ULL * 1024ULL;
 ulonglong opt_vector_pending_cache_size = 64ULL * 1024ULL * 1024ULL;
 ulonglong opt_vector_build_memory_size = 1024ULL * 1024ULL * 1024ULL;
@@ -36,8 +48,21 @@ ulonglong opt_vector_diskann_build_memory_size =
 ulonglong opt_vector_diskann_raw_segment_size = 256ULL * 1024ULL * 1024ULL;
 ulonglong opt_vector_faiss_train_size = 0;
 ulonglong opt_vector_hnsw_index_memory_size = 0;
+bool opt_vector_lazy_external_runtime = false;
 
 namespace vector_index {
+
+diskann_build_mode global_diskann_build_mode() {
+  switch (static_cast<diskann_build_mode>(opt_vector_diskann_build_mode)) {
+    case diskann_build_mode::kAuto:
+      return diskann_build_mode::kAuto;
+    case diskann_build_mode::kSerial:
+      return diskann_build_mode::kSerial;
+    case diskann_build_mode::kOffline:
+      return diskann_build_mode::kOffline;
+  }
+  return diskann_build_mode::kAuto;
+}
 
 vector_default_library global_vector_default_library() {
   switch (static_cast<vector_default_library>(opt_vector_default_library)) {
@@ -51,6 +76,17 @@ vector_default_library global_vector_default_library() {
       return vector_default_library::kFaiss;
   }
   return vector_default_library::kNone;
+}
+
+index_consistency_mode global_index_consistency_mode() {
+  switch (static_cast<index_consistency_mode>(
+      opt_vector_index_consistency_mode)) {
+    case index_consistency_mode::kTransactional:
+      return index_consistency_mode::kTransactional;
+    case index_consistency_mode::kStandalone:
+      return index_consistency_mode::kStandalone;
+  }
+  return index_consistency_mode::kTransactional;
 }
 
 }  // namespace vector_index

@@ -224,7 +224,13 @@ class index_service {
     uint32_t diskann_max_degree{0};
     uint32_t diskann_build_complexity{0};
     uint32_t diskann_build_threads{0};
+    diskann_build_mode diskann_build_mode_value{diskann_build_mode::kAuto};
     uint32_t diskann_search_complexity{0};
+    uint32_t diskann_search_beamwidth{0};
+    uint64_t diskann_pq_code_budget_size{0};
+    bool diskann_build_mode_specified{false};
+    index_consistency_mode consistency_mode{
+        index_consistency_mode::kTransactional};
   };
 
   struct pending_change_snapshot {
@@ -255,6 +261,19 @@ class index_service {
   struct commit_build_plan {
     std::vector<pending_change_snapshot> changes;
     std::vector<commit_rebuild_plan> rebuilds;
+  };
+
+  using bulk_load_visitor =
+      std::function<bool(uint64_t doc_id, const float *values,
+                         size_t dimension)>;
+  using bulk_load_reader =
+      std::function<bool(const bulk_load_visitor &visitor,
+                         std::string *error)>;
+
+  struct bulk_load_options {
+    bool replace_duplicates{false};
+    bool rebuild_after_load{false};
+    std::string source_format;
   };
 
   bool register_index(const std::string &index_name,
@@ -292,10 +311,19 @@ class index_service {
                                 uint32_t diskann_build_threads);
   bool set_diskann_build_threads(const std::string &index_name,
                                  uint32_t diskann_build_threads);
+  bool set_diskann_build_mode(const std::string &index_name,
+                              diskann_build_mode diskann_build_mode_value);
   bool set_diskann_search_complexity(const std::string &index_name,
                                      uint32_t diskann_search_complexity);
+  bool set_diskann_search_beamwidth(const std::string &index_name,
+                                    uint32_t diskann_search_beamwidth);
+  bool set_diskann_pq_code_budget_size(
+      const std::string &index_name, uint64_t diskann_pq_code_budget_size);
   bool restore_index_config(const std::string &index_name,
                             const index_config &config);
+  bool set_index_consistency_mode(
+      const std::string &index_name,
+      index_consistency_mode consistency_mode);
 
   bool stage_upsert(uint64_t txn_id, const std::string &index_name,
                     uint64_t doc_id, const vector_data &vector);
@@ -364,7 +392,25 @@ class index_service {
   bool evict_committed_cache_to_budget();
   size_t pending_vector_memory_bytes(uint64_t txn_id) const;
   size_t total_pending_vector_memory_bytes() const;
+  size_t standalone_ingest_memory_bytes(const std::string &index_name) const;
+  size_t standalone_segment_count(const std::string &index_name) const;
+  size_t standalone_segment_bytes(const std::string &index_name) const;
+  size_t standalone_raw_segment_count(const std::string &index_name) const;
+  size_t standalone_raw_segment_bytes(const std::string &index_name) const;
+  std::string standalone_build_source(const std::string &index_name) const;
   bool restore_committed_state(const committed_state &state);
+  bool direct_upsert(const std::string &index_name, uint64_t doc_id,
+                     const vector_data &vector);
+  bool bulk_upsert_from_reader(const std::string &index_name,
+                               const bulk_load_reader &reader,
+                               const bulk_load_options &options,
+                               std::string *error);
+  bool bulk_upsert_from_raw_files(const std::string &index_name,
+                                  const std::string &vector_filename,
+                                  const std::string &docid_filename,
+                                  const bulk_load_options &options,
+                                  uint64_t *loaded_rows, std::string *error);
+  bool direct_erase(const std::string &index_name, uint64_t doc_id);
   bool replace_committed_entries(const std::string &index_name,
                                  const committed_entries &entries);
   bool replace_committed_entries_preserve_lifecycle(
@@ -411,6 +457,7 @@ class index_service {
   std::unordered_map<std::string, backend_ptr> m_indexes;
   std::unordered_map<std::string, index_config> m_index_configs;
   vector_entry_store m_entry_store;
+  standalone_entry_store m_standalone_store;
   std::unordered_map<std::string, lifecycle_info> m_lifecycle_infos;
   std::unordered_map<uint64_t, std::vector<pending_change>> m_pending_changes;
   std::unordered_map<uint64_t, std::vector<savepoint_marker>> m_savepoints;

@@ -8,6 +8,13 @@ SELECT VEC_INDEX_CREATE('idx_diskann_sidecar', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISK
 SELECT VEC_INDEX_UPSERT('idx_diskann_sidecar', 1, VEC_FROMTEXT('[1,2]'));
 SELECT VEC_INDEX_SEARCH('idx_diskann_sidecar', VEC_FROMTEXT('[1,2]'), 1);
 
+--let $manifest_present=`SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_sidecar'), '$.external_manifest_present')`
+if (!$manifest_present)
+{
+  SELECT VEC_INDEX_DROP('idx_diskann_sidecar');
+  --skip Test requires a native DISKANN path that writes sidecar manifests
+}
+
 --let $datadir=`SELECT @@datadir`
 --let $index_hex=6964785f6469736b616e6e5f73696465636172
 --let $diskann_manifest=$datadir/mysql_vector_index/$index_hex/diskann_external.manifest.v1

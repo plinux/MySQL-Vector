@@ -193,8 +193,7 @@ bool load_vector_column_metadata(THD *thd, const char *db_name,
 
   if (table_def == nullptr ||
       table_def->hidden() == dd::Abstract_table::HT_HIDDEN_SE ||
-      (!vector_index_truth_store::internal_sql_active() &&
-       vector_index_truth_store::is_truth_store_table(db_name, table_name))) {
+      vector_index_truth_store::is_truth_store_table(db_name, table_name)) {
     my_error(ER_NO_SUCH_TABLE, MYF(0), db_name, table_name);
     return false;
   }
@@ -256,8 +255,7 @@ bool validate_vector_index_doc_id_support(THD *thd, const char *db_name,
   if (dd_client->acquire(db_name, table_name, &table_def)) return false;
   if (table_def == nullptr ||
       table_def->hidden() == dd::Abstract_table::HT_HIDDEN_SE ||
-      (!vector_index_truth_store::internal_sql_active() &&
-       vector_index_truth_store::is_truth_store_table(db_name, table_name))) {
+      vector_index_truth_store::is_truth_store_table(db_name, table_name)) {
     my_error(ER_NO_SUCH_TABLE, MYF(0), db_name, table_name);
     return false;
   }

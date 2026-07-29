@@ -54,6 +54,7 @@ WHERE Variable_name LIKE 'idx_diskann_thread_stmt.diskann_build_%';
 Section	Variable_name	Value
 INDEX_STATE	idx_diskann_thread_stmt.diskann_build_complexity	96
 INDEX_STATE	idx_diskann_thread_stmt.diskann_build_threads	4
+INDEX_STATE	idx_diskann_thread_stmt.diskann_build_mode	auto
 DROP TABLE IF EXISTS t_diskann_thread_ddl;
 CREATE TABLE t_diskann_thread_ddl(id INT PRIMARY KEY, v VECTOR(2));
 CREATE VECTOR INDEX ON t_diskann_thread_ddl(v)

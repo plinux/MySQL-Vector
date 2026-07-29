@@ -125,8 +125,7 @@ bool vector_trx_savepoint_rollback_can_release_mdl(handlerton *, THD *) {
 }
 
 int vector_trx_prepare(handlerton *, THD *thd, bool all) {
-  if (!has_vector_trx_context(thd) || !is_real_vector_scope(thd, all) ||
-      vector_index_truth_store::internal_sql_active()) {
+  if (!has_vector_trx_context(thd) || !is_real_vector_scope(thd, all)) {
     return 0;
   }
   XID xid = current_xid(thd);
@@ -138,7 +137,6 @@ int vector_trx_prepare(handlerton *, THD *thd, bool all) {
 
 int vector_trx_commit(handlerton *, THD *thd, bool all) {
   if (!has_vector_trx_context(thd)) return 0;
-  if (vector_index_truth_store::internal_sql_active()) return 0;
   bool ok = false;
   if (is_real_vector_scope(thd, all)) {
     XID xid = current_xid(thd);
@@ -165,7 +163,6 @@ int vector_trx_commit(handlerton *, THD *thd, bool all) {
 
 int vector_trx_rollback(handlerton *, THD *thd, bool all) {
   if (!has_vector_trx_context(thd)) return 0;
-  if (vector_index_truth_store::internal_sql_active()) return 0;
   bool ok = false;
   if (is_real_vector_scope(thd, all)) {
     XID xid = current_xid(thd);

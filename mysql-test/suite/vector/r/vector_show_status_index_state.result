@@ -13,6 +13,14 @@ INDEX_STATE	idx_mem.dimension	2
 INDEX_STATE	idx_mem.metric	euclidean
 INDEX_STATE	idx_mem.mode	memory
 INDEX_STATE	idx_mem.provider	native
+INDEX_STATE	idx_mem.consistency_mode	transactional
+INDEX_STATE	idx_mem.truth_store_enabled	1
+INDEX_STATE	idx_mem.build_source	truth_store
+INDEX_STATE	idx_mem.standalone_ingest_memory_bytes	0
+INDEX_STATE	idx_mem.standalone_segment_count	0
+INDEX_STATE	idx_mem.standalone_segment_bytes	0
+INDEX_STATE	idx_mem.standalone_raw_segment_count	0
+INDEX_STATE	idx_mem.standalone_raw_segment_bytes	0
 INDEX_STATE	idx_mem.backend_variant	
 INDEX_STATE	idx_mem.schema_name	
 INDEX_STATE	idx_mem.table_name	
@@ -29,15 +37,21 @@ INDEX_STATE	idx_mem.faiss_build_threads	0
 INDEX_STATE	idx_mem.diskann_max_degree	0
 INDEX_STATE	idx_mem.diskann_build_complexity	0
 INDEX_STATE	idx_mem.diskann_build_threads	0
+INDEX_STATE	idx_mem.diskann_build_mode	auto
 INDEX_STATE	idx_mem.diskann_search_complexity	0
+INDEX_STATE	idx_mem.diskann_search_beamwidth	0
+INDEX_STATE	idx_mem.diskann_pq_code_budget_size	0
 INDEX_STATE	idx_mem.lifecycle_state	ready
-INDEX_STATE	idx_mem.lifecycle_version	1
+INDEX_STATE	idx_mem.lifecycle_version	2
 INDEX_STATE	idx_mem.supports_mutations	1
 INDEX_STATE	idx_mem.entry_count	0
 INDEX_STATE	idx_mem.committed_entry_count	0
 BACKEND_HEALTH	idx_mem.backend_type	native
 BACKEND_HEALTH	idx_mem.backend_variant	
 BACKEND_HEALTH	idx_mem.mode	memory
+BACKEND_HEALTH	idx_mem.consistency_mode	transactional
+BACKEND_HEALTH	idx_mem.truth_store_enabled	1
+BACKEND_HEALTH	idx_mem.build_source	truth_store
 BACKEND_HEALTH	idx_mem.loaded	1
 BACKEND_HEALTH	idx_mem.writable	1
 BACKEND_HEALTH	idx_mem.last_error_code	0
@@ -56,6 +70,14 @@ INDEX_STATE	idx_ext.dimension	2
 INDEX_STATE	idx_ext.metric	cosine
 INDEX_STATE	idx_ext.mode	external
 INDEX_STATE	idx_ext.provider	faiss
+INDEX_STATE	idx_ext.consistency_mode	transactional
+INDEX_STATE	idx_ext.truth_store_enabled	1
+INDEX_STATE	idx_ext.build_source	truth_store
+INDEX_STATE	idx_ext.standalone_ingest_memory_bytes	0
+INDEX_STATE	idx_ext.standalone_segment_count	0
+INDEX_STATE	idx_ext.standalone_segment_bytes	0
+INDEX_STATE	idx_ext.standalone_raw_segment_count	0
+INDEX_STATE	idx_ext.standalone_raw_segment_bytes	0
 INDEX_STATE	idx_ext.backend_variant	hnsw
 INDEX_STATE	idx_ext.schema_name	
 INDEX_STATE	idx_ext.table_name	
@@ -72,15 +94,21 @@ INDEX_STATE	idx_ext.faiss_build_threads	0
 INDEX_STATE	idx_ext.diskann_max_degree	0
 INDEX_STATE	idx_ext.diskann_build_complexity	0
 INDEX_STATE	idx_ext.diskann_build_threads	0
+INDEX_STATE	idx_ext.diskann_build_mode	auto
 INDEX_STATE	idx_ext.diskann_search_complexity	0
+INDEX_STATE	idx_ext.diskann_search_beamwidth	0
+INDEX_STATE	idx_ext.diskann_pq_code_budget_size	0
 INDEX_STATE	idx_ext.lifecycle_state	ready
-INDEX_STATE	idx_ext.lifecycle_version	1
+INDEX_STATE	idx_ext.lifecycle_version	2
 INDEX_STATE	idx_ext.supports_mutations	1
 INDEX_STATE	idx_ext.entry_count	0
 INDEX_STATE	idx_ext.committed_entry_count	0
 BACKEND_HEALTH	idx_ext.backend_type	faiss
 BACKEND_HEALTH	idx_ext.backend_variant	hnsw
 BACKEND_HEALTH	idx_ext.mode	external
+BACKEND_HEALTH	idx_ext.consistency_mode	transactional
+BACKEND_HEALTH	idx_ext.truth_store_enabled	1
+BACKEND_HEALTH	idx_ext.build_source	truth_store
 BACKEND_HEALTH	idx_ext.loaded	1
 BACKEND_HEALTH	idx_ext.writable	1
 BACKEND_HEALTH	idx_ext.last_error_code	0
@@ -99,6 +127,14 @@ INDEX_STATE	idx_ext.dimension	2
 INDEX_STATE	idx_ext.metric	cosine
 INDEX_STATE	idx_ext.mode	external
 INDEX_STATE	idx_ext.provider	faiss
+INDEX_STATE	idx_ext.consistency_mode	transactional
+INDEX_STATE	idx_ext.truth_store_enabled	1
+INDEX_STATE	idx_ext.build_source	truth_store
+INDEX_STATE	idx_ext.standalone_ingest_memory_bytes	0
+INDEX_STATE	idx_ext.standalone_segment_count	0
+INDEX_STATE	idx_ext.standalone_segment_bytes	0
+INDEX_STATE	idx_ext.standalone_raw_segment_count	0
+INDEX_STATE	idx_ext.standalone_raw_segment_bytes	0
 INDEX_STATE	idx_ext.backend_variant	hnsw
 INDEX_STATE	idx_ext.schema_name	
 INDEX_STATE	idx_ext.table_name	
@@ -115,15 +151,21 @@ INDEX_STATE	idx_ext.faiss_build_threads	0
 INDEX_STATE	idx_ext.diskann_max_degree	0
 INDEX_STATE	idx_ext.diskann_build_complexity	0
 INDEX_STATE	idx_ext.diskann_build_threads	0
+INDEX_STATE	idx_ext.diskann_build_mode	auto
 INDEX_STATE	idx_ext.diskann_search_complexity	0
+INDEX_STATE	idx_ext.diskann_search_beamwidth	0
+INDEX_STATE	idx_ext.diskann_pq_code_budget_size	0
 INDEX_STATE	idx_ext.lifecycle_state	ready
-INDEX_STATE	idx_ext.lifecycle_version	1
+INDEX_STATE	idx_ext.lifecycle_version	2
 INDEX_STATE	idx_ext.supports_mutations	1
 INDEX_STATE	idx_ext.entry_count	0
 INDEX_STATE	idx_ext.committed_entry_count	0
 BACKEND_HEALTH	idx_ext.backend_type	faiss
 BACKEND_HEALTH	idx_ext.backend_variant	hnsw
 BACKEND_HEALTH	idx_ext.mode	external
+BACKEND_HEALTH	idx_ext.consistency_mode	transactional
+BACKEND_HEALTH	idx_ext.truth_store_enabled	1
+BACKEND_HEALTH	idx_ext.build_source	truth_store
 BACKEND_HEALTH	idx_ext.loaded	1
 BACKEND_HEALTH	idx_ext.writable	1
 BACKEND_HEALTH	idx_ext.last_error_code	0
@@ -153,7 +195,7 @@ v VECTOR(2)
 CREATE VECTOR INDEX ON t_vec_status_meta(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SELECT VEC_INDEX_INFO('test.t_vec_status_meta.v');
 VEC_INDEX_INFO('test.t_vec_status_meta.v')
-{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":"test","table_name":"t_vec_status_meta","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":4,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vec_status_meta","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":5,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":0,"committed_entry_count":0}
 SHOW VECTOR STATUS FOR INDEX 'test.t_vec_status_meta.v'
   WHERE Section = 'INDEX_STATE'
     AND Variable_name LIKE 'test.t_vec_status_meta.v.%';
@@ -162,6 +204,14 @@ INDEX_STATE	test.t_vec_status_meta.v.dimension	2
 INDEX_STATE	test.t_vec_status_meta.v.metric	euclidean
 INDEX_STATE	test.t_vec_status_meta.v.mode	memory
 INDEX_STATE	test.t_vec_status_meta.v.provider	native
+INDEX_STATE	test.t_vec_status_meta.v.consistency_mode	transactional
+INDEX_STATE	test.t_vec_status_meta.v.truth_store_enabled	1
+INDEX_STATE	test.t_vec_status_meta.v.build_source	truth_store
+INDEX_STATE	test.t_vec_status_meta.v.standalone_ingest_memory_bytes	0
+INDEX_STATE	test.t_vec_status_meta.v.standalone_segment_count	0
+INDEX_STATE	test.t_vec_status_meta.v.standalone_segment_bytes	0
+INDEX_STATE	test.t_vec_status_meta.v.standalone_raw_segment_count	0
+INDEX_STATE	test.t_vec_status_meta.v.standalone_raw_segment_bytes	0
 INDEX_STATE	test.t_vec_status_meta.v.backend_variant	
 INDEX_STATE	test.t_vec_status_meta.v.schema_name	test
 INDEX_STATE	test.t_vec_status_meta.v.table_name	t_vec_status_meta
@@ -178,9 +228,12 @@ INDEX_STATE	test.t_vec_status_meta.v.faiss_build_threads	0
 INDEX_STATE	test.t_vec_status_meta.v.diskann_max_degree	0
 INDEX_STATE	test.t_vec_status_meta.v.diskann_build_complexity	0
 INDEX_STATE	test.t_vec_status_meta.v.diskann_build_threads	0
+INDEX_STATE	test.t_vec_status_meta.v.diskann_build_mode	auto
 INDEX_STATE	test.t_vec_status_meta.v.diskann_search_complexity	0
+INDEX_STATE	test.t_vec_status_meta.v.diskann_search_beamwidth	0
+INDEX_STATE	test.t_vec_status_meta.v.diskann_pq_code_budget_size	0
 INDEX_STATE	test.t_vec_status_meta.v.lifecycle_state	ready
-INDEX_STATE	test.t_vec_status_meta.v.lifecycle_version	4
+INDEX_STATE	test.t_vec_status_meta.v.lifecycle_version	5
 INDEX_STATE	test.t_vec_status_meta.v.supports_mutations	1
 INDEX_STATE	test.t_vec_status_meta.v.entry_count	0
 INDEX_STATE	test.t_vec_status_meta.v.committed_entry_count	0

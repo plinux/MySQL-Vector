@@ -43,8 +43,6 @@ void reset_override_store_for_testing();
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 bool bootstrap_initialize_mysql_store(THD *thd);
 void shutdown_mysql_store();
-bool internal_sql_active();
-bool internal_truth_store_access_allowed(const THD *thd);
 bool is_truth_store_table_name_impl(const char *schema_name,
                                     const char *table_name);
 bool mysql_debug_get_artifact(const std::string &artifact_name,
@@ -54,10 +52,6 @@ bool mysql_debug_set_artifact(const std::string &artifact_name,
 bool mysql_debug_delete_artifact(const std::string &artifact_name);
 std::string sql_string_literal_impl(const char *text);
 bool decode_hex_bytes_impl(const std::string &encoded, std::string *decoded);
-bool internal_execute_impl(const std::string &sql, unsigned int *last_errno,
-                           std::string *last_error);
-bool internal_query_scalar_string_impl(const std::string &sql,
-                                       std::string *value, bool *found);
 bool deserialize_quarantine_entries_impl(
     const std::string &payload,
     std::vector<std::pair<std::string, std::string>> *entries);

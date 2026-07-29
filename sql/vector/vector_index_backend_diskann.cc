@@ -1264,6 +1264,20 @@ uint32_t diskann_backend::diskann_build_threads() const {
   return m_mode == backend_mode::kExternal ? m_diskann_build_threads : 0;
 }
 
+bool diskann_backend::set_diskann_build_mode(
+    diskann_build_mode diskann_build_mode_value) {
+  if (m_mode != backend_mode::kExternal) return false;
+  m_diskann_build_mode = diskann_build_mode_value;
+  m_native_runtime_enabled = false;
+  m_native_state.reset();
+  return true;
+}
+
+diskann_build_mode diskann_backend::diskann_build_mode_value() const {
+  return m_mode == backend_mode::kExternal ? m_diskann_build_mode
+                                           : diskann_build_mode::kAuto;
+}
+
 bool diskann_backend::set_diskann_search_complexity(
     uint32_t diskann_search_complexity) {
   if (m_mode != backend_mode::kExternal || diskann_search_complexity == 0) {
@@ -1286,6 +1300,32 @@ bool diskann_backend::set_diskann_search_complexity(
 
 uint32_t diskann_backend::diskann_search_complexity() const {
   return m_mode == backend_mode::kExternal ? m_diskann_search_complexity : 0;
+}
+
+bool diskann_backend::set_diskann_search_beamwidth(
+    uint32_t diskann_search_beamwidth) {
+  if (m_mode != backend_mode::kExternal || diskann_search_beamwidth == 0) {
+    return false;
+  }
+  m_diskann_search_beamwidth = diskann_search_beamwidth;
+  return true;
+}
+
+uint32_t diskann_backend::diskann_search_beamwidth() const {
+  return m_mode == backend_mode::kExternal ? m_diskann_search_beamwidth : 0;
+}
+
+bool diskann_backend::set_diskann_pq_code_budget_size(
+    uint64_t diskann_pq_code_budget_size) {
+  if (m_mode != backend_mode::kExternal) return false;
+  m_diskann_pq_code_budget_size = diskann_pq_code_budget_size;
+  m_native_runtime_enabled = false;
+  m_native_state.reset();
+  return true;
+}
+
+uint64_t diskann_backend::diskann_pq_code_budget_size() const {
+  return m_mode == backend_mode::kExternal ? m_diskann_pq_code_budget_size : 0;
 }
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
@@ -1404,7 +1444,6 @@ bool diskann_api_load_for_testing() {
 
 bool diskann_api_available_for_testing(bool has_handle, bool has_create_index,
                                    bool has_drop_index, bool has_insert,
-                                   bool has_bulk_insert,
                                    bool has_search_vector, bool has_remove,
                                    bool has_card) {
   diskann_api api;
@@ -1415,8 +1454,6 @@ bool diskann_api_available_for_testing(bool has_handle, bool has_create_index,
   api.drop_index =
       has_drop_index ? reinterpret_cast<diskann_drop_index_fn>(1) : nullptr;
   api.insert = has_insert ? reinterpret_cast<diskann_insert_fn>(1) : nullptr;
-  api.bulk_insert =
-      has_bulk_insert ? reinterpret_cast<diskann_bulk_insert_fn>(1) : nullptr;
   api.search_vector = has_search_vector
                           ? reinterpret_cast<diskann_search_vector_fn>(1)
                           : nullptr;

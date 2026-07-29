@@ -47,7 +47,7 @@ SELECT VEC_INDEX_TXN_PENDING(@txn_fail);
 SELECT VEC_INDEX_SEARCH('idx_persist_fail', VEC_FROMTEXT('[2,2]'), 10);
 SELECT VEC_INDEX_TXN_ROLLBACK(@txn_fail);
 SELECT VEC_INDEX_TXN_PENDING(@txn_fail);
---replace_regex /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":N/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_persist_fail');
 
 SET @persist_after = (

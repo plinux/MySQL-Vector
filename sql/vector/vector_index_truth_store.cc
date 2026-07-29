@@ -38,14 +38,8 @@
 #include "lex_string.h"
 #include "my_dbug.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
-#include "sql/log.h"
 #include "sql/mysqld.h"
 #include "sql/sql_class.h"
-#include "sql/sql_lex.h"
-#include "sql/sql_list.h"
-#include "sql/sql_parse.h"
-#include "sql/sql_prepare.h"
-#include "sql/thd_raii.h"
 #include "sql/vector/vector_index_diagnostics.h"
 #include "sql/vector/vector_index_truth_store_internal.h"
 #include "storage/innobase/include/dict0vectruth.h"
@@ -61,7 +55,6 @@ constexpr const char *kPreparedArtifactName = "prepared";
 constexpr const char *kQuarantineStoreArtifactName = "quarantine_store";
 constexpr const char *kQuarantinePayloadHeaderV1 =
     "mysql-vector-quarantine-v1";
-thread_local bool g_internal_sql_active = false;
 
 enum class row_artifact_kind { kNone, kCommitted, kChangeLog, kPrepared };
 
@@ -576,155 +569,6 @@ bool is_truth_store_table_name(const char *schema_name, const char *table_name) 
          my_strcasecmp(system_charset_info, table_name,
                        "vector_index_truth_store_quarantine") == 0;
 }
-
-class internal_sql_session {
- public:
-  ~internal_sql_session() {
-    if (m_thd != nullptr) {
-      const bool previous_internal_sql = g_internal_sql_active;
-      THD *previous_thd = current_thd;
-      g_internal_sql_active = true;
-      if (previous_thd != nullptr && previous_thd != m_thd) {
-        previous_thd->restore_globals();
-      }
-      m_thd->thread_stack = reinterpret_cast<char *>(&previous_thd);
-      m_thd->store_globals();
-      m_thd->release_resources();
-      m_thd->restore_globals();
-      g_internal_sql_active = previous_internal_sql;
-      if (previous_thd != nullptr && previous_thd != m_thd) {
-        previous_thd->store_globals();
-      }
-      delete m_thd;
-      m_thd = nullptr;
-    }
-  }
-
-  bool open() {
-    if (m_thd != nullptr) return true;
-    THD *saved_thd = current_thd;
-    if ((m_thd = new THD) == nullptr) return false;
-    m_thd->thread_stack = reinterpret_cast<char *>(&saved_thd);
-    m_thd->set_new_thread_id();
-    if (saved_thd != nullptr) saved_thd->restore_globals();
-    m_thd->store_globals();
-    m_thd->security_context()->skip_grants();
-    m_thd->system_thread = SYSTEM_THREAD_BACKGROUND;
-    m_thd->variables.option_bits &= ~OPTION_BIN_LOG;
-    m_thd->variables.sql_log_bin = false;
-    m_thd->set_skip_readonly_check();
-    lex_start(m_thd);
-    mysql_reset_thd_for_next_command(m_thd);
-    m_thd->restore_globals();
-    if (saved_thd != nullptr) saved_thd->store_globals();
-    return true;
-  }
-
-  bool execute(const std::string &sql, unsigned int *last_errno = nullptr,
-               std::string *last_error = nullptr) {
-    DBUG_EXECUTE_IF("vector_truth_store_fail_internal_execute", return false;);
-    DBUG_EXECUTE_IF("vector_truth_store_force_internal_execute_success",
-                    return true;);
-    DBUG_EXECUTE_IF("vector_truth_store_force_internal_execute_error", {
-      if (last_errno != nullptr) *last_errno = ER_UNKNOWN_ERROR;
-      if (last_error != nullptr) *last_error = "synthetic execute error";
-      return false;
-    };);
-    if (!open()) return false;
-    scoped_thd_switch switch_thd(m_thd);
-    Disable_binlog_guard disable_binlog(m_thd);
-    Disable_sql_log_bin_guard disable_sql_log_bin(m_thd);
-#ifndef NDEBUG
-    m_thd->debug_binlog_xid_last.reset();
-#endif
-    Ed_connection connection(m_thd);
-    LEX_STRING query{const_cast<char *>(sql.c_str()), sql.length()};
-    if (!connection.execute_direct(query)) return true;
-    if (last_errno != nullptr) *last_errno = connection.get_last_errno();
-    if (last_error != nullptr && connection.get_last_error() != nullptr) {
-      *last_error = connection.get_last_error();
-    }
-    return false;
-  }
-
-  bool query_scalar_string(const std::string &sql, std::string *value,
-                         bool *found = nullptr) {
-    DBUG_EXECUTE_IF("vector_truth_store_fail_internal_query_scalar",
-                    return false;);
-    DBUG_EXECUTE_IF("vector_truth_store_force_query_scalar_query_error",
-                    return false;);
-    DBUG_EXECUTE_IF("vector_truth_store_force_query_scalar_empty_result", {
-      value->clear();
-      if (found != nullptr) *found = false;
-      return true;
-    };);
-    DBUG_EXECUTE_IF("vector_truth_store_force_query_scalar_found_one", {
-      value->assign("1");
-      if (found != nullptr) *found = true;
-      return true;
-    };);
-    DBUG_EXECUTE_IF("vector_truth_store_force_query_scalar_found_payload", {
-      value->assign("mock-payload");
-      if (found != nullptr) *found = true;
-      return true;
-    };);
-    if (value == nullptr) return false;
-    if (!open()) return false;
-    scoped_thd_switch switch_thd(m_thd);
-    Disable_binlog_guard disable_binlog(m_thd);
-    Disable_sql_log_bin_guard disable_sql_log_bin(m_thd);
-#ifndef NDEBUG
-    m_thd->debug_binlog_xid_last.reset();
-#endif
-    Ed_connection connection(m_thd);
-    LEX_STRING query{const_cast<char *>(sql.c_str()), sql.length()};
-    if (connection.execute_direct(query)) return false;
-    if (found != nullptr) *found = false;
-    value->clear();
-    Ed_result_set *result_set = connection.get_result_sets();
-    if (result_set == nullptr || result_set->size() == 0 ||
-        result_set->get_field_count() == 0) {
-      return true;
-    }
-    List_iterator<Ed_row> row_it(static_cast<List<Ed_row> &>(*result_set));
-    Ed_row *row = row_it++;
-    if (row == nullptr) return true;
-    const Ed_column *column = row->get_column(0);
-    if (column != nullptr && column->str != nullptr) {
-      value->assign(column->str, column->length);
-      if (found != nullptr) *found = true;
-    }
-    return true;
-  }
-
- private:
-  class scoped_thd_switch {
-   public:
-    explicit scoped_thd_switch(THD *thd)
-        : m_previous(current_thd),
-          m_thd(thd),
-          m_previous_internal_sql(g_internal_sql_active) {
-      if (m_thd == nullptr) return;
-      if (m_previous != nullptr) m_previous->restore_globals();
-      m_thd->thread_stack = reinterpret_cast<char *>(&thd);
-      m_thd->store_globals();
-      g_internal_sql_active = true;
-    }
-
-    ~scoped_thd_switch() {
-      if (m_thd != nullptr) m_thd->restore_globals();
-      g_internal_sql_active = m_previous_internal_sql;
-      if (m_previous != nullptr) m_previous->store_globals();
-    }
-
-   private:
-    THD *m_previous;
-    THD *m_thd;
-    bool m_previous_internal_sql;
-  };
-
-  THD *m_thd{nullptr};
-};
 
 class mysql_truth_store final : public vector_index_truth_store::truth_store {
  public:
@@ -1439,12 +1283,6 @@ void shutdown_mysql_store() {
   g_mysql_store.shutdown();
 }
 
-bool internal_sql_active() { return g_internal_sql_active; }
-
-bool internal_truth_store_access_allowed(const THD *thd) {
-  return thd != nullptr && thd->is_system_thread() && g_internal_sql_active;
-}
-
 bool is_truth_store_table_name_impl(const char *schema_name,
                                     const char *table_name) {
   return is_truth_store_table_name(schema_name, table_name);
@@ -1477,18 +1315,6 @@ std::string sql_string_literal_impl(const char *text) {
 
 bool decode_hex_bytes_impl(const std::string &encoded, std::string *decoded) {
   return decode_hex_bytes(encoded, decoded);
-}
-
-bool internal_execute_impl(const std::string &sql, unsigned int *last_errno,
-                           std::string *last_error) {
-  internal_sql_session session;
-  return session.execute(sql, last_errno, last_error);
-}
-
-bool internal_query_scalar_string_impl(const std::string &sql,
-                                       std::string *value, bool *found) {
-  internal_sql_session session;
-  return session.query_scalar_string(sql, value, found);
 }
 
 bool deserialize_quarantine_entries_impl(

@@ -73,6 +73,7 @@ std::vector<std::string> current_metadata_fields_for_test() {
       "cosine",
       "external",
       "faiss",
+      "transactional",
       "recovering",
       "9",
       "7",
@@ -94,8 +95,12 @@ std::vector<std::string> current_metadata_fields_for_test() {
       "24",
       "120",
       "240",
+      "16",
+      "1048576",
       "5",
-      "9"};
+      "9",
+      "offline",
+      "1"};
 }
 
 std::string join_metadata_fields_for_test(
@@ -112,6 +117,13 @@ std::string current_metadata_payload_for_test(
     const std::vector<std::string> &fields) {
   return std::string("VECTOR_INDEX_METADATA_V1\n") +
          join_metadata_fields_for_test(fields) + "\n";
+}
+
+std::string encoded_vector_for_test(const vector_index::vector_data &vector) {
+  const char *data = reinterpret_cast<const char *>(vector.data());
+  return encode_hex_for_test(
+      vector.empty() ? std::string()
+                     : std::string(data, vector.size() * sizeof(float)));
 }
 
 bool deserialize_current_metadata_fields_for_test(
@@ -213,6 +225,50 @@ TEST_F(MetadataStoreTest, SerializeApisRejectNullOutputPointers) {
       changelog_rows, nullptr));
   EXPECT_FALSE(vector_index_metadata_store::serialize_prepared_rows(
       prepared_rows, nullptr));
+}
+
+TEST_F(MetadataStoreTest, DeserializersSkipBlankLinesAroundRows) {
+  const std::string index_hex = encode_hex_for_test("idx_blank");
+  const std::string vector_hex =
+      encoded_vector_for_test({1.0F, 2.0F});
+
+  std::vector<vector_index_metadata_store::metadata_row> metadata_rows;
+  ASSERT_TRUE(vector_index_metadata_store::deserialize_metadata_rows(
+      std::string("\nVECTOR_INDEX_METADATA_V1\n\n") +
+          join_metadata_fields_for_test(current_metadata_fields_for_test()) +
+          "\n\n",
+      &metadata_rows));
+  ASSERT_EQ(1U, metadata_rows.size());
+  EXPECT_EQ("idx_v1", metadata_rows[0].index_name);
+
+  std::vector<vector_index_metadata_store::committed_row> committed_rows;
+  ASSERT_TRUE(vector_index_metadata_store::deserialize_committed_rows(
+      "mysql-vector-committed-v1\n\n" + index_hex + "\t7\t2\t" + vector_hex +
+          "\n\n",
+      &committed_rows));
+  ASSERT_EQ(1U, committed_rows.size());
+  EXPECT_EQ(7U, committed_rows[0].doc_id);
+
+  vector_index_metadata_store::manifest_row manifest_row;
+  ASSERT_TRUE(vector_index_metadata_store::deserialize_manifest_row(
+      "mysql-vector-manifest-v1\n\nready\t2\t3\t4\t5\n\n", &manifest_row));
+  EXPECT_EQ(3U, manifest_row.metadata_checkpoint);
+
+  std::vector<vector_index_metadata_store::change_log_row> changelog_rows;
+  ASSERT_TRUE(vector_index_metadata_store::deserialize_change_log_rows(
+      "mysql-vector-changelog-v1\n\n1\t99\tupsert\t" + index_hex +
+          "\t7\t" + vector_hex + "\n\n",
+      &changelog_rows));
+  ASSERT_EQ(1U, changelog_rows.size());
+  EXPECT_EQ(99U, changelog_rows[0].txn_id);
+
+  std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows;
+  ASSERT_TRUE(vector_index_metadata_store::deserialize_prepared_rows(
+      "mysql-vector-prepared-v1\n\n1\t3\t0\t616263\t1\t99\tupsert\t" +
+          index_hex + "\t7\t" + vector_hex + "\n\n",
+      &prepared_rows));
+  ASSERT_EQ(1U, prepared_rows.size());
+  EXPECT_TRUE(prepared_rows[0].prepared_in_tc);
 }
 
 TEST_F(MetadataStoreTest, LoadApisRejectNullOutputPointers) {
@@ -320,6 +376,7 @@ TEST_F(MetadataStoreTest, DefaultDataHomeStoreRoundTripWithoutOverride) {
        vector_index::metric_type::kEuclidean,
        vector_index::backend_mode::kMemory,
        vector_index::backend_provider::kNative,
+       vector_index::index_consistency_mode::kTransactional,
        "",
        "",
        "",
@@ -339,6 +396,8 @@ TEST_F(MetadataStoreTest, DefaultDataHomeStoreRoundTripWithoutOverride) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""}};
   ASSERT_TRUE(vector_index_metadata_store::save_all(metadata_rows));
   std::vector<vector_index_metadata_store::metadata_row> loaded_metadata;
@@ -431,6 +490,7 @@ TEST_F(MetadataStoreTest, DefaultDataHomeEmptyUsesRelativeStoreDirectory) {
        vector_index::metric_type::kEuclidean,
        vector_index::backend_mode::kMemory,
        vector_index::backend_provider::kNative,
+       vector_index::index_consistency_mode::kTransactional,
        "",
        "",
        "",
@@ -450,6 +510,8 @@ TEST_F(MetadataStoreTest, DefaultDataHomeEmptyUsesRelativeStoreDirectory) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""}};
   ASSERT_TRUE(vector_index_metadata_store::save_all(metadata_rows));
 
@@ -511,6 +573,7 @@ TEST_F(MetadataStoreTest, RelativePathRoundTripUsesEmptyParentBranch) {
        vector_index::metric_type::kEuclidean,
        vector_index::backend_mode::kMemory,
        vector_index::backend_provider::kNative,
+       vector_index::index_consistency_mode::kTransactional,
        "",
        "",
        "",
@@ -530,6 +593,8 @@ TEST_F(MetadataStoreTest, RelativePathRoundTripUsesEmptyParentBranch) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""}};
   ASSERT_TRUE(vector_index_metadata_store::save_all(metadata_rows));
   std::vector<vector_index_metadata_store::metadata_row> loaded_metadata;
@@ -599,6 +664,7 @@ TEST_F(MetadataStoreTest, SaveThenLoadRoundTrip) {
        vector_index::metric_type::kEuclidean,
        vector_index::backend_mode::kMemory,
        vector_index::backend_provider::kNative,
+       vector_index::index_consistency_mode::kTransactional,
        "",
        "",
        "",
@@ -618,12 +684,15 @@ TEST_F(MetadataStoreTest, SaveThenLoadRoundTrip) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""},
       {"idx_ext",
        4,
        vector_index::metric_type::kCosine,
        vector_index::backend_mode::kExternal,
        vector_index::backend_provider::kFaiss,
+       vector_index::index_consistency_mode::kTransactional,
        "test",
        "t_ext",
        "v",
@@ -643,6 +712,8 @@ TEST_F(MetadataStoreTest, SaveThenLoadRoundTrip) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""}};
 
   ASSERT_TRUE(vector_index_metadata_store::save_all(rows));
@@ -689,6 +760,7 @@ TEST_F(MetadataStoreTest, MetadataSerializationRoundTrip) {
        vector_index::metric_type::kEuclidean,
        vector_index::backend_mode::kMemory,
        vector_index::backend_provider::kNative,
+       vector_index::index_consistency_mode::kTransactional,
        "",
        "",
        "",
@@ -708,12 +780,15 @@ TEST_F(MetadataStoreTest, MetadataSerializationRoundTrip) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""},
       {"test.t_vec.v",
        4,
        vector_index::metric_type::kCosine,
        vector_index::backend_mode::kExternal,
        vector_index::backend_provider::kFaiss,
+       vector_index::index_consistency_mode::kTransactional,
        "test",
        "t_vec",
        "v",
@@ -733,11 +808,17 @@ TEST_F(MetadataStoreTest, MetadataSerializationRoundTrip) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""}};
 
   rows[1].hnsw_build_threads = 3;
   rows[1].faiss_build_threads = 4;
   rows[1].diskann_build_threads = 2;
+  rows[1].diskann_build_mode_value =
+      vector_index::diskann_build_mode::kOffline;
+  rows[1].diskann_build_mode_specified = true;
+  rows[1].diskann_pq_code_budget_size = 1048576;
   std::string payload;
   ASSERT_TRUE(
       vector_index_metadata_store::serialize_metadata_rows(rows, &payload));
@@ -753,6 +834,10 @@ TEST_F(MetadataStoreTest, MetadataSerializationRoundTrip) {
   EXPECT_EQ(3U, loaded[1].hnsw_build_threads);
   EXPECT_EQ(4U, loaded[1].faiss_build_threads);
   EXPECT_EQ(2U, loaded[1].diskann_build_threads);
+  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+            loaded[1].diskann_build_mode_value);
+  EXPECT_TRUE(loaded[1].diskann_build_mode_specified);
+  EXPECT_EQ(1048576U, loaded[1].diskann_pq_code_budget_size);
 }
 
 TEST_F(MetadataStoreTest, ChangeLogSerializationRoundTrip) {
@@ -829,8 +914,12 @@ TEST_F(MetadataStoreTest, LoadCurrentMetadataRowReadsAllFields) {
   EXPECT_EQ(24U, loaded[0].diskann_max_degree);
   EXPECT_EQ(120U, loaded[0].diskann_build_complexity);
   EXPECT_EQ(240U, loaded[0].diskann_search_complexity);
+  EXPECT_EQ(16U, loaded[0].diskann_search_beamwidth);
   EXPECT_EQ(5U, loaded[0].diskann_build_threads);
   EXPECT_EQ(9U, loaded[0].faiss_build_threads);
+  EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
+            loaded[0].diskann_build_mode_value);
+  EXPECT_TRUE(loaded[0].diskann_build_mode_specified);
 }
 
 TEST_F(MetadataStoreTest, LoadRejectsStaleDevelopmentMetadataHeaders) {
@@ -868,6 +957,7 @@ TEST_F(MetadataStoreTest, SerializeCurrentMetadataKeepsInitialHeader) {
        vector_index::metric_type::kEuclidean,
        vector_index::backend_mode::kMemory,
        vector_index::backend_provider::kNative,
+       vector_index::index_consistency_mode::kTransactional,
        "test",
        "t_vec",
        "v",
@@ -887,6 +977,8 @@ TEST_F(MetadataStoreTest, SerializeCurrentMetadataKeepsInitialHeader) {
        24,
        120,
        240,
+       16,
+       vector_index::diskann_build_mode::kAuto,
        "id",
        3,
        5,
@@ -922,12 +1014,55 @@ TEST_F(MetadataStoreTest, LoadRejectsInvalidProviderInCurrentRow) {
   EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
 }
 
+TEST_F(MetadataStoreTest, LoadRejectsInvalidDiskAnnBuildModeInCurrentRow) {
+  std::vector<std::string> fields = current_metadata_fields_for_test();
+  fields[31] = "background";
+
+  std::vector<vector_index_metadata_store::metadata_row> loaded;
+  EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+}
+
+TEST_F(MetadataStoreTest, LoadRejectsInvalidDiskAnnBuildModeSpecifiedFlag) {
+  std::vector<std::string> fields = current_metadata_fields_for_test();
+  fields[32] = "true";
+
+  std::vector<vector_index_metadata_store::metadata_row> loaded;
+  EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+}
+
 TEST_F(MetadataStoreTest, LoadRejectsInvalidIndexHexInCurrentRow) {
   std::vector<std::string> fields = current_metadata_fields_for_test();
   fields[0] = "zz";
 
   std::vector<vector_index_metadata_store::metadata_row> loaded;
   EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+}
+
+TEST_F(MetadataStoreTest, LoadRejectsEmptyIndexNameInCurrentRow) {
+  std::vector<std::string> fields = current_metadata_fields_for_test();
+  fields[0].clear();
+
+  std::vector<vector_index_metadata_store::metadata_row> loaded;
+  EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+}
+
+TEST_F(MetadataStoreTest, LoadRejectsInvalidDimensionAndMetricInCurrentRow) {
+  std::vector<vector_index_metadata_store::metadata_row> loaded;
+  {
+    std::vector<std::string> fields = current_metadata_fields_for_test();
+    fields[1] = "0";
+    EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+  }
+  {
+    std::vector<std::string> fields = current_metadata_fields_for_test();
+    fields[1] = "not_a_number";
+    EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+  }
+  {
+    std::vector<std::string> fields = current_metadata_fields_for_test();
+    fields[2] = "manhattan";
+    EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+  }
 }
 
 TEST_F(MetadataStoreTest, LoadRejectsEmptyLifecycleState) {
@@ -940,7 +1075,7 @@ TEST_F(MetadataStoreTest, LoadRejectsEmptyLifecycleState) {
 
 TEST_F(MetadataStoreTest, LoadRejectsZeroLifecycleVersion) {
   std::vector<std::string> fields = current_metadata_fields_for_test();
-  fields[6] = "0";
+  fields[7] = "0";
 
   std::vector<vector_index_metadata_store::metadata_row> loaded;
   EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
@@ -948,23 +1083,38 @@ TEST_F(MetadataStoreTest, LoadRejectsZeroLifecycleVersion) {
 
 TEST_F(MetadataStoreTest, LoadRejectsInvalidSchemaHexInCurrentRow) {
   std::vector<std::string> fields = current_metadata_fields_for_test();
-  fields[11] = "zz";
+  fields[12] = "zz";
 
   std::vector<vector_index_metadata_store::metadata_row> loaded;
   EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
 }
 
+TEST_F(MetadataStoreTest, LoadRejectsInvalidTableAndColumnHexInCurrentRow) {
+  std::vector<vector_index_metadata_store::metadata_row> loaded;
+  {
+    std::vector<std::string> fields = current_metadata_fields_for_test();
+    fields[13] = "zz";
+    EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+  }
+  {
+    std::vector<std::string> fields = current_metadata_fields_for_test();
+    fields[14] = "zz";
+    EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+  }
+}
+
 TEST_F(MetadataStoreTest, LoadRejectsInvalidDocIdColumnHexInCurrentRow) {
   std::vector<std::string> fields = current_metadata_fields_for_test();
-  fields[14] = "zz";
+  fields[15] = "zz";
 
   std::vector<vector_index_metadata_store::metadata_row> loaded;
   EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
 }
 
 TEST_F(MetadataStoreTest, LoadRejectsOverflowCurrentMetadataFields) {
-  const size_t uint32_overflow_fields[] = {7,  15, 16, 17, 18, 19, 20,
-                                           21, 22, 23, 24, 25, 26, 27};
+  const size_t uint32_overflow_fields[] = {8,  16, 17, 18, 19, 20, 21,
+                                           22, 23, 24, 25, 26, 27, 29,
+                                           30};
   for (size_t field_index : uint32_overflow_fields) {
     std::vector<std::string> fields = current_metadata_fields_for_test();
     fields[field_index] = "4294967296";
@@ -974,7 +1124,7 @@ TEST_F(MetadataStoreTest, LoadRejectsOverflowCurrentMetadataFields) {
         << field_index;
   }
 
-  const size_t uint64_overflow_fields[] = {6, 8, 9, 10};
+  const size_t uint64_overflow_fields[] = {7, 9, 10, 11, 28};
   for (size_t field_index : uint64_overflow_fields) {
     std::vector<std::string> fields = current_metadata_fields_for_test();
     fields[field_index] = "18446744073709551616";
@@ -992,6 +1142,7 @@ TEST_F(MetadataStoreTest, SaveEmptyRowsRemovesStoreFile) {
        vector_index::metric_type::kEuclidean,
        vector_index::backend_mode::kMemory,
        vector_index::backend_provider::kNative,
+       vector_index::index_consistency_mode::kTransactional,
        "",
        "",
        "",
@@ -1011,6 +1162,8 @@ TEST_F(MetadataStoreTest, SaveEmptyRowsRemovesStoreFile) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""}};
   ASSERT_TRUE(vector_index_metadata_store::save_all(rows));
 
@@ -1032,6 +1185,7 @@ TEST_F(MetadataStoreTest, SaveEmptyRowsFailsWhenRemovalIsInjected) {
        vector_index::metric_type::kEuclidean,
        vector_index::backend_mode::kMemory,
        vector_index::backend_provider::kNative,
+       vector_index::index_consistency_mode::kTransactional,
        "",
        "",
        "",
@@ -1051,6 +1205,8 @@ TEST_F(MetadataStoreTest, SaveEmptyRowsFailsWhenRemovalIsInjected) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""}};
   ASSERT_TRUE(vector_index_metadata_store::save_all(rows));
   rows.clear();
@@ -1078,6 +1234,7 @@ TEST_F(MetadataStoreTest, SaveAllFailsWhenParentDirectoryCannotBeCreated) {
        vector_index::metric_type::kEuclidean,
        vector_index::backend_mode::kMemory,
        vector_index::backend_provider::kNative,
+       vector_index::index_consistency_mode::kTransactional,
        "",
        "",
        "",
@@ -1097,6 +1254,8 @@ TEST_F(MetadataStoreTest, SaveAllFailsWhenParentDirectoryCannotBeCreated) {
        0,
        0,
        0,
+       0,
+       vector_index::diskann_build_mode::kAuto,
        ""}};
   EXPECT_FALSE(vector_index_metadata_store::save_all(rows));
 
@@ -1370,6 +1529,39 @@ TEST_F(MetadataStoreTest, LoadPreparedRejectsInvalidIndexHex) {
   EXPECT_FALSE(vector_index_metadata_store::load_prepared(&loaded));
 }
 
+TEST_F(MetadataStoreTest, DeserializePreparedRejectsInvalidFields) {
+  const std::string index_hex = encode_hex_for_test("idx_prepared");
+  const std::string header = "mysql-vector-prepared-v1\n";
+  std::vector<vector_index_metadata_store::prepared_change_row> loaded;
+
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "9223372036854775808\t3\t0\t616263\t0\t99\tupsert\t" +
+          index_hex + "\t7\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t9223372036854775808\t0\t616263\t0\t99\tupsert\t" +
+          index_hex + "\t7\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t3\t9223372036854775808\t616263\t0\t99\tupsert\t" +
+          index_hex + "\t7\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t3\t0\t616263\t0\tnot_a_txn\tupsert\t" + index_hex +
+          "\t7\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t3\t0\t616263\t0\t99\tupsert\t" + index_hex +
+          "\tnot_a_doc\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t3\t0\t616263\t0\t99\tupsert\t" + index_hex + "\t7\t0\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t3\t0\t616263\t0\t99\tupsert\t" + index_hex + "\t7\t00\n",
+      &loaded));
+}
+
 TEST_F(MetadataStoreTest, SavePreparedRejectsInvalidRows) {
   std::vector<vector_index_metadata_store::prepared_change_row> rows{
       {-1, 3, 0, "abc", false, 99,
@@ -1389,6 +1581,13 @@ TEST_F(MetadataStoreTest, SavePreparedRejectsInvalidRows) {
   rows[0].vector.clear();
   rows[0].op = vector_index_metadata_store::change_op::kUpsert;
   rows[0].gtrid_length = 5;
+  EXPECT_FALSE(vector_index_metadata_store::save_prepared(rows));
+
+  rows[0].gtrid_length = -1;
+  EXPECT_FALSE(vector_index_metadata_store::save_prepared(rows));
+
+  rows[0].gtrid_length = 3;
+  rows[0].bqual_length = -1;
   EXPECT_FALSE(vector_index_metadata_store::save_prepared(rows));
 }
 
@@ -1420,6 +1619,21 @@ TEST_F(MetadataStoreTest, SaveThenLoadCommittedRoundTrip) {
   ASSERT_EQ(2U, loaded[2].vector.size());
   EXPECT_FLOAT_EQ(0.25F, loaded[2].vector[0]);
   EXPECT_FLOAT_EQ(0.5F, loaded[2].vector[1]);
+}
+
+TEST_F(MetadataStoreTest, DeserializeCommittedRejectsInvalidFields) {
+  const std::string index_hex = encode_hex_for_test("idx_bad");
+  const std::string header = "mysql-vector-committed-v1\n";
+  std::vector<vector_index_metadata_store::committed_row> loaded;
+
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_committed_rows(
+      header + index_hex + "\tnot_a_doc\t2\t0000803f00000040\n", &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_committed_rows(
+      header + index_hex + "\t7\tnot_a_dim\t0000803f00000040\n", &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_committed_rows(
+      header + index_hex + "\t7\t2\t0\n", &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_committed_rows(
+      header + index_hex + "\t7\t2\t0000803f\n", &loaded));
 }
 
 TEST_F(MetadataStoreTest,
@@ -1636,6 +1850,17 @@ TEST_F(MetadataStoreTest, LoadManifestRejectsWrongFieldCount) {
   EXPECT_FALSE(vector_index_metadata_store::load_manifest(&loaded));
 }
 
+TEST_F(MetadataStoreTest, DeserializeManifestRejectsInvalidCheckpoints) {
+  vector_index_metadata_store::manifest_row loaded;
+
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_manifest_row(
+      "mysql-vector-manifest-v1\nready\t1\tbad\t2\t3\n", &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_manifest_row(
+      "mysql-vector-manifest-v1\nready\t1\t2\tbad\t3\n", &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_manifest_row(
+      "mysql-vector-manifest-v1\nready\t1\t2\t3\tbad\n", &loaded));
+}
+
 TEST_F(MetadataStoreTest, SaveManifestRejectsInvalidInput) {
   vector_index_metadata_store::manifest_row invalid_empty_state;
   invalid_empty_state.state = "";
@@ -1839,6 +2064,24 @@ TEST_F(MetadataStoreTest, LoadChangeLogRejectsOverflowSequence) {
   EXPECT_FALSE(vector_index_metadata_store::load_change_log(&loaded));
 }
 
+TEST_F(MetadataStoreTest, DeserializeChangeLogRejectsInvalidFields) {
+  const std::string index_hex = encode_hex_for_test("idx_bad");
+  const std::string header = "mysql-vector-changelog-v1\n";
+  std::vector<vector_index_metadata_store::change_log_row> loaded;
+
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
+      header + "1\tnot_a_txn\tupsert\t" + index_hex +
+          "\t101\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
+      header + "1\t88\tupsert\t" + index_hex + "\tnot_a_doc\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
+      header + "1\t88\tupsert\t" + index_hex + "\t101\t0\n", &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
+      header + "1\t88\tupsert\t" + index_hex + "\t101\t00\n", &loaded));
+}
+
 TEST_F(MetadataStoreTest, SaveChangeLogRejectsInvalidRows) {
   std::vector<vector_index_metadata_store::change_log_row> bad_rows{
       {0,
@@ -1930,6 +2173,26 @@ TEST_F(MetadataStoreTest, QuarantineFailsWhenCorruptTargetIsDirectory) {
   ASSERT_TRUE(blocker);
 
   EXPECT_FALSE(vector_index_metadata_store::quarantine_current_store());
+}
+
+TEST(VectorIndexMetadataCodecTest, EmptyTransactionalStoresDecodeCleanly) {
+  std::vector<vector_index_metadata_store::committed_row> committed_rows(1);
+  EXPECT_TRUE(
+      vector_index_metadata_store::detail::deserialize_committed_rows_impl(
+          "", &committed_rows));
+  EXPECT_TRUE(committed_rows.empty());
+
+  std::vector<vector_index_metadata_store::change_log_row> change_log_rows(1);
+  EXPECT_TRUE(
+      vector_index_metadata_store::detail::deserialize_change_log_rows_impl(
+          "", &change_log_rows));
+  EXPECT_TRUE(change_log_rows.empty());
+
+  std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows(1);
+  EXPECT_TRUE(
+      vector_index_metadata_store::detail::deserialize_prepared_rows_impl(
+          "", &prepared_rows));
+  EXPECT_TRUE(prepared_rows.empty());
 }
 
 }  // namespace vector_index_metadata_store_unittest

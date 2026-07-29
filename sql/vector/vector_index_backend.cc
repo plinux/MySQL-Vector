@@ -635,9 +635,19 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
                                        backend_mode mode,
                                        backend_provider provider,
                                        const std::string &index_name) {
+  return create_backend(dimension, metric, mode, provider,
+                        index_consistency_mode::kTransactional, index_name);
+}
+
+std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
+                                       backend_mode mode,
+                                       backend_provider provider,
+                                       index_consistency_mode consistency_mode,
+                                       const std::string &index_name) {
   if (!backend_provider_supported(provider)) return nullptr;
 
   (void)index_name;
+  (void)consistency_mode;
   switch (provider) {
     case backend_provider::kNative:
       if (mode == backend_mode::kMemory)
@@ -801,6 +811,45 @@ bool parse_backend_provider(const std::string &value, backend_provider *provider
   return false;
 }
 
+bool parse_diskann_build_mode(const std::string &value,
+                              diskann_build_mode *build_mode) {
+  if (build_mode == nullptr) return false;
+
+  const std::string token = normalize_token(value);
+  if (token == "auto") {
+    *build_mode = diskann_build_mode::kAuto;
+    return true;
+  }
+  if (token == "serial") {
+    *build_mode = diskann_build_mode::kSerial;
+    return true;
+  }
+  if (token == "offline") {
+    *build_mode = diskann_build_mode::kOffline;
+    return true;
+  }
+
+  return false;
+}
+
+bool parse_index_consistency_mode(const std::string &value,
+                                  index_consistency_mode *consistency_mode) {
+  if (consistency_mode == nullptr) return false;
+
+  const std::string token = normalize_token(value);
+  if (token == "transactional") {
+    *consistency_mode = index_consistency_mode::kTransactional;
+    return true;
+  }
+  if (token == "standalone" || token == "non_transactional" ||
+      token == "non-transactional") {
+    *consistency_mode = index_consistency_mode::kStandalone;
+    return true;
+  }
+
+  return false;
+}
+
 const char *metric_to_string(metric_type metric) {
   switch (metric) {
     case metric_type::kEuclidean:
@@ -833,6 +882,29 @@ const char *backend_provider_to_string(backend_provider provider) {
       return "diskann";
     case backend_provider::kHnswlib:
       return "hnswlib";
+  }
+  return "unknown";
+}
+
+const char *diskann_build_mode_to_string(diskann_build_mode build_mode) {
+  switch (build_mode) {
+    case diskann_build_mode::kAuto:
+      return "auto";
+    case diskann_build_mode::kSerial:
+      return "serial";
+    case diskann_build_mode::kOffline:
+      return "offline";
+  }
+  return "unknown";
+}
+
+const char *index_consistency_mode_to_string(
+    index_consistency_mode consistency_mode) {
+  switch (consistency_mode) {
+    case index_consistency_mode::kTransactional:
+      return "transactional";
+    case index_consistency_mode::kStandalone:
+      return "standalone";
   }
   return "unknown";
 }

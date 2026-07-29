@@ -125,12 +125,25 @@ void collect_info_fields(const vector_index_registry::index_info &info,
                          field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(36);
+  fields->reserve(45);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
   append_string(fields, "mode", info.mode);
   append_string(fields, "provider", info.provider);
+  append_string(fields, "consistency_mode", info.consistency_mode);
+  append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
+  append_string(fields, "build_source", info.build_source);
+  append_uint(fields, "standalone_ingest_memory_bytes",
+              info.standalone_ingest_memory_bytes);
+  append_uint(fields, "standalone_segment_count",
+              info.standalone_segment_count);
+  append_uint(fields, "standalone_segment_bytes",
+              info.standalone_segment_bytes);
+  append_uint(fields, "standalone_raw_segment_count",
+              info.standalone_raw_segment_count);
+  append_uint(fields, "standalone_raw_segment_bytes",
+              info.standalone_raw_segment_bytes);
   append_nullable_string(fields, "backend_variant", info.backend_variant);
   append_nullable_string(fields, "schema_name", info.schema_name);
   append_nullable_string(fields, "table_name", info.table_name);
@@ -148,8 +161,15 @@ void collect_info_fields(const vector_index_registry::index_info &info,
   append_uint(fields, "diskann_build_complexity",
               info.diskann_build_complexity);
   append_uint(fields, "diskann_build_threads", info.diskann_build_threads);
+  append_string(fields, "diskann_build_mode",
+                vector_index::diskann_build_mode_to_string(
+                    info.diskann_build_mode_value));
   append_uint(fields, "diskann_search_complexity",
               info.diskann_search_complexity);
+  append_uint(fields, "diskann_search_beamwidth",
+              info.diskann_search_beamwidth);
+  append_uint(fields, "diskann_pq_code_budget_size",
+              info.diskann_pq_code_budget_size);
   append_bool(fields, "supports_mutations", info.supports_mutations);
   append_string(fields, "lifecycle_state", info.lifecycle_state);
   append_uint(fields, "lifecycle_version", info.lifecycle_version);
@@ -174,12 +194,25 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
                                 field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(26);
+  fields->reserve(35);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
   append_string(fields, "mode", info.mode);
   append_string(fields, "provider", info.provider);
+  append_string(fields, "consistency_mode", info.consistency_mode);
+  append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
+  append_string(fields, "build_source", info.build_source);
+  append_uint(fields, "standalone_ingest_memory_bytes",
+              info.standalone_ingest_memory_bytes);
+  append_uint(fields, "standalone_segment_count",
+              info.standalone_segment_count);
+  append_uint(fields, "standalone_segment_bytes",
+              info.standalone_segment_bytes);
+  append_uint(fields, "standalone_raw_segment_count",
+              info.standalone_raw_segment_count);
+  append_uint(fields, "standalone_raw_segment_bytes",
+              info.standalone_raw_segment_bytes);
   append_nullable_string(fields, "backend_variant", info.backend_variant);
   append_nullable_string(fields, "schema_name", info.schema_name);
   append_nullable_string(fields, "table_name", info.table_name);
@@ -197,8 +230,15 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
   append_uint(fields, "diskann_build_complexity",
               info.diskann_build_complexity);
   append_uint(fields, "diskann_build_threads", info.diskann_build_threads);
+  append_string(fields, "diskann_build_mode",
+                vector_index::diskann_build_mode_to_string(
+                    info.diskann_build_mode_value));
   append_uint(fields, "diskann_search_complexity",
               info.diskann_search_complexity);
+  append_uint(fields, "diskann_search_beamwidth",
+              info.diskann_search_beamwidth);
+  append_uint(fields, "diskann_pq_code_budget_size",
+              info.diskann_pq_code_budget_size);
   append_string(fields, "lifecycle_state", info.lifecycle_state);
   append_uint(fields, "lifecycle_version", info.lifecycle_version);
   append_bool(fields, "supports_mutations", info.supports_mutations);
@@ -210,11 +250,14 @@ void collect_backend_health_fields(
     const vector_index_registry::index_info &info, field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(11);
+  fields->reserve(14);
 
   append_string(fields, "backend_type", info.provider);
   append_nullable_string(fields, "backend_variant", info.backend_variant);
   append_string(fields, "mode", info.mode);
+  append_string(fields, "consistency_mode", info.consistency_mode);
+  append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
+  append_string(fields, "build_source", info.build_source);
   append_bool(fields, "loaded", is_loaded(info));
   append_bool(fields, "writable", is_writable(info));
   append_uint(fields, "last_error_code", info.last_error_code);

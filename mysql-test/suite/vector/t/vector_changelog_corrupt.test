@@ -27,6 +27,7 @@ if (!$is_mysql_truth_store)
 --source include/restart_mysqld.inc
 
 SELECT VEC_INDEX_LIST();
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_changelog_corrupt');
 SELECT VEC_INDEX_SEARCH('idx_changelog_corrupt', VEC_FROMTEXT('[1,2]'), 1);
 SHOW GLOBAL STATUS LIKE 'Vector_change_log_load_failures';

@@ -286,11 +286,28 @@ class backend {
   virtual uint32_t diskann_max_degree() const { return 0; }
   virtual uint32_t diskann_build_complexity() const { return 0; }
   virtual uint32_t diskann_build_threads() const { return 0; }
+  virtual bool set_diskann_build_mode(
+      diskann_build_mode diskann_build_mode_value) {
+    return diskann_build_mode_value == diskann_build_mode::kAuto;
+  }
+  virtual diskann_build_mode diskann_build_mode_value() const {
+    return diskann_build_mode::kAuto;
+  }
   virtual bool set_diskann_search_complexity(
       uint32_t diskann_search_complexity [[maybe_unused]]) {
     return false;
   }
   virtual uint32_t diskann_search_complexity() const { return 0; }
+  virtual bool set_diskann_search_beamwidth(
+      uint32_t diskann_search_beamwidth [[maybe_unused]]) {
+    return false;
+  }
+  virtual uint32_t diskann_search_beamwidth() const { return 0; }
+  virtual bool set_diskann_pq_code_budget_size(
+      uint64_t diskann_pq_code_budget_size [[maybe_unused]]) {
+    return false;
+  }
+  virtual uint64_t diskann_pq_code_budget_size() const { return 0; }
 
   /**
     Whether transactional stage/commit can apply mutations to this backend.
@@ -556,8 +573,16 @@ class diskann_backend final : public backend {
   uint32_t diskann_max_degree() const override;
   uint32_t diskann_build_complexity() const override;
   uint32_t diskann_build_threads() const override;
+  bool set_diskann_build_mode(
+      diskann_build_mode diskann_build_mode_value) override;
+  diskann_build_mode diskann_build_mode_value() const override;
   bool set_diskann_search_complexity(uint32_t diskann_search_complexity) override;
   uint32_t diskann_search_complexity() const override;
+  bool set_diskann_search_beamwidth(uint32_t diskann_search_beamwidth) override;
+  uint32_t diskann_search_beamwidth() const override;
+  bool set_diskann_pq_code_budget_size(
+      uint64_t diskann_pq_code_budget_size) override;
+  uint64_t diskann_pq_code_budget_size() const override;
   bool supports_mutations() const override { return true; }
   bool external_manifest_present() const override;
   uint64_t external_manifest_generation() const override;
@@ -573,7 +598,10 @@ class diskann_backend final : public backend {
   uint32_t m_diskann_max_degree{32};
   uint32_t m_diskann_build_complexity{64};
   uint32_t m_diskann_build_threads{0};
+  diskann_build_mode m_diskann_build_mode{diskann_build_mode::kAuto};
   uint32_t m_diskann_search_complexity{64};
+  uint32_t m_diskann_search_beamwidth{16};
+  uint64_t m_diskann_pq_code_budget_size{0};
   bool m_native_runtime_enabled{false};
   bool m_external_adapter_active{true};
 
@@ -650,6 +678,12 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
                                        backend_provider provider,
                                        const std::string &index_name = "");
 
+std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
+                                       backend_mode mode,
+                                       backend_provider provider,
+                                       index_consistency_mode consistency_mode,
+                                       const std::string &index_name);
+
 /** Return compiled vector-library support rows for INFORMATION_SCHEMA. */
 const vector_library_status *vector_library_statuses(size_t *count);
 
@@ -699,11 +733,32 @@ bool parse_backend_mode(const std::string &value, backend_mode *mode);
 bool parse_backend_provider(const std::string &value, backend_provider *provider);
 
 /**
+  Parse DiskANN build mode option text into enum value.
+
+  Parsing is case-insensitive and ignores leading/trailing spaces.
+*/
+bool parse_diskann_build_mode(const std::string &value,
+                              diskann_build_mode *build_mode);
+
+/**
+  Parse vector-index consistency text into enum value.
+
+  TRANSACTIONAL is the default MySQL truth-store path. STANDALONE creates an
+  independent non-transactional index that does not persist vector payload rows
+  in the truth-store.
+*/
+bool parse_index_consistency_mode(const std::string &value,
+                                  index_consistency_mode *consistency_mode);
+
+/**
   Convert enum values to canonical lowercase option text.
 */
 const char *metric_to_string(metric_type metric);
 const char *backend_mode_to_string(backend_mode mode);
 const char *backend_provider_to_string(backend_provider provider);
+const char *diskann_build_mode_to_string(diskann_build_mode build_mode);
+const char *index_consistency_mode_to_string(
+    index_consistency_mode consistency_mode);
 
 /**
   remove provider-specific persistent artifacts for a vector index.
@@ -773,7 +828,6 @@ bool diskann_parse_prefixed_keys_for_testing(const std::string &payload,
 bool diskann_api_load_for_testing();
 bool diskann_api_available_for_testing(bool has_handle, bool has_create_index,
                                    bool has_drop_index, bool has_insert,
-                                   bool has_bulk_insert,
                                    bool has_search_vector, bool has_remove,
                                    bool has_card);
 bool diskann_api_parallel_bulk_build_available_for_testing(

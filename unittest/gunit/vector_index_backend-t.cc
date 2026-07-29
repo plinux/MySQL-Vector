@@ -656,23 +656,23 @@ TEST(VectorIndexBackendTest,
   vector_index::reset_faiss_external_snapshot_root_for_testing();
 
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      false, true, true, true, true, true, true, true));
+      false, true, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, false, true, true, true, true, true, true));
+      true, false, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, false, true, true, true, true, true));
+      true, true, false, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, true, false, true, true, true, true));
+      true, true, true, false, true, true, true));
   EXPECT_TRUE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, false, true, true, true));
+      true, true, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, true, false, true, true));
+      true, true, true, true, false, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, true, true, false, true));
+      true, true, true, true, true, false, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, true, true, true, false));
+      true, true, true, true, true, true, false));
   EXPECT_TRUE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, true, true, true, true));
+      true, true, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
       true, true, false, true, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(

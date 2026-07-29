@@ -61,6 +61,7 @@ namespace vector_index {
 namespace {
 
 using detail::build_backend_from_config;
+using detail::all_true;
 
 constexpr const char *LIFECYCLE_BULK_LOADING = "bulk_loading";
 constexpr uint32_t ERROR_BACKEND_APPLY_FAILED = 1006;
@@ -81,13 +82,6 @@ void mark_lifecycle_failure(vector_index::index_service::lifecycle_info *lifecyc
   mark_lifecycle_state(lifecycle, "failed");
   lifecycle->last_error_code = error_code;
   lifecycle->last_error_ts = now_unix_epoch_seconds();
-}
-
-template <typename... Bools>
-bool all_true(Bools... values) {
-  bool result = true;
-  ((result &= static_cast<bool>(values)), ...);
-  return result;
 }
 
 bool should_batch_rebuild_on_commit(const backend *index_backend) {

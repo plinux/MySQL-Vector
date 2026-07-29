@@ -51,7 +51,7 @@ bool deserialize_metadata_rows_impl(const std::string &payload,
 
     std::vector<std::string> fields;
     split_tab_fields(line, &fields);
-    if (fields.size() != 28) return false;
+    if (fields.size() != 33) return false;
 
     auto parse_uint32_field = [](const std::string &field, uint32_t *value) {
       uint64_t parsed = 0;
@@ -77,41 +77,62 @@ bool deserialize_metadata_rows_impl(const std::string &payload,
     if (!vector_index::parse_backend_provider(fields[4], &row.provider)) {
       return false;
     }
-    row.lifecycle_state = fields[5];
+    if (!vector_index::parse_index_consistency_mode(fields[5],
+                                                    &row.consistency_mode)) {
+      return false;
+    }
+    row.lifecycle_state = fields[6];
     if (row.lifecycle_state.empty()) return false;
-    if (!parse_uint64(fields[6], &row.lifecycle_version) ||
+    if (!parse_uint64(fields[7], &row.lifecycle_version) ||
         row.lifecycle_version == 0) {
       return false;
     }
-    if (!parse_uint32_field(fields[7], &row.last_error_code)) return false;
-    if (!parse_uint64(fields[8], &row.last_error_ts)) return false;
-    if (!parse_uint64(fields[9], &row.recover_fallback_count)) return false;
-    if (!parse_uint64(fields[10], &row.last_recover_fallback_ts)) return false;
-    if (!decode_hex(fields[11], &row.schema_name)) return false;
-    if (!decode_hex(fields[12], &row.table_name)) return false;
-    if (!decode_hex(fields[13], &row.column_name)) return false;
-    if (!decode_hex(fields[14], &row.doc_id_column_name)) return false;
-    if (!parse_uint32_field(fields[15], &row.search_ef)) return false;
-    if (!parse_uint32_field(fields[16], &row.hnsw_m)) return false;
-    if (!parse_uint32_field(fields[17], &row.hnsw_ef_construction)) {
+    if (!parse_uint32_field(fields[8], &row.last_error_code)) return false;
+    if (!parse_uint64(fields[9], &row.last_error_ts)) return false;
+    if (!parse_uint64(fields[10], &row.recover_fallback_count)) return false;
+    if (!parse_uint64(fields[11], &row.last_recover_fallback_ts)) return false;
+    if (!decode_hex(fields[12], &row.schema_name)) return false;
+    if (!decode_hex(fields[13], &row.table_name)) return false;
+    if (!decode_hex(fields[14], &row.column_name)) return false;
+    if (!decode_hex(fields[15], &row.doc_id_column_name)) return false;
+    if (!parse_uint32_field(fields[16], &row.search_ef)) return false;
+    if (!parse_uint32_field(fields[17], &row.hnsw_m)) return false;
+    if (!parse_uint32_field(fields[18], &row.hnsw_ef_construction)) {
       return false;
     }
-    if (!parse_uint32_field(fields[18], &row.hnsw_build_threads)) return false;
-    if (!parse_uint32_field(fields[19], &row.faiss_nlist)) return false;
-    if (!parse_uint32_field(fields[20], &row.faiss_nprobe)) return false;
-    if (!parse_uint32_field(fields[21], &row.faiss_pq_m)) return false;
-    if (!parse_uint32_field(fields[22], &row.faiss_pq_bits)) return false;
-    if (!parse_uint32_field(fields[23], &row.diskann_max_degree)) return false;
-    if (!parse_uint32_field(fields[24], &row.diskann_build_complexity)) {
+    if (!parse_uint32_field(fields[19], &row.hnsw_build_threads)) return false;
+    if (!parse_uint32_field(fields[20], &row.faiss_nlist)) return false;
+    if (!parse_uint32_field(fields[21], &row.faiss_nprobe)) return false;
+    if (!parse_uint32_field(fields[22], &row.faiss_pq_m)) return false;
+    if (!parse_uint32_field(fields[23], &row.faiss_pq_bits)) return false;
+    if (!parse_uint32_field(fields[24], &row.diskann_max_degree)) return false;
+    if (!parse_uint32_field(fields[25], &row.diskann_build_complexity)) {
       return false;
     }
-    if (!parse_uint32_field(fields[25], &row.diskann_search_complexity)) {
+    if (!parse_uint32_field(fields[26], &row.diskann_search_complexity)) {
       return false;
     }
-    if (!parse_uint32_field(fields[26], &row.diskann_build_threads)) {
+    if (!parse_uint32_field(fields[27], &row.diskann_search_beamwidth)) {
       return false;
     }
-    if (!parse_uint32_field(fields[27], &row.faiss_build_threads)) return false;
+    if (!parse_uint64(fields[28], &row.diskann_pq_code_budget_size)) {
+      return false;
+    }
+    if (!parse_uint32_field(fields[29], &row.diskann_build_threads)) {
+      return false;
+    }
+    if (!parse_uint32_field(fields[30], &row.faiss_build_threads)) return false;
+    if (!vector_index::parse_diskann_build_mode(
+            fields[31], &row.diskann_build_mode_value)) {
+      return false;
+    }
+    if (fields[32] == "0") {
+      row.diskann_build_mode_specified = false;
+    } else if (fields[32] == "1") {
+      row.diskann_build_mode_specified = true;
+    } else {
+      return false;
+    }
 
     rows->push_back(std::move(row));
   }
@@ -130,6 +151,9 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
            << vector_index::metric_to_string(row.metric) << "\t"
            << vector_index::backend_mode_to_string(row.mode) << "\t"
            << vector_index::backend_provider_to_string(row.provider) << "\t"
+           << vector_index::index_consistency_mode_to_string(
+                  row.consistency_mode)
+           << "\t"
            << row.lifecycle_state << "\t" << row.lifecycle_version << "\t"
            << row.last_error_code << "\t" << row.last_error_ts << "\t"
            << row.recover_fallback_count << "\t"
@@ -143,7 +167,12 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
            << row.faiss_pq_bits << "\t"
            << row.diskann_max_degree << "\t" << row.diskann_build_complexity
            << "\t" << row.diskann_search_complexity << "\t"
-           << row.diskann_build_threads << "\t" << row.faiss_build_threads
+           << row.diskann_search_beamwidth << "\t"
+           << row.diskann_pq_code_budget_size << "\t"
+           << row.diskann_build_threads << "\t" << row.faiss_build_threads << "\t"
+           << vector_index::diskann_build_mode_to_string(
+                  row.diskann_build_mode_value)
+           << "\t" << (row.diskann_build_mode_specified ? 1 : 0)
            << "\n";
   }
   if (!stream) return false;

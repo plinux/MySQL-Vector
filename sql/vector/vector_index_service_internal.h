@@ -36,6 +36,11 @@ std::unique_ptr<backend> build_backend_from_config(
     const std::string &index_name,
     const vector_index::index_service::index_config &config);
 
+template <typename... Bools>
+inline bool all_true(Bools... values) {
+  return (... && static_cast<bool>(values));
+}
+
 inline bool can_rebuild_after_search_failure(
     const vector_index::index_service::index_config &config) {
   return config.mode == backend_mode::kMemory &&

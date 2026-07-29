@@ -144,6 +144,16 @@ class NullNameTruthStore final : public dummy_truth_store {
   const char *backend_name() const override { return nullptr; }
 };
 
+TEST(VectorIndexTruthStoreTest, TruthStoreDefaultsCoverNoopAndDeltaFallbacks) {
+  dummy_truth_store store;
+  EXPECT_FALSE(store.supports_delta_persist());
+  EXPECT_TRUE(store.begin_persist());
+  EXPECT_TRUE(store.commit_persist());
+  store.rollback_persist();
+  EXPECT_FALSE(store.apply_committed_delta({}));
+  EXPECT_FALSE(store.append_change_log_delta({}));
+}
+
 class CommittedRowsTruthStore final : public dummy_truth_store {
  public:
   explicit CommittedRowsTruthStore(
@@ -1005,124 +1015,17 @@ TEST(VectorIndexTruthStoreTest, InternalFlagsDefaultToFalseWithoutSystemThd) {
   EXPECT_FALSE(vector_index_truth_store::internal_truth_store_access_allowed(nullptr));
 }
 
-TEST(VectorIndexTruthStoreTest, InternalQueryScalarStringTestingWrapperCoversDebugPaths) {
-  std::string payload = "sentinel";
-  bool found = true;
-
-  EXPECT_FALSE(vector_index_truth_store::internal_query_scalar_string_for_testing(
-      "SELECT 1", nullptr, &found));
-
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag, "+d,vector_truth_store_fail_internal_query_scalar");
-    EXPECT_FALSE(vector_index_truth_store::internal_query_scalar_string_for_testing(
-        "SELECT 1", &payload, &found));
-  }
-
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-        "+d,vector_truth_store_force_query_scalar_query_error");
-    EXPECT_FALSE(vector_index_truth_store::internal_query_scalar_string_for_testing(
-        "SELECT 1", &payload, &found));
-  }
-
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-        "+d,vector_truth_store_force_query_scalar_empty_result");
-    payload = "non-empty";
-    found = true;
-    EXPECT_TRUE(vector_index_truth_store::internal_query_scalar_string_for_testing(
-        "SELECT 1", &payload, &found));
-    EXPECT_TRUE(payload.empty());
-    EXPECT_FALSE(found);
-  }
-
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-        "+d,vector_truth_store_force_query_scalar_found_one");
-    payload.clear();
-    found = false;
-    EXPECT_TRUE(vector_index_truth_store::internal_query_scalar_string_for_testing(
-        "SELECT 1", &payload, &found));
-    EXPECT_EQ("1", payload);
-    EXPECT_TRUE(found);
-  }
-
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-        "+d,vector_truth_store_force_query_scalar_found_payload");
-    payload.clear();
-    found = false;
-    EXPECT_TRUE(vector_index_truth_store::internal_query_scalar_string_for_testing(
-        "SELECT 1", &payload, &found));
-    EXPECT_EQ("mock-payload", payload);
-    EXPECT_TRUE(found);
-  }
-}
-
-TEST(VectorIndexTruthStoreTest, InternalExecuteTestingWrapperCoversDebugPaths) {
-  unsigned int last_errno = 0;
-  std::string last_error;
-
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag, "+d,vector_truth_store_fail_internal_execute");
-    EXPECT_FALSE(vector_index_truth_store::internal_execute_for_testing(
-        "SELECT 1", &last_errno, &last_error));
-  }
-
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-        "+d,vector_truth_store_force_internal_execute_success");
-    EXPECT_TRUE(vector_index_truth_store::internal_execute_for_testing(
-        "SELECT 1", &last_errno, &last_error));
-  }
-
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-        "+d,vector_truth_store_force_internal_execute_error");
-    last_errno = 0;
-    last_error.clear();
-    EXPECT_FALSE(vector_index_truth_store::internal_execute_for_testing(
-        "SELECT 1", &last_errno, &last_error));
-    EXPECT_EQ(static_cast<unsigned int>(ER_UNKNOWN_ERROR), last_errno);
-    EXPECT_EQ("synthetic execute error", last_error);
-  }
-}
-
 TEST(VectorIndexTruthStoreTest,
-     InternalSqlTestingWrappersCoverNullOutputDebugShapes) {
-  std::string payload = "stale";
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-        "+d,vector_truth_store_force_query_scalar_empty_result");
-    EXPECT_TRUE(vector_index_truth_store::internal_query_scalar_string_for_testing(
-        "SELECT 1", &payload, nullptr));
-    EXPECT_TRUE(payload.empty());
-  }
+     MysqlTruthStoreQuarantineCommittedRejectsMissingTables) {
+  EnvVarGuard guard("MYSQL_VECTOR_TRUTH_STORE");
+  unsetenv("MYSQL_VECTOR_TRUTH_STORE");
+  vector_index_truth_store::reset_for_testing();
 
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-        "+d,vector_truth_store_force_query_scalar_found_one");
-    payload.clear();
-    EXPECT_TRUE(vector_index_truth_store::internal_query_scalar_string_for_testing(
-        "SELECT 1", &payload, nullptr));
-    EXPECT_EQ("1", payload);
-  }
+  vector_index_truth_store::truth_store *store = vector_index_truth_store::get();
+  ASSERT_NE(nullptr, store);
+  EXPECT_STREQ("mysql", store->backend_name());
 
-  unsigned int last_errno = 0;
-  std::string last_error = "sentinel";
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-        "+d,vector_truth_store_force_internal_execute_error");
-    EXPECT_FALSE(vector_index_truth_store::internal_execute_for_testing(
-        "SELECT 1", &last_errno, nullptr));
-    EXPECT_EQ(static_cast<unsigned int>(ER_UNKNOWN_ERROR), last_errno);
-
-    last_errno = 0;
-    last_error = "sentinel";
-    EXPECT_FALSE(vector_index_truth_store::internal_execute_for_testing(
-        "SELECT 1", nullptr, &last_error));
-    EXPECT_EQ("synthetic execute error", last_error);
-  }
+  EXPECT_FALSE(store->quarantine_committed());
 }
 
 TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {

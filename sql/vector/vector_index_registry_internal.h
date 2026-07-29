@@ -176,18 +176,15 @@ bool rollback_runtime_state_locked(const runtime_state_snapshot &snapshot);
 bool capture_runtime_state_locked(runtime_state_snapshot *snapshot);
 bool evict_committed_cache_to_budget_locked();
 bool persist_registry_state_locked();
-bool persist_metadata_manifest_locked();
 bool persist_prepared_locked();
-bool persist_or_rollback_runtime_state_locked(
-    const runtime_state_snapshot &snapshot);
-bool persist_or_rollback_index_config_locked(
-    const std::string &index_name,
-    const vector_index::index_service::index_config &before);
 bool persist_index_config_manifest_locked(
     const std::string &index_name,
     const vector_index::index_service::index_config &config);
 bool ensure_metadata_loaded_locked();
+bool persist_metadata_locked(size_t *row_count);
 bool persist_committed_locked(size_t *row_count);
+bool persist_committed_delta_locked(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows);
 bool persist_change_log_locked();
 bool persist_manifest_locked();
 bool load_persisted_commit_artifacts_snapshot_locked(

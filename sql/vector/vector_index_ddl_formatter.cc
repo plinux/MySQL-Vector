@@ -26,6 +26,7 @@
 #include <cstring>
 
 #include "m_ctype.h"
+#include "sql/vector/vector_index_limits.h"
 #include "sql/sql_show.h"
 #include "sql/table.h"
 
@@ -53,7 +54,7 @@ bool emit_search_ef(const vector_index_registry::index_info &info,
     return info.search_ef != 0;
   }
   return (provider_is(info, "faiss") || provider_is(info, "hnswlib")) &&
-         info.search_ef != 64;
+         info.search_ef != vector_index::k_default_hnsw_search_ef;
 }
 
 bool emit_hnsw_build_params(const vector_index_registry::index_info &info,
@@ -62,7 +63,9 @@ bool emit_hnsw_build_params(const vector_index_registry::index_info &info,
     return info.hnsw_m != 0 || info.hnsw_ef_construction != 0;
   }
   return provider_is(info, "hnswlib") &&
-         (info.hnsw_m != 16 || info.hnsw_ef_construction != 200);
+         (info.hnsw_m != vector_index::k_default_hnsw_m ||
+          info.hnsw_ef_construction !=
+              vector_index::k_default_hnsw_ef_construction);
 }
 
 bool emit_faiss_ivfpq_params(const vector_index_registry::index_info &info,
@@ -91,8 +94,10 @@ bool emit_diskann_build_params(const vector_index_registry::index_info &info,
            info.diskann_build_threads != 0;
   }
   return provider_is(info, "diskann") &&
-         (info.diskann_max_degree != 32 ||
-          info.diskann_build_complexity != 64 ||
+         (info.diskann_max_degree !=
+              vector_index::k_default_diskann_max_degree ||
+          info.diskann_build_complexity !=
+              vector_index::k_default_diskann_build_complexity ||
           info.diskann_build_threads != 0);
 }
 
@@ -102,7 +107,9 @@ bool emit_diskann_search_complexity(
   if (emit_policy == tuning_emit_policy::k_emit_nonzero) {
     return info.diskann_search_complexity != 0;
   }
-  return provider_is(info, "diskann") && info.diskann_search_complexity != 64;
+  return provider_is(info, "diskann") &&
+         info.diskann_search_complexity !=
+             vector_index::k_default_diskann_search_complexity;
 }
 
 }  // namespace
@@ -221,6 +228,7 @@ void append_tuning_statements(
         static_cast<ulonglong>(info.diskann_search_complexity));
     query->append(STRING_WITH_LEN(")"));
   }
+
 }
 
 }  // namespace vector_index_ddl_formatter

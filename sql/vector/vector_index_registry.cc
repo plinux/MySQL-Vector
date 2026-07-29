@@ -42,6 +42,7 @@
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_diagnostics.h"
 #include "sql/vector/vector_index_identity.h"
+#include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry_internal.h"
 #include "sql/vector/vector_index_service.h"
 #include "sql/vector/vector_index_truth_store.h"
@@ -165,6 +166,54 @@ uint32_t effective_diskann_build_threads(
     return options.build_threads;
   }
   return static_cast<uint32_t>(opt_vector_diskann_build_threads);
+}
+
+uint32_t effective_diskann_max_degree(
+    const std::string &provider,
+    const vector_index_registry::create_index_options &options) {
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+      provider_value != vector_index::backend_provider::kDiskAnn) {
+    return 0;
+  }
+  if (options.diskann_max_degree != 0) return options.diskann_max_degree;
+  return vector_index::k_default_diskann_max_degree;
+}
+
+uint32_t effective_diskann_build_complexity(
+    const std::string &provider,
+    const vector_index_registry::create_index_options &options) {
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+      provider_value != vector_index::backend_provider::kDiskAnn) {
+    return 0;
+  }
+  if (options.diskann_build_complexity != 0) {
+    return options.diskann_build_complexity;
+  }
+  return vector_index::k_default_diskann_build_complexity;
+}
+
+uint64_t effective_diskann_pq_code_budget_size(const std::string &provider) {
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+      provider_value != vector_index::backend_provider::kDiskAnn) {
+    return 0;
+  }
+  return 0;
+}
+
+uint32_t effective_diskann_search_complexity(const std::string &provider) {
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+      provider_value != vector_index::backend_provider::kDiskAnn) {
+    return 0;
+  }
+  return vector_index::k_default_diskann_search_complexity;
 }
 
 uint32_t effective_faiss_build_threads(
@@ -293,7 +342,6 @@ bool rollback_runtime_state_locked(
         &change_log_before,
     const std::vector<std::string> &lagging_indexes_before);
 bool persist_registry_state_locked();
-bool persist_metadata_manifest_locked();
 bool persist_prepared_locked();
 
 uint64_t allocate_txn_id() {
@@ -392,6 +440,11 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
                                      &lagging_indexes_before)) {
     return false;
   }
+  if (binding != nullptr && options.consistency_mode_specified &&
+      options.consistency_mode ==
+          vector_index::index_consistency_mode::kStandalone) {
+    return false;
+  }
   const bool ok = g_index_service.register_index_from_strings(
       index_name, dimension, metric, mode, provider);
   if (!ok) return false;
@@ -411,6 +464,22 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
   }
   const std::string effective_provider =
       vector_index::backend_provider_to_string(registered_config.provider);
+  vector_index::index_consistency_mode consistency_mode =
+      vector_index::index_consistency_mode::kTransactional;
+  if (binding == nullptr) {
+    consistency_mode = options.consistency_mode_specified
+                           ? options.consistency_mode
+                           : vector_index::global_index_consistency_mode();
+  }
+  if (!g_index_service.set_index_consistency_mode(index_name,
+                                                  consistency_mode)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
   if (!options.initial_lifecycle_state.empty() &&
       !g_index_service.set_lifecycle_state(index_name,
                                            options.initial_lifecycle_state)) {
@@ -446,9 +515,50 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
   }
   const uint32_t diskann_build_threads =
       effective_diskann_build_threads(effective_provider, options);
-  if (diskann_build_threads != 0 &&
+  const uint32_t diskann_max_degree =
+      effective_diskann_max_degree(effective_provider, options);
+  const uint32_t diskann_build_complexity =
+      effective_diskann_build_complexity(effective_provider, options);
+  const bool diskann_build_params_applied =
+      diskann_max_degree != 0 && diskann_build_complexity != 0;
+  if (diskann_build_params_applied &&
+      !g_index_service.set_diskann_build_params(
+          index_name, diskann_max_degree, diskann_build_complexity,
+          diskann_build_threads)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
+  if (!diskann_build_params_applied && diskann_build_threads != 0 &&
       !g_index_service.set_diskann_build_threads(index_name,
                                                  diskann_build_threads)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
+  const uint64_t diskann_pq_code_budget_size =
+      effective_diskann_pq_code_budget_size(effective_provider);
+  if (diskann_pq_code_budget_size != 0 &&
+      !g_index_service.set_diskann_pq_code_budget_size(
+          index_name, diskann_pq_code_budget_size)) {
+    if (!rollback_runtime_state_locked(metadata_before, committed_before,
+                                       change_log_before,
+                                       lagging_indexes_before)) {
+      return false;
+    }
+    return false;
+  }
+  const uint32_t diskann_search_complexity =
+      effective_diskann_search_complexity(effective_provider);
+  if (diskann_search_complexity != 0 &&
+      !g_index_service.set_diskann_search_complexity(
+          index_name, diskann_search_complexity)) {
     if (!rollback_runtime_state_locked(metadata_before, committed_before,
                                        change_log_before,
                                        lagging_indexes_before)) {
@@ -525,6 +635,19 @@ bool apply_index_tuning_locked(const std::string &index_name,
           index_name, info.diskann_search_complexity)) {
     return false;
   }
+  if (info.diskann_search_beamwidth != 0 &&
+      !g_index_service.set_diskann_search_beamwidth(
+          index_name, info.diskann_search_beamwidth)) {
+    return false;
+  }
+  vector_index::backend_provider provider_value =
+      vector_index::backend_provider::kNative;
+  if (vector_index::parse_backend_provider(info.provider, &provider_value) &&
+      provider_value == vector_index::backend_provider::kDiskAnn &&
+      !g_index_service.set_diskann_pq_code_budget_size(
+          index_name, info.diskann_pq_code_budget_size)) {
+    return false;
+  }
   return true;
 }
 
@@ -532,6 +655,7 @@ bool reapply_metadata_tuning_locked(
     const std::vector<vector_index_metadata_store::metadata_row> &rows) {
   for (const auto &row : rows) {
     vector_index_registry::index_info info;
+    info.provider = vector_index::backend_provider_to_string(row.provider);
     info.search_ef = row.search_ef;
     info.hnsw_m = row.hnsw_m;
     info.hnsw_ef_construction = row.hnsw_ef_construction;
@@ -545,6 +669,8 @@ bool reapply_metadata_tuning_locked(
     info.diskann_build_complexity = row.diskann_build_complexity;
     info.diskann_build_threads = row.diskann_build_threads;
     info.diskann_search_complexity = row.diskann_search_complexity;
+    info.diskann_search_beamwidth = row.diskann_search_beamwidth;
+    info.diskann_pq_code_budget_size = row.diskann_pq_code_budget_size;
     if (!apply_index_tuning_locked(row.index_name, info)) {
       return false;
     }
@@ -586,6 +712,7 @@ bool snapshot_metadata_locked(
     row.metric = config.metric;
     row.mode = config.mode;
     row.provider = config.provider;
+    row.consistency_mode = config.consistency_mode;
     row.search_ef = config.search_ef;
     row.hnsw_m = config.hnsw_m;
     row.hnsw_ef_construction = config.hnsw_ef_construction;
@@ -599,6 +726,8 @@ bool snapshot_metadata_locked(
     row.diskann_build_complexity = config.diskann_build_complexity;
     row.diskann_build_threads = config.diskann_build_threads;
     row.diskann_search_complexity = config.diskann_search_complexity;
+    row.diskann_search_beamwidth = config.diskann_search_beamwidth;
+    row.diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
     const index_binding binding = binding_for_index_locked(index_name);
     row.schema_name = binding.schema_name;
     row.table_name = binding.table_name;
@@ -685,6 +814,7 @@ bool apply_metadata_rows_locked(
     config.metric = row.metric;
     config.mode = row.mode;
     config.provider = row.provider;
+    config.consistency_mode = row.consistency_mode;
     if (!g_index_service.register_index(row.index_name, config)) {
       return false;
     }
@@ -819,26 +949,6 @@ bool evict_committed_cache_to_budget_locked() {
   return g_index_service.evict_committed_cache_to_budget();
 }
 
-bool persist_or_rollback_runtime_state_locked(
-    const runtime_state_snapshot &snapshot) {
-  if (persist_registry_state_locked()) return true;
-  vector_status::record_truth_store_persist_failure();
-  return rollback_runtime_state_locked(snapshot);
-}
-
-bool persist_or_rollback_index_config_locked(
-    const std::string &index_name,
-    const vector_index::index_service::index_config &before) {
-  if (persist_metadata_manifest_locked()) return true;
-
-  vector_status::record_truth_store_persist_failure();
-  vector_status::record_runtime_state_rollback();
-  if (!g_index_service.restore_index_config(index_name, before)) {
-    vector_status::record_runtime_state_rollback_failure();
-  }
-  return false;
-}
-
 bool persist_index_config_manifest_locked(
     const std::string &index_name,
     const vector_index::index_service::index_config &config) {
@@ -860,6 +970,7 @@ bool persist_index_config_manifest_locked(
     row.metric = config.metric;
     row.mode = config.mode;
     row.provider = config.provider;
+    row.consistency_mode = config.consistency_mode;
     row.search_ef = config.search_ef;
     row.hnsw_m = config.hnsw_m;
     row.hnsw_ef_construction = config.hnsw_ef_construction;
@@ -873,6 +984,8 @@ bool persist_index_config_manifest_locked(
     row.diskann_build_complexity = config.diskann_build_complexity;
     row.diskann_build_threads = config.diskann_build_threads;
     row.diskann_search_complexity = config.diskann_search_complexity;
+    row.diskann_search_beamwidth = config.diskann_search_beamwidth;
+    row.diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
     found = true;
     break;
   }
@@ -1200,25 +1313,6 @@ bool persist_registry_state_locked() {
   bool ok = persist_metadata_locked(nullptr) &&
             persist_committed_locked(nullptr) && persist_change_log_locked() &&
             persist_prepared_locked() && persist_manifest_locked();
-  if (!ok) {
-    truth_store->rollback_persist();
-    return false;
-  }
-  if (!truth_store->commit_persist()) {
-    truth_store->rollback_persist();
-    vector_status::record_metadata_persist_failure();
-    vector_status::record_manifest_persist_failure();
-    return false;
-  }
-  return true;
-}
-
-bool persist_metadata_manifest_locked() {
-  vector_status::record_truth_store_persist_request();
-  vector_index_truth_store::truth_store *truth_store =
-      vector_index_truth_store::get();
-  if (!truth_store->begin_persist()) return false;
-  bool ok = persist_metadata_locked(nullptr) && persist_manifest_locked();
   if (!ok) {
     truth_store->rollback_persist();
     return false;

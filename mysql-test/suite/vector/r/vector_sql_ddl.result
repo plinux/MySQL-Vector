@@ -29,6 +29,14 @@ INDEX_STATE	test.t_vector_ddl.v.dimension	2
 INDEX_STATE	test.t_vector_ddl.v.metric	euclidean
 INDEX_STATE	test.t_vector_ddl.v.mode	memory
 INDEX_STATE	test.t_vector_ddl.v.provider	native
+INDEX_STATE	test.t_vector_ddl.v.consistency_mode	transactional
+INDEX_STATE	test.t_vector_ddl.v.truth_store_enabled	1
+INDEX_STATE	test.t_vector_ddl.v.build_source	truth_store
+INDEX_STATE	test.t_vector_ddl.v.standalone_ingest_memory_bytes	0
+INDEX_STATE	test.t_vector_ddl.v.standalone_segment_count	0
+INDEX_STATE	test.t_vector_ddl.v.standalone_segment_bytes	0
+INDEX_STATE	test.t_vector_ddl.v.standalone_raw_segment_count	0
+INDEX_STATE	test.t_vector_ddl.v.standalone_raw_segment_bytes	0
 INDEX_STATE	test.t_vector_ddl.v.backend_variant	
 INDEX_STATE	test.t_vector_ddl.v.schema_name	test
 INDEX_STATE	test.t_vector_ddl.v.table_name	t_vector_ddl
@@ -45,15 +53,21 @@ INDEX_STATE	test.t_vector_ddl.v.faiss_build_threads	0
 INDEX_STATE	test.t_vector_ddl.v.diskann_max_degree	0
 INDEX_STATE	test.t_vector_ddl.v.diskann_build_complexity	0
 INDEX_STATE	test.t_vector_ddl.v.diskann_build_threads	0
+INDEX_STATE	test.t_vector_ddl.v.diskann_build_mode	auto
 INDEX_STATE	test.t_vector_ddl.v.diskann_search_complexity	0
+INDEX_STATE	test.t_vector_ddl.v.diskann_search_beamwidth	0
+INDEX_STATE	test.t_vector_ddl.v.diskann_pq_code_budget_size	0
 INDEX_STATE	test.t_vector_ddl.v.lifecycle_state	ready
-INDEX_STATE	test.t_vector_ddl.v.lifecycle_version	4
+INDEX_STATE	test.t_vector_ddl.v.lifecycle_version	5
 INDEX_STATE	test.t_vector_ddl.v.supports_mutations	1
 INDEX_STATE	test.t_vector_ddl.v.entry_count	1
 INDEX_STATE	test.t_vector_ddl.v.committed_entry_count	1
 BACKEND_HEALTH	test.t_vector_ddl.v.backend_type	native
 BACKEND_HEALTH	test.t_vector_ddl.v.backend_variant	
 BACKEND_HEALTH	test.t_vector_ddl.v.mode	memory
+BACKEND_HEALTH	test.t_vector_ddl.v.consistency_mode	transactional
+BACKEND_HEALTH	test.t_vector_ddl.v.truth_store_enabled	1
+BACKEND_HEALTH	test.t_vector_ddl.v.build_source	truth_store
 BACKEND_HEALTH	test.t_vector_ddl.v.loaded	1
 BACKEND_HEALTH	test.t_vector_ddl.v.writable	1
 BACKEND_HEALTH	test.t_vector_ddl.v.last_error_code	0
@@ -129,6 +143,14 @@ INDEX_STATE	test.t_vector_ddl_renamed.v.dimension	2
 INDEX_STATE	test.t_vector_ddl_renamed.v.metric	cosine
 INDEX_STATE	test.t_vector_ddl_renamed.v.mode	external
 INDEX_STATE	test.t_vector_ddl_renamed.v.provider	faiss
+INDEX_STATE	test.t_vector_ddl_renamed.v.consistency_mode	transactional
+INDEX_STATE	test.t_vector_ddl_renamed.v.truth_store_enabled	1
+INDEX_STATE	test.t_vector_ddl_renamed.v.build_source	truth_store
+INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_ingest_memory_bytes	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_segment_count	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_segment_bytes	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_raw_segment_count	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_raw_segment_bytes	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.backend_variant	hnsw
 INDEX_STATE	test.t_vector_ddl_renamed.v.schema_name	test
 INDEX_STATE	test.t_vector_ddl_renamed.v.table_name	t_vector_ddl_renamed
@@ -145,15 +167,21 @@ INDEX_STATE	test.t_vector_ddl_renamed.v.faiss_build_threads	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_max_degree	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_build_complexity	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_build_threads	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_build_mode	auto
 INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_search_complexity	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_search_beamwidth	0
+INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_pq_code_budget_size	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.lifecycle_state	ready
-INDEX_STATE	test.t_vector_ddl_renamed.v.lifecycle_version	4
+INDEX_STATE	test.t_vector_ddl_renamed.v.lifecycle_version	5
 INDEX_STATE	test.t_vector_ddl_renamed.v.supports_mutations	1
 INDEX_STATE	test.t_vector_ddl_renamed.v.entry_count	1
 INDEX_STATE	test.t_vector_ddl_renamed.v.committed_entry_count	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_type	faiss
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_variant	hnsw
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.mode	external
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.consistency_mode	transactional
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.truth_store_enabled	1
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.build_source	truth_store
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.loaded	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.writable	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.last_error_code	0
@@ -219,6 +247,14 @@ INDEX_STATE	test.t_vector_alter_dropcol.v.dimension	2
 INDEX_STATE	test.t_vector_alter_dropcol.v.metric	euclidean
 INDEX_STATE	test.t_vector_alter_dropcol.v.mode	memory
 INDEX_STATE	test.t_vector_alter_dropcol.v.provider	native
+INDEX_STATE	test.t_vector_alter_dropcol.v.consistency_mode	transactional
+INDEX_STATE	test.t_vector_alter_dropcol.v.truth_store_enabled	1
+INDEX_STATE	test.t_vector_alter_dropcol.v.build_source	truth_store
+INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_ingest_memory_bytes	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_segment_count	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_segment_bytes	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_raw_segment_count	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_raw_segment_bytes	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.backend_variant	
 INDEX_STATE	test.t_vector_alter_dropcol.v.schema_name	test
 INDEX_STATE	test.t_vector_alter_dropcol.v.table_name	t_vector_alter_dropcol
@@ -235,15 +271,21 @@ INDEX_STATE	test.t_vector_alter_dropcol.v.faiss_build_threads	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_max_degree	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_build_complexity	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_build_threads	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_build_mode	auto
 INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_search_complexity	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_search_beamwidth	0
+INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_pq_code_budget_size	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.lifecycle_state	ready
-INDEX_STATE	test.t_vector_alter_dropcol.v.lifecycle_version	4
+INDEX_STATE	test.t_vector_alter_dropcol.v.lifecycle_version	5
 INDEX_STATE	test.t_vector_alter_dropcol.v.supports_mutations	1
 INDEX_STATE	test.t_vector_alter_dropcol.v.entry_count	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.committed_entry_count	0
 BACKEND_HEALTH	test.t_vector_alter_dropcol.v.backend_type	native
 BACKEND_HEALTH	test.t_vector_alter_dropcol.v.backend_variant	
 BACKEND_HEALTH	test.t_vector_alter_dropcol.v.mode	memory
+BACKEND_HEALTH	test.t_vector_alter_dropcol.v.consistency_mode	transactional
+BACKEND_HEALTH	test.t_vector_alter_dropcol.v.truth_store_enabled	1
+BACKEND_HEALTH	test.t_vector_alter_dropcol.v.build_source	truth_store
 BACKEND_HEALTH	test.t_vector_alter_dropcol.v.loaded	1
 BACKEND_HEALTH	test.t_vector_alter_dropcol.v.writable	1
 BACKEND_HEALTH	test.t_vector_alter_dropcol.v.last_error_code	0
@@ -330,6 +372,6 @@ CONCAT('[', REPEAT('0,', 783), '0]'),
 3
 SELECT VEC_INDEX_INFO('test.t_vector_ddl_large.v');
 VEC_INDEX_INFO('test.t_vector_ddl_large.v')
-{"dimension":784,"metric":"euclidean","mode":"memory","provider":"native","backend_variant":null,"schema_name":"test","table_name":"t_vector_ddl_large","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_search_complexity":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":4,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":3,"committed_entry_count":3}
+{"dimension":784,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"schema_name":"test","table_name":"t_vector_ddl_large","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":5,"last_error_code":0,"last_error_ts":0,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":0,"external_manifest_present":0,"external_manifest_generation":0,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":3,"committed_entry_count":3}
 DROP TABLE t_vector_ddl_large;
 DROP TABLE t_vector_ddl;

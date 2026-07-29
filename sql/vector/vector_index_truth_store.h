@@ -164,8 +164,6 @@ void reset_for_testing();
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 bool bootstrap_initialize_selected_backend(THD *thd);
 void shutdown_selected_backend();
-bool internal_sql_active();
-bool internal_truth_store_access_allowed(const THD *thd);
 const char *active_backend_name();
 bool active_backend_transactional();
 bool is_truth_store_table(const char *schema_name, const char *table_name);
@@ -184,12 +182,6 @@ bool debug_delete_artifact(const std::string &artifact_name);
 */
 std::string sql_string_literal_for_testing(const char *text);
 bool decode_hex_bytes_for_testing(const std::string &encoded, std::string *decoded);
-bool internal_execute_for_testing(const std::string &sql,
-                               unsigned int *last_errno = nullptr,
-                               std::string *last_error = nullptr);
-bool internal_query_scalar_string_for_testing(const std::string &sql,
-                                         std::string *value,
-                                         bool *found = nullptr);
 bool deserialize_quarantine_entries_for_testing(
     const std::string &payload,
     std::vector<std::pair<std::string, std::string>> *entries);

@@ -42,6 +42,14 @@ struct index_info {
   std::string metric;
   std::string mode;
   std::string provider;
+  std::string consistency_mode;
+  bool truth_store_enabled{true};
+  std::string build_source;
+  size_t standalone_ingest_memory_bytes{0};
+  size_t standalone_segment_count{0};
+  size_t standalone_segment_bytes{0};
+  size_t standalone_raw_segment_count{0};
+  size_t standalone_raw_segment_bytes{0};
   std::string backend_variant;
   std::string schema_name;
   std::string table_name;
@@ -58,7 +66,12 @@ struct index_info {
   uint32_t diskann_max_degree{0};
   uint32_t diskann_build_complexity{0};
   uint32_t diskann_build_threads{0};
+  vector_index::diskann_build_mode diskann_build_mode_value{
+      vector_index::diskann_build_mode::kAuto};
   uint32_t diskann_search_complexity{0};
+  uint32_t diskann_search_beamwidth{0};
+  uint64_t diskann_pq_code_budget_size{0};
+  bool diskann_build_mode_specified{false};
   std::string lifecycle_state;
   uint64_t lifecycle_version{0};
   uint32_t last_error_code{0};
@@ -76,6 +89,11 @@ struct index_info {
 struct create_index_options {
   bool build_threads_specified{false};
   uint32_t build_threads{0};
+  uint32_t diskann_max_degree{0};
+  uint32_t diskann_build_complexity{0};
+  bool consistency_mode_specified{false};
+  vector_index::index_consistency_mode consistency_mode{
+      vector_index::index_consistency_mode::kTransactional};
   std::string initial_lifecycle_state;
 };
 
@@ -138,6 +156,16 @@ bool rename_index_for_column(const std::string &db_name,
                           const std::string &old_column_name,
                           const std::string &new_column_name);
 bool begin_bulk_load(const std::string &index_name);
+bool bulk_upsert_from_reader(
+    const std::string &index_name,
+    const vector_index::index_service::bulk_load_reader &reader,
+    const vector_index::index_service::bulk_load_options &options,
+    std::string *error);
+bool bulk_upsert_from_raw_files(
+    const std::string &index_name, const std::string &vector_filename,
+    const std::string &docid_filename,
+    const vector_index::index_service::bulk_load_options &options,
+    uint64_t *loaded_rows, std::string *error);
 bool bulk_build_index(const std::string &index_name);
 bool rebuild_index(const std::string &index_name);
 bool recover_index(const std::string &index_name);
@@ -147,6 +175,11 @@ bool replace_committed_entries(
 bool replace_committed_entries_preserve_lifecycle(
     const std::string &index_name,
     const vector_index::index_service::committed_entries &entries);
+bool replace_committed_entries_for_backfill(
+    const std::string &index_name,
+    const vector_index::index_service::committed_entries &entries);
+bool finish_backfill(const std::string &index_name,
+                     const std::string &lifecycle_state);
 bool set_lifecycle_state(const std::string &index_name,
                          const std::string &lifecycle_state);
 bool set_search_ef(const std::string &index_name, uint32_t search_ef);
@@ -163,10 +196,18 @@ bool set_diskann_build_params(const std::string &index_name,
                            uint32_t diskann_build_threads);
 bool set_diskann_build_threads(const std::string &index_name,
                             uint32_t diskann_build_threads);
+bool set_diskann_build_mode(
+    const std::string &index_name,
+    vector_index::diskann_build_mode diskann_build_mode_value);
+bool set_index_consistency_mode(
+    const std::string &index_name,
+    vector_index::index_consistency_mode consistency_mode);
 bool set_diskann_search_complexity(const std::string &index_name,
                                 uint32_t diskann_search_complexity);
-bool set_diskann_search_complexity(const std::string &index_name,
-                                uint32_t diskann_search_complexity);
+bool set_diskann_search_beamwidth(const std::string &index_name,
+                                  uint32_t diskann_search_beamwidth);
+bool set_diskann_pq_code_budget_size(const std::string &index_name,
+                                     uint64_t diskann_pq_code_budget_size);
 bool rebuild_all_indexes(size_t *rebuilt_count);
 bool recover_all_indexes(size_t *recovered_count);
 bool get_index_info(const std::string &index_name, index_info *info);

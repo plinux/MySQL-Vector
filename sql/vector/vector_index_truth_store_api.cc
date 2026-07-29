@@ -47,12 +47,6 @@ bool bootstrap_initialize_selected_backend(THD *thd) {
 
 void shutdown_selected_backend() { detail::shutdown_mysql_store(); }
 
-bool internal_sql_active() { return detail::internal_sql_active(); }
-
-bool internal_truth_store_access_allowed(const THD *thd) {
-  return detail::internal_truth_store_access_allowed(thd);
-}
-
 const char *active_backend_name() {
   const char *name = get()->backend_name();
   return name != nullptr ? name : "unknown";
@@ -86,17 +80,6 @@ std::string sql_string_literal_for_testing(const char *text) {
 bool decode_hex_bytes_for_testing(const std::string &encoded,
                               std::string *decoded) {
   return detail::decode_hex_bytes_impl(encoded, decoded);
-}
-
-bool internal_execute_for_testing(const std::string &sql,
-                               unsigned int *last_errno,
-                               std::string *last_error) {
-  return detail::internal_execute_impl(sql, last_errno, last_error);
-}
-
-bool internal_query_scalar_string_for_testing(const std::string &sql,
-                                         std::string *value, bool *found) {
-  return detail::internal_query_scalar_string_impl(sql, value, found);
 }
 
 bool deserialize_quarantine_entries_for_testing(

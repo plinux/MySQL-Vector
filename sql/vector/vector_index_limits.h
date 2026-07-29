@@ -24,15 +24,22 @@
 #ifndef SQL_VECTOR_INDEX_LIMITS_INCLUDED
 #define SQL_VECTOR_INDEX_LIMITS_INCLUDED
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
 namespace vector_index {
 
 inline constexpr uint32_t k_max_build_threads = 65535;
+inline constexpr uint32_t k_max_diskann_search_beamwidth = 65535;
+inline constexpr uint32_t k_max_vector_dimension =
+    std::numeric_limits<uint32_t>::max() / sizeof(float);
 inline constexpr uint32_t k_max_search_top_k = 10000;
 inline constexpr uint32_t k_max_search_batch_count = 1024;
 inline constexpr uint32_t k_max_search_batch_results = 65536;
+inline constexpr uint32_t k_default_search_batch_count = 1024;
+inline constexpr uint32_t k_default_search_batch_result_count = 65536;
+inline constexpr uint32_t k_default_batch_search_threads = 32;
 inline constexpr uint32_t k_default_diskann_max_degree = 32;
 inline constexpr uint32_t k_default_diskann_build_complexity = 64;
 inline constexpr uint32_t k_default_diskann_search_complexity = 64;

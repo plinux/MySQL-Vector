@@ -24,7 +24,10 @@
 #ifndef SQL_VECTOR_VECTOR_INDEX_BUILD_OPTIONS_H
 #define SQL_VECTOR_VECTOR_INDEX_BUILD_OPTIONS_H
 
+#include <cstddef>
+
 #include "my_inttypes.h"
+#include "sql/vector/vector_index_backend.h"
 
 /**
   Global vector index build-thread defaults.
@@ -36,7 +39,12 @@
 extern ulong opt_vector_hnsw_build_threads;
 extern ulong opt_vector_faiss_build_threads;
 extern ulong opt_vector_diskann_build_threads;
+extern ulong opt_vector_diskann_build_mode;
+extern ulong opt_vector_search_batch_count;
+extern ulong opt_vector_search_batch_result_count;
+extern ulong opt_vector_batch_search_threads;
 extern ulong opt_vector_default_library;
+extern ulong opt_vector_index_consistency_mode;
 extern ulonglong opt_vector_entry_cache_size;
 extern ulonglong opt_vector_pending_cache_size;
 extern ulonglong opt_vector_build_memory_size;
@@ -44,6 +52,7 @@ extern ulonglong opt_vector_diskann_build_memory_size;
 extern ulonglong opt_vector_diskann_raw_segment_size;
 extern ulonglong opt_vector_faiss_train_size;
 extern ulonglong opt_vector_hnsw_index_memory_size;
+extern bool opt_vector_lazy_external_runtime;
 
 namespace vector_index {
 
@@ -56,6 +65,12 @@ enum class vector_default_library : ulong {
 
 /** Return the global default vector library. */
 vector_default_library global_vector_default_library();
+
+/** Return the global DiskANN build-mode default. */
+diskann_build_mode global_diskann_build_mode();
+
+/** Return the global default vector index consistency mode. */
+index_consistency_mode global_index_consistency_mode();
 
 }  // namespace vector_index
 
