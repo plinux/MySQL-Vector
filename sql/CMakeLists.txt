@@ -667,6 +667,7 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_registry_txn.cc
     vector/vector_index_service.cc
     vector/vector_index_service_txn.cc
+    vector/vector_load_file.cc
     vector/vector_dml_sync.cc
     vector/vector_trx_participant.cc
     vector/vector_mapped_search.cc

@@ -89,6 +89,102 @@ class vector_entry_store {
 };
 
 /**
+  Non-transactional named-index input store.
+
+  Standalone indexes do not use the InnoDB truth-store as their authoritative
+  input. This store keeps recent ingest deltas in memory and spills them to
+  standalone segment files when the configured vector entry cache budget is
+  exceeded.
+*/
+class standalone_entry_store {
+ public:
+  using entry_visitor = std::function<bool(uint64_t, const vector_data &)>;
+
+  bool register_index(const std::string &index_name, size_t dimension);
+  bool drop_index(const std::string &index_name);
+  bool rename_index(const std::string &old_index_name,
+                    const std::string &new_index_name);
+  bool has_index(const std::string &index_name) const;
+  bool upsert(const std::string &index_name, uint64_t doc_id,
+              const vector_data &vector, size_t cache_budget);
+  bool bulk_upsert(const std::string &index_name,
+                   const committed_entries &entries);
+  bool bulk_upsert_raw_files(const std::string &index_name,
+                             const std::string &vector_filename,
+                             const std::string &docid_filename,
+                             uint64_t row_count, size_t dimension);
+  bool erase(const std::string &index_name, uint64_t doc_id,
+             size_t cache_budget);
+  bool rebuild_backend_input(const std::string &index_name, backend *target);
+  bool for_each_entry(const std::string &index_name,
+                      const entry_visitor &visitor) const;
+  bool find_entry(const std::string &index_name, uint64_t doc_id,
+                  vector_data *vector, bool *found) const;
+  size_t entry_count(const std::string &index_name) const;
+  size_t memory_bytes(const std::string &index_name) const;
+  size_t segment_count(const std::string &index_name) const;
+  size_t segment_bytes(const std::string &index_name) const;
+  size_t raw_segment_count(const std::string &index_name) const;
+  size_t raw_segment_bytes(const std::string &index_name) const;
+  std::string build_source(const std::string &index_name) const;
+  uint64_t generation(const std::string &index_name) const;
+
+ private:
+  enum class standalone_segment_kind { kDelta, kRawFbin };
+
+  struct standalone_segment {
+    standalone_segment_kind kind{standalone_segment_kind::kDelta};
+    std::string path;
+    std::string vector_path;
+    std::string docid_path;
+    size_t record_count{0};
+    size_t dimension{0};
+    size_t bytes{0};
+    uint64_t generation{0};
+  };
+
+  struct index_state {
+    size_t dimension{0};
+    std::unordered_set<uint64_t> live_doc_ids;
+    committed_entries memory_entries;
+    std::unordered_set<uint64_t> memory_erases;
+    std::vector<standalone_segment> segments;
+    size_t entry_count{0};
+    size_t memory_bytes{0};
+    uint64_t generation{0};
+    uint64_t next_segment_id{1};
+    std::string build_source{"memory"};
+  };
+
+  bool flush_index(const std::string &index_name, index_state *state);
+  bool flush_if_needed(const std::string &index_name, index_state *state,
+                       size_t cache_budget);
+  bool compact_to_raw_segment(const std::string &index_name,
+                              index_state *state);
+  bool read_raw_segments(const index_state &state,
+                         const raw_vector_segment_visitor &visitor) const;
+  bool can_rebuild_direct_from_raw_segments(const index_state &state) const;
+  std::string build_source_for_state(const index_state &state) const;
+  bool load_manifest(const std::string &index_name, index_state *state) const;
+  bool save_manifest(const std::string &index_name,
+                     const index_state &state) const;
+  bool replay_segments(const index_state &state,
+                       committed_entries *entries) const;
+  bool load_entries(const index_state &state,
+                    committed_entries *entries) const;
+  std::string segment_directory(const std::string &index_name) const;
+  std::string manifest_path(const std::string &index_name) const;
+  std::string segment_path(const std::string &index_name,
+                           uint64_t segment_id) const;
+  std::string raw_vector_path(const std::string &index_name,
+                              uint64_t segment_id) const;
+  std::string raw_docid_path(const std::string &index_name,
+                             uint64_t segment_id) const;
+
+  std::unordered_map<std::string, index_state> m_indexes;
+};
+
+/**
   Transaction-buffered index service on top of backend implementations.
 
   This service is a lightweight integration layer used by SQL/InnoDB glue code.

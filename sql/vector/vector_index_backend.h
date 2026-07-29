@@ -52,6 +52,20 @@ using committed_entry_visitor =
 using committed_entry_reader =
     std::function<bool(const committed_entry_visitor &visitor)>;
 
+struct raw_vector_segment {
+  std::string vector_path;
+  std::string docid_path;
+  size_t row_count{0};
+  size_t dimension{0};
+  size_t bytes{0};
+  uint64_t generation{0};
+};
+
+using raw_vector_segment_visitor =
+    std::function<bool(const raw_vector_segment &segment)>;
+using raw_vector_segment_reader =
+    std::function<bool(const raw_vector_segment_visitor &visitor)>;
+
 enum class metric_type { kEuclidean, kCosine, kInnerProduct };
 enum class backend_mode { kMemory, kExternal };
 enum class backend_provider { kNative, kFaiss, kDiskAnn, kHnswlib };
@@ -165,6 +179,15 @@ class backend {
   */
   virtual bool rebuild_from_committed_entries_from_reader(
       const committed_entry_reader &reader);
+
+  /**
+    Rebuild serving state from standalone raw vector segments.
+
+    Early standalone mode only records the contract. Backends start returning
+    true after LOAD VECTOR support teaches the default implementation how to
+    stream rows from raw files, or after provider-specific overrides are added.
+  */
+  virtual bool rebuild_from_raw_segments(const raw_vector_segment_reader &reader);
 
   /**
     recover backend serving state from persisted metadata or snapshots.

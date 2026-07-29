@@ -500,6 +500,11 @@ bool backend::rebuild_from_committed_entries_from_reader(
   return rebuild_from_committed_entries(entries);
 }
 
+bool backend::rebuild_from_raw_segments(
+    const raw_vector_segment_reader &reader [[maybe_unused]]) {
+  return false;
+}
+
 bool backend::recover_committed_entries_from_reader(
     const committed_entry_reader &reader) {
   std::unordered_map<uint64_t, vector_data> entries;

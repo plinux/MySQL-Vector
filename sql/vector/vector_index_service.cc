@@ -25,16 +25,138 @@
 
 #include <algorithm>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <map>
+#include <mutex>
+#include <shared_mutex>
 #include <unordered_set>
 #include <utility>
 
+#include "my_dbug.h"
+#include "sql/vector/vector_index_backend_common.h"
+#include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_load_file.h"
 #include "sql/vector/vector_status.h"
 
 namespace vector_index {
+
+namespace {
+
+constexpr const char *kStandaloneSegmentHeader =
+    "mysql-vector-standalone-segment-v1";
+constexpr const char *kStandaloneManifestHeader =
+    "mysql-vector-standalone-manifest-v1";
+constexpr uint8_t kStandaloneSegmentUpsert = 1;
+constexpr uint8_t kStandaloneSegmentErase = 2;
+
+template <typename T>
+bool write_plain_value(std::ofstream &file, T value) {
+  file.write(reinterpret_cast<const char *>(&value), sizeof(value));
+  return file.good();
+}
+
+template <typename T>
+bool read_plain_value(std::ifstream &file, T &value) {
+  file.read(reinterpret_cast<char *>(&value), sizeof(value));
+  return file.good();
+}
+
+std::vector<std::string> split_tab_line(const std::string &line) {
+  std::vector<std::string> fields;
+  size_t begin = 0;
+  while (begin <= line.size()) {
+    const size_t tab = line.find('\t', begin);
+    if (tab == std::string::npos) {
+      fields.push_back(line.substr(begin));
+      break;
+    }
+    fields.push_back(line.substr(begin, tab - begin));
+    begin = tab + 1;
+  }
+  return fields;
+}
+
+bool parse_manifest_size(const std::string &text, size_t *value) {
+  if (value == nullptr) return false;
+  uint64_t parsed = 0;
+  if (!detail::parse_uint64(text, &parsed) ||
+      parsed > std::numeric_limits<size_t>::max()) {
+    return false;
+  }
+  *value = static_cast<size_t>(parsed);
+  return true;
+}
+
+void remove_file_if_exists(const std::string &path) {
+  std::error_code ignored;
+  std::filesystem::remove(path, ignored);
+}
+
+bool file_size_as_size(const std::string &path, size_t *bytes) {
+  if (bytes == nullptr) return false;
+  std::error_code ec;
+  const uintmax_t file_bytes = std::filesystem::file_size(path, ec);
+  if (ec || file_bytes > std::numeric_limits<size_t>::max()) return false;
+  *bytes = static_cast<size_t>(file_bytes);
+  return true;
+}
+
+bool copy_or_link_file(const std::string &source, const std::string &target) {
+  if (source.empty() || target.empty() || !detail::ensure_parent_directory(target))
+    return false;
+
+  remove_file_if_exists(target);
+  std::error_code ec;
+  std::filesystem::create_hard_link(source, target, ec);
+  if (ec) {
+    ec.clear();
+    std::filesystem::copy_file(source, target,
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+  }
+  if (ec) {
+    remove_file_if_exists(target);
+    return false;
+  }
+
+  size_t source_size = 0;
+  size_t target_size = 0;
+  if (!file_size_as_size(source, &source_size) ||
+      !file_size_as_size(target, &target_size) || source_size != target_size) {
+    remove_file_if_exists(target);
+    return false;
+  }
+  return true;
+}
+
+bool write_generated_docid_file(const std::string &path, uint64_t row_count) {
+  if (path.empty() || !detail::ensure_parent_directory(path)) return false;
+  std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
+  if (!file.is_open()) return false;
+  if (!write_plain_value<uint64_t>(file, row_count)) {
+    remove_file_if_exists(path);
+    return false;
+  }
+  for (uint64_t doc_id = 0; doc_id < row_count; ++doc_id) {
+    if (!write_plain_value<uint64_t>(file, doc_id)) {
+      remove_file_if_exists(path);
+      return false;
+    }
+  }
+  file.close();
+  if (!file) {
+    remove_file_if_exists(path);
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
 
 bool vector_entry_store::register_index(const std::string &index_name) {
   if (index_name.empty() ||
@@ -327,6 +449,1100 @@ size_t vector_entry_store::memory_bytes(const std::string &index_name) const {
     bytes += doc_entry.second.size() * sizeof(float);
   }
   return bytes;
+}
+
+bool standalone_entry_store::register_index(const std::string &index_name,
+                                            size_t dimension) {
+  if (index_name.empty() || dimension == 0 ||
+      m_indexes.find(index_name) != m_indexes.end()) {
+    return false;
+  }
+  index_state state;
+  state.dimension = dimension;
+  if (!load_manifest(index_name, &state)) return false;
+  m_indexes.emplace(index_name, std::move(state));
+  return true;
+}
+
+bool standalone_entry_store::drop_index(const std::string &index_name) {
+  const bool existed = m_indexes.erase(index_name) > 0;
+  std::error_code ignored;
+  std::filesystem::remove_all(segment_directory(index_name), ignored);
+  return existed;
+}
+
+bool standalone_entry_store::rename_index(const std::string &old_index_name,
+                                          const std::string &new_index_name) {
+  if (old_index_name.empty() || new_index_name.empty() ||
+      m_indexes.find(new_index_name) != m_indexes.end()) {
+    return false;
+  }
+  auto state_it = m_indexes.find(old_index_name);
+  if (state_it == m_indexes.end()) return false;
+
+  const std::string old_directory = segment_directory(old_index_name);
+  const std::string new_directory = segment_directory(new_index_name);
+  if (!old_directory.empty() && !new_directory.empty()) {
+    std::error_code ec;
+    if (std::filesystem::exists(old_directory, ec)) {
+      if (ec) return false;
+      std::filesystem::create_directories(
+          std::filesystem::path(new_directory).parent_path(), ec);
+      if (ec) return false;
+      std::filesystem::rename(old_directory, new_directory, ec);
+      if (ec) return false;
+      for (standalone_segment &segment : state_it->second.segments) {
+        if (!segment.path.empty()) {
+          segment.path =
+              (std::filesystem::path(new_directory) /
+               std::filesystem::path(segment.path).filename())
+                  .string();
+        }
+        if (!segment.vector_path.empty()) {
+          segment.vector_path =
+              (std::filesystem::path(new_directory) /
+               std::filesystem::path(segment.vector_path).filename())
+                  .string();
+        }
+        if (!segment.docid_path.empty()) {
+          segment.docid_path =
+              (std::filesystem::path(new_directory) /
+               std::filesystem::path(segment.docid_path).filename())
+                  .string();
+        }
+      }
+    }
+  }
+
+  index_state state = state_it->second;
+  if (!save_manifest(new_index_name, state)) {
+    if (!old_directory.empty() && !new_directory.empty()) {
+      std::error_code rollback_ec;
+      if (std::filesystem::exists(new_directory, rollback_ec)) {
+        std::filesystem::rename(new_directory, old_directory, rollback_ec);
+      }
+    }
+    return false;
+  }
+  m_indexes.erase(state_it);
+  m_indexes.emplace(new_index_name, std::move(state));
+  return true;
+}
+
+bool standalone_entry_store::has_index(const std::string &index_name) const {
+  return m_indexes.find(index_name) != m_indexes.end();
+}
+
+bool standalone_entry_store::upsert(const std::string &index_name,
+                                    uint64_t doc_id,
+                                    const vector_data &vector,
+                                    size_t cache_budget) {
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end() ||
+      vector.size() != state_it->second.dimension) {
+    return false;
+  }
+
+  const bool inserted = state_it->second.live_doc_ids.insert(doc_id).second;
+  if (inserted) ++state_it->second.entry_count;
+  state_it->second.memory_erases.erase(doc_id);
+  auto memory_it = state_it->second.memory_entries.find(doc_id);
+  if (memory_it != state_it->second.memory_entries.end()) {
+    state_it->second.memory_bytes -= memory_it->second.size() * sizeof(float);
+    memory_it->second = vector;
+  } else {
+    state_it->second.memory_entries.emplace(doc_id, vector);
+  }
+  state_it->second.memory_bytes += vector.size() * sizeof(float);
+  ++state_it->second.generation;
+  state_it->second.build_source = build_source_for_state(state_it->second);
+  return flush_if_needed(index_name, &state_it->second, cache_budget);
+}
+
+bool standalone_entry_store::bulk_upsert(
+    const std::string &index_name, const committed_entries &entries) {
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return false;
+  if (entries.empty()) return true;
+
+  for (const auto &entry : entries) {
+    if (entry.second.size() != state_it->second.dimension) return false;
+  }
+
+  if (!flush_index(index_name, &state_it->second)) return false;
+  const index_state before_bulk = state_it->second;
+
+  const std::string path =
+      segment_path(index_name, state_it->second.next_segment_id);
+  if (path.empty() || !detail::ensure_parent_directory(path)) return false;
+  std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
+  if (!file.is_open()) return false;
+
+  const uint64_t dimension = state_it->second.dimension;
+  const uint64_t records = entries.size();
+  file << kStandaloneSegmentHeader << '\n';
+  if (!write_plain_value(file, dimension) ||
+      !write_plain_value(file, records)) {
+    remove_file_if_exists(path);
+    return false;
+  }
+
+  std::vector<uint64_t> ordered_doc_ids;
+  ordered_doc_ids.reserve(entries.size());
+  for (const auto &entry : entries) {
+    ordered_doc_ids.push_back(entry.first);
+  }
+  std::sort(ordered_doc_ids.begin(), ordered_doc_ids.end());
+
+  for (const uint64_t doc_id : ordered_doc_ids) {
+    const auto entry_it = entries.find(doc_id);
+    if (entry_it == entries.end()) {
+      remove_file_if_exists(path);
+      return false;
+    }
+    const uint8_t op = kStandaloneSegmentUpsert;
+    if (!write_plain_value(file, op) || !write_plain_value(file, doc_id)) {
+      remove_file_if_exists(path);
+      return false;
+    }
+    file.write(reinterpret_cast<const char *>(entry_it->second.data()),
+               static_cast<std::streamsize>(entry_it->second.size() *
+                                            sizeof(float)));
+    if (!file.good()) {
+      remove_file_if_exists(path);
+      return false;
+    }
+  }
+
+  file.close();
+  if (!file) {
+    remove_file_if_exists(path);
+    return false;
+  }
+
+  std::error_code ec;
+  const uintmax_t file_bytes = std::filesystem::file_size(path, ec);
+  if (ec) {
+    remove_file_if_exists(path);
+    return false;
+  }
+
+  standalone_segment segment;
+  segment.kind = standalone_segment_kind::kDelta;
+  segment.path = path;
+  segment.record_count = entries.size();
+  segment.dimension = state_it->second.dimension;
+  segment.bytes = static_cast<size_t>(file_bytes);
+  segment.generation = state_it->second.generation + 1;
+  state_it->second.segments.push_back(std::move(segment));
+  ++state_it->second.next_segment_id;
+  for (const auto &entry : entries) {
+    if (state_it->second.live_doc_ids.insert(entry.first).second) {
+      ++state_it->second.entry_count;
+    }
+  }
+  state_it->second.generation = state_it->second.segments.back().generation;
+  state_it->second.build_source = build_source_for_state(state_it->second);
+
+  if (!save_manifest(index_name, state_it->second)) {
+    state_it->second = before_bulk;
+    remove_file_if_exists(path);
+    return false;
+  }
+  return true;
+}
+
+bool standalone_entry_store::bulk_upsert_raw_files(
+    const std::string &index_name, const std::string &vector_filename,
+    const std::string &docid_filename, uint64_t row_count, size_t dimension) {
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end() || dimension != state_it->second.dimension)
+    return false;
+  if (row_count == 0) return true;
+  if (row_count > std::numeric_limits<size_t>::max()) return false;
+
+  committed_entries loaded_entries;
+  vector_load_file_info file_info;
+  std::string load_error;
+  if (!read_fbin_vectors(
+          vector_filename, docid_filename, state_it->second.dimension,
+          &file_info, &load_error,
+          [&loaded_entries](uint64_t doc_id, const float *values,
+                            size_t row_dimension) {
+            loaded_entries[doc_id] =
+                vector_data(values, values + row_dimension);
+            return true;
+          }) ||
+      file_info.row_count != row_count ||
+      file_info.dimension != state_it->second.dimension) {
+    return false;
+  }
+
+  if (!flush_index(index_name, &state_it->second)) return false;
+  const index_state before_bulk = state_it->second;
+
+  const uint64_t segment_id = state_it->second.next_segment_id;
+  const std::string target_vector_path = raw_vector_path(index_name, segment_id);
+  const std::string target_docid_path = raw_docid_path(index_name, segment_id);
+  if (target_vector_path.empty() || target_docid_path.empty()) return false;
+
+  if (!copy_or_link_file(vector_filename, target_vector_path)) return false;
+  bool docid_ready = false;
+  if (docid_filename.empty()) {
+    docid_ready = write_generated_docid_file(target_docid_path, row_count);
+  } else {
+    docid_ready = copy_or_link_file(docid_filename, target_docid_path);
+  }
+  if (!docid_ready) {
+    remove_file_if_exists(target_vector_path);
+    return false;
+  }
+
+  size_t vector_bytes = 0;
+  size_t docid_bytes = 0;
+  if (!file_size_as_size(target_vector_path, &vector_bytes) ||
+      !file_size_as_size(target_docid_path, &docid_bytes) ||
+      vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes) {
+    state_it->second = before_bulk;
+    remove_file_if_exists(target_vector_path);
+    remove_file_if_exists(target_docid_path);
+    return false;
+  }
+
+  standalone_segment segment;
+  segment.kind = standalone_segment_kind::kRawFbin;
+  segment.vector_path = target_vector_path;
+  segment.docid_path = target_docid_path;
+  segment.record_count = static_cast<size_t>(row_count);
+  segment.dimension = state_it->second.dimension;
+  segment.bytes = vector_bytes + docid_bytes;
+  segment.generation = state_it->second.generation + 1;
+  state_it->second.segments.push_back(std::move(segment));
+  ++state_it->second.next_segment_id;
+  for (const auto &entry : loaded_entries) {
+    if (state_it->second.live_doc_ids.insert(entry.first).second) {
+      ++state_it->second.entry_count;
+    }
+  }
+  state_it->second.generation = state_it->second.segments.back().generation;
+  state_it->second.build_source = build_source_for_state(state_it->second);
+
+  if (!save_manifest(index_name, state_it->second)) {
+    state_it->second = before_bulk;
+    remove_file_if_exists(target_vector_path);
+    remove_file_if_exists(target_docid_path);
+    return false;
+  }
+  return true;
+}
+
+bool standalone_entry_store::erase(const std::string &index_name,
+                                   uint64_t doc_id, size_t cache_budget) {
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return false;
+
+  auto memory_it = state_it->second.memory_entries.find(doc_id);
+  if (memory_it != state_it->second.memory_entries.end()) {
+    state_it->second.memory_bytes -= memory_it->second.size() * sizeof(float);
+    state_it->second.memory_entries.erase(memory_it);
+  }
+  if (state_it->second.live_doc_ids.erase(doc_id) > 0) {
+    if (state_it->second.entry_count > 0) --state_it->second.entry_count;
+    state_it->second.memory_erases.insert(doc_id);
+    ++state_it->second.generation;
+    state_it->second.build_source = build_source_for_state(state_it->second);
+  }
+  return flush_if_needed(index_name, &state_it->second, cache_budget);
+}
+
+bool standalone_entry_store::can_rebuild_direct_from_raw_segments(
+    const index_state &state) const {
+  if (!state.memory_entries.empty() || !state.memory_erases.empty()) return false;
+  if (state.segments.empty()) return state.entry_count == 0;
+
+  size_t raw_rows = 0;
+  for (const standalone_segment &segment : state.segments) {
+    if (segment.kind != standalone_segment_kind::kRawFbin ||
+        segment.dimension != state.dimension ||
+        segment.record_count > std::numeric_limits<size_t>::max() - raw_rows) {
+      return false;
+    }
+    raw_rows += segment.record_count;
+  }
+  return raw_rows == state.entry_count;
+}
+
+bool standalone_entry_store::read_raw_segments(
+    const index_state &state, const raw_vector_segment_visitor &visitor) const {
+  if (!visitor) return false;
+  for (const standalone_segment &segment : state.segments) {
+    if (segment.kind != standalone_segment_kind::kRawFbin ||
+        segment.dimension != state.dimension) {
+      return false;
+    }
+
+    size_t vector_bytes = 0;
+    size_t docid_bytes = 0;
+    if (!file_size_as_size(segment.vector_path, &vector_bytes) ||
+        !file_size_as_size(segment.docid_path, &docid_bytes) ||
+        vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes ||
+        vector_bytes + docid_bytes != segment.bytes) {
+      return false;
+    }
+
+    raw_vector_segment raw_segment;
+    raw_segment.vector_path = segment.vector_path;
+    raw_segment.docid_path = segment.docid_path;
+    raw_segment.row_count = segment.record_count;
+    raw_segment.dimension = segment.dimension;
+    raw_segment.bytes = segment.bytes;
+    raw_segment.generation = segment.generation;
+    if (!visitor(raw_segment)) return false;
+  }
+  return true;
+}
+
+std::string standalone_entry_store::build_source_for_state(
+    const index_state &state) const {
+  if (state.entry_count == 0 && state.segments.empty() &&
+      state.memory_entries.empty() && state.memory_erases.empty()) {
+    return "memory";
+  }
+  if (can_rebuild_direct_from_raw_segments(state)) return "raw_segments_direct";
+  bool has_raw_segment = false;
+  for (const standalone_segment &segment : state.segments) {
+    if (segment.kind == standalone_segment_kind::kRawFbin) {
+      has_raw_segment = true;
+      break;
+    }
+  }
+  return has_raw_segment ? "raw_segments_compacted" : "delta_replay";
+}
+
+bool standalone_entry_store::compact_to_raw_segment(const std::string &index_name,
+                                                    index_state *state) {
+  if (state == nullptr) return false;
+
+  committed_entries entries;
+  if (!load_entries(*state, &entries)) return false;
+  if (entries.size() > std::numeric_limits<uint32_t>::max()) return false;
+
+  const index_state before_compact = *state;
+  if (entries.empty()) {
+    state->segments.clear();
+    state->memory_entries.clear();
+    state->memory_erases.clear();
+    state->memory_bytes = 0;
+    state->live_doc_ids.clear();
+    state->entry_count = 0;
+    state->generation = before_compact.generation + 1;
+    state->build_source = "memory";
+    if (!save_manifest(index_name, *state)) {
+      *state = before_compact;
+      return false;
+    }
+    return true;
+  }
+
+  const uint64_t segment_id = state->next_segment_id;
+  const std::string vector_path = raw_vector_path(index_name, segment_id);
+  const std::string docid_path = raw_docid_path(index_name, segment_id);
+  if (vector_path.empty() || docid_path.empty() ||
+      !detail::ensure_parent_directory(vector_path) ||
+      !detail::ensure_parent_directory(docid_path)) {
+    return false;
+  }
+
+  std::vector<uint64_t> doc_ids;
+  doc_ids.reserve(entries.size());
+  for (const auto &entry : entries) doc_ids.push_back(entry.first);
+  std::sort(doc_ids.begin(), doc_ids.end());
+
+  std::ofstream vector_file(vector_path,
+                            std::ios::out | std::ios::binary | std::ios::trunc);
+  std::ofstream docid_file(docid_path,
+                           std::ios::out | std::ios::binary | std::ios::trunc);
+  if (!vector_file.is_open() || !docid_file.is_open()) {
+    remove_file_if_exists(vector_path);
+    remove_file_if_exists(docid_path);
+    return false;
+  }
+
+  const auto row_count = static_cast<uint32_t>(doc_ids.size());
+  if (!write_plain_value(vector_file, row_count) ||
+      !write_plain_value(vector_file, static_cast<uint32_t>(state->dimension)) ||
+      !write_plain_value(docid_file, static_cast<uint64_t>(doc_ids.size()))) {
+    remove_file_if_exists(vector_path);
+    remove_file_if_exists(docid_path);
+    return false;
+  }
+
+  for (const uint64_t doc_id : doc_ids) {
+    const auto entry_it = entries.find(doc_id);
+    if (entry_it == entries.end() || entry_it->second.size() != state->dimension ||
+        !write_plain_value(docid_file, doc_id)) {
+      remove_file_if_exists(vector_path);
+      remove_file_if_exists(docid_path);
+      return false;
+    }
+    const size_t vector_bytes = state->dimension * sizeof(float);
+    if (vector_bytes >
+        static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+      remove_file_if_exists(vector_path);
+      remove_file_if_exists(docid_path);
+      return false;
+    }
+    vector_file.write(reinterpret_cast<const char *>(entry_it->second.data()),
+                      static_cast<std::streamsize>(vector_bytes));
+    if (!vector_file.good()) {
+      remove_file_if_exists(vector_path);
+      remove_file_if_exists(docid_path);
+      return false;
+    }
+  }
+
+  vector_file.close();
+  docid_file.close();
+  if (!vector_file || !docid_file) {
+    remove_file_if_exists(vector_path);
+    remove_file_if_exists(docid_path);
+    return false;
+  }
+
+  size_t vector_bytes = 0;
+  size_t docid_bytes = 0;
+  if (!file_size_as_size(vector_path, &vector_bytes) ||
+      !file_size_as_size(docid_path, &docid_bytes) ||
+      vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes) {
+    remove_file_if_exists(vector_path);
+    remove_file_if_exists(docid_path);
+    return false;
+  }
+
+  standalone_segment segment;
+  segment.kind = standalone_segment_kind::kRawFbin;
+  segment.vector_path = vector_path;
+  segment.docid_path = docid_path;
+  segment.record_count = entries.size();
+  segment.dimension = state->dimension;
+  segment.bytes = vector_bytes + docid_bytes;
+  segment.generation = state->generation + 1;
+
+  state->segments.clear();
+  if (!entries.empty()) state->segments.push_back(std::move(segment));
+  state->memory_entries.clear();
+  state->memory_erases.clear();
+  state->memory_bytes = 0;
+  state->live_doc_ids.clear();
+  for (uint64_t doc_id : doc_ids) state->live_doc_ids.insert(doc_id);
+  state->entry_count = entries.size();
+  state->generation = before_compact.generation + 1;
+  ++state->next_segment_id;
+  state->build_source = "raw_segments_compacted";
+
+  if (!save_manifest(index_name, *state)) {
+    *state = before_compact;
+    remove_file_if_exists(vector_path);
+    remove_file_if_exists(docid_path);
+    return false;
+  }
+  return true;
+}
+
+bool standalone_entry_store::rebuild_backend_input(
+    const std::string &index_name, backend *target) {
+  if (target == nullptr) return false;
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return false;
+  if (!flush_index(index_name, &state_it->second)) return false;
+  if (!can_rebuild_direct_from_raw_segments(state_it->second) &&
+      !compact_to_raw_segment(index_name, &state_it->second)) {
+    return false;
+  }
+  if (state_it->second.entry_count == 0) {
+    return target->rebuild_from_committed_entries(committed_entries{});
+  }
+
+  const bool compacted =
+      state_it->second.build_source == "raw_segments_compacted";
+  const bool rebuilt = target->rebuild_from_raw_segments(
+      [this, &state_it](const raw_vector_segment_visitor &visitor) {
+        return read_raw_segments(state_it->second, visitor);
+      });
+  if (!rebuilt) {
+    committed_entries entries;
+    if (!load_entries(state_it->second, &entries) ||
+        !target->rebuild_from_committed_entries(entries)) {
+      return false;
+    }
+  }
+  if (!compacted) {
+    state_it->second.build_source =
+        build_source_for_state(state_it->second);
+    if (!save_manifest(index_name, state_it->second)) return false;
+  }
+  return true;
+}
+
+bool standalone_entry_store::for_each_entry(
+    const std::string &index_name, const entry_visitor &visitor) const {
+  if (!visitor) return false;
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return false;
+
+  committed_entries entries;
+  if (!load_entries(state_it->second, &entries)) return false;
+
+  std::vector<uint64_t> doc_ids;
+  doc_ids.reserve(entries.size());
+  for (const auto &entry : entries) {
+    doc_ids.push_back(entry.first);
+  }
+  std::sort(doc_ids.begin(), doc_ids.end());
+  for (const uint64_t doc_id : doc_ids) {
+    const auto doc_it = entries.find(doc_id);
+    if (doc_it == entries.end()) return false;
+    if (!visitor(doc_id, doc_it->second)) return false;
+  }
+  return true;
+}
+
+bool standalone_entry_store::find_entry(const std::string &index_name,
+                                        uint64_t doc_id, vector_data *vector,
+                                        bool *found) const {
+  if (vector == nullptr || found == nullptr) return false;
+  vector->clear();
+  *found = false;
+
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return false;
+  if (state_it->second.live_doc_ids.find(doc_id) ==
+      state_it->second.live_doc_ids.end()) {
+    return true;
+  }
+  auto memory_it = state_it->second.memory_entries.find(doc_id);
+  if (memory_it != state_it->second.memory_entries.end()) {
+    *vector = memory_it->second;
+    *found = true;
+    return true;
+  }
+  if (state_it->second.memory_erases.find(doc_id) !=
+      state_it->second.memory_erases.end()) {
+    return true;
+  }
+
+  committed_entries entries;
+  if (!load_entries(state_it->second, &entries)) return false;
+  const auto entry_it = entries.find(doc_id);
+  if (entry_it == entries.end()) return true;
+  *vector = entry_it->second;
+  *found = true;
+  return true;
+}
+
+size_t standalone_entry_store::entry_count(
+    const std::string &index_name) const {
+  auto state_it = m_indexes.find(index_name);
+  return state_it == m_indexes.end() ? 0 : state_it->second.entry_count;
+}
+
+size_t standalone_entry_store::memory_bytes(
+    const std::string &index_name) const {
+  auto state_it = m_indexes.find(index_name);
+  return state_it == m_indexes.end() ? 0 : state_it->second.memory_bytes;
+}
+
+size_t standalone_entry_store::segment_count(
+    const std::string &index_name) const {
+  auto state_it = m_indexes.find(index_name);
+  return state_it == m_indexes.end() ? 0 : state_it->second.segments.size();
+}
+
+size_t standalone_entry_store::segment_bytes(
+    const std::string &index_name) const {
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return 0;
+  size_t bytes = 0;
+  for (const standalone_segment &segment : state_it->second.segments) {
+    bytes += segment.bytes;
+  }
+  return bytes;
+}
+
+size_t standalone_entry_store::raw_segment_count(
+    const std::string &index_name) const {
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return 0;
+  size_t count = 0;
+  for (const standalone_segment &segment : state_it->second.segments) {
+    if (segment.kind == standalone_segment_kind::kRawFbin) ++count;
+  }
+  return count;
+}
+
+size_t standalone_entry_store::raw_segment_bytes(
+    const std::string &index_name) const {
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return 0;
+  size_t bytes = 0;
+  for (const standalone_segment &segment : state_it->second.segments) {
+    if (segment.kind == standalone_segment_kind::kRawFbin) {
+      bytes += segment.bytes;
+    }
+  }
+  return bytes;
+}
+
+std::string standalone_entry_store::build_source(
+    const std::string &index_name) const {
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return "";
+  return state_it->second.build_source.empty()
+             ? build_source_for_state(state_it->second)
+             : state_it->second.build_source;
+}
+
+uint64_t standalone_entry_store::generation(
+    const std::string &index_name) const {
+  auto state_it = m_indexes.find(index_name);
+  return state_it == m_indexes.end() ? 0 : state_it->second.generation;
+}
+
+bool standalone_entry_store::flush_index(const std::string &index_name,
+                                         index_state *state) {
+  if (state == nullptr) return false;
+  const size_t record_count =
+      state->memory_entries.size() + state->memory_erases.size();
+  if (record_count == 0) return true;
+
+  const std::string path = segment_path(index_name, state->next_segment_id);
+  if (path.empty() || !detail::ensure_parent_directory(path)) return false;
+  std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
+  if (!file.is_open()) return false;
+
+  const uint64_t dimension = state->dimension;
+  const uint64_t records = record_count;
+  file << kStandaloneSegmentHeader << '\n';
+  if (!write_plain_value(file, dimension) ||
+      !write_plain_value(file, records)) {
+    remove_file_if_exists(path);
+    return false;
+  }
+
+  std::map<uint64_t, const vector_data *> ordered_upserts;
+  for (const auto &entry : state->memory_entries) {
+    ordered_upserts.emplace(entry.first, &entry.second);
+  }
+  for (const auto &entry : ordered_upserts) {
+    const uint8_t op = kStandaloneSegmentUpsert;
+    const uint64_t doc_id = entry.first;
+    if (!write_plain_value(file, op) || !write_plain_value(file, doc_id)) {
+      remove_file_if_exists(path);
+      return false;
+    }
+    file.write(reinterpret_cast<const char *>(entry.second->data()),
+               static_cast<std::streamsize>(entry.second->size() *
+                                            sizeof(float)));
+    if (!file.good()) {
+      remove_file_if_exists(path);
+      return false;
+    }
+  }
+
+  std::vector<uint64_t> ordered_erases(state->memory_erases.begin(),
+                                       state->memory_erases.end());
+  std::sort(ordered_erases.begin(), ordered_erases.end());
+  for (const uint64_t doc_id : ordered_erases) {
+    const uint8_t op = kStandaloneSegmentErase;
+    if (!write_plain_value(file, op) || !write_plain_value(file, doc_id)) {
+      remove_file_if_exists(path);
+      return false;
+    }
+  }
+
+  file.close();
+  if (!file) {
+    remove_file_if_exists(path);
+    return false;
+  }
+
+  std::error_code ec;
+  const uintmax_t file_bytes = std::filesystem::file_size(path, ec);
+  if (ec) {
+    remove_file_if_exists(path);
+    return false;
+  }
+  standalone_segment segment;
+  segment.kind = standalone_segment_kind::kDelta;
+  segment.path = path;
+  segment.record_count = record_count;
+  segment.dimension = state->dimension;
+  segment.bytes = static_cast<size_t>(file_bytes);
+  segment.generation = state->generation;
+  state->segments.push_back(std::move(segment));
+  ++state->next_segment_id;
+  state->memory_entries.clear();
+  state->memory_erases.clear();
+  state->memory_bytes = 0;
+  state->build_source = build_source_for_state(*state);
+  return save_manifest(index_name, *state);
+}
+
+bool standalone_entry_store::flush_if_needed(const std::string &index_name,
+                                             index_state *state,
+                                             size_t cache_budget) {
+  if (state == nullptr) return false;
+  if (cache_budget == std::numeric_limits<size_t>::max()) return true;
+  if (memory_bytes(index_name) <= cache_budget &&
+      (cache_budget != 0 || state->memory_erases.empty())) {
+    return true;
+  }
+  return flush_index(index_name, state);
+}
+
+bool standalone_entry_store::load_manifest(const std::string &index_name,
+                                           index_state *state) const {
+  if (state == nullptr || state->dimension == 0) return false;
+  const std::string path = manifest_path(index_name);
+  if (path.empty()) return false;
+
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) return !ec;
+
+  std::ifstream file(path, std::ios::in);
+  if (!file.is_open()) return false;
+
+  std::string header;
+  if (!std::getline(file, header) || header != kStandaloneManifestHeader) {
+    return false;
+  }
+
+  index_state loaded;
+  loaded.dimension = state->dimension;
+  uint64_t manifest_dimension = 0;
+  size_t expected_entry_count = 0;
+  size_t expected_segment_count = 0;
+  bool saw_dimension = false;
+  bool saw_entry_count = false;
+  bool saw_generation = false;
+  bool saw_next_segment_id = false;
+  bool saw_segment_count = false;
+
+  std::string line;
+  while (std::getline(file, line)) {
+    const std::vector<std::string> fields = split_tab_line(line);
+    if (fields.empty()) return false;
+
+    if (fields[0] == "dimension") {
+      if (fields.size() != 2 || !detail::parse_uint64(fields[1],
+                                                       &manifest_dimension)) {
+        return false;
+      }
+      saw_dimension = true;
+      continue;
+    }
+    if (fields[0] == "entry_count") {
+      if (fields.size() != 2 ||
+          !parse_manifest_size(fields[1], &expected_entry_count)) {
+        return false;
+      }
+      saw_entry_count = true;
+      continue;
+    }
+    if (fields[0] == "generation") {
+      if (fields.size() != 2 ||
+          !detail::parse_uint64(fields[1], &loaded.generation)) {
+        return false;
+      }
+      saw_generation = true;
+      continue;
+    }
+    if (fields[0] == "next_segment_id") {
+      if (fields.size() != 2 ||
+          !detail::parse_uint64(fields[1], &loaded.next_segment_id) ||
+          loaded.next_segment_id == 0) {
+        return false;
+      }
+      saw_next_segment_id = true;
+      continue;
+    }
+    if (fields[0] == "segment_count") {
+      if (fields.size() != 2 ||
+          !parse_manifest_size(fields[1], &expected_segment_count)) {
+        return false;
+      }
+      saw_segment_count = true;
+      continue;
+    }
+    if (fields[0] == "build_source") {
+      if (fields.size() != 2) return false;
+      loaded.build_source = fields[1];
+      continue;
+    }
+    if (fields[0] == "segment" || fields[0] == "segment_delta") {
+      if (fields[0] == "segment" && fields.size() != 4) return false;
+      if (fields[0] == "segment_delta" && fields.size() != 5) return false;
+      standalone_segment segment;
+      segment.kind = standalone_segment_kind::kDelta;
+      const std::filesystem::path filename(fields[1]);
+      if (filename.has_parent_path() ||
+          !parse_manifest_size(fields[2], &segment.record_count) ||
+          !parse_manifest_size(fields[3], &segment.bytes)) {
+        return false;
+      }
+      segment.dimension = loaded.dimension;
+      if (fields[0] == "segment_delta") {
+        if (!detail::parse_uint64(fields[4], &segment.generation))
+          return false;
+      }
+      segment.path =
+          (std::filesystem::path(segment_directory(index_name)) / filename)
+              .string();
+      const uintmax_t actual_size =
+          std::filesystem::file_size(segment.path, ec);
+      if (ec || actual_size != segment.bytes) return false;
+      loaded.segments.push_back(std::move(segment));
+      continue;
+    }
+    if (fields[0] == "segment_raw_fbin") {
+      if (fields.size() != 7) return false;
+      standalone_segment segment;
+      segment.kind = standalone_segment_kind::kRawFbin;
+      const std::filesystem::path vector_filename(fields[1]);
+      const std::filesystem::path docid_filename(fields[2]);
+      size_t segment_dimension = 0;
+      if (vector_filename.has_parent_path() || docid_filename.has_parent_path() ||
+          !parse_manifest_size(fields[3], &segment.record_count) ||
+          !parse_manifest_size(fields[4], &segment_dimension) ||
+          !parse_manifest_size(fields[5], &segment.bytes) ||
+          !detail::parse_uint64(fields[6], &segment.generation) ||
+          segment_dimension != loaded.dimension) {
+        return false;
+      }
+      segment.dimension = segment_dimension;
+      const std::filesystem::path directory(segment_directory(index_name));
+      segment.vector_path = (directory / vector_filename).string();
+      segment.docid_path = (directory / docid_filename).string();
+      size_t vector_bytes = 0;
+      size_t docid_bytes = 0;
+      if (!file_size_as_size(segment.vector_path, &vector_bytes) ||
+          !file_size_as_size(segment.docid_path, &docid_bytes) ||
+          vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes ||
+          vector_bytes + docid_bytes != segment.bytes) {
+        return false;
+      }
+      loaded.segments.push_back(std::move(segment));
+      continue;
+    }
+    return false;
+  }
+
+  if (!saw_dimension || !saw_entry_count || !saw_generation ||
+      !saw_next_segment_id || !saw_segment_count ||
+      manifest_dimension != state->dimension ||
+      loaded.segments.size() != expected_segment_count) {
+    return false;
+  }
+
+  committed_entries entries;
+  if (!replay_segments(loaded, &entries) ||
+      entries.size() != expected_entry_count) {
+    return false;
+  }
+  for (const auto &entry : entries) {
+    loaded.live_doc_ids.insert(entry.first);
+  }
+  loaded.entry_count = loaded.live_doc_ids.size();
+  if (loaded.build_source.empty()) {
+    loaded.build_source = build_source_for_state(loaded);
+  }
+  *state = std::move(loaded);
+  return true;
+}
+
+bool standalone_entry_store::save_manifest(const std::string &index_name,
+                                           const index_state &state) const {
+  const std::string path = manifest_path(index_name);
+  if (path.empty() || !detail::ensure_parent_directory(path)) return false;
+
+  const std::string tmp_path = path + ".tmp";
+  std::ofstream file(tmp_path, std::ios::out | std::ios::trunc);
+  if (!file.is_open()) return false;
+  file << kStandaloneManifestHeader << '\n'
+       << "dimension\t" << state.dimension << '\n'
+       << "entry_count\t" << state.entry_count << '\n'
+       << "generation\t" << state.generation << '\n'
+       << "next_segment_id\t" << state.next_segment_id << '\n'
+       << "segment_count\t" << state.segments.size() << '\n'
+       << "build_source\t" << (state.build_source.empty()
+                                   ? build_source_for_state(state)
+                                   : state.build_source)
+       << '\n';
+  for (const standalone_segment &segment : state.segments) {
+    if (segment.kind == standalone_segment_kind::kRawFbin) {
+      file << "segment_raw_fbin\t"
+           << std::filesystem::path(segment.vector_path).filename().string()
+           << '\t'
+           << std::filesystem::path(segment.docid_path).filename().string()
+           << '\t' << segment.record_count << '\t' << segment.dimension
+           << '\t' << segment.bytes << '\t' << segment.generation << '\n';
+    } else {
+      file << "segment_delta\t"
+           << std::filesystem::path(segment.path).filename().string() << '\t'
+           << segment.record_count << '\t' << segment.bytes << '\t'
+           << segment.generation << '\n';
+    }
+  }
+  file.close();
+  if (!file) {
+    remove_file_if_exists(tmp_path);
+    return false;
+  }
+
+  std::error_code ec;
+  std::filesystem::rename(tmp_path, path, ec);
+  if (ec) {
+    ec.clear();
+    std::filesystem::remove(path, ec);
+    ec.clear();
+    std::filesystem::rename(tmp_path, path, ec);
+  }
+  if (ec) {
+    remove_file_if_exists(tmp_path);
+    return false;
+  }
+  return true;
+}
+
+bool standalone_entry_store::replay_segments(const index_state &state,
+                                             committed_entries *entries) const {
+  if (entries == nullptr) return false;
+  entries->clear();
+  for (const standalone_segment &segment : state.segments) {
+    if (segment.kind == standalone_segment_kind::kRawFbin) {
+      size_t vector_bytes = 0;
+      size_t docid_bytes = 0;
+      if (!file_size_as_size(segment.vector_path, &vector_bytes) ||
+          !file_size_as_size(segment.docid_path, &docid_bytes) ||
+          vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes ||
+          vector_bytes + docid_bytes != segment.bytes ||
+          segment.dimension != state.dimension) {
+        return false;
+      }
+
+      vector_load_file_info info;
+      std::string error;
+      if (!read_fbin_vectors(
+              segment.vector_path, segment.docid_path, state.dimension, &info,
+              &error,
+              [entries](uint64_t doc_id, const float *values,
+                        size_t dimension) {
+                (*entries)[doc_id] = vector_data(values, values + dimension);
+                return true;
+              }) ||
+          info.row_count != segment.record_count ||
+          info.dimension != state.dimension) {
+        return false;
+      }
+      continue;
+    }
+
+    std::error_code ec;
+    const uintmax_t actual_size = std::filesystem::file_size(segment.path, ec);
+    if (ec || actual_size != segment.bytes) return false;
+
+    std::ifstream file(segment.path, std::ios::in | std::ios::binary);
+    if (!file.is_open()) return false;
+    std::string header;
+    if (!std::getline(file, header) || header != kStandaloneSegmentHeader) {
+      return false;
+    }
+    uint64_t dimension = 0;
+    uint64_t record_count = 0;
+    if (!read_plain_value(file, dimension) ||
+        !read_plain_value(file, record_count) ||
+        dimension != state.dimension || record_count != segment.record_count) {
+      return false;
+    }
+    for (uint64_t i = 0; i < record_count; ++i) {
+      uint8_t op = 0;
+      uint64_t doc_id = 0;
+      if (!read_plain_value(file, op) || !read_plain_value(file, doc_id)) {
+        return false;
+      }
+      if (op == kStandaloneSegmentUpsert) {
+        vector_data vector(state.dimension);
+        file.read(reinterpret_cast<char *>(vector.data()),
+                  static_cast<std::streamsize>(state.dimension *
+                                               sizeof(float)));
+        if (!file.good()) return false;
+        (*entries)[doc_id] = std::move(vector);
+      } else if (op == kStandaloneSegmentErase) {
+        entries->erase(doc_id);
+      } else {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool standalone_entry_store::load_entries(const index_state &state,
+                                          committed_entries *entries) const {
+  if (!replay_segments(state, entries)) return false;
+  for (const auto &entry : state.memory_entries) {
+    (*entries)[entry.first] = entry.second;
+  }
+  for (const uint64_t doc_id : state.memory_erases) {
+    entries->erase(doc_id);
+  }
+  return entries->size() == state.entry_count;
+}
+
+std::string standalone_entry_store::segment_directory(
+    const std::string &index_name) const {
+  const std::string root = detail::vector_index_root_path();
+  if (root.empty() || index_name.empty()) return "";
+  std::filesystem::path directory(root);
+  directory /= detail::encoded_index_name(index_name);
+  directory /= "standalone_segments";
+  return directory.string();
+}
+
+std::string standalone_entry_store::manifest_path(
+    const std::string &index_name) const {
+  const std::string directory = segment_directory(index_name);
+  if (directory.empty()) return "";
+  std::filesystem::path path(directory);
+  path /= "manifest.v1";
+  return path.string();
+}
+
+std::string standalone_entry_store::segment_path(
+    const std::string &index_name, uint64_t segment_id) const {
+  const std::string directory = segment_directory(index_name);
+  if (directory.empty() || segment_id == 0) return "";
+  std::filesystem::path path(directory);
+  path /= "segment-" + std::to_string(segment_id) + ".vseg";
+  return path.string();
+}
+
+std::string standalone_entry_store::raw_vector_path(
+    const std::string &index_name, uint64_t segment_id) const {
+  const std::string directory = segment_directory(index_name);
+  if (directory.empty() || segment_id == 0) return "";
+  std::filesystem::path path(directory);
+  path /= "raw-segment-" + std::to_string(segment_id) + ".fbin";
+  return path.string();
+}
+
+std::string standalone_entry_store::raw_docid_path(
+    const std::string &index_name, uint64_t segment_id) const {
+  const std::string directory = segment_directory(index_name);
+  if (directory.empty() || segment_id == 0) return "";
+  std::filesystem::path path(directory);
+  path /= "raw-segment-" + std::to_string(segment_id) + ".u64";
+  return path.string();
 }
 
 namespace detail {
