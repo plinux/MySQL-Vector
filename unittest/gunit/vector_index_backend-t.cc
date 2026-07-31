@@ -178,6 +178,43 @@ const vector_index_status_fields::field_value *find_status_field(
   ASSERT_TRUE(file);
 }
 
+void install_diskann_offline_test_adapter() {
+#ifdef MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB
+  vector_index::diskann_reset_offline_adapter_path_for_testing();
+  vector_index::diskann_set_offline_adapter_path_for_testing(
+      MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB);
+#endif
+}
+
+struct diskann_offline_test_adapter_installer {
+  diskann_offline_test_adapter_installer() {
+    install_diskann_offline_test_adapter();
+  }
+};
+
+[[maybe_unused]] diskann_offline_test_adapter_installer
+    install_diskann_offline_test_adapter_before_tests;
+
+struct diskann_serial_test_adapter_installer {
+  diskann_serial_test_adapter_installer() {
+    const char *real_library =
+        std::getenv("MYSQL_VECTOR_DISKANN_REAL_TEST_LIB");
+    if (real_library != nullptr && real_library[0] != '\0') {
+      vector_index::diskann_reset_adapter_path_for_testing();
+      vector_index::diskann_set_adapter_path_for_testing(real_library);
+      return;
+    }
+#ifdef MYSQL_VECTOR_DISKANN_TEST_LIB
+    vector_index::diskann_reset_adapter_path_for_testing();
+    vector_index::diskann_set_adapter_path_for_testing(
+        MYSQL_VECTOR_DISKANN_TEST_LIB);
+#endif
+  }
+};
+
+[[maybe_unused]] diskann_serial_test_adapter_installer
+    install_diskann_serial_test_adapter;
+
 template <typename T>
 void write_binary_value(std::ofstream *file, T value) {
   file->write(reinterpret_cast<const char *>(&value), sizeof(value));
@@ -206,23 +243,6 @@ void write_raw_docid_file(const std::string &path,
   file.close();
   ASSERT_TRUE(file);
 }
-
-void install_diskann_offline_test_adapter() {
-#ifdef MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB
-  vector_index::diskann_reset_offline_adapter_path_for_testing();
-  vector_index::diskann_set_offline_adapter_path_for_testing(
-      MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB);
-#endif
-}
-
-struct diskann_offline_test_adapter_installer {
-  diskann_offline_test_adapter_installer() {
-    install_diskann_offline_test_adapter();
-  }
-};
-
-[[maybe_unused]] diskann_offline_test_adapter_installer
-    install_diskann_offline_test_adapter_before_tests;
 
 #ifdef HAVE_FAISS
 void write_faiss_index_file(const std::string &path,
@@ -957,60 +977,31 @@ TEST(VectorIndexBackendTest,
   vector_index::reset_faiss_external_snapshot_root_for_testing();
 
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      false, true, true, true, true, true, true));
+      false, true, true, true, true, true, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, false, true, true, true, true, true));
+      true, false, true, true, true, true, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, false, true, true, true, true));
+      true, true, false, true, true, true, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, true, false, true, true, true));
+      true, true, true, false, true, true, true, true, true, true, true));
   EXPECT_TRUE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, true, true, true));
+      true, true, true, true, true, true, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, false, true, true));
+      true, true, true, true, false, true, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, true, false, true));
+      true, true, true, true, true, false, true, true, true, true, true));
   EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, true, true, false));
+      true, true, true, true, true, true, false, true, true, true, true));
+  EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
+      true, true, true, true, true, true, true, false, true, true, true));
+  EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
+      true, true, true, true, true, true, true, true, false, true, true));
+  EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
+      true, true, true, true, true, true, true, true, true, false, true));
+  EXPECT_FALSE(vector_index::diskann_api_available_for_testing(
+      true, true, true, true, true, true, true, true, true, true, false));
   EXPECT_TRUE(vector_index::diskann_api_available_for_testing(
-      true, true, true, true, true, true, true));
-  EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
-      true, true, false, true, true, true, true, true, true));
-  EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
-      false, true, true, true, true, true, true, true, true));
-  EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
-      true, false, true, true, true, true, true, true, true));
-  EXPECT_FALSE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
-      true, true, true, true, true, false, true, true, true));
-  EXPECT_TRUE(vector_index::diskann_api_parallel_bulk_build_available_for_testing(
-      true, true, true, true, true, true, true, true, true));
-
-  bool used_parallel_create = false;
-  uint32_t observed_build_threads = 0;
-  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
-      false, false, 7, &used_parallel_create, &observed_build_threads));
-  EXPECT_FALSE(used_parallel_create);
-  EXPECT_EQ(0U, observed_build_threads);
-  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
-      true, false, 7, &used_parallel_create, &observed_build_threads));
-  EXPECT_FALSE(used_parallel_create);
-  EXPECT_EQ(0U, observed_build_threads);
-  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
-      false, true, 7, &used_parallel_create, &observed_build_threads));
-  EXPECT_FALSE(used_parallel_create);
-  EXPECT_EQ(0U, observed_build_threads);
-  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
-      true, true, 7, &used_parallel_create, &observed_build_threads));
-  EXPECT_TRUE(used_parallel_create);
-  EXPECT_EQ(7U, observed_build_threads);
-  EXPECT_TRUE(vector_index::diskann_api_create_index_route_for_testing(
-      true, true, 0, &used_parallel_create, &observed_build_threads));
-  EXPECT_TRUE(used_parallel_create);
-  EXPECT_EQ(0U, observed_build_threads);
-  EXPECT_FALSE(vector_index::diskann_api_create_index_route_for_testing(
-      true, true, 7, nullptr, &observed_build_threads));
-  EXPECT_FALSE(vector_index::diskann_api_create_index_route_for_testing(
-      true, true, 7, &used_parallel_create, nullptr));
+      true, true, true, true, true, true, true, true, true, true, true));
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_diskann_api_load");
@@ -1043,6 +1034,21 @@ TEST(VectorIndexBackendTest, DiskAnnApiLoadUsesEnvironmentCandidates) {
   setenv("MYSQL_VECTOR_DISKANN_LIB", "", 1);
   setenv("MYSQL_VECTOR_DISKANN_LIB_DIR", "", 1);
   std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexBackendTest, DiskAnnSelectedRealLibraryMatchesAbiV2) {
+  const char *real_library =
+      std::getenv("MYSQL_VECTOR_DISKANN_REAL_TEST_LIB");
+  if (real_library == nullptr || real_library[0] == '\0') {
+    GTEST_SKIP() << "No real Garnet library selected";
+  }
+  const bool expect_rejection =
+      std::getenv("MYSQL_VECTOR_DISKANN_EXPECT_ABI_REJECTION") != nullptr;
+  if (expect_rejection) {
+    EXPECT_FALSE(vector_index::diskann_api_load_for_testing());
+  } else {
+    EXPECT_TRUE(vector_index::diskann_api_load_for_testing());
+  }
 }
 
 TEST(VectorIndexBackendTest, DiskAnnMemoryModeRejectsExternalOnlyOperations) {
@@ -1102,6 +1108,45 @@ TEST(VectorIndexBackendTest, DiskAnnExternalRejectsWrongDimensionsBeforeNativePa
   ASSERT_EQ(2U, batch_results.size());
   EXPECT_TRUE(batch_results[0].empty());
   EXPECT_TRUE(batch_results[1].empty());
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexBackendTest,
+     DiskAnnExternalUsesExactFallbackForUnsignedDocIdsBeyondSidecarRange) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_diskann_uint64_fallback_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  const uint64_t max_doc_id = std::numeric_limits<uint64_t>::max();
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_uint64_fallback");
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
+  ASSERT_TRUE(backend.upsert(max_doc_id, {2.0F, 2.0F}));
+  EXPECT_FALSE(backend.external_manifest_present());
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(backend.search({2.0F, 2.0F}, 2, &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(max_doc_id, result[0].doc_id);
+
+  vector_index::diskann_backend loaded(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_diskann_uint64_loaded");
+  const std::unordered_map<uint64_t, vector_index::vector_data> entries{
+      {1, {1.0F, 1.0F}}, {max_doc_id, {2.0F, 2.0F}}};
+  ASSERT_TRUE(loaded.load_committed_entries(entries));
+  ASSERT_TRUE(loaded.search({2.0F, 2.0F}, 2, &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(max_doc_id, result[0].doc_id);
+  ASSERT_TRUE(loaded.erase(max_doc_id));
+  EXPECT_EQ(1U, loaded.entry_count());
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);

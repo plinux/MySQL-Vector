@@ -1001,19 +1001,16 @@ bool diskann_parse_prefixed_keys_for_testing(const std::string &payload,
                                              int fail_index = -1,
                                              bool null_key_data = false);
 bool diskann_api_load_for_testing();
+void diskann_set_adapter_path_for_testing(const std::string &path);
+void diskann_reset_adapter_path_for_testing();
 bool diskann_api_available_for_testing(bool has_handle, bool has_create_index,
-                                   bool has_drop_index, bool has_insert,
-                                   bool has_search_vector, bool has_remove,
-                                   bool has_card);
-bool diskann_api_parallel_bulk_build_available_for_testing(
-    bool has_handle, bool has_create_index,
-    bool has_create_index_with_build_threads, bool has_drop_index,
-    bool has_insert, bool has_bulk_insert, bool has_search_vector,
-    bool has_remove, bool has_card);
-bool diskann_api_create_index_route_for_testing(
-    bool has_create_index_with_build_threads, bool has_bulk_insert,
-    uint32_t build_threads, bool *used_parallel_create,
-    uint32_t *observed_build_threads);
+                                       bool has_drop_index, bool has_insert,
+                                       bool has_search_vector, bool has_remove,
+                                       bool has_card,
+                                       bool has_build_quant_table,
+                                       bool has_backfill_quant_vectors,
+                                       bool has_random_members,
+                                       bool has_search_neighbors);
 bool diskann_offline_api_load_for_testing();
 void diskann_set_offline_adapter_path_for_testing(const std::string &path);
 void diskann_reset_offline_adapter_path_for_testing();

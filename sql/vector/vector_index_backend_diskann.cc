@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -41,6 +42,7 @@
 #include <vector>
 
 #include "my_dbug.h"
+#include "sql/vector/vector_diskann_garnet_abi.h"
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_index_limits.h"
@@ -57,10 +59,8 @@ using vector_index::detail::remove_if_exists;
 
 constexpr uint64_t kDiskAnnTermBitmask = 0x7ULL;
 constexpr uint32_t kDiskAnnNoQuant = 1;
-constexpr uint32_t kDiskAnnVectorValueFp32 = 1;
 constexpr uint32_t kDiskAnnBuildComplexity = 64;
 constexpr uint32_t kDiskAnnMaxDegree = 32;
-constexpr size_t kDiskAnnBulkBuildBatchSize = 8192;
 constexpr const char *kDiskAnnOfflineBuildSymbol =
     "mysql_vector_diskann_offline_build";
 constexpr const char *kDiskAnnOfflineBuildFromManifestSymbol =
@@ -78,49 +78,64 @@ constexpr const char *kDiskAnnOfflineCardSymbol =
 constexpr const char *kDiskAnnOfflineDropSymbol =
     "mysql_vector_diskann_offline_drop";
 
-#if defined(EXTRA_CODE_FOR_UNIT_TESTING) && \
-    !defined(MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED)
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+std::string &diskann_adapter_path_for_testing() {
+  static std::string path;
+  return path;
+}
+
+#ifndef MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED
 std::string &diskann_offline_adapter_path_for_testing() {
   static std::string path;
   return path;
 }
 #endif
+#endif
 
-using diskann_read_data_callback =
-    void (*)(uint32_t, void *, const uint8_t *, size_t);
-using diskann_rmw_data_callback = void (*)(void *, uint8_t *, size_t);
-using diskann_read_callback =
-    void (*)(uint64_t, uint32_t, const uint8_t *, size_t, diskann_read_data_callback,
-             void *);
-using diskann_write_callback =
-    bool (*)(uint64_t, const uint8_t *, size_t, const uint8_t *, size_t);
-using diskann_delete_callback = bool (*)(uint64_t, const uint8_t *, size_t);
-using diskann_read_modify_write_callback =
-    bool (*)(uint64_t, const uint8_t *, size_t, size_t, diskann_rmw_data_callback,
-             void *);
-using diskann_create_index_fn =
-    const void *(*)(uint64_t, uint32_t, uint32_t, uint32_t, int32_t, uint32_t,
-                    uint32_t, diskann_read_callback, diskann_write_callback,
-                    diskann_delete_callback,
-                    diskann_read_modify_write_callback);
-using diskann_create_index_with_build_threads_fn =
-    const void *(*)(uint64_t, uint32_t, uint32_t, uint32_t, int32_t, uint32_t,
-                    uint32_t, uint32_t, diskann_read_callback,
-                    diskann_write_callback, diskann_delete_callback,
-                    diskann_read_modify_write_callback);
-using diskann_drop_index_fn = void (*)(uint64_t, const void *);
-using diskann_insert_fn = bool (*)(uint64_t, const void *, const uint8_t *, size_t,
-                                 uint32_t, const uint8_t *, size_t,
-                                 const uint8_t *, size_t);
-using diskann_bulk_insert_fn = bool (*)(uint64_t, const void *, const uint8_t *,
-                                       size_t, size_t, uint32_t, const uint8_t *,
-                                       size_t, size_t, size_t, size_t);
-using diskann_search_vector_fn =
-    int32_t (*)(uint64_t, const void *, uint32_t, const uint8_t *, size_t, float,
-                uint32_t, const uint8_t *, size_t, size_t, uint8_t *, size_t,
-                float *, size_t, void *);
-using diskann_remove_fn = bool (*)(uint64_t, const void *, const uint8_t *, size_t);
-using diskann_card_fn = uint64_t (*)(uint64_t, const void *);
+bool diskann_sidecar_supports_doc_id(uint64_t doc_id) {
+#ifdef HAVE_FAISS
+  // The rebuildable FAISS sidecar stores identifiers in signed idx_t values.
+  return doc_id <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+#else
+  (void)doc_id;
+  return true;
+#endif
+}
+
+bool diskann_sidecar_supports_entries(
+    const std::unordered_map<uint64_t, vector_index::vector_data> &entries) {
+  return std::all_of(entries.begin(), entries.end(), [](const auto &entry) {
+    return diskann_sidecar_supports_doc_id(entry.first);
+  });
+}
+
+bool diskann_entries_match_dimension(
+    const std::unordered_map<uint64_t, vector_index::vector_data> &entries,
+    size_t dimension) {
+  return std::all_of(entries.begin(), entries.end(),
+                     [dimension](const auto &entry) {
+                       return entry.second.size() == dimension;
+                     });
+}
+
+using vector_index::diskann_garnet_abi::diskann_card_fn;
+using vector_index::diskann_garnet_abi::diskann_backfill_quant_vectors_fn;
+using vector_index::diskann_garnet_abi::diskann_build_quant_table_fn;
+using vector_index::diskann_garnet_abi::diskann_create_index_fn;
+using vector_index::diskann_garnet_abi::diskann_delete_callback;
+using vector_index::diskann_garnet_abi::diskann_drop_index_fn;
+using vector_index::diskann_garnet_abi::diskann_filter_callback;
+using vector_index::diskann_garnet_abi::diskann_insert_fn;
+using vector_index::diskann_garnet_abi::diskann_log_callback;
+using vector_index::diskann_garnet_abi::diskann_random_members_fn;
+using vector_index::diskann_garnet_abi::diskann_read_callback;
+using vector_index::diskann_garnet_abi::diskann_read_data_callback;
+using vector_index::diskann_garnet_abi::diskann_read_modify_write_callback;
+using vector_index::diskann_garnet_abi::diskann_remove_fn;
+using vector_index::diskann_garnet_abi::diskann_rmw_data_callback;
+using vector_index::diskann_garnet_abi::diskann_search_vector_fn;
+using vector_index::diskann_garnet_abi::diskann_search_neighbors_fn;
+using vector_index::diskann_garnet_abi::diskann_write_callback;
 using diskann_offline_build_fn = bool (*)(const char *, const uint8_t *, size_t,
                                           size_t, const uint8_t *, size_t,
                                           size_t, size_t, int32_t, uint32_t,
@@ -153,38 +168,56 @@ using diskann_offline_drop_fn = void (*)(const void *);
 #ifdef MYSQL_VECTOR_DISKANN_OFFLINE_STATIC_LINKED
 extern "C" {
 bool mysql_vector_diskann_offline_build(
-    const char *, const uint8_t *, size_t, size_t, const uint8_t *, size_t,
-    size_t, size_t, int32_t, uint32_t, uint32_t, uint32_t, double, uint32_t,
-    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+    const char *index_prefix, const uint8_t *vectors, size_t row_count,
+    size_t dimension, const uint8_t *doc_ids, size_t doc_id_stride,
+    size_t doc_id_count, size_t raw_vector_bytes, int32_t metric_type,
+    uint32_t max_degree, uint32_t build_complexity, uint32_t num_threads,
+    double build_memory_gb, uint32_t pq_code_budget_gb,
+    uint32_t num_nodes_to_cache, uint32_t build_blas_threads,
+    uint32_t disk_pq_dims, uint32_t accelerate_build,
+    uint32_t shuffle_build);
 bool mysql_vector_diskann_offline_build_from_manifest(
-    const char *, const char *, uint32_t, int32_t, uint32_t, uint32_t,
-    uint32_t, double, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
-    uint32_t);
+    const char *index_prefix, const char *manifest_path, uint32_t dimension,
+    int32_t metric_type, uint32_t max_degree, uint32_t build_complexity,
+    uint32_t num_threads, double build_memory_gb,
+    uint32_t pq_code_budget_gb, uint32_t num_nodes_to_cache,
+    uint32_t build_blas_threads, uint32_t disk_pq_dims,
+    uint32_t accelerate_build, uint32_t shuffle_build);
 bool mysql_vector_diskann_offline_build_from_native_pq(
-    const char *, const char *, const char *, const char *, const char *,
-    const char *, uint32_t, int32_t, uint32_t, uint32_t, uint32_t, double,
-    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
-const void *mysql_vector_diskann_offline_load(const char *, int32_t, uint32_t,
-                                              uint32_t, uint32_t, uint32_t);
+    const char *index_prefix, const char *manifest_path,
+    const char *pq_pivots_path, const char *pq_compressed_path,
+    const char *disk_pq_pivots_path, const char *disk_pq_compressed_path,
+    uint32_t dimension, int32_t metric_type, uint32_t max_degree,
+    uint32_t build_complexity, uint32_t num_threads, double build_memory_gb,
+    uint32_t pq_code_budget_gb, uint32_t num_nodes_to_cache,
+    uint32_t build_blas_threads, uint32_t disk_pq_dims,
+    uint32_t accelerate_build, uint32_t shuffle_build);
+const void *mysql_vector_diskann_offline_load(
+    const char *index_prefix, int32_t metric_type, uint32_t num_threads,
+    uint32_t search_io_limit, uint32_t cache_nodes, uint32_t use_bfs_cache);
 int32_t mysql_vector_diskann_offline_search(
-    const void *, const float *, size_t, uint32_t, uint32_t, uint32_t,
-    uint64_t *, float *);
+    const void *index_ptr, const float *query, size_t dimension, uint32_t top_k,
+    uint32_t search_complexity, uint32_t num_threads, uint64_t *labels,
+    float *distances);
 int32_t mysql_vector_diskann_offline_search_batch(
-    const void *, const float *, size_t, size_t, uint32_t, uint32_t, uint32_t,
-    uint32_t, uint64_t *, float *, uint32_t *);
-uint64_t mysql_vector_diskann_offline_card(const void *);
-void mysql_vector_diskann_offline_drop(const void *);
+    const void *index_ptr, const float *queries, size_t query_count,
+    size_t dimension, uint32_t top_k, uint32_t search_complexity,
+    uint32_t beamwidth, uint32_t num_threads, uint64_t *labels,
+    float *distances, uint32_t *result_counts);
+uint64_t mysql_vector_diskann_offline_card(const void *index_ptr);
+void mysql_vector_diskann_offline_drop(const void *index_ptr);
 }
 #endif
 
 struct diskann_api {
   void *handle{nullptr};
   diskann_create_index_fn create_index{nullptr};
-  diskann_create_index_with_build_threads_fn create_index_with_build_threads{
-      nullptr};
   diskann_drop_index_fn drop_index{nullptr};
   diskann_insert_fn insert{nullptr};
-  diskann_bulk_insert_fn bulk_insert{nullptr};
+  diskann_build_quant_table_fn build_quant_table{nullptr};
+  diskann_backfill_quant_vectors_fn backfill_quant_vectors{nullptr};
+  diskann_random_members_fn random_members{nullptr};
+  diskann_search_neighbors_fn search_neighbors{nullptr};
   diskann_search_vector_fn search_vector{nullptr};
   diskann_remove_fn remove{nullptr};
   diskann_card_fn card{nullptr};
@@ -194,17 +227,11 @@ struct diskann_api {
     if (handle != nullptr) return available();
 
     std::vector<std::string> candidates;
-    if (const char *env = std::getenv("MYSQL_VECTOR_DISKANN_LIB");
-        env != nullptr && env[0] != '\0') {
-      candidates.emplace_back(env);
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+    if (!diskann_adapter_path_for_testing().empty()) {
+      candidates.emplace_back(diskann_adapter_path_for_testing());
     }
-    if (const char *env = std::getenv("MYSQL_VECTOR_DISKANN_LIB_DIR");
-        env != nullptr && env[0] != '\0') {
-      const std::filesystem::path lib_dir(env);
-      candidates.emplace_back(
-          (lib_dir / "libdiskann_garnet.dylib").string());
-      candidates.emplace_back((lib_dir / "libdiskann_garnet.so").string());
-    }
+#endif
 #ifdef MYSQL_VECTOR_DISKANN_DEFAULT_LIB
     candidates.emplace_back(MYSQL_VECTOR_DISKANN_DEFAULT_LIB);
 #endif
@@ -225,14 +252,18 @@ struct diskann_api {
       if (handle == nullptr) continue;
       create_index = reinterpret_cast<diskann_create_index_fn>(
           dlsym(handle, "create_index"));
-      create_index_with_build_threads =
-          reinterpret_cast<diskann_create_index_with_build_threads_fn>(
-              dlsym(handle, "create_index_with_build_threads"));
       drop_index =
           reinterpret_cast<diskann_drop_index_fn>(dlsym(handle, "drop_index"));
       insert = reinterpret_cast<diskann_insert_fn>(dlsym(handle, "insert"));
-      bulk_insert = reinterpret_cast<diskann_bulk_insert_fn>(
-          dlsym(handle, "bulk_insert"));
+      build_quant_table = reinterpret_cast<diskann_build_quant_table_fn>(
+          dlsym(handle, "build_quant_table"));
+      backfill_quant_vectors =
+          reinterpret_cast<diskann_backfill_quant_vectors_fn>(
+              dlsym(handle, "backfill_quant_vectors"));
+      random_members = reinterpret_cast<diskann_random_members_fn>(
+          dlsym(handle, "random_members"));
+      search_neighbors = reinterpret_cast<diskann_search_neighbors_fn>(
+          dlsym(handle, "search_neighbors"));
       search_vector = reinterpret_cast<diskann_search_vector_fn>(
           dlsym(handle, "search_vector"));
       remove = reinterpret_cast<diskann_remove_fn>(dlsym(handle, "remove"));
@@ -242,10 +273,12 @@ struct diskann_api {
       dlclose(handle);
       handle = nullptr;
       create_index = nullptr;
-      create_index_with_build_threads = nullptr;
       drop_index = nullptr;
       insert = nullptr;
-      bulk_insert = nullptr;
+      build_quant_table = nullptr;
+      backfill_quant_vectors = nullptr;
+      random_members = nullptr;
+      search_neighbors = nullptr;
       search_vector = nullptr;
       remove = nullptr;
       card = nullptr;
@@ -256,13 +289,11 @@ struct diskann_api {
 
   bool available() const {
     return handle != nullptr && create_index != nullptr &&
-           drop_index != nullptr && insert != nullptr && search_vector != nullptr &&
+           drop_index != nullptr && insert != nullptr &&
+           build_quant_table != nullptr && backfill_quant_vectors != nullptr &&
+           random_members != nullptr && search_neighbors != nullptr &&
+           search_vector != nullptr &&
            remove != nullptr && card != nullptr;
-  }
-
-  bool parallel_bulk_build_available() const {
-    return available() && create_index_with_build_threads != nullptr &&
-           bulk_insert != nullptr;
   }
 
   const void *create_index_handle(uint64_t ctx, uint32_t dimension,
@@ -270,22 +301,20 @@ struct diskann_api {
                                   uint32_t quant_type, int32_t metric_type,
                                   uint32_t build_complexity,
                                   uint32_t max_degree,
-                                  uint32_t build_threads,
                                   diskann_read_callback read_callback,
                                   diskann_write_callback write_callback,
                                   diskann_delete_callback delete_callback,
                                   diskann_read_modify_write_callback
-                                      read_modify_write_callback) const {
-    if (parallel_bulk_build_available()) {
-      return create_index_with_build_threads(
-          ctx, dimension, reduce_dimension, quant_type, metric_type,
-          build_complexity, max_degree, build_threads, read_callback,
-          write_callback, delete_callback, read_modify_write_callback);
-    }
+                                      read_modify_write_callback,
+                                  diskann_filter_callback filter_callback,
+                                  diskann_log_callback log_callback,
+                                  bool *quantization_needed) const {
     return create_index(ctx, dimension, reduce_dimension, quant_type, metric_type,
                         build_complexity, max_degree, read_callback,
                         write_callback, delete_callback,
-                        read_modify_write_callback);
+                        read_modify_write_callback, filter_callback,
+                        log_callback,
+                        quantization_needed);
   }
 };
 
@@ -488,18 +517,19 @@ bool diskann_backend::search_entries_exact(
 class diskann_native_state {
  public:
   diskann_native_state(size_t dimension, metric_type metric, const std::string &index_name,
-                     uint32_t build_complexity, uint32_t max_degree,
-                     uint32_t build_threads)
+                     uint32_t build_complexity, uint32_t max_degree)
       : m_dimension(dimension),
         m_metric(metric),
         m_index_name(index_name),
         m_store_directory(detail::diskann_store_directory(index_name)),
         m_api(&get_diskann_api()),
         m_build_complexity(build_complexity),
-        m_max_degree(max_degree),
-        m_build_threads(build_threads) {}
+        m_max_degree(max_degree) {}
 
-  ~diskann_native_state() { close(); }
+  ~diskann_native_state() {
+    std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    close_locked();
+  }
 
   bool supported() const { return m_api != nullptr && m_api->available(); }
   bool active() const {
@@ -535,29 +565,10 @@ class diskann_native_state {
     }
 
     bool rebuild_ok = true;
-    if (!ordered_entries.empty() && m_api->parallel_bulk_build_available()) {
-      std::vector<uint64_t> doc_ids;
-      std::vector<float> vectors;
-      doc_ids.reserve(ordered_entries.size());
-      vectors.reserve(ordered_entries.size() * m_dimension);
-      for (const auto &entry : ordered_entries) {
-        doc_ids.push_back(entry.first);
-        vectors.insert(vectors.end(), entry.second->begin(), entry.second->end());
-      }
-      const size_t batch_size =
-          std::min(kDiskAnnBulkBuildBatchSize, ordered_entries.size());
-      rebuild_ok = m_api->bulk_insert(
-          callback_context(), m_index_handle,
-          reinterpret_cast<const uint8_t *>(doc_ids.data()), sizeof(uint64_t),
-          sizeof(uint64_t), kDiskAnnVectorValueFp32,
-          reinterpret_cast<const uint8_t *>(vectors.data()), m_dimension,
-          m_dimension * sizeof(float), ordered_entries.size(), batch_size);
-    } else {
-      for (const auto &entry : ordered_entries) {
-        if (!insert_locked(entry.first, *entry.second)) {
-          rebuild_ok = false;
-          break;
-        }
+    for (const auto &entry : ordered_entries) {
+      if (!insert_locked(entry.first, *entry.second)) {
+        rebuild_ok = false;
+        break;
       }
     }
     if (rebuild_ok) rebuild_ok = flush_build_memory_store_locked();
@@ -588,12 +599,15 @@ class diskann_native_state {
     if (m_index_handle == nullptr) return false;
     std::string ids_buffer(top_k * (sizeof(uint32_t) + sizeof(uint64_t)), '\0');
     std::vector<float> distances(top_k, 0.0F);
+    const uint32_t effective_search_complexity =
+        std::max(m_search_complexity, static_cast<uint32_t>(top_k));
     const int32_t count = m_api->search_vector(
-        callback_context(), m_index_handle, kDiskAnnVectorValueFp32,
+        callback_context(), m_index_handle,
         reinterpret_cast<const uint8_t *>(query.data()), query.size(), 0.0F,
-        m_search_complexity, nullptr, 0, 0,
+        effective_search_complexity, nullptr, 0, 0,
         reinterpret_cast<uint8_t *>(ids_buffer.data()), ids_buffer.size(),
-        distances.data(), distances.size(), nullptr);
+        distances.data(), distances.size(),
+        vector_index::k_default_diskann_search_beamwidth, nullptr);
     if (count < 0) return false;
 
     const uint8_t *ptr = reinterpret_cast<const uint8_t *>(ids_buffer.data());
@@ -796,13 +810,20 @@ class diskann_native_state {
       if (ec) return false;
     }
 
+    bool quantization_needed = false;
     const void *index = m_api->create_index_handle(
         callback_context(), static_cast<uint32_t>(m_dimension), 0,
         kDiskAnnNoQuant, diskann_metric_code(m_metric), m_build_complexity,
-        m_max_degree, m_build_threads, &diskann_native_state::read_callback,
-        &diskann_native_state::write_callback, &diskann_native_state::delete_callback,
-        &diskann_native_state::read_modify_write_callback);
-    if (index == nullptr) return false;
+        m_max_degree, &diskann_native_state::read_callback,
+        &diskann_native_state::write_callback,
+        &diskann_native_state::delete_callback,
+        &diskann_native_state::read_modify_write_callback,
+        &diskann_native_state::filter_callback,
+        &diskann_native_state::log_callback, &quantization_needed);
+    if (index == nullptr || quantization_needed) {
+      if (index != nullptr) m_api->drop_index(callback_context(), index);
+      return false;
+    }
     m_index_handle = index;
     return true;
   }
@@ -810,11 +831,14 @@ class diskann_native_state {
   bool insert_locked(uint64_t doc_id, const vector_data &vector) {
     if (!ensure_open_locked(false)) return false;
     const std::string doc_id_bytes = diskann_doc_id_bytes(doc_id);
-    return m_api->insert(callback_context(), m_index_handle,
-                         reinterpret_cast<const uint8_t *>(doc_id_bytes.data()),
-                         doc_id_bytes.size(), kDiskAnnVectorValueFp32,
-                         reinterpret_cast<const uint8_t *>(vector.data()),
-                         vector.size(), nullptr, 0);
+    const uint8_t status = m_api->insert(
+        callback_context(), m_index_handle,
+        reinterpret_cast<const uint8_t *>(doc_id_bytes.data()),
+        doc_id_bytes.size(),
+        reinterpret_cast<const uint8_t *>(vector.data()), vector.size(), nullptr,
+        0);
+    // Garnet uses two nonzero statuses for successful insert transitions.
+    return status != 0;
   }
 
   static diskann_native_state *from_context(uint64_t ctx) {
@@ -828,11 +852,6 @@ class diskann_native_state {
   bool ensure_open_locked(bool reset_store) const {
     if (m_index_handle != nullptr) return true;
     return const_cast<diskann_native_state *>(this)->reopen_locked(reset_store);
-  }
-
-  void close() {
-    std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
-    close_locked();
   }
 
   void close_locked() {
@@ -1219,10 +1238,13 @@ class diskann_native_state {
   }
 
   static void read_callback(uint64_t ctx, uint32_t key_count,
-                           const uint8_t *key_data, size_t key_length,
-                           diskann_read_data_callback callback, void *user_data) {
+                            uint32_t value_length_hint,
+                            const uint8_t *key_data, size_t key_length,
+                            diskann_read_data_callback callback,
+                            void *user_data) {
     diskann_native_state *state = from_context(ctx);
     if (state == nullptr || callback == nullptr) return;
+    (void)value_length_hint;
     (void)parse_prefixed_keys(
         key_data, key_length, key_count,
         [state, ctx, callback, user_data](uint32_t index, const uint8_t *key,
@@ -1264,6 +1286,15 @@ class diskann_native_state {
                                           callback, user_data);
   }
 
+  static bool filter_callback(uint64_t, const uint8_t *, size_t) {
+    // MySQL applies visibility filtering after DiskANN returns candidates.
+    return true;
+  }
+
+  static void log_callback(uint64_t, const uint8_t *, size_t) {
+    // MySQL exposes stable vector diagnostics through its own status surfaces.
+  }
+
   size_t m_dimension{0};
   metric_type m_metric{metric_type::kEuclidean};
   std::string m_index_name;
@@ -1272,7 +1303,6 @@ class diskann_native_state {
   const void *m_index_handle{nullptr};
   uint32_t m_build_complexity{kDiskAnnBuildComplexity};
   uint32_t m_max_degree{kDiskAnnMaxDegree};
-  uint32_t m_build_threads{0};
   uint32_t m_search_complexity{kDiskAnnBuildComplexity};
   mutable std::shared_mutex m_lifecycle_mutex;
   std::atomic_bool m_build_memory_store_active{false};
@@ -1295,6 +1325,9 @@ diskann_backend::~diskann_backend() = default;
 bool diskann_backend::upsert(uint64_t doc_id, const vector_data &vector) {
   if (m_mode != backend_mode::kExternal) return false;
   if (vector.size() != m_dimension) return false;
+  if (m_external_adapter_active && !diskann_sidecar_supports_doc_id(doc_id)) {
+    m_external_adapter_active = false;
+  }
   if (m_external_adapter_active &&
       !m_external_adapter.upsert(doc_id, vector))
     return false;
@@ -1358,9 +1391,14 @@ bool diskann_backend::search(const vector_data &query, size_t top_k,
 bool diskann_backend::load_committed_entries(
     const std::unordered_map<uint64_t, vector_data> &entries) {
   if (m_mode != backend_mode::kExternal) return false;
-  if (!m_external_adapter.load_committed_entries(entries)) return false;
+  const bool sidecar_compatible = diskann_sidecar_supports_entries(entries);
+  if (sidecar_compatible) {
+    if (!m_external_adapter.load_committed_entries(entries)) return false;
+  } else if (!diskann_entries_match_dimension(entries, m_dimension)) {
+    return false;
+  }
   m_entries = entries;
-  m_external_adapter_active = true;
+  m_external_adapter_active = sidecar_compatible;
   m_native_runtime_enabled = false;
   m_native_state.reset();
   return true;
@@ -1369,18 +1407,24 @@ bool diskann_backend::load_committed_entries(
 bool diskann_backend::rebuild_from_committed_entries(
     const std::unordered_map<uint64_t, vector_data> &entries) {
   if (m_mode != backend_mode::kExternal) return false;
+  if (m_diskann_build_mode == diskann_build_mode::kOffline) return false;
   auto rebuilt = std::make_unique<diskann_native_state>(
       m_dimension, m_metric, m_index_name, m_diskann_build_complexity,
-      m_diskann_max_degree, m_diskann_build_threads);
+      m_diskann_max_degree);
   bool rebuild_ok = rebuilt->rebuild_from_entries(entries);
   DBUG_EXECUTE_IF("vector_backend_fail_diskann_native_rebuild",
                   rebuild_ok = false;);
   if (!rebuild_ok) {
     if (rebuilt->supported()) return false;
-    if (!m_external_adapter.load_committed_entries(entries)) return false;
+    const bool sidecar_compatible = diskann_sidecar_supports_entries(entries);
+    if (sidecar_compatible) {
+      if (!m_external_adapter.load_committed_entries(entries)) return false;
+    } else if (!diskann_entries_match_dimension(entries, m_dimension)) {
+      return false;
+    }
     (void)rebuilt->set_search_complexity(m_diskann_search_complexity);
     m_entries = entries;
-    m_external_adapter_active = true;
+    m_external_adapter_active = sidecar_compatible;
     m_native_state = std::move(rebuilt);
     m_native_runtime_enabled = false;
     return true;
@@ -1633,14 +1677,14 @@ uint32_t diskann_backend::diskann_cache_nodes() const {
 std::string diskann_term_directory_for_testing(const std::string &index_name,
                                            uint64_t ctx) {
   diskann_native_state state(2, metric_type::kEuclidean, index_name,
-                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree, 0);
+                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree);
   return state.term_directory_for_testing(ctx);
 }
 
 std::string diskann_key_path_for_testing(const std::string &index_name, uint64_t ctx,
                                      const std::string &key_bytes) {
   diskann_native_state state(2, metric_type::kEuclidean, index_name,
-                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree, 0);
+                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree);
   if (key_bytes.empty()) return state.key_path_for_testing(ctx, nullptr, 0);
   return state.key_path_for_testing(
       ctx, reinterpret_cast<const uint8_t *>(key_bytes.data()),
@@ -1651,7 +1695,7 @@ bool diskann_load_value_for_testing(const std::string &index_name, uint64_t ctx,
                                 const std::string &key_bytes,
                                 std::string *value) {
   diskann_native_state state(2, metric_type::kEuclidean, index_name,
-                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree, 0);
+                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree);
   if (key_bytes.empty()) return state.load_value_for_testing(ctx, nullptr, 0, value);
   return state.load_value_for_testing(
       ctx, reinterpret_cast<const uint8_t *>(key_bytes.data()),
@@ -1662,7 +1706,7 @@ bool diskann_save_value_for_testing(const std::string &index_name, uint64_t ctx,
                                 const std::string &key_bytes,
                                 const std::string &value) {
   diskann_native_state state(2, metric_type::kEuclidean, index_name,
-                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree, 0);
+                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree);
   const uint8_t *key_ptr = key_bytes.empty()
                                ? nullptr
                                : reinterpret_cast<const uint8_t *>(key_bytes.data());
@@ -1674,7 +1718,7 @@ bool diskann_save_value_for_testing(const std::string &index_name, uint64_t ctx,
 bool diskann_delete_value_for_testing(const std::string &index_name, uint64_t ctx,
                                   const std::string &key_bytes) {
   diskann_native_state state(2, metric_type::kEuclidean, index_name,
-                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree, 0);
+                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree);
   const uint8_t *key_ptr = key_bytes.empty()
                                ? nullptr
                                : reinterpret_cast<const uint8_t *>(key_bytes.data());
@@ -1686,7 +1730,7 @@ bool diskann_build_memory_store_round_trip_for_testing(
     const std::string &value, std::string *loaded_before_flush,
     bool *file_exists_before_flush, std::string *loaded_after_flush) {
   diskann_native_state state(2, metric_type::kEuclidean, index_name,
-                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree, 0);
+                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree);
   const uint8_t *key_ptr = key_bytes.empty()
                                ? nullptr
                                : reinterpret_cast<const uint8_t *>(key_bytes.data());
@@ -1699,7 +1743,7 @@ bool diskann_resident_store_round_trip_for_testing(
     const std::string &index_name, uint64_t ctx, const std::string &key_bytes,
     const std::string &value, std::string *loaded_after_removing_file) {
   diskann_native_state state(2, metric_type::kEuclidean, index_name,
-                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree, 0);
+                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree);
   const uint8_t *key_ptr = key_bytes.empty()
                                ? nullptr
                                : reinterpret_cast<const uint8_t *>(key_bytes.data());
@@ -1713,7 +1757,7 @@ bool diskann_read_modify_write_round_trip_for_testing(
     size_t write_length, std::string *persistent_value,
     std::string *build_memory_value, std::string *resident_value) {
   diskann_native_state state(2, metric_type::kEuclidean, index_name,
-                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree, 0);
+                           kDiskAnnBuildComplexity, kDiskAnnMaxDegree);
   const uint8_t *key_ptr = key_bytes.empty()
                                ? nullptr
                                : reinterpret_cast<const uint8_t *>(key_bytes.data());
@@ -1746,10 +1790,22 @@ bool diskann_api_load_for_testing() {
   return api.load();
 }
 
+void diskann_set_adapter_path_for_testing(const std::string &path) {
+  diskann_adapter_path_for_testing() = path;
+}
+
+void diskann_reset_adapter_path_for_testing() {
+  diskann_adapter_path_for_testing().clear();
+}
+
 bool diskann_api_available_for_testing(bool has_handle, bool has_create_index,
-                                   bool has_drop_index, bool has_insert,
-                                   bool has_search_vector, bool has_remove,
-                                   bool has_card) {
+                                       bool has_drop_index, bool has_insert,
+                                       bool has_search_vector, bool has_remove,
+                                       bool has_card,
+                                       bool has_build_quant_table,
+                                       bool has_backfill_quant_vectors,
+                                       bool has_random_members,
+                                       bool has_search_neighbors) {
   diskann_api api;
   api.handle = has_handle ? reinterpret_cast<void *>(1) : nullptr;
   api.create_index = has_create_index
@@ -1758,101 +1814,26 @@ bool diskann_api_available_for_testing(bool has_handle, bool has_create_index,
   api.drop_index =
       has_drop_index ? reinterpret_cast<diskann_drop_index_fn>(1) : nullptr;
   api.insert = has_insert ? reinterpret_cast<diskann_insert_fn>(1) : nullptr;
+  api.build_quant_table =
+      has_build_quant_table
+          ? reinterpret_cast<diskann_build_quant_table_fn>(1)
+          : nullptr;
+  api.backfill_quant_vectors =
+      has_backfill_quant_vectors
+          ? reinterpret_cast<diskann_backfill_quant_vectors_fn>(1)
+          : nullptr;
+  api.random_members =
+      has_random_members ? reinterpret_cast<diskann_random_members_fn>(1)
+                         : nullptr;
+  api.search_neighbors =
+      has_search_neighbors ? reinterpret_cast<diskann_search_neighbors_fn>(1)
+                           : nullptr;
   api.search_vector = has_search_vector
                           ? reinterpret_cast<diskann_search_vector_fn>(1)
                           : nullptr;
   api.remove = has_remove ? reinterpret_cast<diskann_remove_fn>(1) : nullptr;
   api.card = has_card ? reinterpret_cast<diskann_card_fn>(1) : nullptr;
   return api.available();
-}
-
-bool diskann_api_parallel_bulk_build_available_for_testing(
-    bool has_handle, bool has_create_index,
-    bool has_create_index_with_build_threads, bool has_drop_index,
-    bool has_insert, bool has_bulk_insert, bool has_search_vector,
-    bool has_remove, bool has_card) {
-  diskann_api api;
-  api.handle = has_handle ? reinterpret_cast<void *>(1) : nullptr;
-  api.create_index = has_create_index
-                         ? reinterpret_cast<diskann_create_index_fn>(1)
-                         : nullptr;
-  api.create_index_with_build_threads =
-      has_create_index_with_build_threads
-          ? reinterpret_cast<diskann_create_index_with_build_threads_fn>(1)
-          : nullptr;
-  api.drop_index =
-      has_drop_index ? reinterpret_cast<diskann_drop_index_fn>(1) : nullptr;
-  api.insert = has_insert ? reinterpret_cast<diskann_insert_fn>(1) : nullptr;
-  api.bulk_insert =
-      has_bulk_insert ? reinterpret_cast<diskann_bulk_insert_fn>(1) : nullptr;
-  api.search_vector = has_search_vector
-                          ? reinterpret_cast<diskann_search_vector_fn>(1)
-                          : nullptr;
-  api.remove = has_remove ? reinterpret_cast<diskann_remove_fn>(1) : nullptr;
-  api.card = has_card ? reinterpret_cast<diskann_card_fn>(1) : nullptr;
-  return api.parallel_bulk_build_available();
-}
-
-namespace {
-
-bool g_diskann_serial_create_called_for_testing = false;
-bool g_diskann_parallel_create_called_for_testing = false;
-uint32_t g_diskann_parallel_build_threads_for_testing = 0;
-
-const void *diskann_serial_create_index_for_testing(
-    uint64_t, uint32_t, uint32_t, uint32_t, int32_t, uint32_t, uint32_t,
-    diskann_read_callback, diskann_write_callback, diskann_delete_callback,
-    diskann_read_modify_write_callback) {
-  g_diskann_serial_create_called_for_testing = true;
-  return reinterpret_cast<const void *>(1);
-}
-
-const void *diskann_parallel_create_index_for_testing(
-    uint64_t, uint32_t, uint32_t, uint32_t, int32_t, uint32_t, uint32_t,
-    uint32_t build_threads, diskann_read_callback, diskann_write_callback,
-    diskann_delete_callback, diskann_read_modify_write_callback) {
-  g_diskann_parallel_create_called_for_testing = true;
-  g_diskann_parallel_build_threads_for_testing = build_threads;
-  return reinterpret_cast<const void *>(2);
-}
-
-}  // namespace
-
-bool diskann_api_create_index_route_for_testing(
-    bool has_create_index_with_build_threads, bool has_bulk_insert,
-    uint32_t build_threads, bool *used_parallel_create,
-    uint32_t *observed_build_threads) {
-  if (used_parallel_create == nullptr || observed_build_threads == nullptr) {
-    return false;
-  }
-  g_diskann_serial_create_called_for_testing = false;
-  g_diskann_parallel_create_called_for_testing = false;
-  g_diskann_parallel_build_threads_for_testing = 0;
-
-  diskann_api api;
-  api.handle = reinterpret_cast<void *>(1);
-  api.create_index = diskann_serial_create_index_for_testing;
-  api.create_index_with_build_threads =
-      has_create_index_with_build_threads
-          ? diskann_parallel_create_index_for_testing
-          : nullptr;
-  api.drop_index = reinterpret_cast<diskann_drop_index_fn>(1);
-  api.insert = reinterpret_cast<diskann_insert_fn>(1);
-  api.bulk_insert =
-      has_bulk_insert ? reinterpret_cast<diskann_bulk_insert_fn>(1) : nullptr;
-  api.search_vector = reinterpret_cast<diskann_search_vector_fn>(1);
-  api.remove = reinterpret_cast<diskann_remove_fn>(1);
-  api.card = reinterpret_cast<diskann_card_fn>(1);
-
-  const void *handle = api.create_index_handle(
-      1, 2, 0, kDiskAnnNoQuant, diskann_metric_code(metric_type::kEuclidean),
-      kDiskAnnBuildComplexity, kDiskAnnMaxDegree, build_threads, nullptr,
-      nullptr, nullptr, nullptr);
-  *used_parallel_create = g_diskann_parallel_create_called_for_testing;
-  *observed_build_threads = g_diskann_parallel_build_threads_for_testing;
-  return handle != nullptr &&
-         (g_diskann_serial_create_called_for_testing !=
-          g_diskann_parallel_create_called_for_testing);
 }
 
 bool diskann_offline_api_load_for_testing() {
