@@ -105,6 +105,11 @@ struct index_info {
   uint64_t last_recover_fallback_ts{0};
   bool external_manifest_present{false};
   uint64_t external_manifest_generation{0};
+  uint64_t index_identity{0};
+  uint64_t truth_generation{0};
+  uint64_t config_generation{0};
+  uint64_t artifact_generation{0};
+  uint64_t runtime_generation{0};
   bool supports_mutations{false};
   size_t entry_count{0};
   size_t committed_entry_count{0};
@@ -150,6 +155,16 @@ struct create_index_options {
   vector_index::index_consistency_mode consistency_mode{
       vector_index::index_consistency_mode::kTransactional};
   std::string initial_lifecycle_state;
+};
+
+/** Ownership token for publishing one mapped-index backfill generation. */
+struct index_backfill_token {
+  uint64_t index_identity{0};
+  uint64_t truth_generation{0};
+  uint64_t config_generation{0};
+  uint64_t artifact_generation{0};
+  uint64_t runtime_generation{0};
+  uint64_t lifecycle_version{0};
 };
 
 struct registry_state_snapshot {
@@ -241,11 +256,11 @@ bool replace_committed_entries(
 bool replace_committed_entries_preserve_lifecycle(
     const std::string &index_name,
     const vector_index::index_service::committed_entries &entries);
-bool replace_committed_entries_for_backfill(
+bool begin_backfill(const std::string &index_name, index_backfill_token *token);
+bool publish_backfill(
     const std::string &index_name,
-    const vector_index::index_service::committed_entries &entries);
-bool finish_backfill(const std::string &index_name,
-                     const std::string &lifecycle_state);
+    const vector_index::index_service::committed_entries &entries,
+    const index_backfill_token &token);
 bool set_lifecycle_state(const std::string &index_name,
                          const std::string &lifecycle_state);
 bool set_search_ef(const std::string &index_name, uint32_t search_ef);

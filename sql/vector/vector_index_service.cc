@@ -2966,6 +2966,14 @@ void sync_diskann_build_config_from_backend(
   config->diskann_use_bfs_cache = index_backend.diskann_use_bfs_cache();
 }
 
+template <typename Apply>
+bool apply_backend_config_exclusively(
+    const vector_index::index_service::backend_ptr &runtime, Apply apply) {
+  if (runtime == nullptr) return false;
+  std::unique_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
+  return apply(runtime.get());
+}
+
 template <typename pending_changes_map>
 bool pending_changes_contain_index(const pending_changes_map &pending_changes,
                                    const std::string &index_name) {
@@ -4706,27 +4714,50 @@ bool index_service::build_runtime_from_current_policy(
   return true;
 }
 
+bool index_service::synchronize_runtime_publication(
+    const std::string &index_name) {
+  auto publication_it = m_publication_states.find(index_name);
+  const auto index_it = m_indexes.find(index_name);
+  if (publication_it == m_publication_states.end() ||
+      index_it == m_indexes.end() || index_it->second == nullptr) {
+    return false;
+  }
+
+  publication_it->second.runtime_generation =
+      publication_it->second.truth_generation;
+  publication_it->second.artifact_generation =
+      index_it->second->external_manifest_present()
+          ? publication_it->second.truth_generation
+          : 0;
+  return true;
+}
+
 bool index_service::ensure_runtime_loaded(const std::string &index_name) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
+  auto publication_it = m_publication_states.find(index_name);
   if (!all_true(config_it != m_index_configs.end(), index_it != m_indexes.end(),
+                publication_it != m_publication_states.end(),
                 m_entry_store.has_index(index_name))) {
     return false;
   }
+  const bool generation_matches = publication_it->second.runtime_generation ==
+                                  publication_it->second.truth_generation;
   const bool standalone =
       config_it->second.consistency_mode ==
       index_consistency_mode::kStandalone;
   const bool source_backed_runtime =
       standalone || (lazy_external_runtime_enabled() &&
                      config_it->second.mode == backend_mode::kExternal);
-  if (!source_backed_runtime) return true;
+  if (!source_backed_runtime && generation_matches) return true;
   const size_t committed_count =
-      standalone
-          ? m_standalone_store.entry_count(index_name)
-          : m_entry_store.entry_count(index_name);
-  if (committed_count == 0 ||
-      index_it->second->entry_count() == committed_count)
+      standalone ? m_standalone_store.entry_count(index_name)
+                 : m_entry_store.entry_count(index_name);
+  if (generation_matches &&
+      (committed_count == 0 ||
+       index_it->second->entry_count() == committed_count)) {
     return true;
+  }
 
   std::unique_ptr<backend> loaded;
   if (!build_runtime_from_current_policy(index_name, config_it->second,
@@ -4735,7 +4766,7 @@ bool index_service::ensure_runtime_loaded(const std::string &index_name) {
   }
   index_it->second = std::move(loaded);
   m_last_failed_build_diagnostics.erase(index_name);
-  return true;
+  return synchronize_runtime_publication(index_name);
 }
 
 bool index_service::ensure_runtime_loaded_for_search(
@@ -4753,13 +4784,18 @@ bool index_service::runtime_loaded_for_search(
   const auto config_it = m_index_configs.find(index_name);
   const auto index_it = m_indexes.find(index_name);
   const auto lifecycle_it = m_lifecycle_infos.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end(),
+  const auto publication_it = m_publication_states.find(index_name);
+  if (!all_true(config_it != m_index_configs.end(), index_it != m_indexes.end(),
                 lifecycle_it != m_lifecycle_infos.end(),
+                publication_it != m_publication_states.end(),
                 m_entry_store.has_index(index_name))) {
     return false;
   }
   if (lifecycle_it->second.state == LIFECYCLE_BULK_LOADING) return false;
+  if (publication_it->second.runtime_generation !=
+      publication_it->second.truth_generation) {
+    return false;
+  }
 
   const bool standalone =
       config_it->second.consistency_mode ==
@@ -4803,7 +4839,7 @@ bool index_service::rebuild_runtime_from_store_for_search(
   index_it->second = std::move(rebuilt);
   m_last_failed_build_diagnostics.erase(index_name);
   mark_recover_fallback(&lifecycle_it->second, true);
-  return true;
+  return synchronize_runtime_publication(index_name);
 }
 
 void index_service::maybe_unload_runtime(const std::string &index_name) {
@@ -4939,6 +4975,14 @@ bool index_service::register_index_impl(const std::string &index_name,
       lifecycle_info{LIFECYCLE_READY, 1, ERROR_NONE, 0, 0, 0, 0};
   m_build_pipeline_snapshots[index_name] = build_pipeline_snapshot{};
   m_segment_task_rows[index_name] = {};
+  if (m_next_index_identity == 0 ||
+      m_next_index_identity == std::numeric_limits<uint64_t>::max()) {
+    (void)unregister_index(index_name);
+    return false;
+  }
+  index_publication_state publication;
+  publication.index_identity = m_next_index_identity++;
+  m_publication_states.emplace(index_name, publication);
   return true;
 }
 
@@ -5005,6 +5049,7 @@ bool index_service::unregister_index(const std::string &index_name) {
   m_entry_store.drop_index(index_name);
   m_standalone_store.drop_index(index_name);
   m_lifecycle_infos.erase(index_name);
+  m_publication_states.erase(index_name);
   m_build_pipeline_snapshots.erase(index_name);
   m_segment_task_rows.erase(index_name);
   m_last_failed_build_diagnostics.erase(index_name);
@@ -5020,16 +5065,19 @@ bool index_service::rename_index(const std::string &old_index_name,
   auto old_index_it = m_indexes.find(old_index_name);
   auto old_config_it = m_index_configs.find(old_index_name);
   auto old_lifecycle_it = m_lifecycle_infos.find(old_index_name);
+  auto old_publication_it = m_publication_states.find(old_index_name);
   if (old_index_it == m_indexes.end() ||
       old_config_it == m_index_configs.end() ||
       !m_entry_store.has_index(old_index_name) ||
-      old_lifecycle_it == m_lifecycle_infos.end()) {
+      old_lifecycle_it == m_lifecycle_infos.end() ||
+      old_publication_it == m_publication_states.end()) {
     return false;
   }
   if (m_indexes.find(new_index_name) != m_indexes.end()) return false;
 
   const index_config config = old_config_it->second;
   const lifecycle_info lifecycle = old_lifecycle_it->second;
+  const index_publication_state publication = old_publication_it->second;
   build_pipeline_snapshot pipeline_snapshot;
   bool has_pipeline_snapshot = false;
   auto old_pipeline_it = m_build_pipeline_snapshots.find(old_index_name);
@@ -5070,6 +5118,7 @@ bool index_service::rename_index(const std::string &old_index_name,
   m_indexes.erase(old_index_it);
   m_index_configs.erase(old_config_it);
   m_lifecycle_infos.erase(old_lifecycle_it);
+  m_publication_states.erase(old_publication_it);
   m_build_pipeline_snapshots.erase(old_index_name);
   m_segment_task_rows.erase(old_index_name);
   m_last_failed_build_diagnostics.erase(old_index_name);
@@ -5077,6 +5126,7 @@ bool index_service::rename_index(const std::string &old_index_name,
   m_indexes.emplace(new_index_name, std::move(renamed_backend));
   m_index_configs.emplace(new_index_name, config);
   m_lifecycle_infos.emplace(new_index_name, lifecycle);
+  m_publication_states.emplace(new_index_name, publication);
   if (has_pipeline_snapshot) {
     m_build_pipeline_snapshots.emplace(new_index_name,
                                        std::move(pipeline_snapshot));
@@ -5321,6 +5371,11 @@ bool index_service::publish_standalone_rebuild(
   m_build_pipeline_snapshots[plan->index_name] = plan->pipeline;
   m_segment_task_rows[plan->index_name] = plan->segment_tasks;
   index_it->second = std::move(plan->rebuilt_backend);
+  if (!synchronize_runtime_publication(plan->index_name)) {
+    set_bulk_load_error(error,
+                        "standalone rebuild publication state is unavailable");
+    return false;
+  }
   mark_index_ready(plan->index_name, &lifecycle_it->second);
   maybe_unload_runtime(plan->index_name);
   plan->published = true;
@@ -5461,6 +5516,12 @@ bool index_service::rebuild_index(const std::string &index_name,
     return false;
   }
   index_it->second = std::move(rebuilt);
+  if (!synchronize_runtime_publication(index_name)) {
+    lifecycle_it->second = lifecycle_before_rebuild;
+    set_bulk_load_error(error,
+                        "vector rebuild publication state is unavailable");
+    return false;
+  }
   mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   m_standalone_store.finalize_levelled_compaction(&compaction);
@@ -5499,6 +5560,10 @@ bool index_service::recover_index(const std::string &index_name) {
   }
 
   index_it->second = std::move(recovered);
+  if (!synchronize_runtime_publication(index_name)) {
+    mark_lifecycle_failure(&lifecycle_it->second, ERROR_REPLAY_STATE_FAILED);
+    return false;
+  }
   mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;
@@ -5512,9 +5577,12 @@ bool index_service::set_search_ef(const std::string &index_name,
                 index_it != m_indexes.end())) {
     return false;
   }
-  if (!index_it->second->set_search_ef(search_ef)) return false;
-  sync_search_config_from_backend(*index_it->second, &config_it->second);
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_search_ef(search_ef)) return false;
+        sync_search_config_from_backend(*runtime, &config_it->second);
+        return true;
+      });
 }
 
 bool index_service::set_hnsw_build_params(const std::string &index_name,
@@ -5558,10 +5626,12 @@ bool index_service::set_hnsw_build_threads(const std::string &index_name,
   }
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
-  if (!index_it->second->set_hnsw_build_threads(hnsw_build_threads))
-    return false;
-  sync_hnsw_config_from_backend(*index_it->second, &config_it->second);
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_hnsw_build_threads(hnsw_build_threads)) return false;
+        sync_hnsw_config_from_backend(*runtime, &config_it->second);
+        return true;
+      });
 }
 
 bool index_service::set_faiss_ivf_params(const std::string &index_name,
@@ -5577,12 +5647,16 @@ bool index_service::set_faiss_ivf_params(const std::string &index_name,
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
 
-  if (!index_it->second->set_faiss_ivf_params(faiss_nlist, faiss_nprobe))
-    return false;
-  sync_search_config_from_backend(*index_it->second, &config_it->second);
-  sync_hnsw_config_from_backend(*index_it->second, &config_it->second);
-  sync_faiss_config_from_backend(*index_it->second, &config_it->second);
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_faiss_ivf_params(faiss_nlist, faiss_nprobe)) {
+          return false;
+        }
+        sync_search_config_from_backend(*runtime, &config_it->second);
+        sync_hnsw_config_from_backend(*runtime, &config_it->second);
+        sync_faiss_config_from_backend(*runtime, &config_it->second);
+        return true;
+      });
 }
 
 bool index_service::set_faiss_ivf_pq_params(const std::string &index_name,
@@ -5599,14 +5673,17 @@ bool index_service::set_faiss_ivf_pq_params(const std::string &index_name,
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
 
-  if (!index_it->second->set_faiss_ivf_pq_params(faiss_nlist, faiss_nprobe,
-                                                 faiss_pq_m, faiss_pq_bits)) {
-    return false;
-  }
-  sync_search_config_from_backend(*index_it->second, &config_it->second);
-  sync_hnsw_config_from_backend(*index_it->second, &config_it->second);
-  sync_faiss_config_from_backend(*index_it->second, &config_it->second);
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_faiss_ivf_pq_params(faiss_nlist, faiss_nprobe,
+                                              faiss_pq_m, faiss_pq_bits)) {
+          return false;
+        }
+        sync_search_config_from_backend(*runtime, &config_it->second);
+        sync_hnsw_config_from_backend(*runtime, &config_it->second);
+        sync_faiss_config_from_backend(*runtime, &config_it->second);
+        return true;
+      });
 }
 
 bool index_service::set_faiss_build_threads(
@@ -5620,11 +5697,13 @@ bool index_service::set_faiss_build_threads(
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
 
-  if (!index_it->second->set_faiss_build_threads(faiss_build_threads)) {
-    return false;
-  }
-  sync_faiss_config_from_backend(*index_it->second, &config_it->second);
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_faiss_build_threads(faiss_build_threads))
+          return false;
+        sync_faiss_config_from_backend(*runtime, &config_it->second);
+        return true;
+      });
 }
 
 bool index_service::set_diskann_build_params(
@@ -5641,16 +5720,18 @@ bool index_service::set_diskann_build_params(
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
 
-  if (!index_it->second->set_diskann_build_params(
-          diskann_max_degree, diskann_build_complexity,
-          diskann_build_threads)) {
-    return false;
-  }
-  sync_diskann_build_config_from_backend(*index_it->second,
-                                         &config_it->second);
-  sync_search_config_from_backend(*index_it->second, &config_it->second);
-  sync_hnsw_config_from_backend(*index_it->second, &config_it->second);
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_build_params(diskann_max_degree,
+                                               diskann_build_complexity,
+                                               diskann_build_threads)) {
+          return false;
+        }
+        sync_diskann_build_config_from_backend(*runtime, &config_it->second);
+        sync_search_config_from_backend(*runtime, &config_it->second);
+        sync_hnsw_config_from_backend(*runtime, &config_it->second);
+        return true;
+      });
 }
 
 bool index_service::set_diskann_build_threads(
@@ -5664,12 +5745,14 @@ bool index_service::set_diskann_build_threads(
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
 
-  if (!index_it->second->set_diskann_build_threads(diskann_build_threads)) {
-    return false;
-  }
-  sync_diskann_build_config_from_backend(*index_it->second,
-                                         &config_it->second);
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_build_threads(diskann_build_threads)) {
+          return false;
+        }
+        sync_diskann_build_config_from_backend(*runtime, &config_it->second);
+        return true;
+      });
 }
 
 bool index_service::set_diskann_build_mode(
@@ -5687,13 +5770,15 @@ bool index_service::set_diskann_build_mode(
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
 
-  if (!index_it->second->set_diskann_build_mode(diskann_build_mode_value)) {
-    return false;
-  }
-  sync_diskann_build_config_from_backend(*index_it->second,
-                                         &config_it->second);
-  config_it->second.diskann_build_mode_specified = true;
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_build_mode(diskann_build_mode_value)) {
+          return false;
+        }
+        sync_diskann_build_config_from_backend(*runtime, &config_it->second);
+        config_it->second.diskann_build_mode_specified = true;
+        return true;
+      });
 }
 
 bool index_service::set_diskann_search_complexity(
@@ -5704,12 +5789,16 @@ bool index_service::set_diskann_search_complexity(
                 index_it != m_indexes.end())) {
     return false;
   }
-  if (!index_it->second->set_diskann_search_complexity(
-          diskann_search_complexity))
-    return false;
-  config_it->second.diskann_search_complexity =
-      index_it->second->diskann_search_complexity();
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_search_complexity(
+                diskann_search_complexity)) {
+          return false;
+        }
+        config_it->second.diskann_search_complexity =
+            runtime->diskann_search_complexity();
+        return true;
+      });
 }
 
 bool index_service::set_diskann_search_beamwidth(
@@ -5720,12 +5809,15 @@ bool index_service::set_diskann_search_beamwidth(
                 index_it != m_indexes.end())) {
     return false;
   }
-  if (!index_it->second->set_diskann_search_beamwidth(
-          diskann_search_beamwidth))
-    return false;
-  config_it->second.diskann_search_beamwidth =
-      index_it->second->diskann_search_beamwidth();
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_search_beamwidth(diskann_search_beamwidth)) {
+          return false;
+        }
+        config_it->second.diskann_search_beamwidth =
+            runtime->diskann_search_beamwidth();
+        return true;
+      });
 }
 
 bool index_service::set_diskann_pq_code_budget_size(
@@ -5738,13 +5830,16 @@ bool index_service::set_diskann_pq_code_budget_size(
   }
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
-  if (!index_it->second->set_diskann_pq_code_budget_size(
-          diskann_pq_code_budget_size)) {
-    return false;
-  }
-  config_it->second.diskann_pq_code_budget_size =
-      index_it->second->diskann_pq_code_budget_size();
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_pq_code_budget_size(
+                diskann_pq_code_budget_size)) {
+          return false;
+        }
+        config_it->second.diskann_pq_code_budget_size =
+            runtime->diskann_pq_code_budget_size();
+        return true;
+      });
 }
 
 bool index_service::set_diskann_disk_pq_dims(
@@ -5757,12 +5852,15 @@ bool index_service::set_diskann_disk_pq_dims(
   }
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
-  if (!index_it->second->set_diskann_disk_pq_dims(diskann_disk_pq_dims)) {
-    return false;
-  }
-  config_it->second.diskann_disk_pq_dims =
-      index_it->second->diskann_disk_pq_dims();
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_disk_pq_dims(diskann_disk_pq_dims)) {
+          return false;
+        }
+        config_it->second.diskann_disk_pq_dims =
+            runtime->diskann_disk_pq_dims();
+        return true;
+      });
 }
 
 bool index_service::set_diskann_accelerate_build(
@@ -5775,13 +5873,15 @@ bool index_service::set_diskann_accelerate_build(
   }
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
-  if (!index_it->second->set_diskann_accelerate_build(
-          diskann_accelerate_build)) {
-    return false;
-  }
-  config_it->second.diskann_accelerate_build =
-      index_it->second->diskann_accelerate_build();
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_accelerate_build(diskann_accelerate_build)) {
+          return false;
+        }
+        config_it->second.diskann_accelerate_build =
+            runtime->diskann_accelerate_build();
+        return true;
+      });
 }
 
 bool index_service::set_diskann_shuffle_build(
@@ -5794,12 +5894,15 @@ bool index_service::set_diskann_shuffle_build(
   }
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
-  if (!index_it->second->set_diskann_shuffle_build(diskann_shuffle_build)) {
-    return false;
-  }
-  config_it->second.diskann_shuffle_build =
-      index_it->second->diskann_shuffle_build();
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_shuffle_build(diskann_shuffle_build)) {
+          return false;
+        }
+        config_it->second.diskann_shuffle_build =
+            runtime->diskann_shuffle_build();
+        return true;
+      });
 }
 
 bool index_service::set_diskann_use_bfs_cache(
@@ -5812,12 +5915,15 @@ bool index_service::set_diskann_use_bfs_cache(
   }
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
-  if (!index_it->second->set_diskann_use_bfs_cache(diskann_use_bfs_cache)) {
-    return false;
-  }
-  config_it->second.diskann_use_bfs_cache =
-      index_it->second->diskann_use_bfs_cache();
-  return true;
+  return apply_backend_config_exclusively(
+      index_it->second, [&](backend *runtime) {
+        if (!runtime->set_diskann_use_bfs_cache(diskann_use_bfs_cache)) {
+          return false;
+        }
+        config_it->second.diskann_use_bfs_cache =
+            runtime->diskann_use_bfs_cache();
+        return true;
+      });
 }
 
 bool index_service::rebuild_all_indexes(size_t *rebuilt_count) {
@@ -5867,6 +5973,7 @@ bool index_service::rebuild_all_indexes(size_t *rebuilt_count) {
       mark_lifecycle_state(&lifecycle_it->second, LIFECYCLE_REBUILDING);
     }
     m_indexes[entry.first] = std::move(entry.second);
+    if (!synchronize_runtime_publication(entry.first)) return false;
     maybe_unload_runtime(entry.first);
     if (lifecycle_it != m_lifecycle_infos.end()) {
       mark_index_ready(entry.first, &lifecycle_it->second);
@@ -5912,6 +6019,7 @@ bool index_service::recover_all_indexes(size_t *recovered_count) {
       mark_lifecycle_state(&lifecycle_it->second, LIFECYCLE_RECOVERING);
     }
     m_indexes[entry.first] = std::move(entry.second);
+    if (!synchronize_runtime_publication(entry.first)) return false;
     maybe_unload_runtime(entry.first);
     if (lifecycle_it != m_lifecycle_infos.end() &&
         recover_fallback_indexes.find(entry.first) !=
@@ -5934,9 +6042,9 @@ bool index_service::describe_index(
     uint64_t *lifecycle_version, uint32_t *last_error_code,
     uint64_t *last_error_ts, uint64_t *last_apply_latency_ms,
     uint64_t *recover_fallback_count, uint64_t *last_recover_fallback_ts,
-    bool *external_manifest_present,
-    uint64_t *external_manifest_generation,
-    backend_build_diagnostics *build_diagnostics) const {
+    bool *external_manifest_present, uint64_t *external_manifest_generation,
+    backend_build_diagnostics *build_diagnostics,
+    index_publication_state *publication_state) const {
   if (config == nullptr) {
     return false;
   }
@@ -5944,6 +6052,7 @@ bool index_service::describe_index(
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   auto lifecycle_it = m_lifecycle_infos.find(index_name);
+  auto publication_it = m_publication_states.find(index_name);
   index_observability_state observability;
   if (!describe_index_observability(index_name, &observability)) {
     return false;
@@ -5953,7 +6062,10 @@ bool index_service::describe_index(
       !has_serving_entries) {
     return false;
   }
-  if (lifecycle_it == m_lifecycle_infos.end()) return false;
+  if (lifecycle_it == m_lifecycle_infos.end() ||
+      publication_it == m_publication_states.end()) {
+    return false;
+  }
 
   const backend *backend = index_it->second.get();
   config->dimension = backend->dimension();
@@ -6027,6 +6139,89 @@ bool index_service::describe_index(
             ? backend->build_diagnostics()
             : failed_diagnostics_it->second;
   }
+  if (publication_state != nullptr) {
+    *publication_state = publication_it->second;
+  }
+  return true;
+}
+
+bool index_service::describe_publication_state(
+    const std::string &index_name,
+    index_publication_state *publication_state) const {
+  if (publication_state == nullptr) return false;
+  const auto publication_it = m_publication_states.find(index_name);
+  if (publication_it == m_publication_states.end()) return false;
+  *publication_state = publication_it->second;
+  return true;
+}
+
+bool index_service::restore_publication_state(
+    const std::string &index_name,
+    const index_publication_state &publication_state) {
+  if (publication_state.index_identity == 0 ||
+      publication_state.index_identity ==
+          std::numeric_limits<uint64_t>::max() ||
+      publication_state.config_generation == 0 ||
+      publication_state.runtime_generation >
+          publication_state.truth_generation ||
+      publication_state.artifact_generation >
+          publication_state.truth_generation) {
+    return false;
+  }
+  auto publication_it = m_publication_states.find(index_name);
+  if (publication_it == m_publication_states.end()) return false;
+  for (const auto &entry : m_publication_states) {
+    if (entry.first != index_name &&
+        entry.second.index_identity == publication_state.index_identity) {
+      return false;
+    }
+  }
+  publication_it->second = publication_state;
+  m_next_index_identity =
+      std::max(m_next_index_identity, publication_state.index_identity + 1);
+  return true;
+}
+
+bool index_service::snapshot_publication_states(
+    std::unordered_map<std::string, index_publication_state> *states) const {
+  if (states == nullptr) return false;
+  *states = m_publication_states;
+  return states->size() == m_indexes.size();
+}
+
+bool index_service::restore_publication_states(
+    const std::unordered_map<std::string, index_publication_state> &states) {
+  if (states.size() != m_indexes.size()) return false;
+  std::unordered_set<uint64_t> identities;
+  uint64_t next_identity = 1;
+  for (const auto &entry : states) {
+    const index_publication_state &publication = entry.second;
+    if (m_indexes.find(entry.first) == m_indexes.end() ||
+        publication.index_identity == 0 ||
+        publication.index_identity == std::numeric_limits<uint64_t>::max() ||
+        publication.config_generation == 0 ||
+        publication.runtime_generation > publication.truth_generation ||
+        publication.artifact_generation > publication.truth_generation ||
+        !identities.insert(publication.index_identity).second) {
+      return false;
+    }
+    next_identity = std::max(next_identity, publication.index_identity + 1);
+  }
+  m_publication_states = states;
+  m_next_index_identity = std::max(m_next_index_identity, next_identity);
+  return true;
+}
+
+uint64_t index_service::next_index_identity() const {
+  return m_next_index_identity;
+}
+
+bool index_service::restore_next_index_identity(uint64_t next_index_identity) {
+  if (next_index_identity == 0) return false;
+  for (const auto &entry : m_publication_states) {
+    if (entry.second.index_identity >= next_index_identity) return false;
+  }
+  m_next_index_identity = next_index_identity;
   return true;
 }
 
@@ -6771,6 +6966,7 @@ bool index_service::install_rebuilt_index(
 
   index_it->second = std::move(rebuilt_backend);
   if (!m_entry_store.replace_index(index_name, entries)) return false;
+  if (!synchronize_runtime_publication(index_name)) return false;
   mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;
@@ -6790,6 +6986,7 @@ bool index_service::install_recovered_index(
 
   index_it->second = std::move(recovered_backend);
   if (!m_entry_store.replace_index(index_name, entries)) return false;
+  if (!synchronize_runtime_publication(index_name)) return false;
   if (used_recover_fallback) {
     mark_recover_fallback(&lifecycle_it->second, false);
   }

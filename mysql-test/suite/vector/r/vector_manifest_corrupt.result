@@ -1,5 +1,5 @@
 #
-# WL#vector-v1: quarantine corrupt manifest artifact during startup load
+# WL#vector-v1: quarantine a header-only manifest during startup load
 #
 SELECT VEC_INDEX_CREATE('idx_manifest_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 VEC_INDEX_CREATE('idx_manifest_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
@@ -17,7 +17,7 @@ SELECT VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1);
 ERROR HY000: Incorrect arguments to vec_index_search
 SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest');
 VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest')
-6261640a726f770a
+6d7973716c2d766563746f722d6d616e69666573742d76310a
 SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';
 Variable_name	Value
 Vector_metadata_load_failures	<num>

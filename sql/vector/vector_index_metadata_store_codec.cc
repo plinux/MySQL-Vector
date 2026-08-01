@@ -51,7 +51,7 @@ bool deserialize_metadata_rows_impl(const std::string &payload,
 
     std::vector<std::string> fields;
     split_tab_fields(line, &fields);
-    if (fields.size() != 38) return false;
+    if (fields.size() != 43) return false;
 
     auto parse_uint32_field = [](const std::string &field, uint32_t *value) {
       uint64_t parsed = 0;
@@ -161,15 +161,31 @@ bool deserialize_metadata_rows_impl(const std::string &payload,
     } else {
       return false;
     }
-    if (!decode_hex(fields[37], &row.owner_schema) ||
+    if (!parse_uint64(fields[37], &row.index_identity) ||
+        row.index_identity == 0 ||
+        row.index_identity == std::numeric_limits<uint64_t>::max()) {
+      return false;
+    }
+    if (!parse_uint64(fields[38], &row.truth_generation)) return false;
+    if (!parse_uint64(fields[39], &row.config_generation) ||
+        row.config_generation == 0) {
+      return false;
+    }
+    if (!parse_uint64(fields[40], &row.artifact_generation)) return false;
+    if (!parse_uint64(fields[41], &row.runtime_generation)) return false;
+    if (!decode_hex(fields[42], &row.owner_schema) ||
         row.owner_schema.empty()) {
+      return false;
+    }
+    if (row.artifact_generation > row.truth_generation ||
+        row.runtime_generation > row.truth_generation) {
       return false;
     }
 
     rows->push_back(std::move(row));
   }
 
-  return !stream.bad();
+  return header_checked && !stream.bad();
 }
 
 bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
@@ -179,9 +195,13 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
   std::ostringstream stream;
   stream << kMetadataHeaderV1 << "\n";
   for (const metadata_row &row : rows) {
-    if (row.owner_schema.empty() ||
+    if (row.index_identity == 0 ||
+        row.index_identity == std::numeric_limits<uint64_t>::max() ||
+        row.config_generation == 0 || row.owner_schema.empty() ||
         !vector_index::valid_optional_diskann_search_beamwidth(
-            row.diskann_search_beamwidth)) {
+            row.diskann_search_beamwidth) ||
+        row.artifact_generation > row.truth_generation ||
+        row.runtime_generation > row.truth_generation) {
       return false;
     }
     stream << encode_hex(row.index_name) << "\t" << row.dimension << "\t"
@@ -213,7 +233,9 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
            << vector_index::diskann_build_mode_to_string(
                   row.diskann_build_mode_value)
            << "\t" << (row.diskann_build_mode_specified ? 1 : 0) << "\t"
-           << encode_hex(row.owner_schema)
+           << row.index_identity << "\t" << row.truth_generation << "\t"
+           << row.config_generation << "\t" << row.artifact_generation << "\t"
+           << row.runtime_generation << "\t" << encode_hex(row.owner_schema)
            << "\n";
   }
   if (!stream) return false;
@@ -265,7 +287,7 @@ bool deserialize_committed_rows_impl(const std::string &payload,
     rows->push_back(std::move(row));
   }
 
-  return !stream.bad();
+  return header_checked && !stream.bad();
 }
 
 bool serialize_committed_rows_impl(const std::vector<committed_row> &rows,
@@ -292,10 +314,11 @@ bool deserialize_manifest_row_impl(const std::string &payload, manifest_row *row
   if (row == nullptr) return false;
 
   *row = manifest_row();
-  if (payload.empty()) return true;
+  if (payload.empty()) return false;
 
   std::string line;
   bool header_checked = false;
+  bool row_checked = false;
   std::istringstream stream(payload);
   while (std::getline(stream, line)) {
     if (line.empty()) continue;
@@ -304,10 +327,11 @@ bool deserialize_manifest_row_impl(const std::string &payload, manifest_row *row
       header_checked = true;
       continue;
     }
+    if (row_checked) return false;
 
     std::vector<std::string> fields;
     split_tab_fields(line, &fields);
-    if (fields.size() != 5) return false;
+    if (fields.size() != 7) return false;
 
     row->state = fields[0];
     if (row->state.empty()) return false;
@@ -318,21 +342,37 @@ bool deserialize_manifest_row_impl(const std::string &payload, manifest_row *row
     if (!parse_uint64(fields[2], &row->metadata_checkpoint)) return false;
     if (!parse_uint64(fields[3], &row->committed_checkpoint)) return false;
     if (!parse_uint64(fields[4], &row->change_log_checkpoint)) return false;
+    if (!parse_uint64(fields[5], &row->next_index_identity) ||
+        row->next_index_identity == 0 ||
+        row->next_index_identity == std::numeric_limits<uint64_t>::max()) {
+      return false;
+    }
+    if (!parse_uint64(fields[6], &row->next_change_log_sequence) ||
+        row->next_change_log_sequence == 0 ||
+        row->next_change_log_sequence == std::numeric_limits<uint64_t>::max()) {
+      return false;
+    }
+    row_checked = true;
   }
 
-  return !stream.bad();
+  return header_checked && row_checked && !stream.bad();
 }
 
 bool serialize_manifest_row_impl(const manifest_row &row, std::string *payload) {
   if (payload == nullptr || row.state.empty() || row.version == 0 ||
-      row.version == std::numeric_limits<uint64_t>::max()) {
+      row.version == std::numeric_limits<uint64_t>::max() ||
+      row.next_index_identity == 0 ||
+      row.next_index_identity == std::numeric_limits<uint64_t>::max() ||
+      row.next_change_log_sequence == 0 ||
+      row.next_change_log_sequence == std::numeric_limits<uint64_t>::max()) {
     return false;
   }
   std::ostringstream stream;
   stream << kManifestHeaderV1 << "\n";
-  stream << row.state << "\t" << row.version << "\t"
-         << row.metadata_checkpoint << "\t" << row.committed_checkpoint << "\t"
-         << row.change_log_checkpoint << "\n";
+  stream << row.state << "\t" << row.version << "\t" << row.metadata_checkpoint
+         << "\t" << row.committed_checkpoint << "\t"
+         << row.change_log_checkpoint << "\t" << row.next_index_identity << "\t"
+         << row.next_change_log_sequence << "\n";
   if (!stream) return false;
   *payload = stream.str();
   return true;
@@ -382,7 +422,7 @@ bool deserialize_change_log_rows_impl(const std::string &payload,
     rows->push_back(std::move(row));
   }
 
-  return !stream.bad();
+  return header_checked && !stream.bad();
 }
 
 bool serialize_change_log_rows_impl(const std::vector<change_log_row> &rows,
@@ -478,7 +518,7 @@ bool deserialize_prepared_rows_impl(const std::string &payload,
     rows->push_back(std::move(row));
   }
 
-  return !stream.bad();
+  return header_checked && !stream.bad();
 }
 
 bool serialize_prepared_rows_impl(const std::vector<prepared_change_row> &rows,
@@ -564,7 +604,7 @@ bool deserialize_segment_task_rows_impl(
     rows->push_back(std::move(row));
   }
 
-  return !stream.bad();
+  return header_checked && !stream.bad();
 }
 
 bool serialize_segment_task_rows_impl(

@@ -1408,6 +1408,11 @@ TEST(VectorIndexBackendTest,
   info.supports_mutations = true;
   info.entry_count = 12;
   info.committed_entry_count = 5;
+  info.index_identity = 17;
+  info.truth_generation = 19;
+  info.config_generation = 23;
+  info.artifact_generation = 29;
+  info.runtime_generation = 31;
 
   vector_index_status_fields::field_values fields;
   vector_index_status_fields::collect_info_fields(info, &fields);
@@ -1415,6 +1420,17 @@ TEST(VectorIndexBackendTest,
   const auto *pending = find_status_field(fields, "pending_apply_count");
   ASSERT_NE(nullptr, pending);
   EXPECT_EQ(7U, pending->uint_value);
+  const auto expect_uint_field = [&fields](const char *name,
+                                           uint64_t expected) {
+    const auto *field = find_status_field(fields, name);
+    ASSERT_NE(nullptr, field);
+    EXPECT_EQ(expected, field->uint_value);
+  };
+  expect_uint_field("index_identity", 17);
+  expect_uint_field("truth_generation", 19);
+  expect_uint_field("config_generation", 23);
+  expect_uint_field("artifact_generation", 29);
+  expect_uint_field("runtime_generation", 31);
 
   info.lifecycle_state = "failed";
   vector_index_status_fields::collect_backend_health_fields(info, &fields);
@@ -1424,6 +1440,8 @@ TEST(VectorIndexBackendTest,
   const auto *writable = find_status_field(fields, "writable");
   ASSERT_NE(nullptr, writable);
   EXPECT_FALSE(writable->bool_value);
+  expect_uint_field("index_identity", 17);
+  expect_uint_field("runtime_generation", 31);
 
   info.lifecycle_state = "rebuilding";
   vector_index_status_fields::collect_sync_pipeline_fields(info, &fields);

@@ -1,7 +1,7 @@
 --source include/have_vector_debug_native.inc
 
 --echo #
---echo # WL#vector-v1: quarantine corrupt manifest artifact during startup load
+--echo # WL#vector-v1: quarantine a header-only manifest during startup load
 --echo #
 
 SELECT VEC_INDEX_CREATE('idx_manifest_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
@@ -19,14 +19,14 @@ if ($is_mysql_truth_store)
   --disable_result_log
   --let $manifest_backup= query_get_value("SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest') AS value", value, 1)
   SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX(
-    'manifest', '6261640a726f770a');
+    'manifest', '6d7973716c2d766563746f722d6d616e69666573742d76310a');
   --enable_result_log
   --enable_query_log
 }
 if (!$is_mysql_truth_store)
 {
   --exec cp $manifest_file $manifest_backup_file
-  --exec printf 'bad\nrow\n' > $manifest_file
+  --exec printf 'mysql-vector-manifest-v1\n' > $manifest_file
 }
 
 --source include/restart_mysqld.inc

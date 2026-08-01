@@ -20,13 +20,13 @@ INSERT INTO t_vec_truncate_sync VALUES
   (2, VEC_FROMTEXT('[2,2]'));
 
 SELECT VEC_INDEX_SEARCH('test.t_vec_truncate_sync.v', '[1,1]', 8);
---replace_regex /"lifecycle_version":[0-9]+/"lifecycle_version":<num>/ /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('test.t_vec_truncate_sync.v');
 
 TRUNCATE TABLE t_vec_truncate_sync;
 
 SELECT VEC_INDEX_SEARCH('test.t_vec_truncate_sync.v', '[1,1]', 8);
---replace_regex /"lifecycle_version":[0-9]+/"lifecycle_version":<num>/ /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('test.t_vec_truncate_sync.v');
 SHOW VECTOR STATUS FOR INDEX 'test.t_vec_truncate_sync.v'
   WHERE Variable_name = 'test.t_vec_truncate_sync.v.search_ef'

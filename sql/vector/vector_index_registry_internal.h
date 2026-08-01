@@ -98,6 +98,9 @@ struct persisted_commit_artifacts_snapshot {
 
 struct commit_runtime_snapshot {
   vector_index::index_service::committed_state committed_state;
+  std::unordered_map<std::string,
+                     vector_index::index_service::index_publication_state>
+      publication_states;
   std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
   uint64_t manifest_change_log_checkpoint{0};
   uint64_t next_change_log_sequence{1};
@@ -201,7 +204,8 @@ bool persist_prepared_locked();
 bool persist_segment_tasks_locked();
 bool persist_index_config_manifest_locked(
     const std::string &index_name,
-    const vector_index::index_service::index_config &config);
+    const vector_index::index_service::index_config &config,
+    const vector_index::index_service::index_publication_state &publication);
 bool ensure_metadata_available_locked();
 bool ensure_metadata_loaded_locked();
 bool fail_stop_truth_artifact_locked(
@@ -213,7 +217,10 @@ bool persist_committed_locked(size_t *row_count);
 bool persist_committed_delta_locked(
     const std::vector<vector_index_metadata_store::change_log_row> &rows);
 bool persist_change_log_locked();
+bool persist_change_log_delta_locked(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows);
 bool persist_manifest_locked();
+void refresh_manifest_status_locked();
 bool load_persisted_commit_artifacts_snapshot_locked(
     persisted_commit_artifacts_snapshot *snapshot);
 bool restore_persisted_commit_artifacts_snapshot_locked(

@@ -8,9 +8,22 @@
 SELECT VEC_INDEX_CREATE('idx_mem', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 SELECT VEC_INDEX_CREATE('idx_ext', 2, 'COSINE', 'EXTERNAL', 'FAISS');
 
-SHOW VECTOR STATUS LIKE 'idx_mem.%';
-SHOW VECTOR STATUS LIKE 'idx_ext.%';
-SHOW VECTOR STATUS FOR INDEX idx_ext;
+SHOW VECTOR STATUS LIKE 'idx_mem.metric';
+SHOW VECTOR STATUS FOR INDEX idx_mem
+  WHERE Variable_name NOT LIKE '%.index_identity'
+    AND Variable_name NOT LIKE '%.%generation';
+--source suite/vector/include/vector_normalize_status_generations.inc
+SHOW VECTOR STATUS FOR INDEX idx_mem
+  WHERE Variable_name LIKE '%.index_identity'
+     OR Variable_name LIKE '%.%generation';
+SHOW VECTOR STATUS LIKE 'idx_ext.metric';
+SHOW VECTOR STATUS FOR INDEX idx_ext
+  WHERE Variable_name NOT LIKE '%.index_identity'
+    AND Variable_name NOT LIKE '%.%generation';
+--source suite/vector/include/vector_normalize_status_generations.inc
+SHOW VECTOR STATUS FOR INDEX idx_ext
+  WHERE Variable_name LIKE '%.index_identity'
+     OR Variable_name LIKE '%.%generation';
 SHOW VECTOR STATUS WHERE Section = 'SYNC_PIPELINE'
   AND Variable_name LIKE 'idx_ext.%';
 
@@ -25,7 +38,16 @@ CREATE VECTOR INDEX ON t_vec_status_meta(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NAT
 SELECT VEC_INDEX_INFO('test.t_vec_status_meta.v');
 SHOW VECTOR STATUS FOR INDEX 'test.t_vec_status_meta.v'
   WHERE Section = 'INDEX_STATE'
-    AND Variable_name LIKE 'test.t_vec_status_meta.v.%';
+    AND Variable_name NOT LIKE '%.index_identity'
+    AND Variable_name NOT LIKE '%.%generation';
+--source suite/vector/include/vector_normalize_status_generations.inc
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_status_meta.v'
+  WHERE Section = 'INDEX_STATE'
+    AND Variable_name LIKE '%.index_identity';
+--source suite/vector/include/vector_normalize_status_generations.inc
+SHOW VECTOR STATUS FOR INDEX 'test.t_vec_status_meta.v'
+  WHERE Section = 'INDEX_STATE'
+    AND Variable_name LIKE '%.%generation';
 DROP VECTOR INDEX ON t_vec_status_meta(v);
 DROP TABLE t_vec_status_meta;
 

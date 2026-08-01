@@ -1152,6 +1152,46 @@ TEST(VectorIndexServiceTest, RegisterAndDropIndex) {
   EXPECT_FALSE(service.drop_index("idx_mem"));
 }
 
+TEST(VectorIndexServiceTest,
+     PublicationIdentityAndGenerationsRejectStaleIndexInstances) {
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings(
+      "idx_generation", 2, "euclidean", "memory", "native"));
+
+  vector_index::index_service::index_publication_state first;
+  ASSERT_TRUE(service.describe_publication_state("idx_generation", &first));
+  EXPECT_NE(0U, first.index_identity);
+  EXPECT_EQ(0U, first.truth_generation);
+  EXPECT_EQ(1U, first.config_generation);
+  EXPECT_EQ(0U, first.runtime_generation);
+
+  ASSERT_TRUE(service.stage_upsert(51, "idx_generation", 7, {7.0F, 7.0F}));
+  ASSERT_TRUE(service.commit(51));
+  vector_index::index_service::index_publication_state committed;
+  ASSERT_TRUE(service.describe_publication_state("idx_generation", &committed));
+  EXPECT_EQ(first.index_identity, committed.index_identity);
+  EXPECT_EQ(1U, committed.truth_generation);
+  EXPECT_EQ(committed.truth_generation, committed.runtime_generation);
+
+  ASSERT_TRUE(service.drop_index("idx_generation"));
+  ASSERT_TRUE(service.register_index_from_strings(
+      "idx_generation", 2, "euclidean", "memory", "native"));
+  vector_index::index_service::index_publication_state recreated;
+  ASSERT_TRUE(service.describe_publication_state("idx_generation", &recreated));
+  EXPECT_GT(recreated.index_identity, committed.index_identity);
+
+  vector_index::index_service::index_publication_state invalid = recreated;
+  invalid.runtime_generation = invalid.truth_generation + 1;
+  EXPECT_FALSE(service.restore_publication_state("idx_generation", invalid));
+  EXPECT_FALSE(service.restore_next_index_identity(recreated.index_identity));
+
+  ASSERT_TRUE(service.register_index_from_strings(
+      "idx_generation_other", 2, "euclidean", "memory", "native"));
+  vector_index::index_service::index_publication_state duplicate = recreated;
+  EXPECT_FALSE(
+      service.restore_publication_state("idx_generation_other", duplicate));
+}
+
 TEST(VectorIndexServiceTest, RenameIndexSameNameIsNoop) {
   vector_index::index_service service;
   std::vector<vector_index::search_result> result;

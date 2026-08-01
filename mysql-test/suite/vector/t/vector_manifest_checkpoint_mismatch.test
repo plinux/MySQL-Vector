@@ -17,13 +17,13 @@ if ($is_mysql_truth_store)
   --disable_query_log
   --disable_result_log
   SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('manifest',
-            '6d7973716c2d766563746f722d6d616e69666573742d76310a726561647909310939393939093939393909393939390a');
+            '6d7973716c2d766563746f722d6d616e69666573742d76310a72656164790931093939393909393939390939393939093209320a');
   --enable_result_log
   --enable_query_log
 }
 if (!$is_mysql_truth_store)
 {
-  --exec sed -i '' '2s/.*/ready\t1\t9999\t9999\t9999/' $manifest_file
+  --exec sed -i '' '2s/.*/ready\t1\t9999\t9999\t9999\t2\t2/' $manifest_file
 }
 
 --source include/restart_mysqld.inc

@@ -1,0 +1,34 @@
+#
+# WL#vector-v1: FAISS IVF nprobe update avoids external rebuild
+#
+SELECT VEC_INDEX_CREATE('idx_faiss_ivf_nprobe', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_faiss_ivf_nprobe', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivf_nprobe', 1, VEC_FROMTEXT('[1,1]'));
+VEC_INDEX_UPSERT('idx_faiss_ivf_nprobe', 1, VEC_FROMTEXT('[1,1]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_faiss_ivf_nprobe', 9, VEC_FROMTEXT('[9,9]'));
+VEC_INDEX_UPSERT('idx_faiss_ivf_nprobe', 9, VEC_FROMTEXT('[9,9]'))
+1
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf_nprobe', 2, 1);
+VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf_nprobe', 2, 1)
+1
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf_nprobe', 2, 2);
+VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf_nprobe', 2, 2)
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nprobe')
+AS faiss_nprobe_after_runtime_update;
+faiss_nprobe_after_runtime_update
+2
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf_nprobe', 1, 1);
+ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
+# restart
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nlist')
+AS faiss_nlist_after_restart,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nprobe')
+AS faiss_nprobe_after_restart;
+faiss_nlist_after_restart	faiss_nprobe_after_restart
+1	1
+SELECT VEC_INDEX_DROP('idx_faiss_ivf_nprobe');
+VEC_INDEX_DROP('idx_faiss_ivf_nprobe')
+1

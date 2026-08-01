@@ -251,6 +251,9 @@ BACKEND_HEALTH	idx_show_filter.recover_fallback_count	0
 BACKEND_HEALTH	idx_show_filter.last_recover_fallback_ts	0
 BACKEND_HEALTH	idx_show_filter.external_manifest_present	0
 BACKEND_HEALTH	idx_show_filter.external_manifest_generation	0
+BACKEND_HEALTH	idx_show_filter.truth_generation	0
+BACKEND_HEALTH	idx_show_filter.artifact_generation	0
+BACKEND_HEALTH	idx_show_filter.runtime_generation	0
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name = 'idx_show_filter.recover_fallback_count'
   AND Value = '0';

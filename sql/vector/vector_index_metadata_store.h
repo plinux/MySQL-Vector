@@ -83,6 +83,11 @@ struct metadata_row {
   bool diskann_accelerate_build{false};
   bool diskann_shuffle_build{false};
   bool diskann_use_bfs_cache{false};
+  uint64_t index_identity{1};
+  uint64_t truth_generation{0};
+  uint64_t config_generation{1};
+  uint64_t artifact_generation{0};
+  uint64_t runtime_generation{0};
   std::string owner_schema{};
 };
 
@@ -110,6 +115,8 @@ struct manifest_row {
   uint64_t metadata_checkpoint{0};
   uint64_t committed_checkpoint{0};
   uint64_t change_log_checkpoint{0};
+  uint64_t next_index_identity{1};
+  uint64_t next_change_log_sequence{1};
 };
 
 /**

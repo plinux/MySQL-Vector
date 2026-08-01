@@ -486,6 +486,10 @@ bool change_log_compaction_needed_locked() {
 
 bool compact_change_log_locked() {
   vector_status::record_truth_store_compact_request();
+  if (!persist_metadata_locked(nullptr)) {
+    vector_status::record_truth_store_compact_failure();
+    return false;
+  }
   const std::vector<vector_index_metadata_store::change_log_row> empty_rows;
   if (!vector_index_truth_store::get()->save_change_log(empty_rows)) {
     vector_status::record_metadata_persist_failure();
@@ -1120,11 +1124,13 @@ bool snapshot_metadata_locked(
     uint64_t last_error_ts = 0;
     uint64_t recover_fallback_count = 0;
     uint64_t last_recover_fallback_ts = 0;
+    vector_index::index_service::index_publication_state publication;
     if (!g_index_service.describe_index(
             index_name, &config, &supports_mutations, &entry_count,
             &committed_entry_count, &lifecycle_state, &lifecycle_version,
             &last_error_code, &last_error_ts, nullptr, &recover_fallback_count,
-            &last_recover_fallback_ts)) {
+            &last_recover_fallback_ts, nullptr, nullptr, nullptr,
+            &publication)) {
       return false;
     }
 
@@ -1143,6 +1149,11 @@ bool snapshot_metadata_locked(
     row.last_error_ts = last_error_ts;
     row.recover_fallback_count = recover_fallback_count;
     row.last_recover_fallback_ts = last_recover_fallback_ts;
+    row.index_identity = publication.index_identity;
+    row.truth_generation = publication.truth_generation;
+    row.config_generation = publication.config_generation;
+    row.artifact_generation = publication.artifact_generation;
+    row.runtime_generation = publication.runtime_generation;
     rows->push_back(std::move(row));
   }
 
@@ -1224,6 +1235,16 @@ bool apply_metadata_rows_locked(
     if (!g_index_service.register_index(row.index_name, config)) {
       return false;
     }
+    vector_index::index_service::index_publication_state publication;
+    publication.index_identity = row.index_identity;
+    publication.truth_generation = row.truth_generation;
+    publication.config_generation = row.config_generation;
+    publication.artifact_generation = row.artifact_generation;
+    publication.runtime_generation = row.runtime_generation;
+    if (!g_index_service.restore_publication_state(row.index_name,
+                                                   publication)) {
+      return false;
+    }
     set_index_binding_and_owner_schema_locked(
         row.index_name,
         index_binding{row.schema_name, row.table_name, row.column_name,
@@ -1245,7 +1266,30 @@ bool apply_committed_rows_locked(
   for (const auto &row : rows) {
     state[row.index_name][row.doc_id] = row.vector;
   }
-  return g_index_service.restore_committed_state(state);
+  if (!g_index_service.restore_committed_state(state)) return false;
+
+  std::vector<std::string> index_names;
+  if (!g_index_service.list_indexes(&index_names)) return false;
+  for (const std::string &index_name : index_names) {
+    vector_index::index_service::index_publication_state publication;
+    vector_index::index_service::index_config config;
+    bool manifest_present = false;
+    if (!g_index_service.describe_publication_state(index_name, &publication) ||
+        !g_index_service.describe_index(
+            index_name, &config, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, nullptr, nullptr, &manifest_present)) {
+      return false;
+    }
+    publication.runtime_generation = publication.truth_generation;
+    publication.artifact_generation =
+        config.mode == vector_index::backend_mode::kExternal && manifest_present
+            ? publication.truth_generation
+            : 0;
+    if (!g_index_service.restore_publication_state(index_name, publication)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool apply_change_log_rows_locked(
@@ -1277,7 +1321,36 @@ bool apply_change_log_rows_locked(
       return false;
     }
   }
-  return g_index_service.restore_committed_state(state);
+  if (!g_index_service.restore_committed_state(state)) return false;
+
+  std::unordered_map<std::string, uint64_t> truth_generations;
+  for (const auto &row : ordered_rows) {
+    uint64_t &generation = truth_generations[row.index_name];
+    generation = std::max(generation, row.sequence);
+  }
+  for (const auto &entry : truth_generations) {
+    vector_index::index_service::index_publication_state publication;
+    vector_index::index_service::index_config config;
+    bool manifest_present = false;
+    if (!g_index_service.describe_publication_state(entry.first,
+                                                    &publication) ||
+        !g_index_service.describe_index(
+            entry.first, &config, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, nullptr, nullptr, &manifest_present)) {
+      return false;
+    }
+    publication.truth_generation =
+        std::max(publication.truth_generation, entry.second);
+    publication.runtime_generation = publication.truth_generation;
+    publication.artifact_generation =
+        config.mode == vector_index::backend_mode::kExternal && manifest_present
+            ? publication.truth_generation
+            : 0;
+    if (!g_index_service.restore_publication_state(entry.first, publication)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void refresh_committed_snapshot_rows_locked() {
@@ -1397,7 +1470,8 @@ bool evict_committed_cache_to_budget_locked() {
 
 bool persist_index_config_manifest_locked(
     const std::string &index_name,
-    const vector_index::index_service::index_config &config) {
+    const vector_index::index_service::index_config &config,
+    const vector_index::index_service::index_publication_state &publication) {
   vector_status::record_truth_store_persist_request();
   vector_index_truth_store::truth_store *truth_store =
       vector_index_truth_store::get();
@@ -1413,6 +1487,11 @@ bool persist_index_config_manifest_locked(
   for (auto &row : rows) {
     if (row.index_name != index_name) continue;
     assign_config_to_metadata_row(config, row);
+    row.index_identity = publication.index_identity;
+    row.truth_generation = publication.truth_generation;
+    row.config_generation = publication.config_generation;
+    row.artifact_generation = publication.artifact_generation;
+    row.runtime_generation = publication.runtime_generation;
     found = true;
     break;
   }
@@ -1517,6 +1596,7 @@ bool ensure_metadata_available_locked() {
   g_manifest_metadata_checkpoint = manifest_row.metadata_checkpoint;
   g_manifest_committed_checkpoint = manifest_row.committed_checkpoint;
   g_manifest_change_log_checkpoint = manifest_row.change_log_checkpoint;
+  g_next_change_log_sequence = manifest_row.next_change_log_sequence;
 
   std::vector<vector_index_metadata_store::metadata_row> rows;
   if (!truth_store->load_metadata(&rows)) {
@@ -1537,6 +1617,13 @@ bool ensure_metadata_available_locked() {
     return fail_stop_truth_artifact_locked(
         truth_store, "metadata", "metadata_validation_failed",
         g_manifest_metadata_checkpoint);
+  }
+  if (!g_index_service.restore_next_index_identity(
+          std::max(manifest_row.next_index_identity,
+                   g_index_service.next_index_identity()))) {
+    return fail_stop_truth_artifact_locked(truth_store, "manifest",
+                                           "index_identity_high_water_invalid",
+                                           g_manifest_metadata_checkpoint);
   }
 
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
@@ -1620,7 +1707,8 @@ bool ensure_metadata_available_locked() {
     }
     g_change_log_rows.clear();
   }
-  g_next_change_log_sequence = 1;
+  g_next_change_log_sequence =
+      std::max<uint64_t>(1, manifest_row.next_change_log_sequence);
   for (const auto &row : g_change_log_rows) {
     if (row.sequence >= g_next_change_log_sequence) {
       g_next_change_log_sequence = row.sequence + 1;
@@ -1849,6 +1937,8 @@ bool persist_manifest_locked() {
   row.metadata_checkpoint = g_manifest_metadata_checkpoint;
   row.committed_checkpoint = g_manifest_committed_checkpoint;
   row.change_log_checkpoint = g_manifest_change_log_checkpoint;
+  row.next_index_identity = g_index_service.next_index_identity();
+  row.next_change_log_sequence = g_next_change_log_sequence;
   if (!vector_index_truth_store::get()->save_manifest(row)) {
     vector_status::record_metadata_persist_failure();
     vector_status::record_manifest_persist_failure();
@@ -1907,6 +1997,7 @@ bool restore_persisted_commit_artifacts_snapshot_locked(
   g_manifest_committed_checkpoint = snapshot.manifest_row.committed_checkpoint;
   g_manifest_change_log_checkpoint =
       snapshot.manifest_row.change_log_checkpoint;
+  g_next_change_log_sequence = snapshot.manifest_row.next_change_log_sequence;
   vector_status::set_committed_snapshot_rows(snapshot.committed_rows.size());
   refresh_manifest_status_locked();
   return true;
@@ -2200,6 +2291,7 @@ bool restore_runtime_state_locked(
     const std::vector<vector_index_metadata_store::change_log_row>
         &change_log_rows,
     const std::vector<std::string> &lagging_index_names) {
+  DBUG_EXECUTE_IF("vector_registry_fail_restore_runtime_state", return false;);
   const uint64_t next_change_log_sequence = g_next_change_log_sequence;
   g_change_log_rows = change_log_rows;
   g_next_change_log_sequence = next_change_log_sequence;
@@ -2246,6 +2338,10 @@ bool capture_runtime_commit_state_locked(commit_runtime_snapshot *snapshot) {
   if (!g_index_service.snapshot_committed_state(&snapshot->committed_state)) {
     return false;
   }
+  if (!g_index_service.snapshot_publication_states(
+          &snapshot->publication_states)) {
+    return false;
+  }
   snapshot->change_log_rows = g_change_log_rows;
   snapshot->manifest_change_log_checkpoint = g_manifest_change_log_checkpoint;
   snapshot->next_change_log_sequence = g_next_change_log_sequence;
@@ -2258,6 +2354,11 @@ bool rollback_runtime_commit_state_locked(
   g_manifest_change_log_checkpoint = snapshot.manifest_change_log_checkpoint;
   g_next_change_log_sequence = snapshot.next_change_log_sequence;
   if (!g_index_service.restore_committed_state(snapshot.committed_state)) {
+    vector_status::record_runtime_state_rollback_failure();
+    return false;
+  }
+  if (!g_index_service.restore_publication_states(
+          snapshot.publication_states)) {
     vector_status::record_runtime_state_rollback_failure();
     return false;
   }

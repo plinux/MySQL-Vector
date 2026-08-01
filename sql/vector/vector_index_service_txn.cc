@@ -434,6 +434,16 @@ bool index_service::snapshot_commit_build_plan(uint64_t txn_id,
     index_plan.index_name = entry.first;
     index_plan.config = config_it->second;
     index_plan.before_generation = m_entry_store.generation(entry.first);
+    if (!describe_publication_state(entry.first,
+                                    &index_plan.publication_before)) {
+      return false;
+    }
+    if (index_plan.publication_before.truth_generation ==
+        std::numeric_limits<uint64_t>::max()) {
+      return false;
+    }
+    index_plan.target_truth_generation =
+        index_plan.publication_before.truth_generation + 1;
     std::unordered_set<uint64_t> captured_doc_ids;
     captured_doc_ids.reserve(entry.second.size());
     for (const pending_change_snapshot *change : entry.second) {
@@ -529,13 +539,29 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
     }
     auto index_it = m_indexes.find(index_plan.index_name);
     auto config_it = m_index_configs.find(index_plan.index_name);
+    auto publication_it = m_publication_states.find(index_plan.index_name);
     if (index_it == m_indexes.end() || config_it == m_index_configs.end() ||
+        publication_it == m_publication_states.end() ||
         !m_entry_store.has_index(index_plan.index_name)) {
       return false;
     }
+    const index_publication_state &current_publication = publication_it->second;
     if (m_entry_store.generation(index_plan.index_name) !=
             index_plan.before_generation ||
-        !index_configs_equal(config_it->second, index_plan.config)) {
+        !index_configs_equal(config_it->second, index_plan.config) ||
+        current_publication.index_identity !=
+            index_plan.publication_before.index_identity ||
+        current_publication.truth_generation !=
+            index_plan.publication_before.truth_generation ||
+        current_publication.config_generation !=
+            index_plan.publication_before.config_generation ||
+        current_publication.artifact_generation !=
+            index_plan.publication_before.artifact_generation ||
+        current_publication.runtime_generation !=
+            index_plan.publication_before.runtime_generation ||
+        index_plan.target_truth_generation == 0 ||
+        index_plan.target_truth_generation <
+            current_publication.truth_generation) {
       return false;
     }
   }
@@ -650,6 +676,18 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
   for (auto &target : rebuild_targets) {
     *target.first = std::move(target.second->rebuilt_backend);
     maybe_unload_runtime(target.second->index_name);
+  }
+
+  for (const commit_index_plan &index_plan : plan->indexes) {
+    auto publication_it = m_publication_states.find(index_plan.index_name);
+    if (publication_it == m_publication_states.end()) return false;
+    publication_it->second.truth_generation =
+        index_plan.target_truth_generation;
+    auto lifecycle_it = m_lifecycle_infos.find(index_plan.index_name);
+    if (lifecycle_it == m_lifecycle_infos.end() ||
+        !lifecycle_is_bulk_loading(lifecycle_it->second)) {
+      if (!synchronize_runtime_publication(index_plan.index_name)) return false;
+    }
   }
 
   auto pending_it = m_pending_changes.find(txn_id);
@@ -954,6 +992,12 @@ bool index_service::snapshot_search_backend_loaded(
       query.size() != config_it->second.dimension) {
     return false;
   }
+  const auto publication_it = m_publication_states.find(index_name);
+  if (publication_it == m_publication_states.end() ||
+      publication_it->second.runtime_generation !=
+          publication_it->second.truth_generation) {
+    return false;
+  }
   auto index_it = m_indexes.find(index_name);
   if (index_it == m_indexes.end() || index_it->second == nullptr)
     return false;
@@ -982,6 +1026,12 @@ bool index_service::search_batch_loaded(
   }
   auto config_it = m_index_configs.find(index_name);
   if (config_it == m_index_configs.end()) return false;
+  const auto publication_it = m_publication_states.find(index_name);
+  if (publication_it == m_publication_states.end() ||
+      publication_it->second.runtime_generation !=
+          publication_it->second.truth_generation) {
+    return false;
+  }
   for (const vector_data &query : queries) {
     if (query.size() != config_it->second.dimension) return false;
   }

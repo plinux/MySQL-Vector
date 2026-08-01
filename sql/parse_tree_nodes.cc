@@ -300,8 +300,6 @@ bool log_vector_ddl(THD *thd) {
 }
 
 constexpr const char *kVectorIndexLifecycleCreating = "creating";
-constexpr const char *kVectorIndexLifecycleBackfilling = "backfilling";
-constexpr const char *kVectorIndexLifecycleReady = "ready";
 
 bool reject_vector_index_on_temporary_table(THD *thd, Table_ref *table_ref,
                                             const char *stmt_name) {
@@ -324,9 +322,10 @@ std::string make_vector_index_name(const char *db_name, const char *table_name,
   return index_name;
 }
 
-bool backfill_vector_index(THD *thd, Table_ref *table_ref,
-                           const std::string &index_name,
-                           const std::string &column_name) {
+bool scan_vector_index_backfill(
+    THD *thd, Table_ref *table_ref, const std::string &index_name,
+    const std::string &column_name,
+    vector_index::index_service::committed_entries *backfill_entries) {
   if (thd == nullptr || table_ref == nullptr) {
     my_error(ER_INTERNAL_ERROR, MYF(0),
              "Failed to open table for vector index backfill");
@@ -351,10 +350,15 @@ bool backfill_vector_index(THD *thd, Table_ref *table_ref,
     return false;
   }
 
+  if (backfill_entries == nullptr) {
+    table->file->ha_rnd_end();
+    table->column_bitmaps_set(saved_read_set, saved_write_set);
+    my_error(ER_INTERNAL_ERROR, MYF(0), "vector index backfill failed");
+    return false;
+  }
+
   bool failed = false;
-  vector_index::index_service::committed_state backfill_entries;
-  // Empty tables still need a committed snapshot before the DDL is made ready.
-  backfill_entries[index_name];
+  backfill_entries->clear();
 
   while (true) {
     const int scan_error = table->file->ha_rnd_next(table->record[0]);
@@ -372,27 +376,20 @@ bool backfill_vector_index(THD *thd, Table_ref *table_ref,
       break;
     }
     for (const vector_dml_sync::prepared_change &change : vector_changes) {
-      auto &entries = backfill_entries[change.index_name];
+      if (change.index_name != index_name) {
+        failed = true;
+        break;
+      }
       if (change.erase) {
-        entries.erase(change.doc_id);
+        backfill_entries->erase(change.doc_id);
       } else {
-        entries[change.doc_id] = change.vector;
+        (*backfill_entries)[change.doc_id] = change.vector;
       }
     }
 
     if (failed) break;
   }
 
-  if (!failed) {
-    for (const auto &entry : backfill_entries) {
-      if (!vector_index_registry::replace_committed_entries_for_backfill(
-              entry.first, entry.second)) {
-        my_error(ER_INTERNAL_ERROR, MYF(0), "vector index backfill failed");
-        failed = true;
-        break;
-      }
-    }
-  }
   const int end_error = table->file->ha_rnd_end();
   table->column_bitmaps_set(saved_read_set, saved_write_set);
   if (end_error != 0 && !failed) {
@@ -504,14 +501,16 @@ class Sql_cmd_create_vector_index final : public Sql_cmd {
       return true;
     }
 
-    if (!vector_index_registry::set_lifecycle_state(
-            index_name, kVectorIndexLifecycleBackfilling)) {
+    vector_index_registry::index_backfill_token backfill_token;
+    if (!vector_index_registry::begin_backfill(index_name, &backfill_token)) {
       (void)vector_index_registry::drop_index(index_name);
       my_error(ER_INTERNAL_ERROR, MYF(0), "CREATE VECTOR INDEX");
       return true;
     }
 
-    if (!backfill_vector_index(thd, first_table, index_name, m_column_name)) {
+    vector_index::index_service::committed_entries backfill_entries;
+    if (!scan_vector_index_backfill(thd, first_table, index_name, m_column_name,
+                                    &backfill_entries)) {
       (void)vector_index_registry::drop_index(index_name);
       if (!thd->is_error()) {
         my_error(ER_INTERNAL_ERROR, MYF(0), "CREATE VECTOR INDEX");
@@ -519,8 +518,8 @@ class Sql_cmd_create_vector_index final : public Sql_cmd {
       return true;
     }
 
-    if (!vector_index_registry::finish_backfill(
-            index_name, kVectorIndexLifecycleReady)) {
+    if (!vector_index_registry::publish_backfill(index_name, backfill_entries,
+                                                 backfill_token)) {
       (void)vector_index_registry::drop_index(index_name);
       my_error(ER_INTERNAL_ERROR, MYF(0), "CREATE VECTOR INDEX");
       return true;

@@ -23,7 +23,9 @@ SELECT VEC_INDEX_SEARCH('test.t_vector_ddl.v', VEC_FROMTEXT('[9,9]'), 1);
 VEC_INDEX_SEARCH('test.t_vector_ddl.v', VEC_FROMTEXT('[9,9]'), 1)
 [9]
 SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl.v'
-  WHERE Variable_name != 'test.t_vector_ddl.v.apply_latency_ms';
+  WHERE Variable_name != 'test.t_vector_ddl.v.apply_latency_ms'
+    AND Variable_name NOT LIKE '%.index_identity'
+    AND Variable_name NOT LIKE '%.%generation';
 Section	Variable_name	Value
 INDEX_STATE	test.t_vector_ddl.v.dimension	2
 INDEX_STATE	test.t_vector_ddl.v.metric	euclidean
@@ -94,10 +96,24 @@ BACKEND_HEALTH	test.t_vector_ddl.v.last_error_ts	0
 BACKEND_HEALTH	test.t_vector_ddl.v.recover_fallback_count	0
 BACKEND_HEALTH	test.t_vector_ddl.v.last_recover_fallback_ts	0
 BACKEND_HEALTH	test.t_vector_ddl.v.external_manifest_present	0
-BACKEND_HEALTH	test.t_vector_ddl.v.external_manifest_generation	0
 SYNC_PIPELINE	test.t_vector_ddl.v.pending_apply_count	0
 SYNC_PIPELINE	test.t_vector_ddl.v.rebuild_progress	100
 SYNC_PIPELINE	test.t_vector_ddl.v.recover_progress	100
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl.v'
+  WHERE Variable_name LIKE '%.index_identity'
+     OR Variable_name LIKE '%.%generation';
+Section	Variable_name	Value
+INDEX_STATE	test.t_vector_ddl.v.index_identity	<num>
+INDEX_STATE	test.t_vector_ddl.v.truth_generation	<num>
+INDEX_STATE	test.t_vector_ddl.v.config_generation	<num>
+INDEX_STATE	test.t_vector_ddl.v.artifact_generation	<num>
+INDEX_STATE	test.t_vector_ddl.v.runtime_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl.v.external_manifest_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl.v.index_identity	<num>
+BACKEND_HEALTH	test.t_vector_ddl.v.truth_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl.v.config_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl.v.artifact_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl.v.runtime_generation	<num>
 SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl.v'
   WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'test.t_vector_ddl.v.dimension';
@@ -160,7 +176,9 @@ SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
   AND Variable_name NOT LIKE
 'test.t_vector_ddl_renamed.v.backend_build_%_ms'
   AND Variable_name NOT LIKE
-'test.t_vector_ddl_renamed.v.diskann_segment_build_%_ms';
+'test.t_vector_ddl_renamed.v.diskann_segment_build_%_ms'
+  AND Variable_name NOT LIKE '%.index_identity'
+  AND Variable_name NOT LIKE '%.%generation';
 Section	Variable_name	Value
 INDEX_STATE	test.t_vector_ddl_renamed.v.dimension	2
 INDEX_STATE	test.t_vector_ddl_renamed.v.metric	cosine
@@ -267,10 +285,24 @@ BACKEND_HEALTH	test.t_vector_ddl_renamed.v.last_error_ts	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.recover_fallback_count	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.last_recover_fallback_ts	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.external_manifest_present	1
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.external_manifest_generation	1
 SYNC_PIPELINE	test.t_vector_ddl_renamed.v.pending_apply_count	0
 SYNC_PIPELINE	test.t_vector_ddl_renamed.v.rebuild_progress	100
 SYNC_PIPELINE	test.t_vector_ddl_renamed.v.recover_progress	100
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
+  WHERE Variable_name LIKE '%.index_identity'
+     OR Variable_name LIKE '%.%generation';
+Section	Variable_name	Value
+INDEX_STATE	test.t_vector_ddl_renamed.v.index_identity	<num>
+INDEX_STATE	test.t_vector_ddl_renamed.v.truth_generation	<num>
+INDEX_STATE	test.t_vector_ddl_renamed.v.config_generation	<num>
+INDEX_STATE	test.t_vector_ddl_renamed.v.artifact_generation	<num>
+INDEX_STATE	test.t_vector_ddl_renamed.v.runtime_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.external_manifest_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.index_identity	<num>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.truth_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.config_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.artifact_generation	<num>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.runtime_generation	<num>
 DROP TABLE t_vector_ddl_renamed;
 DROP TABLE IF EXISTS t_vector_alter_rename;
 Warnings:
@@ -319,7 +351,9 @@ v VECTOR(2),
 c INT
 ) ENGINE=InnoDB;
 CREATE VECTOR INDEX ON t_vector_alter_dropcol(v) WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
-SHOW VECTOR STATUS LIKE 'test.t_vector_alter_dropcol.v.%';
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_alter_dropcol.v'
+  WHERE Variable_name NOT LIKE '%.index_identity'
+    AND Variable_name NOT LIKE '%.%generation';
 Section	Variable_name	Value
 INDEX_STATE	test.t_vector_alter_dropcol.v.dimension	2
 INDEX_STATE	test.t_vector_alter_dropcol.v.metric	euclidean
@@ -390,11 +424,25 @@ BACKEND_HEALTH	test.t_vector_alter_dropcol.v.last_error_ts	0
 BACKEND_HEALTH	test.t_vector_alter_dropcol.v.recover_fallback_count	0
 BACKEND_HEALTH	test.t_vector_alter_dropcol.v.last_recover_fallback_ts	0
 BACKEND_HEALTH	test.t_vector_alter_dropcol.v.external_manifest_present	0
-BACKEND_HEALTH	test.t_vector_alter_dropcol.v.external_manifest_generation	0
 SYNC_PIPELINE	test.t_vector_alter_dropcol.v.pending_apply_count	0
 SYNC_PIPELINE	test.t_vector_alter_dropcol.v.apply_latency_ms	0
 SYNC_PIPELINE	test.t_vector_alter_dropcol.v.rebuild_progress	100
 SYNC_PIPELINE	test.t_vector_alter_dropcol.v.recover_progress	100
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_alter_dropcol.v'
+  WHERE Variable_name LIKE '%.index_identity'
+     OR Variable_name LIKE '%.%generation';
+Section	Variable_name	Value
+INDEX_STATE	test.t_vector_alter_dropcol.v.index_identity	<num>
+INDEX_STATE	test.t_vector_alter_dropcol.v.truth_generation	<num>
+INDEX_STATE	test.t_vector_alter_dropcol.v.config_generation	<num>
+INDEX_STATE	test.t_vector_alter_dropcol.v.artifact_generation	<num>
+INDEX_STATE	test.t_vector_alter_dropcol.v.runtime_generation	<num>
+BACKEND_HEALTH	test.t_vector_alter_dropcol.v.external_manifest_generation	<num>
+BACKEND_HEALTH	test.t_vector_alter_dropcol.v.index_identity	<num>
+BACKEND_HEALTH	test.t_vector_alter_dropcol.v.truth_generation	<num>
+BACKEND_HEALTH	test.t_vector_alter_dropcol.v.config_generation	<num>
+BACKEND_HEALTH	test.t_vector_alter_dropcol.v.artifact_generation	<num>
+BACKEND_HEALTH	test.t_vector_alter_dropcol.v.runtime_generation	<num>
 ALTER TABLE t_vector_alter_dropcol DROP COLUMN v;
 SHOW VECTOR STATUS LIKE 'test.t_vector_alter_dropcol.v.%';
 Section	Variable_name	Value
@@ -469,6 +517,6 @@ CONCAT('[', REPEAT('0,', 783), '0]'),
 3
 SELECT VEC_INDEX_INFO('test.t_vector_ddl_large.v');
 VEC_INDEX_INFO('test.t_vector_ddl_large.v')
-{"dimension":784,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_segment_profile":"manual","build_segment_profile_reason":"manual","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"build_segment_effective_row_limit":683041,"build_segment_effective_target_size":2147483648,"build_segment_target_size":2147483648,"build_segment_max_rows":4294967295,"build_segment_policy":"size_first","standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"owner_schema":"test","schema_name":"test","table_name":"t_vector_ddl_large","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":0,"diskann_cache_nodes":0,"diskann_accelerate_build":0,"diskann_shuffle_build":0,"diskann_use_bfs_cache":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":3,"committed_entry_count":3}
+{"dimension":784,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_segment_profile":"manual","build_segment_profile_reason":"manual","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"build_segment_effective_row_limit":683041,"build_segment_effective_target_size":2147483648,"build_segment_target_size":2147483648,"build_segment_max_rows":4294967295,"build_segment_policy":"size_first","standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"owner_schema":"test","schema_name":"test","table_name":"t_vector_ddl_large","column_name":"v","search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":0,"diskann_cache_nodes":0,"diskann_accelerate_build":0,"diskann_shuffle_build":0,"diskann_use_bfs_cache":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"index_identity":<num>,"truth_generation":<num>,"config_generation":<num>,"artifact_generation":<num>,"runtime_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":3,"committed_entry_count":3}
 DROP TABLE t_vector_ddl_large;
 DROP TABLE t_vector_ddl;

@@ -557,7 +557,7 @@ void collect_info_fields(const vector_index_registry::index_info &info,
                          field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(75);
+  fields->reserve(80);
 
   append_index_definition_fields(fields, info);
   append_build_diagnostics(fields,
@@ -577,6 +577,11 @@ void collect_info_fields(const vector_index_registry::index_info &info,
               info.external_manifest_present);
   append_uint(fields, "external_manifest_generation",
               info.external_manifest_generation);
+  append_uint(fields, "index_identity", info.index_identity);
+  append_uint(fields, "truth_generation", info.truth_generation);
+  append_uint(fields, "config_generation", info.config_generation);
+  append_uint(fields, "artifact_generation", info.artifact_generation);
+  append_uint(fields, "runtime_generation", info.runtime_generation);
   append_uint(fields, "pending_apply_count", pending_apply_count(info));
   append_uint(fields, "rebuild_progress", rebuild_progress(info));
   append_uint(fields, "recover_progress", recover_progress(info));
@@ -588,7 +593,7 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
                                 field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(52);
+  fields->reserve(57);
 
   append_index_definition_fields(fields, info);
   append_index_tuning_fields(fields, info);
@@ -597,13 +602,18 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
   append_bool(fields, "supports_mutations", info.supports_mutations);
   append_uint(fields, "entry_count", info.entry_count);
   append_uint(fields, "committed_entry_count", info.committed_entry_count);
+  append_uint(fields, "index_identity", info.index_identity);
+  append_uint(fields, "truth_generation", info.truth_generation);
+  append_uint(fields, "config_generation", info.config_generation);
+  append_uint(fields, "artifact_generation", info.artifact_generation);
+  append_uint(fields, "runtime_generation", info.runtime_generation);
 }
 
 void collect_backend_health_fields(
     const vector_index_registry::index_info &info, field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(21);
+  fields->reserve(26);
 
   append_string(fields, "backend_type", info.provider);
   append_nullable_string(fields, "backend_variant", info.backend_variant);
@@ -625,6 +635,11 @@ void collect_backend_health_fields(
               info.external_manifest_present);
   append_uint(fields, "external_manifest_generation",
               info.external_manifest_generation);
+  append_uint(fields, "index_identity", info.index_identity);
+  append_uint(fields, "truth_generation", info.truth_generation);
+  append_uint(fields, "config_generation", info.config_generation);
+  append_uint(fields, "artifact_generation", info.artifact_generation);
+  append_uint(fields, "runtime_generation", info.runtime_generation);
 }
 
 void collect_sync_pipeline_fields(const vector_index_registry::index_info &info,

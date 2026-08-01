@@ -50,7 +50,10 @@ namespace {
 
 using vector_index::detail::build_backend_from_config;
 
-constexpr size_t k_backfill_committed_persist_batch_rows = 256;
+constexpr size_t k_committed_persist_batch_rows = 256;
+constexpr const char *k_lifecycle_creating = "creating";
+constexpr const char *k_lifecycle_backfilling = "backfilling";
+constexpr const char *k_lifecycle_ready = "ready";
 
 bool binding_matches_table(const index_binding &binding,
                            const std::string &schema_name,
@@ -93,13 +96,14 @@ bool populate_index_info_locked(const std::string &index_name, index_info *info)
   uint64_t lifecycle_version = 0;
   uint32_t last_error_code = 0;
   uint64_t last_error_ts = 0;
+  vector_index::index_service::index_publication_state publication;
   if (!g_index_service.describe_index(
           index_name, &config, &supports_mutations, &entry_count,
           &info->committed_entry_count, &lifecycle_state, &lifecycle_version,
           &last_error_code, &last_error_ts, &info->last_apply_latency_ms,
           &info->recover_fallback_count, &info->last_recover_fallback_ts,
-          &info->external_manifest_present,
-          &info->external_manifest_generation, &info->build_diagnostics)) {
+          &info->external_manifest_present, &info->external_manifest_generation,
+          &info->build_diagnostics, &publication)) {
     return false;
   }
   if (!g_index_service.describe_index_observability(index_name, &observability)) {
@@ -191,6 +195,11 @@ bool populate_index_info_locked(const std::string &index_name, index_info *info)
   info->diskann_accelerate_build = config.diskann_accelerate_build;
   info->diskann_shuffle_build = config.diskann_shuffle_build;
   info->diskann_use_bfs_cache = config.diskann_use_bfs_cache;
+  info->index_identity = publication.index_identity;
+  info->truth_generation = publication.truth_generation;
+  info->config_generation = publication.config_generation;
+  info->artifact_generation = publication.artifact_generation;
+  info->runtime_generation = publication.runtime_generation;
   const index_binding binding = binding_for_index_locked(index_name);
   info->owner_schema = owner_schema_for_index_locked(index_name);
   info->schema_name = binding.schema_name;
@@ -235,7 +244,7 @@ vector_index_metadata_store::change_log_row make_erase_delta_row(
   return row;
 }
 
-bool persist_backfill_committed_batch_locked(
+bool persist_committed_delta_batch_locked(
     const std::vector<vector_index_metadata_store::change_log_row> &rows) {
   vector_index_truth_store::truth_store *truth_store =
       vector_index_truth_store::get();
@@ -288,54 +297,6 @@ bool persist_metadata_manifest_locked(bool include_change_log) {
   return true;
 }
 
-bool persist_backfill_committed_entries_locked(
-    const std::string &index_name,
-    const vector_index::index_service::committed_entries &entries) {
-  vector_index_truth_store::truth_store *truth_store =
-      vector_index_truth_store::get();
-  if (!truth_store->is_transactional() ||
-      !truth_store->supports_delta_persist()) {
-    return persist_registry_state_locked();
-  }
-
-  const uint64_t checkpoint_before = g_manifest_committed_checkpoint;
-  if (entries.empty()) {
-    g_manifest_committed_checkpoint = g_index_service.committed_entry_count();
-    vector_status::set_committed_snapshot_rows(g_manifest_committed_checkpoint);
-    return true;
-  }
-
-  std::vector<uint64_t> doc_ids;
-  doc_ids.reserve(entries.size());
-  for (const auto &entry : entries) doc_ids.push_back(entry.first);
-  std::sort(doc_ids.begin(), doc_ids.end());
-
-  std::vector<vector_index_metadata_store::change_log_row> batch;
-  batch.reserve(k_backfill_committed_persist_batch_rows);
-  uint64_t sequence = 1;
-  for (uint64_t doc_id : doc_ids) {
-    auto entry_it = entries.find(doc_id);
-    if (entry_it == entries.end()) {
-      g_manifest_committed_checkpoint = checkpoint_before;
-      return false;
-    }
-    batch.push_back(
-        make_backfill_delta_row(index_name, sequence++, doc_id,
-                                entry_it->second));
-    if (batch.size() < k_backfill_committed_persist_batch_rows) continue;
-    if (!persist_backfill_committed_batch_locked(batch)) {
-      g_manifest_committed_checkpoint = checkpoint_before;
-      return false;
-    }
-    batch.clear();
-  }
-  if (!batch.empty() && !persist_backfill_committed_batch_locked(batch)) {
-    g_manifest_committed_checkpoint = checkpoint_before;
-    return false;
-  }
-  return true;
-}
-
 bool persist_drop_committed_entries_locked(
     const std::string &index_name,
     const vector_index::index_service::committed_entries &entries) {
@@ -359,18 +320,18 @@ bool persist_drop_committed_entries_locked(
   std::sort(doc_ids.begin(), doc_ids.end());
 
   std::vector<vector_index_metadata_store::change_log_row> batch;
-  batch.reserve(k_backfill_committed_persist_batch_rows);
+  batch.reserve(k_committed_persist_batch_rows);
   uint64_t sequence = 1;
   for (uint64_t doc_id : doc_ids) {
     batch.push_back(make_erase_delta_row(index_name, sequence++, doc_id));
-    if (batch.size() < k_backfill_committed_persist_batch_rows) continue;
-    if (!persist_backfill_committed_batch_locked(batch)) {
+    if (batch.size() < k_committed_persist_batch_rows) continue;
+    if (!persist_committed_delta_batch_locked(batch)) {
       g_manifest_committed_checkpoint = checkpoint_before;
       return false;
     }
     batch.clear();
   }
-  if (!batch.empty() && !persist_backfill_committed_batch_locked(batch)) {
+  if (!batch.empty() && !persist_committed_delta_batch_locked(batch)) {
     g_manifest_committed_checkpoint = checkpoint_before;
     return false;
   }
@@ -382,15 +343,49 @@ void refresh_committed_checkpoint_from_runtime_locked() {
   vector_status::set_committed_snapshot_rows(g_manifest_committed_checkpoint);
 }
 
+void fail_stop_registry_locked(const char *reason) {
+  g_registry_health = registry_health_state::kFailed;
+  g_registry_failure_reason =
+      reason == nullptr ? "registry_state_restore_failed" : reason;
+}
+
 bool rollback_runtime_state_and_fail_locked(
     const runtime_state_snapshot &snapshot) {
-  if (!rollback_runtime_state_locked(snapshot)) return false;
+  if (!rollback_runtime_state_locked(snapshot)) {
+    fail_stop_registry_locked("registry_state_restore_failed");
+  }
   return false;
+}
+
+struct manifest_state_snapshot {
+  uint64_t version{0};
+  uint64_t metadata_checkpoint{0};
+  uint64_t committed_checkpoint{0};
+  uint64_t change_log_checkpoint{0};
+  uint64_t next_change_log_sequence{1};
+};
+
+manifest_state_snapshot capture_manifest_state_locked() {
+  return {g_manifest_version, g_manifest_metadata_checkpoint,
+          g_manifest_committed_checkpoint, g_manifest_change_log_checkpoint,
+          g_next_change_log_sequence};
+}
+
+void restore_manifest_state_locked(const manifest_state_snapshot &snapshot) {
+  g_manifest_version = snapshot.version;
+  g_manifest_metadata_checkpoint = snapshot.metadata_checkpoint;
+  g_manifest_committed_checkpoint = snapshot.committed_checkpoint;
+  g_manifest_change_log_checkpoint = snapshot.change_log_checkpoint;
+  g_next_change_log_sequence = snapshot.next_change_log_sequence;
+  refresh_manifest_status_locked();
 }
 
 bool persist_registry_state_or_rollback_locked(
     const runtime_state_snapshot &snapshot, bool record_truth_store_failure) {
+  const manifest_state_snapshot manifest_before =
+      capture_manifest_state_locked();
   if (persist_registry_state_locked()) return true;
+  restore_manifest_state_locked(manifest_before);
   if (record_truth_store_failure)
     vector_status::record_truth_store_persist_failure();
   return rollback_runtime_state_and_fail_locked(snapshot);
@@ -398,16 +393,149 @@ bool persist_registry_state_or_rollback_locked(
 
 bool persist_metadata_manifest_or_rollback_locked(
     const runtime_state_snapshot &snapshot, bool include_change_log) {
+  const manifest_state_snapshot manifest_before =
+      capture_manifest_state_locked();
   if (persist_metadata_manifest_locked(include_change_log)) return true;
+  restore_manifest_state_locked(manifest_before);
   return rollback_runtime_state_and_fail_locked(snapshot);
+}
+
+bool persist_backfill_generation_locked(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows) {
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  const bool use_delta_path =
+      truth_store->is_transactional() && truth_store->supports_delta_persist();
+  vector_status::record_truth_store_persist_request();
+  if (use_delta_path) vector_status::record_truth_store_delta_persist_request();
+  if (!truth_store->begin_persist()) {
+    vector_status::record_truth_store_persist_failure();
+    if (use_delta_path)
+      vector_status::record_truth_store_delta_persist_failure();
+    return false;
+  }
+
+  bool ok = true;
+  if (use_delta_path) {
+    for (size_t first = 0; ok && first < rows.size();
+         first += k_committed_persist_batch_rows) {
+      const size_t last =
+          std::min(rows.size(), first + k_committed_persist_batch_rows);
+      const std::vector<vector_index_metadata_store::change_log_row> batch(
+          rows.begin() + first, rows.begin() + last);
+      ok = persist_committed_delta_locked(batch);
+    }
+    if (rows.empty()) refresh_committed_checkpoint_from_runtime_locked();
+    if (ok && !rows.empty()) ok = persist_change_log_delta_locked(rows);
+  } else {
+    ok = persist_committed_locked(nullptr) && persist_change_log_locked();
+  }
+  if (ok) ok = persist_metadata_locked(nullptr);
+  if (ok) ok = persist_manifest_locked();
+  if (ok) ok = truth_store->commit_persist();
+  if (ok) return true;
+
+  truth_store->rollback_persist();
+  vector_status::record_truth_store_persist_failure();
+  if (use_delta_path) vector_status::record_truth_store_delta_persist_failure();
+  return false;
 }
 
 struct lifecycle_backend_plan {
   std::string index_name;
   vector_index::index_service::index_config config;
   vector_index::index_service::committed_entries entries;
+  vector_index::index_service::index_publication_state publication;
   uint64_t lifecycle_version{0};
 };
+
+bool capture_backfill_token_locked(const std::string &index_name,
+                                   const char *required_lifecycle,
+                                   index_backfill_token *token) {
+  if (required_lifecycle == nullptr || token == nullptr) return false;
+
+  vector_index::index_service::index_config config;
+  vector_index::index_service::index_publication_state publication;
+  std::string lifecycle_state;
+  uint64_t lifecycle_version = 0;
+  if (!g_index_service.describe_index(index_name, &config, nullptr, nullptr,
+                                      nullptr, &lifecycle_state,
+                                      &lifecycle_version) ||
+      !g_index_service.describe_publication_state(index_name, &publication) ||
+      config.consistency_mode !=
+          vector_index::index_consistency_mode::kTransactional ||
+      lifecycle_state != required_lifecycle || lifecycle_version == 0 ||
+      publication.index_identity == 0 ||
+      g_index_service.has_pending_changes_for_index(index_name)) {
+    return false;
+  }
+
+  token->index_identity = publication.index_identity;
+  token->truth_generation = publication.truth_generation;
+  token->config_generation = publication.config_generation;
+  token->artifact_generation = publication.artifact_generation;
+  token->runtime_generation = publication.runtime_generation;
+  token->lifecycle_version = lifecycle_version;
+  return true;
+}
+
+bool backfill_token_matches_locked(const std::string &index_name,
+                                   const index_backfill_token &expected) {
+  index_backfill_token current;
+  return capture_backfill_token_locked(index_name, k_lifecycle_backfilling,
+                                       &current) &&
+         current.index_identity == expected.index_identity &&
+         current.truth_generation == expected.truth_generation &&
+         current.config_generation == expected.config_generation &&
+         current.artifact_generation == expected.artifact_generation &&
+         current.runtime_generation == expected.runtime_generation &&
+         current.lifecycle_version == expected.lifecycle_version;
+}
+
+bool allocate_backfill_change_log_locked(
+    const std::string &index_name,
+    const vector_index::index_service::committed_entries &entries,
+    std::vector<vector_index_metadata_store::change_log_row> *rows) {
+  if (rows == nullptr || index_name.empty()) return false;
+  rows->clear();
+  if (entries.empty()) return true;
+  if (entries.size() >
+      std::numeric_limits<uint64_t>::max() - g_next_change_log_sequence) {
+    return false;
+  }
+
+  try {
+    std::vector<uint64_t> doc_ids;
+    doc_ids.reserve(entries.size());
+    for (const auto &entry : entries) doc_ids.push_back(entry.first);
+    std::sort(doc_ids.begin(), doc_ids.end());
+
+    rows->reserve(doc_ids.size());
+    uint64_t sequence = g_next_change_log_sequence;
+    for (uint64_t doc_id : doc_ids) {
+      const auto entry_it = entries.find(doc_id);
+      if (entry_it == entries.end()) return false;
+      rows->push_back(make_backfill_delta_row(index_name, sequence++, doc_id,
+                                              entry_it->second));
+    }
+    g_next_change_log_sequence = sequence;
+    g_change_log_rows.insert(g_change_log_rows.end(), rows->begin(),
+                             rows->end());
+    g_manifest_change_log_checkpoint = g_change_log_rows.size();
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
+bool rollback_backfill_publish_locked(
+    const runtime_state_snapshot &runtime_before,
+    const manifest_state_snapshot &manifest_before, const char *reason) {
+  restore_manifest_state_locked(manifest_before);
+  if (rollback_runtime_state_locked(runtime_before)) return false;
+  fail_stop_registry_locked(reason);
+  return false;
+}
 
 struct prepared_lifecycle_backend {
   lifecycle_backend_plan plan;
@@ -456,12 +584,15 @@ bool snapshot_backend_plan_from_state_locked(
 
   lifecycle_backend_plan candidate;
   candidate.index_name = index_name;
-  if (!g_index_service.describe_index(
-          index_name, &candidate.config, nullptr, nullptr, nullptr, nullptr,
-          &candidate.lifecycle_version)) {
+  if (!g_index_service.describe_index(index_name, &candidate.config, nullptr,
+                                      nullptr, nullptr, nullptr,
+                                      &candidate.lifecycle_version) ||
+      !g_index_service.describe_publication_state(index_name,
+                                                  &candidate.publication)) {
     return false;
   }
   if (candidate.lifecycle_version == 0 ||
+      candidate.publication.index_identity == 0 ||
       g_index_service.has_pending_changes_for_index(index_name)) {
     return false;
   }
@@ -514,13 +645,25 @@ bool validate_backend_plan_against_state_locked(
     const lifecycle_backend_plan &plan,
     const vector_index::index_service::committed_state &current_state) {
   vector_index::index_service::index_config current_config;
+  vector_index::index_service::index_publication_state current_publication;
   uint64_t current_lifecycle_version = 0;
-  if (!g_index_service.describe_index(
-          plan.index_name, &current_config, nullptr, nullptr, nullptr, nullptr,
-          &current_lifecycle_version)) {
+  if (!g_index_service.describe_index(plan.index_name, &current_config, nullptr,
+                                      nullptr, nullptr, nullptr,
+                                      &current_lifecycle_version) ||
+      !g_index_service.describe_publication_state(plan.index_name,
+                                                  &current_publication)) {
     return false;
   }
   if (!vector_index::detail::index_configs_equal(plan.config, current_config) ||
+      plan.publication.index_identity != current_publication.index_identity ||
+      plan.publication.truth_generation !=
+          current_publication.truth_generation ||
+      plan.publication.config_generation !=
+          current_publication.config_generation ||
+      plan.publication.artifact_generation !=
+          current_publication.artifact_generation ||
+      plan.publication.runtime_generation !=
+          current_publication.runtime_generation ||
       current_lifecycle_version != plan.lifecycle_version ||
       g_index_service.has_pending_changes_for_index(plan.index_name)) {
     return false;
@@ -756,7 +899,9 @@ bool snapshot_truth_recovery_plans_locked(
     plan.expected_backend.index_name = index_name;
     if (!g_index_service.describe_index(
             index_name, &plan.expected_backend.config, nullptr, nullptr,
-            nullptr, nullptr, &plan.expected_backend.lifecycle_version)) {
+            nullptr, nullptr, &plan.expected_backend.lifecycle_version) ||
+        !g_index_service.describe_publication_state(
+            index_name, &plan.expected_backend.publication)) {
       return false;
     }
     if (plan.expected_backend.config.consistency_mode !=
@@ -921,20 +1066,42 @@ bool apply_persisted_index_config_change_locked(const std::string &index_name,
                                                 Prepare prepare,
                                                 Apply apply) {
   vector_index::index_service::index_config before;
-  if (!snapshot_index_config_locked(index_name, &before)) return false;
+  vector_index::index_service::index_publication_state publication_before;
+  if (!snapshot_index_config_locked(index_name, &before) ||
+      !g_index_service.describe_publication_state(index_name,
+                                                  &publication_before) ||
+      publication_before.config_generation ==
+          std::numeric_limits<uint64_t>::max()) {
+    return false;
+  }
 
   vector_index::index_service::index_config candidate = before;
   prepare(&candidate);
-  if (!persist_index_config_manifest_locked(index_name, candidate)) return false;
-  if (apply()) return true;
-
-  vector_status::record_runtime_state_rollback();
-  if (!g_index_service.restore_index_config(index_name, before)) {
-    vector_status::record_runtime_state_rollback_failure();
+  vector_index::index_service::index_publication_state publication_after =
+      publication_before;
+  ++publication_after.config_generation;
+  if (!persist_index_config_manifest_locked(index_name, candidate,
+                                            publication_after)) {
     return false;
   }
-  if (!persist_index_config_manifest_locked(index_name, before)) {
+  if (apply() && g_index_service.restore_publication_state(index_name,
+                                                           publication_after)) {
+    return true;
+  }
+
+  vector_status::record_runtime_state_rollback();
+  const bool runtime_restored =
+      g_index_service.restore_index_config(index_name, before) &&
+      g_index_service.restore_publication_state(index_name, publication_before);
+  if (!runtime_restored) {
+    vector_status::record_runtime_state_rollback_failure();
+    fail_stop_registry_locked("index_config_runtime_restore_failed");
+    return false;
+  }
+  if (!persist_index_config_manifest_locked(index_name, before,
+                                            publication_before)) {
     vector_status::record_truth_store_persist_failure();
+    fail_stop_registry_locked("index_config_metadata_restore_failed");
   }
   return false;
 }
@@ -1043,9 +1210,7 @@ bool drop_index_impl(const std::string &index_name,
                                          lagging_indexes_before)) {
         return false;
       }
-      (void)persist_backfill_committed_entries_locked(index_name,
-                                                      dropped_entries);
-      (void)persist_metadata_manifest_locked(true);
+      (void)persist_registry_state_locked();
       return false;
     }
     if (!persist_drop_committed_entries_locked(index_name, dropped_entries)) {
@@ -1718,52 +1883,128 @@ bool replace_committed_entries_preserve_lifecycle(
   return evict_committed_cache_to_budget_locked();
 }
 
-bool replace_committed_entries_for_backfill(
-    const std::string &index_name,
-    const vector_index::index_service::committed_entries &entries) {
-  vector_index::index_service::committed_entries before_entries;
-  {
-    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-    if (!ensure_metadata_loaded_locked()) return false;
-    vector_index::index_service::committed_state snapshot_state;
-    if (!g_index_service.snapshot_committed_state(&snapshot_state))
-      return false;
-    auto state_it = snapshot_state.find(index_name);
-    if (state_it == snapshot_state.end()) {
-      before_entries.clear();
-    } else {
-      before_entries = state_it->second;
-    }
-  }
+bool begin_backfill(const std::string &index_name,
+                    index_backfill_token *token) {
+  if (token == nullptr) return false;
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
-  const bool ok = g_index_service.replace_committed_entries_preserve_lifecycle(
-      index_name, entries);
-  if (!ok) return false;
-  if (!persist_backfill_committed_entries_locked(index_name, entries)) {
-    vector_status::record_truth_store_persist_failure();
-    if (!g_index_service.replace_committed_entries_preserve_lifecycle(
-            index_name, before_entries)) {
-      return false;
-    }
+
+  index_backfill_token creating_token;
+  if (!capture_backfill_token_locked(index_name, k_lifecycle_creating,
+                                     &creating_token)) {
     return false;
   }
-  return evict_committed_cache_to_budget_locked();
-}
 
-bool finish_backfill(const std::string &index_name,
-                     const std::string &lifecycle_state) {
-  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
   runtime_state_snapshot snapshot;
   if (!capture_runtime_state_locked(&snapshot)) return false;
-  if (!g_index_service.set_lifecycle_state(index_name, lifecycle_state)) {
+  if (!g_index_service.set_lifecycle_state(index_name,
+                                           k_lifecycle_backfilling)) {
     return false;
   }
 
-  if (!persist_metadata_manifest_or_rollback_locked(snapshot, false))
+  index_backfill_token backfilling_token;
+  if (!capture_backfill_token_locked(index_name, k_lifecycle_backfilling,
+                                     &backfilling_token)) {
+    return rollback_runtime_state_and_fail_locked(snapshot);
+  }
+  if (backfilling_token.index_identity != creating_token.index_identity ||
+      backfilling_token.truth_generation != creating_token.truth_generation ||
+      backfilling_token.config_generation != creating_token.config_generation ||
+      backfilling_token.artifact_generation !=
+          creating_token.artifact_generation ||
+      backfilling_token.runtime_generation !=
+          creating_token.runtime_generation) {
+    return rollback_runtime_state_and_fail_locked(snapshot);
+  }
+
+  if (!persist_metadata_manifest_or_rollback_locked(snapshot, false)) {
     return false;
+  }
+  *token = backfilling_token;
+  return true;
+}
+
+bool publish_backfill(
+    const std::string &index_name,
+    const vector_index::index_service::committed_entries &entries,
+    const index_backfill_token &token) {
+  lifecycle_backend_plan plan;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked() ||
+        !backfill_token_matches_locked(index_name, token) ||
+        !snapshot_backend_plan_locked(index_name, &plan)) {
+      return false;
+    }
+    plan.entries = entries;
+  }
+
+  std::unique_ptr<vector_index::backend> rebuilt = build_rebuilt_backend(plan);
+  if (rebuilt == nullptr) return false;
+  const bool artifact_present = rebuilt->external_manifest_present();
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  vector_index::index_service::index_config current_config;
+  if (!ensure_metadata_loaded_locked() ||
+      !backfill_token_matches_locked(index_name, token) ||
+      !snapshot_index_config_locked(index_name, &current_config) ||
+      !vector_index::detail::index_configs_equal(plan.config, current_config) ||
+      token.lifecycle_version == std::numeric_limits<uint64_t>::max()) {
+    return false;
+  }
+
+  runtime_state_snapshot runtime_before;
+  if (!capture_runtime_state_locked(&runtime_before)) return false;
+  const manifest_state_snapshot manifest_before =
+      capture_manifest_state_locked();
+
+  std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
+  if (!allocate_backfill_change_log_locked(index_name, entries,
+                                           &change_log_rows)) {
+    return rollback_backfill_publish_locked(
+        runtime_before, manifest_before,
+        "backfill_change_log_allocation_restore_failed");
+  }
+
+  vector_index::index_service::index_publication_state publication;
+  publication.index_identity = token.index_identity;
+  publication.truth_generation = change_log_rows.empty()
+                                     ? token.truth_generation
+                                     : change_log_rows.back().sequence;
+  publication.config_generation = token.config_generation;
+  publication.artifact_generation =
+      artifact_present ? publication.truth_generation : 0;
+  publication.runtime_generation = publication.truth_generation;
+
+  if (!g_index_service.install_rebuilt_index(index_name, entries,
+                                             std::move(rebuilt)) ||
+      !g_index_service.restore_publication_state(index_name, publication)) {
+    return rollback_backfill_publish_locked(
+        runtime_before, manifest_before,
+        "backfill_runtime_install_restore_failed");
+  }
+
+  std::string lifecycle_state;
+  uint64_t lifecycle_version = 0;
+  if (!g_index_service.describe_index(index_name, &current_config, nullptr,
+                                      nullptr, nullptr, &lifecycle_state,
+                                      &lifecycle_version) ||
+      lifecycle_state != k_lifecycle_ready ||
+      lifecycle_version != token.lifecycle_version + 1) {
+    return rollback_backfill_publish_locked(
+        runtime_before, manifest_before,
+        "backfill_lifecycle_publish_restore_failed");
+  }
+
+  if (!persist_backfill_generation_locked(change_log_rows)) {
+    return rollback_backfill_publish_locked(runtime_before, manifest_before,
+                                            "backfill_persist_restore_failed");
+  }
+  if (!evict_committed_cache_to_budget_locked()) {
+    fail_stop_registry_locked("backfill_cache_evict_failed");
+    return false;
+  }
   return true;
 }
 

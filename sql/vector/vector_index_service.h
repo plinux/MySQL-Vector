@@ -285,6 +285,15 @@ class index_service {
     uint64_t last_recover_fallback_ts{0};
   };
 
+  /** Durable identity and generation tuple for one published index runtime. */
+  struct index_publication_state {
+    uint64_t index_identity{0};
+    uint64_t truth_generation{0};
+    uint64_t config_generation{1};
+    uint64_t artifact_generation{0};
+    uint64_t runtime_generation{0};
+  };
+
   struct index_config {
     size_t dimension{0};
     metric_type metric{metric_type::kEuclidean};
@@ -347,6 +356,8 @@ class index_service {
     std::string index_name;
     index_config config;
     uint64_t before_generation{0};
+    index_publication_state publication_before;
+    uint64_t target_truth_generation{0};
     std::vector<commit_entry_before_image> before_images;
   };
 
@@ -546,20 +557,31 @@ class index_service {
   bool ensure_runtime_loaded_for_search(const std::string &index_name);
   bool runtime_loaded_for_search(const std::string &index_name) const;
   bool rebuild_runtime_from_store_for_search(const std::string &index_name);
-  bool describe_index(const std::string &index_name, index_config *config,
-                      bool *supports_mutations, size_t *entry_count,
-                      size_t *committed_entry_count,
-                      std::string *lifecycle_state = nullptr,
-                      uint64_t *lifecycle_version = nullptr,
-                      uint32_t *last_error_code = nullptr,
-                      uint64_t *last_error_ts = nullptr,
-                      uint64_t *last_apply_latency_ms = nullptr,
-                      uint64_t *recover_fallback_count = nullptr,
-                      uint64_t *last_recover_fallback_ts = nullptr,
-                      bool *external_manifest_present = nullptr,
-                      uint64_t *external_manifest_generation = nullptr,
-                      backend_build_diagnostics *build_diagnostics = nullptr)
-      const;
+  bool describe_index(
+      const std::string &index_name, index_config *config,
+      bool *supports_mutations, size_t *entry_count,
+      size_t *committed_entry_count, std::string *lifecycle_state = nullptr,
+      uint64_t *lifecycle_version = nullptr,
+      uint32_t *last_error_code = nullptr, uint64_t *last_error_ts = nullptr,
+      uint64_t *last_apply_latency_ms = nullptr,
+      uint64_t *recover_fallback_count = nullptr,
+      uint64_t *last_recover_fallback_ts = nullptr,
+      bool *external_manifest_present = nullptr,
+      uint64_t *external_manifest_generation = nullptr,
+      backend_build_diagnostics *build_diagnostics = nullptr,
+      index_publication_state *publication_state = nullptr) const;
+  bool describe_publication_state(
+      const std::string &index_name,
+      index_publication_state *publication_state) const;
+  bool restore_publication_state(
+      const std::string &index_name,
+      const index_publication_state &publication_state);
+  bool snapshot_publication_states(
+      std::unordered_map<std::string, index_publication_state> *states) const;
+  bool restore_publication_states(
+      const std::unordered_map<std::string, index_publication_state> &states);
+  uint64_t next_index_identity() const;
+  bool restore_next_index_identity(uint64_t next_index_identity);
   bool describe_build_pipeline(const std::string &index_name,
                                build_pipeline_snapshot *snapshot) const;
   bool describe_index_observability(const std::string &index_name,
@@ -652,6 +674,8 @@ class index_service {
   vector_entry_store m_entry_store;
   standalone_entry_store m_standalone_store;
   std::unordered_map<std::string, lifecycle_info> m_lifecycle_infos;
+  std::unordered_map<std::string, index_publication_state> m_publication_states;
+  uint64_t m_next_index_identity{1};
   std::unordered_map<std::string, build_pipeline_snapshot>
       m_build_pipeline_snapshots;
   std::unordered_map<
@@ -680,6 +704,7 @@ class index_service {
   bool replace_committed_entries_impl(const std::string &index_name,
                                       const committed_entries &entries,
                                       bool preserve_lifecycle);
+  bool synchronize_runtime_publication(const std::string &index_name);
   void mark_index_ready(const std::string &index_name,
                         lifecycle_info *lifecycle);
   bool build_runtime_from_current_policy(
