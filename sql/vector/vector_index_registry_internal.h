@@ -33,10 +33,15 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_limits.h"
+
+namespace vector_index_truth_store {
+class truth_store;
+}
 
 namespace vector_index_registry::detail {
 
@@ -70,6 +75,11 @@ struct index_binding {
   std::string table_name;
   std::string column_name;
   std::string doc_id_column_name;
+};
+
+struct truth_recovery_state {
+  std::unordered_set<std::string> pending_index_names;
+  std::unordered_map<std::string, std::string> quarantine_identities;
 };
 
 struct mapped_index_reset_spec {
@@ -143,6 +153,9 @@ inline size_t mapped_search_next_candidate_top_k(size_t current_top_k,
 extern std::shared_mutex g_registry_mutex;
 extern vector_index::index_service g_index_service;
 extern bool g_metadata_loaded;
+extern registry_health_state g_registry_health;
+extern std::string g_registry_failure_reason;
+extern truth_recovery_state g_truth_recovery_state;
 extern std::atomic<uint64_t> g_next_txn_id;
 extern uint64_t g_manifest_version;
 extern uint64_t g_manifest_metadata_checkpoint;
@@ -189,7 +202,12 @@ bool persist_segment_tasks_locked();
 bool persist_index_config_manifest_locked(
     const std::string &index_name,
     const vector_index::index_service::index_config &config);
+bool ensure_metadata_available_locked();
 bool ensure_metadata_loaded_locked();
+bool fail_stop_truth_artifact_locked(
+    vector_index_truth_store::truth_store *truth_store,
+    const std::string &artifact_name, const std::string &reason,
+    uint64_t generation);
 bool persist_metadata_locked(size_t *row_count);
 bool persist_committed_locked(size_t *row_count);
 bool persist_committed_delta_locked(

@@ -58,6 +58,9 @@ namespace vector_index_registry::detail {
 std::shared_mutex g_registry_mutex;
 vector_index::index_service g_index_service;
 bool g_metadata_loaded = false;
+registry_health_state g_registry_health = registry_health_state::kReady;
+std::string g_registry_failure_reason;
+truth_recovery_state g_truth_recovery_state;
 std::atomic<uint64_t> g_next_txn_id{1};
 uint64_t g_manifest_version = 1;
 uint64_t g_manifest_metadata_checkpoint = 0;
@@ -80,6 +83,7 @@ namespace {
 constexpr size_t kVectorChangeLogCompactRows = 1000000;
 constexpr const char *kLifecycleCreating = "creating";
 constexpr const char *kLifecycleBackfilling = "backfilling";
+constexpr const char *kLifecycleRecoveryRequired = "recovery_required";
 constexpr uint32_t kSegmentTaskMissingArtifactError = 1;
 
 bool is_incomplete_create_lifecycle(const std::string &state) {
@@ -1437,12 +1441,64 @@ bool persist_index_config_manifest_locked(
   return true;
 }
 
-bool ensure_metadata_loaded_locked() {
+bool metadata_rows_have_recovery_source(
+    const std::vector<vector_index_metadata_store::metadata_row> &rows) {
+  return std::all_of(
+      rows.begin(), rows.end(), [](const auto &row) {
+        return row.consistency_mode ==
+                   vector_index::index_consistency_mode::kTransactional &&
+               !row.schema_name.empty() && !row.table_name.empty() &&
+               !row.column_name.empty() && !row.doc_id_column_name.empty();
+      });
+}
+
+bool require_truth_recovery_locked(
+    vector_index_truth_store::truth_store *truth_store,
+    const std::vector<vector_index_metadata_store::metadata_row> &rows,
+    const std::string &artifact_name, const std::string &reason,
+    uint64_t generation) {
+  if (!metadata_rows_have_recovery_source(rows)) {
+    return fail_stop_truth_artifact_locked(truth_store, artifact_name, reason,
+                                           generation);
+  }
+
+  std::string quarantine_identity;
+  if (truth_store == nullptr ||
+      !truth_store->stage_quarantine(artifact_name, reason, generation,
+                                     &quarantine_identity)) {
+    g_registry_health = registry_health_state::kFailed;
+    g_registry_failure_reason = reason + ":quarantine_copy_failed";
+    return false;
+  }
+
+  g_truth_recovery_state.quarantine_identities[artifact_name] =
+      std::move(quarantine_identity);
+  for (const auto &row : rows) {
+    g_truth_recovery_state.pending_index_names.insert(row.index_name);
+  }
+  g_registry_health = registry_health_state::kRecoveryRequired;
+  g_registry_failure_reason = "truth_projection_recovery_required";
+  return true;
+}
+
+void mark_metadata_recovery_required(
+    std::vector<vector_index_metadata_store::metadata_row> *rows) {
+  if (rows == nullptr) return;
+  for (auto &row : *rows) {
+    row.lifecycle_state = kLifecycleRecoveryRequired;
+    ++row.lifecycle_version;
+  }
+}
+
+bool ensure_metadata_available_locked() {
   // A pre-commit search can load runtime before a detached XA is resolved.
   // Keep the after-commit observer available so that resolution catches up the
   // durable outbox even when this process has no original THD transaction state.
   (void)vector_trx_participant::ensure_observer_registered();
+  if (g_registry_health == registry_health_state::kFailed) return false;
   if (g_metadata_loaded) return true;
+
+  g_truth_recovery_state = truth_recovery_state{};
 
   vector_index_truth_store::truth_store *truth_store =
       vector_index_truth_store::get();
@@ -1454,8 +1510,8 @@ bool ensure_metadata_loaded_locked() {
   if (!truth_store->load_manifest(&manifest_row)) {
     vector_status::record_metadata_load_failure();
     vector_status::record_manifest_load_failure();
-    if (!truth_store->quarantine_manifest()) return false;
-    manifest_row = vector_index_metadata_store::manifest_row();
+    return fail_stop_truth_artifact_locked(
+        truth_store, "manifest", "manifest_load_failed", 0);
   }
   g_manifest_version = manifest_row.version == 0 ? 1 : manifest_row.version;
   g_manifest_metadata_checkpoint = manifest_row.metadata_checkpoint;
@@ -1465,8 +1521,9 @@ bool ensure_metadata_loaded_locked() {
   std::vector<vector_index_metadata_store::metadata_row> rows;
   if (!truth_store->load_metadata(&rows)) {
     vector_status::record_metadata_load_failure();
-    if (!truth_store->quarantine_metadata()) return false;
-    rows.clear();
+    return fail_stop_truth_artifact_locked(
+        truth_store, "metadata", "metadata_load_failed",
+        g_manifest_metadata_checkpoint);
   }
   const std::unordered_set<std::string> incomplete_create_indexes =
       remove_incomplete_create_metadata_rows(&rows);
@@ -1476,34 +1533,58 @@ bool ensure_metadata_loaded_locked() {
     manifest_checkpoint_mismatch = true;
     g_manifest_metadata_checkpoint = rows.size();
   }
-  if (!apply_metadata_rows_locked(rows)) return false;
+  if (!apply_metadata_rows_locked(rows)) {
+    return fail_stop_truth_artifact_locked(
+        truth_store, "metadata", "metadata_validation_failed",
+        g_manifest_metadata_checkpoint);
+  }
 
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
+  bool truth_recovery_required = false;
   if (!truth_store->load_committed(&committed_rows)) {
     vector_status::record_committed_load_failure();
-    if (!truth_store->quarantine_committed()) return false;
-    committed_rows.clear();
+    if (!require_truth_recovery_locked(
+            truth_store, rows, "committed", "committed_load_failed",
+            g_manifest_committed_checkpoint)) {
+      return false;
+    }
+    truth_recovery_required = true;
   }
   remove_committed_rows_for_indexes(incomplete_create_indexes, &committed_rows);
-  if (g_manifest_committed_checkpoint > committed_rows.size()) {
+  if (!truth_recovery_required &&
+      g_manifest_committed_checkpoint > committed_rows.size()) {
     manifest_checkpoint_mismatch = true;
     committed_checkpoint_mismatch = true;
     g_manifest_committed_checkpoint = committed_rows.size();
   }
-  if (!apply_committed_rows_locked(committed_rows)) return false;
+  if (!truth_recovery_required &&
+      !apply_committed_rows_locked(committed_rows)) {
+    vector_status::record_committed_load_failure();
+    if (!require_truth_recovery_locked(
+            truth_store, rows, "committed", "committed_validation_failed",
+            g_manifest_committed_checkpoint)) {
+      return false;
+    }
+    truth_recovery_required = true;
+  }
 
   std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
   if (!truth_store->load_change_log(&change_log_rows)) {
     vector_status::record_metadata_load_failure();
     vector_status::record_change_log_load_failure();
-    if (!truth_store->quarantine_change_log()) return false;
-    change_log_rows.clear();
+    if (!require_truth_recovery_locked(
+            truth_store, rows, "changelog", "changelog_load_failed",
+            g_manifest_change_log_checkpoint)) {
+      return false;
+    }
+    truth_recovery_required = true;
   }
 
   remove_change_log_rows_for_indexes(incomplete_create_indexes,
                                      &change_log_rows);
-  g_change_log_rows = std::move(change_log_rows);
-  if (g_manifest_change_log_checkpoint > g_change_log_rows.size()) {
+  if (!truth_recovery_required) g_change_log_rows = std::move(change_log_rows);
+  if (!truth_recovery_required &&
+      g_manifest_change_log_checkpoint > g_change_log_rows.size()) {
     manifest_checkpoint_mismatch = true;
     change_log_checkpoint_mismatch = true;
     g_manifest_change_log_checkpoint = g_change_log_rows.size();
@@ -1518,33 +1599,55 @@ bool ensure_metadata_loaded_locked() {
       vector_status::record_change_log_load_failure();
     }
   }
+  if (!truth_recovery_required &&
+      !apply_change_log_rows_locked(g_change_log_rows)) {
+    vector_status::record_metadata_load_failure();
+    vector_status::record_change_log_load_failure();
+    vector_status::record_change_log_replay_failure();
+    if (!require_truth_recovery_locked(
+            truth_store, rows, "changelog", "changelog_replay_failed",
+            g_manifest_change_log_checkpoint)) {
+      return false;
+    }
+    truth_recovery_required = true;
+  }
+  if (truth_recovery_required) {
+    mark_metadata_recovery_required(&rows);
+    if (!apply_metadata_rows_locked(rows) || !apply_committed_rows_locked({})) {
+      return fail_stop_truth_artifact_locked(
+          truth_store, "metadata", "recovery_state_install_failed",
+          g_manifest_metadata_checkpoint);
+    }
+    g_change_log_rows.clear();
+  }
   g_next_change_log_sequence = 1;
   for (const auto &row : g_change_log_rows) {
     if (row.sequence >= g_next_change_log_sequence) {
       g_next_change_log_sequence = row.sequence + 1;
     }
   }
-  if (!apply_change_log_rows_locked(g_change_log_rows)) {
-    vector_status::record_metadata_load_failure();
-    vector_status::record_change_log_load_failure();
-    vector_status::record_change_log_replay_failure();
-    if (!truth_store->quarantine_change_log()) return false;
-    g_change_log_rows.clear();
-    g_next_change_log_sequence = 1;
-    g_manifest_change_log_checkpoint = 0;
-    if (!apply_committed_rows_locked(committed_rows)) return false;
+  if (!reapply_metadata_tuning_locked(rows)) {
+    return fail_stop_truth_artifact_locked(
+        truth_store, "metadata", "metadata_tuning_restore_failed",
+        g_manifest_metadata_checkpoint);
   }
-  if (!reapply_metadata_tuning_locked(rows)) return false;
 
   std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows;
   if (!truth_store->load_prepared(&prepared_rows)) {
     vector_status::record_metadata_load_failure();
-    if (!truth_store->quarantine_prepared()) return false;
-    prepared_rows.clear();
+    return fail_stop_truth_artifact_locked(
+        truth_store, "prepared", "prepared_load_failed",
+        g_manifest_change_log_checkpoint);
   } else if (!prepared_rows_are_valid(prepared_rows)) {
     vector_status::record_metadata_load_failure();
-    if (!truth_store->quarantine_prepared()) return false;
-    prepared_rows.clear();
+    return fail_stop_truth_artifact_locked(
+        truth_store, "prepared", "prepared_validation_failed",
+        g_manifest_change_log_checkpoint);
+  }
+  if (truth_recovery_required && !prepared_rows.empty()) {
+    g_registry_health = registry_health_state::kFailed;
+    g_registry_failure_reason = "truth_recovery_has_prepared_rows";
+    return false;
   }
   remove_prepared_rows_for_indexes(incomplete_create_indexes, &prepared_rows);
   g_prepared_change_rows = std::move(prepared_rows);
@@ -1564,9 +1667,17 @@ bool ensure_metadata_loaded_locked() {
   remove_segment_task_rows_for_indexes(incomplete_create_indexes,
                                        &segment_task_rows);
   const bool segment_task_recovery_changed =
-      normalize_segment_tasks_for_recovery(rows, &segment_task_rows);
+      truth_recovery_required
+          ? !segment_task_rows.empty()
+          : normalize_segment_tasks_for_recovery(rows, &segment_task_rows);
+  if (truth_recovery_required) segment_task_rows.clear();
   g_segment_task_rows = std::move(segment_task_rows);
 
+  if (truth_recovery_required && !g_recovery_actions.empty()) {
+    g_registry_health = registry_health_state::kFailed;
+    g_registry_failure_reason = "truth_recovery_has_pending_xa_actions";
+    return false;
+  }
   if (mysqld_server_started && !g_recovery_actions.empty()) {
     const auto actions = g_recovery_actions;
     g_recovery_actions.clear();
@@ -1598,25 +1709,53 @@ bool ensure_metadata_loaded_locked() {
     }
   }
 
-  g_manifest_metadata_checkpoint = rows.size();
-  std::vector<vector_index_metadata_store::committed_row>
-      effective_committed_rows;
-  if (!snapshot_committed_rows_locked(&effective_committed_rows)) return false;
-  g_manifest_committed_checkpoint = effective_committed_rows.size();
-  g_manifest_change_log_checkpoint = g_change_log_rows.size();
+  if (!truth_recovery_required) {
+    g_manifest_metadata_checkpoint = rows.size();
+    std::vector<vector_index_metadata_store::committed_row>
+        effective_committed_rows;
+    if (!snapshot_committed_rows_locked(&effective_committed_rows)) return false;
+    g_manifest_committed_checkpoint = effective_committed_rows.size();
+    g_manifest_change_log_checkpoint = g_change_log_rows.size();
+  }
 
   vector_status::set_registered_indexes(rows.size());
   refresh_committed_snapshot_rows_locked();
   refresh_manifest_status_locked();
   if (!evict_committed_cache_to_budget_locked()) return false;
+  if (!truth_recovery_required) {
+    g_registry_health = registry_health_state::kReady;
+    g_registry_failure_reason.clear();
+  }
   g_metadata_loaded = true;
-  if ((cleanup_incomplete_create_state || segment_task_recovery_changed) &&
+  if (!truth_recovery_required &&
+      (cleanup_incomplete_create_state || segment_task_recovery_changed) &&
       !persist_registry_state_locked()) {
     vector_status::record_truth_store_persist_failure();
     g_metadata_loaded = false;
     return false;
   }
   return true;
+}
+
+bool ensure_metadata_loaded_locked() {
+  return ensure_metadata_available_locked() &&
+         g_registry_health == registry_health_state::kReady;
+}
+
+bool fail_stop_truth_artifact_locked(
+    vector_index_truth_store::truth_store *truth_store,
+    const std::string &artifact_name, const std::string &reason,
+    uint64_t generation) {
+  std::string quarantine_identity;
+  const bool evidence_saved =
+      truth_store != nullptr &&
+      truth_store->stage_quarantine(artifact_name, reason, generation,
+                                    &quarantine_identity);
+  g_registry_health = registry_health_state::kFailed;
+  g_registry_failure_reason = evidence_saved
+                                  ? reason
+                                  : reason + ":quarantine_copy_failed";
+  return false;
 }
 
 bool persist_metadata_locked(size_t *row_count) {
@@ -2174,6 +2313,16 @@ size_t total_pending_vector_memory_bytes() {
   return g_index_service.total_pending_vector_memory_bytes();
 }
 
+registry_health_state registry_health() {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  return g_registry_health;
+}
+
+std::string registry_failure_reason() {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  return g_registry_failure_reason;
+}
+
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 bool parse_mapped_index_name_for_testing(const std::string &index_name,
                                          std::string *schema_name,
@@ -2268,6 +2417,9 @@ void reset_for_testing() {
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   g_index_service = vector_index::index_service();
   g_metadata_loaded = false;
+  g_registry_health = registry_health_state::kReady;
+  g_registry_failure_reason.clear();
+  g_truth_recovery_state = truth_recovery_state{};
   g_next_txn_id.store(1, std::memory_order_relaxed);
   g_manifest_version = 1;
   g_manifest_metadata_checkpoint = 0;

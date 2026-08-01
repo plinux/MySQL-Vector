@@ -35,7 +35,12 @@
 #include "sql/vector/vector_index_service.h"
 #include "sql/xa.h"
 
+class THD;
+
 namespace vector_index_registry {
+
+/** Global serving health derived from durable truth-store recovery. */
+enum class registry_health_state { kReady, kRecoveryRequired, kFailed };
 
 struct index_info {
   size_t dimension{0};
@@ -229,6 +234,7 @@ bool bulk_build_index(const std::string &index_name,
                       std::string *error = nullptr);
 bool rebuild_index(const std::string &index_name, std::string *error = nullptr);
 bool recover_index(const std::string &index_name);
+bool recover_index(THD *thd, const std::string &index_name);
 bool replace_committed_entries(
     const std::string &index_name,
     const vector_index::index_service::committed_entries &entries);
@@ -278,10 +284,13 @@ bool set_diskann_use_bfs_cache(const std::string &index_name,
                                bool diskann_use_bfs_cache);
 bool rebuild_all_indexes(size_t *rebuilt_count);
 bool recover_all_indexes(size_t *recovered_count);
+bool recover_all_indexes(THD *thd, size_t *recovered_count);
 bool get_index_info(const std::string &index_name, index_info *info);
 bool get_global_status_summary(global_status_summary *summary);
 bool list_indexes(std::vector<std::string> *index_names);
 bool metadata_loaded();
+registry_health_state registry_health();
+std::string registry_failure_reason();
 size_t committed_vector_memory_bytes();
 size_t total_pending_vector_memory_bytes();
 
@@ -387,6 +396,8 @@ bool restore_runtime_state_for_testing(
 bool build_backend_from_config_for_testing(
     const std::string &index_name,
     const vector_index::index_service::index_config &config);
+bool recover_truth_projection_for_testing(
+    const vector_index::index_service::committed_state &state);
 
 struct effective_index_options_for_testing {
   uint32_t hnsw_build_threads{0};

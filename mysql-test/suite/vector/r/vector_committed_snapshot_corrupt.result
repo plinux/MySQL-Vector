@@ -1,28 +1,101 @@
 #
-# WL#vector-v1: replay change-log when committed snapshot is corrupt
+# WL#vector-v1: recover corrupt committed projection from bound tables
 #
-SELECT VEC_INDEX_CREATE('idx_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
-VEC_INDEX_CREATE('idx_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
-1
-SELECT VEC_INDEX_UPSERT('idx_corrupt', 1, VEC_FROMTEXT('[1,2]'));
-VEC_INDEX_UPSERT('idx_corrupt', 1, VEC_FROMTEXT('[1,2]'))
-1
-SELECT VEC_INDEX_SEARCH('idx_corrupt', VEC_FROMTEXT('[1,2]'), 1);
-VEC_INDEX_SEARCH('idx_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+DROP TABLE IF EXISTS t_vec_committed_corrupt_a;
+Warnings:
+Note	1051	Unknown table 'test.t_vec_committed_corrupt_a'
+DROP TABLE IF EXISTS t_vec_committed_corrupt_b;
+Warnings:
+Note	1051	Unknown table 'test.t_vec_committed_corrupt_b'
+CREATE TABLE t_vec_committed_corrupt_a (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE TABLE t_vec_committed_corrupt_b (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vec_committed_corrupt_a VALUES
+(1, VEC_FROMTEXT('[1,2]')),
+(2, NULL);
+INSERT INTO t_vec_committed_corrupt_b VALUES
+(7, VEC_FROMTEXT('[7,8]'));
+CREATE VECTOR INDEX ON t_vec_committed_corrupt_a(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+CREATE VECTOR INDEX ON t_vec_committed_corrupt_b(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+VEC_FROMTEXT('[1,2]'), 1)
 [1]
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_b.v',
+VEC_FROMTEXT('[7,8]'), 1);
+VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_b.v',
+VEC_FROMTEXT('[7,8]'), 1)
+[7]
 # restart
 SELECT VEC_INDEX_LIST();
 VEC_INDEX_LIST()
-["idx_corrupt"]
-SELECT VEC_INDEX_INFO('idx_corrupt');
-VEC_INDEX_INFO('idx_corrupt')
-{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_segment_profile":"manual","build_segment_profile_reason":"manual","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"build_segment_effective_row_limit":134217728,"build_segment_effective_target_size":2147483648,"build_segment_target_size":2147483648,"build_segment_max_rows":4294967295,"build_segment_policy":"size_first","standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"owner_schema":"test","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":0,"diskann_cache_nodes":0,"diskann_accelerate_build":0,"diskann_shuffle_build":0,"diskann_use_bfs_cache":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
-SELECT VEC_INDEX_SEARCH('idx_corrupt', VEC_FROMTEXT('[1,2]'), 1);
-VEC_INDEX_SEARCH('idx_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+["test.t_vec_committed_corrupt_a.v","test.t_vec_committed_corrupt_b.v"]
+SELECT JSON_UNQUOTE(JSON_EXTRACT(
+VEC_INDEX_INFO('test.t_vec_committed_corrupt_a.v'),
+'$.lifecycle_state')) AS lifecycle_a,
+JSON_UNQUOTE(JSON_EXTRACT(
+VEC_INDEX_INFO('test.t_vec_committed_corrupt_b.v'),
+'$.lifecycle_state')) AS lifecycle_b;
+lifecycle_a	lifecycle_b
+recovery_required	recovery_required
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+VEC_FROMTEXT('[1,2]'), 1);
+ERROR HY000: Incorrect arguments to vec_index_search
+START TRANSACTION;
+SELECT COUNT(*) FROM t_vec_committed_corrupt_a;
+COUNT(*)
+2
+SELECT VEC_INDEX_RECOVER_ALL();
+ERROR HY000: Can't execute the given command because you have active locked tables or an active transaction
+ROLLBACK;
+SELECT VEC_INDEX_RECOVER('test.t_vec_committed_corrupt_a.v');
+ERROR HY000: Incorrect arguments to vec_index_recover
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+2
+SELECT JSON_UNQUOTE(JSON_EXTRACT(
+VEC_INDEX_INFO('test.t_vec_committed_corrupt_a.v'),
+'$.lifecycle_state')) AS lifecycle_a,
+JSON_EXTRACT(VEC_INDEX_INFO('test.t_vec_committed_corrupt_a.v'),
+'$.committed_entry_count') AS entries_a,
+JSON_UNQUOTE(JSON_EXTRACT(
+VEC_INDEX_INFO('test.t_vec_committed_corrupt_b.v'),
+'$.lifecycle_state')) AS lifecycle_b,
+JSON_EXTRACT(VEC_INDEX_INFO('test.t_vec_committed_corrupt_b.v'),
+'$.committed_entry_count') AS entries_b;
+lifecycle_a	entries_a	lifecycle_b	entries_b
+ready	1	ready	1
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+VEC_FROMTEXT('[1,2]'), 1)
 [1]
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_b.v',
+VEC_FROMTEXT('[7,8]'), 1);
+VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_b.v',
+VEC_FROMTEXT('[7,8]'), 1)
+[7]
 SHOW GLOBAL STATUS LIKE 'Vector_committed_load_failures';
 Variable_name	Value
-Vector_committed_load_failures	2
-SELECT VEC_INDEX_DROP('idx_corrupt');
-VEC_INDEX_DROP('idx_corrupt')
-1
+Vector_committed_load_failures	1
+# restart
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+VEC_FROMTEXT('[1,2]'), 1)
+[1]
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_b.v',
+VEC_FROMTEXT('[7,8]'), 1);
+VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_b.v',
+VEC_FROMTEXT('[7,8]'), 1)
+[7]
+DROP TABLE t_vec_committed_corrupt_a;
+DROP TABLE t_vec_committed_corrupt_b;

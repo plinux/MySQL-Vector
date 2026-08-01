@@ -53,17 +53,26 @@ bool mysql_debug_delete_artifact(const std::string &artifact_name);
 std::string sql_string_literal_impl(const char *text);
 bool decode_hex_bytes_impl(const std::string &encoded, std::string *decoded);
 bool deserialize_quarantine_entries_impl(
-    const std::string &payload,
-    std::vector<std::pair<std::string, std::string>> *entries);
+    const std::string &payload, std::vector<quarantine_record> *entries);
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 bool split_tab_fields_impl(const std::string &line,
                            std::vector<std::string> *fields);
+const char *quarantine_state_name_impl(quarantine_state state);
+bool parse_quarantine_state_impl(const std::string &value,
+                                 quarantine_state *state);
+bool parse_uint64_impl(const std::string &value, uint64_t *result);
+uint64_t quarantine_payload_checksum_impl(const std::string &payload);
 bool serialize_quarantine_entries_impl(
-    const std::vector<std::pair<std::string, std::string>> &entries,
-    std::string *payload);
-void upsert_quarantine_entry_impl(
-    std::vector<std::pair<std::string, std::string>> *entries,
-    const std::string &artifact_name, const std::string &payload);
+    const std::vector<quarantine_record> &entries, std::string *payload);
+bool append_quarantine_entry_impl(std::vector<quarantine_record> *entries,
+                                  const std::string &artifact_name,
+                                  const std::string &reason,
+                                  uint64_t generation,
+                                  const std::string &payload,
+                                  std::string *identity);
+bool update_quarantine_entry_state_impl(std::vector<quarantine_record> *entries,
+                                        const std::string &identity,
+                                        quarantine_state state);
 void record_artifact_persist_event_impl(const char *backend_name,
                                         const char *artifact_name,
                                         size_t row_count, size_t payload_bytes,

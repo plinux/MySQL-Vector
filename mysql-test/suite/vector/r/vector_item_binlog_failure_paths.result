@@ -133,14 +133,8 @@ JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_pq_bits')
 SELECT VEC_INDEX_REBUILD('idx_item_binlog_fail_mem');
 VEC_INDEX_REBUILD('idx_item_binlog_fail_mem')
 0
-SELECT VEC_INDEX_RECOVER('idx_item_binlog_fail_mem');
-VEC_INDEX_RECOVER('idx_item_binlog_fail_mem')
-0
 SELECT VEC_INDEX_REBUILD_ALL();
 VEC_INDEX_REBUILD_ALL()
-0
-SELECT VEC_INDEX_RECOVER_ALL();
-VEC_INDEX_RECOVER_ALL()
 0
 SELECT VEC_INDEX_DROP('idx_item_binlog_fail_mem');
 VEC_INDEX_DROP('idx_item_binlog_fail_mem')

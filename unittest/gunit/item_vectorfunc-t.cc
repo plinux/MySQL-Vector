@@ -379,7 +379,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const std::vector<vector_index_metadata_store::metadata_row> &) override {
     return true;
   }
-  bool quarantine_metadata() override { return !fail_quarantine_metadata; }
 
   bool load_committed(
       std::vector<vector_index_metadata_store::committed_row> *rows) override {
@@ -390,7 +389,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const std::vector<vector_index_metadata_store::committed_row> &) override {
     return true;
   }
-  bool quarantine_committed() override { return true; }
 
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
     if (row != nullptr) *row = vector_index_metadata_store::manifest_row();
@@ -400,7 +398,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const vector_index_metadata_store::manifest_row &) override {
     return true;
   }
-  bool quarantine_manifest() override { return true; }
 
   bool load_change_log(
       std::vector<vector_index_metadata_store::change_log_row> *rows) override {
@@ -411,7 +408,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const std::vector<vector_index_metadata_store::change_log_row> &) override {
     return true;
   }
-  bool quarantine_change_log() override { return true; }
 
   bool load_prepared(
       std::vector<vector_index_metadata_store::prepared_change_row> *rows)
@@ -423,7 +419,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const std::vector<vector_index_metadata_store::prepared_change_row> &) override {
     return true;
   }
-  bool quarantine_prepared() override { return true; }
 
   bool load_segment_tasks(
       std::vector<vector_index_metadata_store::segment_task_row> *rows)
@@ -439,7 +434,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
   bool quarantine_segment_tasks() override { return true; }
 
   bool fail_load_metadata{false};
-  bool fail_quarantine_metadata{false};
 };
 
 class TruthStoreOverrideGuard {
@@ -1451,12 +1445,6 @@ TEST_F(ItemVectorFuncFixture,
     fix_item(thd(), rebuild_item);
     EXPECT_EQ(0, rebuild_item->val_int());
     EXPECT_FALSE(rebuild_item->null_value);
-
-    auto *recover_item = new Item_func_vec_index_recover(
-        POS(), make_item_list({make_string_item(native_index.c_str())}));
-    fix_item(thd(), recover_item);
-    EXPECT_EQ(0, recover_item->val_int());
-    EXPECT_FALSE(recover_item->null_value);
 
     auto *bulk_begin_item = new Item_func_vec_index_bulk_load_begin(
         POS(), make_item_list({make_string_item(native_index.c_str())}));
@@ -3363,7 +3351,6 @@ TEST_F(ItemVectorFuncFixture, DebugTruthStoreItemsRejectAccessAndNullArguments) 
 TEST_F(ItemVectorFuncFixture, RegistryBackedItemsPropagateMetadataLoadFailures) {
   controlled_truth_store store;
   store.fail_load_metadata = true;
-  store.fail_quarantine_metadata = true;
   vector_index_truth_store::set_for_testing(&store);
   vector_index_registry::reset_for_testing();
 

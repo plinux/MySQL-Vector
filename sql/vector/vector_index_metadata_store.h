@@ -334,47 +334,6 @@ bool save_raw_artifact(const std::string &artifact_name,
 bool delete_raw_artifact(const std::string &artifact_name);
 
 /**
-  Move the current store file aside after detecting corruption.
-
-  @retval true Store is absent or moved successfully.
-  @retval false Rename failed.
-*/
-bool quarantine_current_store();
-
-/**
-  Move the current committed-entry store file aside after detecting corruption.
-
-  @retval true Store is absent or moved successfully.
-  @retval false Rename failed.
-*/
-bool quarantine_committed_store();
-
-/**
-  Move the current manifest store file aside after detecting corruption.
-
-  @retval true Store is absent or moved successfully.
-  @retval false Rename failed.
-*/
-bool quarantine_manifest_store();
-
-/**
-  Move the current change-log store file aside after detecting corruption.
-
-  @retval true Store is absent or moved successfully.
-  @retval false Rename failed.
-*/
-bool quarantine_change_log_store();
-
-/**
-  Move the current prepared-change store file aside after detecting
-  corruption.
-
-  @retval true Store is absent or moved successfully.
-  @retval false Rename failed.
-*/
-bool quarantine_prepared_store();
-
-/**
   Move the current segmented-build task store file aside after detecting
   corruption.
 

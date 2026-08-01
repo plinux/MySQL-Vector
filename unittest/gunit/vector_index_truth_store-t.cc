@@ -31,11 +31,11 @@
 #include <vector>
 
 #include "mysqld_error.h"
-#include "storage/innobase/include/dict0vectruth.h"
 #include "sql/dd/impl/tables/vector_index_truth_tables.h"
 #include "sql/vector/vector_index_metadata_store.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_index_truth_store_internal.h"
+#include "storage/innobase/include/dict0vectruth.h"
 #include "unittest/gunit/vector_test_utils.h"
 
 namespace vector_index_truth_store_unittest {
@@ -88,8 +88,6 @@ class dummy_truth_store : public vector_index_truth_store::truth_store {
       [[maybe_unused]]) override {
     return true;
   }
-  bool quarantine_metadata() override { return true; }
-
   bool load_committed(
       std::vector<vector_index_metadata_store::committed_row> *rows) override {
     if (rows != nullptr) rows->clear();
@@ -100,19 +98,14 @@ class dummy_truth_store : public vector_index_truth_store::truth_store {
       [[maybe_unused]]) override {
     return true;
   }
-  bool quarantine_committed() override { return true; }
-
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
     if (row != nullptr) *row = vector_index_metadata_store::manifest_row();
     return true;
   }
-  bool save_manifest(
-      const vector_index_metadata_store::manifest_row &row [[maybe_unused]])
-      override {
+  bool save_manifest(const vector_index_metadata_store::manifest_row &row
+                     [[maybe_unused]]) override {
     return true;
   }
-  bool quarantine_manifest() override { return true; }
-
   bool load_change_log(
       std::vector<vector_index_metadata_store::change_log_row> *rows) override {
     if (rows != nullptr) rows->clear();
@@ -123,8 +116,6 @@ class dummy_truth_store : public vector_index_truth_store::truth_store {
       [[maybe_unused]]) override {
     return true;
   }
-  bool quarantine_change_log() override { return true; }
-
   bool load_prepared(
       std::vector<vector_index_metadata_store::prepared_change_row> *rows)
       override {
@@ -136,8 +127,6 @@ class dummy_truth_store : public vector_index_truth_store::truth_store {
       [[maybe_unused]]) override {
     return true;
   }
-  bool quarantine_prepared() override { return true; }
-
   bool load_segment_tasks(
       std::vector<vector_index_metadata_store::segment_task_row> *rows)
       override {
@@ -167,6 +156,10 @@ TEST(VectorIndexTruthStoreTest, TruthStoreDefaultsCoverNoopAndDeltaFallbacks) {
   store.rollback_persist();
   EXPECT_FALSE(store.apply_committed_delta({}));
   EXPECT_FALSE(store.append_change_log_delta({}));
+  std::string identity;
+  EXPECT_FALSE(store.stage_quarantine("metadata", "load_failed", 1, &identity));
+  EXPECT_FALSE(store.update_quarantine_state(
+      identity, vector_index_truth_store::quarantine_state::kComplete));
 }
 
 class CommittedRowsTruthStore final : public dummy_truth_store {
@@ -340,16 +333,17 @@ TEST(VectorIndexTruthStoreTest, IsTruthStoreTableRecognizesKnownTables) {
       "mysql", "vector_index_truth_store_quarantine"));
   EXPECT_FALSE(vector_index_truth_store::is_truth_store_table(
       "mysql", "vector_index_truth_store"));
-  EXPECT_FALSE(
-      vector_index_truth_store::is_truth_store_table("test", "vector_index_truth_metadata"));
+  EXPECT_FALSE(vector_index_truth_store::is_truth_store_table(
+      "test", "vector_index_truth_metadata"));
   EXPECT_FALSE(vector_index_truth_store::is_truth_store_table(
       "mysql", "vector_index_truth_other"));
 }
 
 TEST(VectorIndexTruthStoreTest, IsTruthStoreTableRejectsNullNames) {
-  EXPECT_FALSE(vector_index_truth_store::is_truth_store_table(nullptr,
-                                                           "vector_index_truth_metadata"));
-  EXPECT_FALSE(vector_index_truth_store::is_truth_store_table("mysql", nullptr));
+  EXPECT_FALSE(vector_index_truth_store::is_truth_store_table(
+      nullptr, "vector_index_truth_metadata"));
+  EXPECT_FALSE(
+      vector_index_truth_store::is_truth_store_table("mysql", nullptr));
 }
 
 TEST(VectorIndexTruthStoreTest, RowTruthTablesUseRelationalDefinitions) {
@@ -377,15 +371,14 @@ TEST(VectorIndexTruthStoreTest, RowTruthTablesUseRelationalDefinitions) {
             changelog_ddl.find("sequence BIGINT UNSIGNED NOT NULL"));
   EXPECT_NE(std::string::npos,
             changelog_ddl.find("txn_id BIGINT UNSIGNED NOT NULL"));
-  EXPECT_NE(std::string::npos, changelog_ddl.find("op TINYINT UNSIGNED NOT NULL"));
   EXPECT_NE(std::string::npos,
-            changelog_ddl.find("PRIMARY KEY (sequence)"));
+            changelog_ddl.find("op TINYINT UNSIGNED NOT NULL"));
+  EXPECT_NE(std::string::npos, changelog_ddl.find("PRIMARY KEY (sequence)"));
   EXPECT_EQ(std::string::npos, changelog_ddl.find("singleton_id"));
 
-  const auto prepared_ddl =
-      dd::tables::Vector_index_truth_prepared::instance()
-          .target_table_definition()
-          ->get_ddl();
+  const auto prepared_ddl = dd::tables::Vector_index_truth_prepared::instance()
+                                .target_table_definition()
+                                ->get_ddl();
   EXPECT_NE(std::string::npos,
             prepared_ddl.find("txn_id BIGINT UNSIGNED NOT NULL"));
   EXPECT_NE(std::string::npos,
@@ -400,23 +393,19 @@ TEST(VectorIndexTruthStoreTest, RowTruthTablesUseRelationalDefinitions) {
 }
 
 TEST(VectorIndexTruthStoreTest, SingletonTruthTablesCarryLayoutVersion) {
-  const auto metadata_ddl =
-      dd::tables::Vector_index_truth_metadata::instance()
-          .target_table_definition()
-          ->get_ddl();
+  const auto metadata_ddl = dd::tables::Vector_index_truth_metadata::instance()
+                                .target_table_definition()
+                                ->get_ddl();
   EXPECT_NE(std::string::npos,
             metadata_ddl.find("layout_version INT UNSIGNED NOT NULL"));
-  EXPECT_NE(std::string::npos,
-            metadata_ddl.find("PRIMARY KEY (singleton_id)"));
+  EXPECT_NE(std::string::npos, metadata_ddl.find("PRIMARY KEY (singleton_id)"));
 
-  const auto manifest_ddl =
-      dd::tables::Vector_index_truth_manifest::instance()
-          .target_table_definition()
-          ->get_ddl();
+  const auto manifest_ddl = dd::tables::Vector_index_truth_manifest::instance()
+                                .target_table_definition()
+                                ->get_ddl();
   EXPECT_NE(std::string::npos,
             manifest_ddl.find("layout_version INT UNSIGNED NOT NULL"));
-  EXPECT_NE(std::string::npos,
-            manifest_ddl.find("PRIMARY KEY (singleton_id)"));
+  EXPECT_NE(std::string::npos, manifest_ddl.find("PRIMARY KEY (singleton_id)"));
 
   const auto quarantine_ddl =
       dd::tables::Vector_index_truth_store_quarantine::instance()
@@ -438,7 +427,8 @@ TEST(VectorIndexTruthStoreTest, SingletonTruthTablesCarryLayoutVersion) {
 }
 
 TEST(VectorIndexTruthStoreTest, SqlStringLiteralEscapesQuotesAndBackslashes) {
-  EXPECT_EQ("''", vector_index_truth_store::sql_string_literal_for_testing(nullptr));
+  EXPECT_EQ("''",
+            vector_index_truth_store::sql_string_literal_for_testing(nullptr));
   EXPECT_EQ("'plain'",
             vector_index_truth_store::sql_string_literal_for_testing("plain"));
   EXPECT_EQ("'a\\'b\\\\c'",
@@ -447,21 +437,24 @@ TEST(VectorIndexTruthStoreTest, SqlStringLiteralEscapesQuotesAndBackslashes) {
 
 TEST(VectorIndexTruthStoreTest, DecodeHexBytesRejectsInvalidInputs) {
   std::string decoded;
-  EXPECT_FALSE(vector_index_truth_store::decode_hex_bytes_for_testing("0", &decoded));
+  EXPECT_FALSE(
+      vector_index_truth_store::decode_hex_bytes_for_testing("0", &decoded));
   EXPECT_FALSE(
       vector_index_truth_store::decode_hex_bytes_for_testing("0g", &decoded));
   EXPECT_FALSE(
       vector_index_truth_store::decode_hex_bytes_for_testing("g0", &decoded));
-  EXPECT_FALSE(vector_index_truth_store::decode_hex_bytes_for_testing("00", nullptr));
+  EXPECT_FALSE(
+      vector_index_truth_store::decode_hex_bytes_for_testing("00", nullptr));
 }
 
 TEST(VectorIndexTruthStoreTest, DecodeHexBytesHandlesUppercaseAndEmptyInput) {
   std::string decoded = "sentinel";
-  EXPECT_TRUE(vector_index_truth_store::decode_hex_bytes_for_testing("", &decoded));
+  EXPECT_TRUE(
+      vector_index_truth_store::decode_hex_bytes_for_testing("", &decoded));
   EXPECT_TRUE(decoded.empty());
 
-  EXPECT_TRUE(
-      vector_index_truth_store::decode_hex_bytes_for_testing("414243", &decoded));
+  EXPECT_TRUE(vector_index_truth_store::decode_hex_bytes_for_testing("414243",
+                                                                     &decoded));
   EXPECT_EQ("ABC", decoded);
 }
 
@@ -472,12 +465,15 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
   std::string payload;
   vector_index::vector_data vector;
   EXPECT_FALSE(detail::vector_to_truth_payload_impl({1.0F}, nullptr, &payload));
-  EXPECT_FALSE(detail::vector_to_truth_payload_impl({1.0F}, &dimension, nullptr));
+  EXPECT_FALSE(
+      detail::vector_to_truth_payload_impl({1.0F}, &dimension, nullptr));
   EXPECT_TRUE(detail::vector_to_truth_payload_impl({}, &dimension, &payload));
   EXPECT_EQ(0U, dimension);
   EXPECT_TRUE(payload.empty());
-  EXPECT_FALSE(detail::truth_payload_to_vector_impl(1, fp32_payload(2), &vector));
-  EXPECT_FALSE(detail::truth_payload_to_vector_impl(1, fp32_payload(1), nullptr));
+  EXPECT_FALSE(
+      detail::truth_payload_to_vector_impl(1, fp32_payload(2), &vector));
+  EXPECT_FALSE(
+      detail::truth_payload_to_vector_impl(1, fp32_payload(1), nullptr));
   EXPECT_TRUE(detail::truth_payload_to_vector_impl(0, "", &vector));
   EXPECT_TRUE(vector.empty());
 
@@ -496,19 +492,18 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
 
   std::vector<innodb_vector_truth_store::committed_row> stored_committed;
   EXPECT_FALSE(detail::to_innodb_committed_rows_impl({}, nullptr));
-  EXPECT_TRUE(detail::to_innodb_committed_rows_impl(
-      {{"idx", 1, {1.0F, 2.0F}}}, &stored_committed));
+  EXPECT_TRUE(detail::to_innodb_committed_rows_impl({{"idx", 1, {1.0F, 2.0F}}},
+                                                    &stored_committed));
   ASSERT_EQ(1U, stored_committed.size());
   EXPECT_EQ(2U, stored_committed[0].dimension);
   const auto valid_stored_committed = stored_committed;
-  EXPECT_FALSE(detail::to_innodb_committed_rows_impl(
-      {{"", 1, {1.0F}}}, &stored_committed));
+  EXPECT_FALSE(detail::to_innodb_committed_rows_impl({{"", 1, {1.0F}}},
+                                                     &stored_committed));
 
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
   EXPECT_FALSE(detail::from_innodb_committed_rows_impl({}, nullptr));
-  EXPECT_TRUE(
-      detail::from_innodb_committed_rows_impl(valid_stored_committed,
-                                              &committed_rows));
+  EXPECT_TRUE(detail::from_innodb_committed_rows_impl(valid_stored_committed,
+                                                      &committed_rows));
   ASSERT_EQ(1U, committed_rows.size());
   EXPECT_EQ(1U, committed_rows[0].doc_id);
   auto multiple_stored_committed = valid_stored_committed;
@@ -527,7 +522,11 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
   std::vector<innodb_vector_truth_store::change_log_row> stored_change_log;
   EXPECT_FALSE(detail::to_innodb_change_log_rows_impl({}, nullptr));
   EXPECT_TRUE(detail::to_innodb_change_log_rows_impl(
-      {{1, 9, vector_index_metadata_store::change_op::kUpsert, "idx", 1,
+      {{1,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
         {1.0F}},
        {2, 9, vector_index_metadata_store::change_op::kErase, "idx", 1, {}}},
       &stored_change_log));
@@ -536,19 +535,30 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
   EXPECT_EQ(2U, stored_change_log[1].op);
   const auto valid_stored_change_log = stored_change_log;
   EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(
-      {{0, 9, vector_index_metadata_store::change_op::kUpsert, "idx", 1,
+      {{0,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
         {1.0F}}},
       &stored_change_log));
   EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(
-      {{1, 9, vector_index_metadata_store::change_op::kUpsert, "", 1,
+      {{1, 9, vector_index_metadata_store::change_op::kUpsert, "", 1, {1.0F}}},
+      &stored_change_log));
+  EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(
+      {{1,
+        9,
+        static_cast<vector_index_metadata_store::change_op>(99),
+        "idx",
+        1,
         {1.0F}}},
       &stored_change_log));
   EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(
-      {{1, 9, static_cast<vector_index_metadata_store::change_op>(99), "idx",
-        1, {1.0F}}},
-      &stored_change_log));
-  EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(
-      {{1, 9, vector_index_metadata_store::change_op::kErase, "idx", 1,
+      {{1,
+        9,
+        vector_index_metadata_store::change_op::kErase,
+        "idx",
+        1,
         {1.0F}}},
       &stored_change_log));
 
@@ -572,62 +582,156 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
   std::vector<innodb_vector_truth_store::prepared_change_row> stored_prepared;
   EXPECT_FALSE(detail::to_innodb_prepared_rows_impl({}, nullptr));
   EXPECT_TRUE(detail::to_innodb_prepared_rows_impl(
-      {{7, 1, 1, "gb", true, 9,
-        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}},
-       {7, 1, 1, "gb", false, 9,
-        vector_index_metadata_store::change_op::kErase, "idx", 1, {}}},
+      {{7,
+        1,
+        1,
+        "gb",
+        true,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
+        {1.0F}},
+       {7,
+        1,
+        1,
+        "gb",
+        false,
+        9,
+        vector_index_metadata_store::change_op::kErase,
+        "idx",
+        1,
+        {}}},
       &stored_prepared));
   ASSERT_EQ(2U, stored_prepared.size());
   EXPECT_EQ(1U, stored_prepared[0].row_no);
   EXPECT_EQ(2U, stored_prepared[1].row_no);
   const auto valid_stored_prepared = stored_prepared;
   EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{-1, 1, 1, "gb", false, 9,
-        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
-      &stored_prepared));
-  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{7, -1, 1, "gb", false, 9,
-        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
-      &stored_prepared));
-  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{7, 1, -1, "gb", false, 9,
-        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
-      &stored_prepared));
-  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{7, 65, 0, std::string(65, 'g'), false, 9,
-        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
-      &stored_prepared));
-  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{7, 0, 65, std::string(65, 'b'), false, 9,
-        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
-      &stored_prepared));
-  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{7, 1, 0, "g", false, 0,
-        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
-      &stored_prepared));
-  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{7, 1, 1, "g", false, 9,
-        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
-      &stored_prepared));
-  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{7, 1, 1, "gb", false, 9,
-        vector_index_metadata_store::change_op::kUpsert, "", 1, {1.0F}}},
-      &stored_prepared));
-  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{7, 1, 1, "gb", false, 9,
-        static_cast<vector_index_metadata_store::change_op>(99), "idx", 1,
+      {{-1,
+        1,
+        1,
+        "gb",
+        false,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
         {1.0F}}},
       &stored_prepared));
   EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
-      {{7, 1, 1, "gb", false, 9,
-        vector_index_metadata_store::change_op::kErase, "idx", 1, {1.0F}}},
+      {{7,
+        -1,
+        1,
+        "gb",
+        false,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
+        {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7,
+        1,
+        -1,
+        "gb",
+        false,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
+        {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7,
+        65,
+        0,
+        std::string(65, 'g'),
+        false,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
+        {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7,
+        0,
+        65,
+        std::string(65, 'b'),
+        false,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
+        {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7,
+        1,
+        0,
+        "g",
+        false,
+        0,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
+        {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7,
+        1,
+        1,
+        "g",
+        false,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "idx",
+        1,
+        {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7,
+        1,
+        1,
+        "gb",
+        false,
+        9,
+        vector_index_metadata_store::change_op::kUpsert,
+        "",
+        1,
+        {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7,
+        1,
+        1,
+        "gb",
+        false,
+        9,
+        static_cast<vector_index_metadata_store::change_op>(99),
+        "idx",
+        1,
+        {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7,
+        1,
+        1,
+        "gb",
+        false,
+        9,
+        vector_index_metadata_store::change_op::kErase,
+        "idx",
+        1,
+        {1.0F}}},
       &stored_prepared));
 
   std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows;
   EXPECT_FALSE(detail::from_innodb_prepared_rows_impl({}, nullptr));
-  EXPECT_TRUE(
-      detail::from_innodb_prepared_rows_impl(valid_stored_prepared,
-                                             &prepared_rows));
+  EXPECT_TRUE(detail::from_innodb_prepared_rows_impl(valid_stored_prepared,
+                                                     &prepared_rows));
   ASSERT_EQ(2U, prepared_rows.size());
   EXPECT_TRUE(prepared_rows[0].prepared_in_tc);
   EXPECT_TRUE(prepared_rows[1].vector.empty());
@@ -773,50 +877,84 @@ TEST(VectorIndexTruthStoreTest, DebugPayloadHelpersCoverArtifactBranches) {
 
 TEST(VectorIndexTruthStoreTest,
      DeserializeQuarantineEntriesRejectsMalformedPayloads) {
-  std::vector<std::pair<std::string, std::string>> entries;
+  std::vector<vector_index_truth_store::quarantine_record> entries;
 
-  EXPECT_FALSE(vector_index_truth_store::deserialize_quarantine_entries_for_testing(
-      "mysql-vector-wrong-header\n", &entries));
-  EXPECT_FALSE(vector_index_truth_store::deserialize_quarantine_entries_for_testing(
-      "mysql-vector-quarantine-v1\n616263\n", &entries));
-  EXPECT_FALSE(vector_index_truth_store::deserialize_quarantine_entries_for_testing(
-      "mysql-vector-quarantine-v1\nzz\t616263\n", &entries));
-  EXPECT_FALSE(vector_index_truth_store::deserialize_quarantine_entries_for_testing(
-      "mysql-vector-quarantine-v1\n616263\tzz\n", &entries));
-  EXPECT_FALSE(vector_index_truth_store::deserialize_quarantine_entries_for_testing(
-      "mysql-vector-quarantine-v1\n\t616263\n", &entries));
-  EXPECT_FALSE(vector_index_truth_store::deserialize_quarantine_entries_for_testing(
-      "mysql-vector-quarantine-v1\n616263\t646566\textra\n", &entries));
-  EXPECT_FALSE(vector_index_truth_store::deserialize_quarantine_entries_for_testing(
-      "mysql-vector-quarantine-v1\n616\t646566\n", &entries));
   EXPECT_FALSE(
       vector_index_truth_store::deserialize_quarantine_entries_for_testing(
-          "mysql-vector-quarantine-v1\n616263\t64656g\n", &entries));
-  EXPECT_FALSE(vector_index_truth_store::deserialize_quarantine_entries_for_testing(
-      "mysql-vector-quarantine-v1\n", nullptr));
+          "mysql-vector-wrong-header\n", &entries));
+  EXPECT_FALSE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "mysql-vector-quarantine-v1\n6964\t6d65746164617461\n", &entries));
+  EXPECT_FALSE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "mysql-vector-quarantine-v1\nzz\t6d65746164617461\tcopied\t"
+          "726561736f6e\t0\t1\t2\t\n",
+          &entries));
+  EXPECT_FALSE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "mysql-vector-quarantine-v1\n6964\t6d65746164617461\tbad\t"
+          "726561736f6e\t0\t1\t2\t\n",
+          &entries));
+  EXPECT_FALSE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "mysql-vector-quarantine-v1\n6964\t6d65746164617461\tcopied\t"
+          "zz\t0\t1\t2\t\n",
+          &entries));
+  EXPECT_FALSE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "mysql-vector-quarantine-v1\n6964\t6d65746164617461\tcopied\t"
+          "726561736f6e\tnan\t1\t2\t\n",
+          &entries));
+  EXPECT_FALSE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "mysql-vector-quarantine-v1\n6964\t6d65746164617461\tcopied\t"
+          "726561736f6e\t0\t1\t2\t00\n",
+          &entries));
+  EXPECT_FALSE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "mysql-vector-quarantine-v1\n6964\t6d65746164617461\tcopied\t"
+          "726561736f6e\t0\t1\t2\tzz\n",
+          &entries));
+  EXPECT_FALSE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "mysql-vector-quarantine-v1\n", nullptr));
 }
 
 TEST(VectorIndexTruthStoreTest,
      DeserializeQuarantineEntriesHandlesEmptyAndValidPayloads) {
-  std::vector<std::pair<std::string, std::string>> entries{{"stale", "value"}};
+  namespace detail = vector_index_truth_store::detail;
+  std::vector<vector_index_truth_store::quarantine_record> entries(1);
   EXPECT_TRUE(
-      vector_index_truth_store::deserialize_quarantine_entries_for_testing("",
-                                                                       &entries));
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "", &entries));
   EXPECT_TRUE(entries.empty());
 
-  const std::string payload =
-      "mysql-vector-quarantine-v1\n"
-      "6d65746164617461\t7061796c6f6164\n"
-      "\n"
-      "7072657061726564\t414243\n";
+  std::string first_identity;
+  std::string second_identity;
+  ASSERT_TRUE(detail::append_quarantine_entry_impl(
+      &entries, "metadata", "decode_failure", 7, "payload", &first_identity));
+  ASSERT_TRUE(detail::append_quarantine_entry_impl(
+      &entries, "prepared", "invalid_xid", 8, "ABC", &second_identity));
+  ASSERT_TRUE(detail::update_quarantine_entry_state_impl(
+      &entries, first_identity,
+      vector_index_truth_store::quarantine_state::kComplete));
+  std::string payload;
+  ASSERT_TRUE(detail::serialize_quarantine_entries_impl(entries, &payload));
+  entries.clear();
   EXPECT_TRUE(
-      vector_index_truth_store::deserialize_quarantine_entries_for_testing(payload,
-                                                                       &entries));
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          payload, &entries));
   ASSERT_EQ(2U, entries.size());
-  EXPECT_EQ("metadata", entries[0].first);
-  EXPECT_EQ("payload", entries[0].second);
-  EXPECT_EQ("prepared", entries[1].first);
-  EXPECT_EQ("ABC", entries[1].second);
+  EXPECT_EQ(first_identity, entries[0].identity);
+  EXPECT_EQ("metadata", entries[0].artifact_name);
+  EXPECT_EQ(vector_index_truth_store::quarantine_state::kComplete,
+            entries[0].state);
+  EXPECT_EQ("decode_failure", entries[0].reason);
+  EXPECT_EQ(7U, entries[0].generation);
+  EXPECT_EQ("payload", entries[0].payload);
+  EXPECT_EQ(second_identity, entries[1].identity);
+  EXPECT_EQ("prepared", entries[1].artifact_name);
+  EXPECT_EQ("ABC", entries[1].payload);
 }
 
 TEST(VectorIndexTruthStoreTest,
@@ -834,22 +972,131 @@ TEST(VectorIndexTruthStoreTest,
   EXPECT_EQ("b", fields[1]);
   EXPECT_EQ("", fields[2]);
 
-  std::vector<std::pair<std::string, std::string>> entries;
-  detail::upsert_quarantine_entry_impl(&entries, "metadata", "one");
-  detail::upsert_quarantine_entry_impl(&entries, "prepared", "two");
-  detail::upsert_quarantine_entry_impl(&entries, "metadata", "replaced");
+  std::vector<vector_index_truth_store::quarantine_record> entries;
+  std::string first_identity;
+  ASSERT_TRUE(detail::append_quarantine_entry_impl(
+      &entries, "metadata", "load_failed", 1, "one", &first_identity));
+  std::string resumed_identity;
+  ASSERT_TRUE(detail::append_quarantine_entry_impl(
+      &entries, "metadata", "load_failed", 1, "one", &resumed_identity));
+  EXPECT_EQ(first_identity, resumed_identity);
+  ASSERT_TRUE(detail::update_quarantine_entry_state_impl(
+      &entries, first_identity,
+      vector_index_truth_store::quarantine_state::kComplete));
+  std::string second_identity;
+  ASSERT_TRUE(detail::append_quarantine_entry_impl(
+      &entries, "metadata", "load_failed_again", 2, "one", &second_identity));
   ASSERT_EQ(2U, entries.size());
-  EXPECT_EQ("metadata", entries[0].first);
-  EXPECT_EQ("replaced", entries[0].second);
+  EXPECT_NE(first_identity, second_identity);
+  EXPECT_FALSE(detail::update_quarantine_entry_state_impl(
+      &entries, "missing",
+      vector_index_truth_store::quarantine_state::kComplete));
+  EXPECT_FALSE(detail::update_quarantine_entry_state_impl(
+      &entries, first_identity,
+      vector_index_truth_store::quarantine_state::kSourceUpdateFailed));
 
   std::string payload;
   EXPECT_FALSE(detail::serialize_quarantine_entries_impl(entries, nullptr));
   ASSERT_TRUE(detail::serialize_quarantine_entries_impl(entries, &payload));
-  std::vector<std::pair<std::string, std::string>> decoded;
+  std::vector<vector_index_truth_store::quarantine_record> decoded;
   ASSERT_TRUE(detail::deserialize_quarantine_entries_impl(payload, &decoded));
   ASSERT_EQ(entries.size(), decoded.size());
-  EXPECT_EQ(entries[0], decoded[0]);
-  EXPECT_EQ(entries[1], decoded[1]);
+  EXPECT_EQ(entries[0].identity, decoded[0].identity);
+  EXPECT_EQ(entries[1].identity, decoded[1].identity);
+}
+
+TEST(VectorIndexTruthStoreTest,
+     QuarantineCodecRejectsEveryInvalidFieldAndStateTransition) {
+  namespace detail = vector_index_truth_store::detail;
+  using vector_index_truth_store::quarantine_record;
+  using vector_index_truth_store::quarantine_state;
+
+  EXPECT_EQ(nullptr, detail::quarantine_state_name_impl(
+                         static_cast<quarantine_state>(99)));
+  quarantine_state state = quarantine_state::kCopied;
+  EXPECT_FALSE(detail::parse_quarantine_state_impl("copied", nullptr));
+  EXPECT_TRUE(detail::parse_quarantine_state_impl("copied", &state));
+  EXPECT_EQ(quarantine_state::kCopied, state);
+  EXPECT_TRUE(
+      detail::parse_quarantine_state_impl("source_update_failed", &state));
+  EXPECT_EQ(quarantine_state::kSourceUpdateFailed, state);
+  EXPECT_TRUE(detail::parse_quarantine_state_impl("complete", &state));
+  EXPECT_EQ(quarantine_state::kComplete, state);
+  EXPECT_FALSE(detail::parse_quarantine_state_impl("unknown", &state));
+
+  uint64_t value = 0;
+  EXPECT_FALSE(detail::parse_uint64_impl("1", nullptr));
+  EXPECT_FALSE(detail::parse_uint64_impl("", &value));
+  EXPECT_FALSE(detail::parse_uint64_impl("-1", &value));
+  EXPECT_FALSE(detail::parse_uint64_impl("1x", &value));
+  EXPECT_FALSE(detail::parse_uint64_impl("18446744073709551616", &value));
+  EXPECT_TRUE(detail::parse_uint64_impl("18446744073709551615", &value));
+  EXPECT_EQ(std::numeric_limits<uint64_t>::max(), value);
+
+  std::vector<quarantine_record> entries;
+  std::string identity;
+  EXPECT_FALSE(detail::append_quarantine_entry_impl(
+      nullptr, "metadata", "decode_failed", 1, "payload", &identity));
+  EXPECT_FALSE(detail::append_quarantine_entry_impl(
+      &entries, "metadata", "decode_failed", 1, "payload", nullptr));
+  EXPECT_FALSE(detail::append_quarantine_entry_impl(
+      &entries, "", "decode_failed", 1, "payload", &identity));
+  EXPECT_FALSE(detail::append_quarantine_entry_impl(&entries, "metadata", "", 1,
+                                                    "payload", &identity));
+  ASSERT_TRUE(detail::append_quarantine_entry_impl(
+      &entries, "metadata", "decode_failed", 1, "payload", &identity));
+
+  EXPECT_FALSE(detail::update_quarantine_entry_state_impl(
+      nullptr, identity, quarantine_state::kComplete));
+  EXPECT_FALSE(detail::update_quarantine_entry_state_impl(
+      &entries, "", quarantine_state::kComplete));
+
+  const quarantine_record valid = entries.front();
+  std::string serialized;
+  const auto expect_serialize_failure = [&](const auto &mutate) {
+    entries.assign(1, valid);
+    mutate(&entries.front());
+    EXPECT_FALSE(
+        detail::serialize_quarantine_entries_impl(entries, &serialized));
+  };
+  expect_serialize_failure([](auto *entry) { entry->identity.clear(); });
+  expect_serialize_failure([](auto *entry) { entry->artifact_name.clear(); });
+  expect_serialize_failure([](auto *entry) { entry->reason.clear(); });
+  expect_serialize_failure(
+      [](auto *entry) { entry->state = static_cast<quarantine_state>(99); });
+  expect_serialize_failure([](auto *entry) { ++entry->checksum; });
+
+  const std::string checksum =
+      std::to_string(detail::quarantine_payload_checksum_impl("payload"));
+  const std::string header = "mysql-vector-quarantine-v1\n";
+  const std::string valid_line =
+      "6964\t6d65746164617461\tcopied\t726561736f6e\t" + checksum +
+      "\t1\t2\t7061796c6f6164\n";
+  const auto expect_decode_failure = [&](const std::string &line) {
+    EXPECT_FALSE(
+        detail::deserialize_quarantine_entries_impl(header + line, &entries));
+  };
+  expect_decode_failure("\t6d65746164617461\tcopied\t726561736f6e\t" +
+                        checksum + "\t1\t2\t7061796c6f6164\n");
+  expect_decode_failure("6964\t\tcopied\t726561736f6e\t" + checksum +
+                        "\t1\t2\t7061796c6f6164\n");
+  expect_decode_failure("6964\t6d65746164617461\tcopied\t\t" + checksum +
+                        "\t1\t2\t7061796c6f6164\n");
+  expect_decode_failure(
+      "6964\t6d65746164617461\tcopied\t726561736f6e\t\t1\t2\t"
+      "7061796c6f6164\n");
+  expect_decode_failure("6964\t6d65746164617461\tcopied\t726561736f6e\t" +
+                        checksum + "\t\t2\t7061796c6f6164\n");
+  expect_decode_failure("6964\t6d65746164617461\tcopied\t726561736f6e\t" +
+                        checksum + "\t1\t\t7061796c6f6164\n");
+  expect_decode_failure(
+      "6964\t6d65746164617461\tcopied\t726561736f6e\t" +
+      std::to_string(detail::quarantine_payload_checksum_impl("other")) +
+      "\t1\t2\t7061796c6f6164\n");
+
+  ASSERT_TRUE(detail::deserialize_quarantine_entries_impl(
+      header + "\n" + valid_line + "\n", &entries));
+  ASSERT_EQ(1U, entries.size());
 }
 
 TEST(VectorIndexTruthStoreTest,
@@ -901,12 +1148,12 @@ TEST(VectorIndexTruthStoreTest, TruthStoreBackendEnvParserCoversSwitches) {
 
 TEST(VectorIndexTruthStoreTest, DebugWrappersRejectInvalidArtifacts) {
   std::string payload;
+  EXPECT_FALSE(vector_index_truth_store::debug_get_artifact_payload(
+      "not_an_artifact", &payload));
+  EXPECT_FALSE(vector_index_truth_store::debug_set_artifact_payload(
+      "not_an_artifact", "abcd"));
   EXPECT_FALSE(
-      vector_index_truth_store::debug_get_artifact_payload("not_an_artifact",
-                                                        &payload));
-  EXPECT_FALSE(vector_index_truth_store::debug_set_artifact_payload("not_an_artifact",
-                                                                 "abcd"));
-  EXPECT_FALSE(vector_index_truth_store::debug_delete_artifact("not_an_artifact"));
+      vector_index_truth_store::debug_delete_artifact("not_an_artifact"));
 }
 
 TEST(VectorIndexTruthStoreTest, DebugWrappersRejectFileBackend) {
@@ -914,39 +1161,40 @@ TEST(VectorIndexTruthStoreTest, DebugWrappersRejectFileBackend) {
   setenv("MYSQL_VECTOR_TRUTH_STORE", "file", 1);
   vector_index_truth_store::reset_for_testing();
   std::string payload;
-  EXPECT_FALSE(vector_index_truth_store::debug_get_artifact_payload("metadata", &payload));
+  EXPECT_FALSE(vector_index_truth_store::debug_get_artifact_payload("metadata",
+                                                                    &payload));
   EXPECT_FALSE(
       vector_index_truth_store::debug_set_artifact_payload("metadata", "abcd"));
   EXPECT_FALSE(vector_index_truth_store::debug_delete_artifact("metadata"));
 }
 
 TEST(VectorIndexTruthStoreTest, DebugGetRejectsNullPayload) {
-  EXPECT_FALSE(
-      vector_index_truth_store::debug_get_artifact_payload("metadata", nullptr));
+  EXPECT_FALSE(vector_index_truth_store::debug_get_artifact_payload("metadata",
+                                                                    nullptr));
 }
 
 TEST(VectorIndexTruthStoreTest,
      DebugWrappersHandleRowArtifactsWithoutHiddenTables) {
   std::string payload = "unchanged";
 
+  EXPECT_FALSE(vector_index_truth_store::debug_get_artifact_payload("committed",
+                                                                    &payload));
   EXPECT_FALSE(
-      vector_index_truth_store::debug_get_artifact_payload("committed", &payload));
-  EXPECT_FALSE(vector_index_truth_store::debug_set_artifact_payload("committed",
-                                                                  "raw"));
+      vector_index_truth_store::debug_set_artifact_payload("committed", "raw"));
   EXPECT_FALSE(vector_index_truth_store::debug_delete_artifact("committed"));
 
+  EXPECT_FALSE(vector_index_truth_store::debug_get_artifact_payload("changelog",
+                                                                    &payload));
   EXPECT_FALSE(
-      vector_index_truth_store::debug_get_artifact_payload("changelog", &payload));
-  EXPECT_FALSE(vector_index_truth_store::debug_set_artifact_payload("changelog",
-                                                                  "raw"));
+      vector_index_truth_store::debug_set_artifact_payload("changelog", "raw"));
   EXPECT_FALSE(vector_index_truth_store::debug_delete_artifact("changelog"));
 
   payload = "prepared";
-  EXPECT_TRUE(
-      vector_index_truth_store::debug_get_artifact_payload("prepared", &payload));
+  EXPECT_TRUE(vector_index_truth_store::debug_get_artifact_payload("prepared",
+                                                                   &payload));
   EXPECT_TRUE(payload.empty());
-  EXPECT_FALSE(vector_index_truth_store::debug_set_artifact_payload("prepared",
-                                                                  "raw"));
+  EXPECT_FALSE(
+      vector_index_truth_store::debug_set_artifact_payload("prepared", "raw"));
   EXPECT_FALSE(vector_index_truth_store::debug_delete_artifact("prepared"));
 }
 
@@ -984,13 +1232,11 @@ TEST(VectorIndexTruthStoreTest, ForEachCommittedCoversIteratorEdges) {
 
   visited.clear();
   EXPECT_FALSE(rows_store.for_each_committed(
-      "", [](const vector_index_metadata_store::committed_row &) {
-        return true;
-      }));
+      "",
+      [](const vector_index_metadata_store::committed_row &) { return true; }));
   EXPECT_FALSE(rows_store.for_each_committed(
-      "idx_iter",
-      std::function<bool(
-          const vector_index_metadata_store::committed_row &)>()));
+      "idx_iter", std::function<bool(
+                      const vector_index_metadata_store::committed_row &)>()));
   EXPECT_TRUE(rows_store.for_each_committed(
       "idx_iter",
       [&visited](const vector_index_metadata_store::committed_row &current) {
@@ -1006,9 +1252,7 @@ TEST(VectorIndexTruthStoreTest, ForEachCommittedCoversIteratorEdges) {
 
   FailingCommittedRowsTruthStore failing_store;
   EXPECT_FALSE(failing_store.for_each_committed(
-      [](const vector_index_metadata_store::committed_row &) {
-        return true;
-      }));
+      [](const vector_index_metadata_store::committed_row &) { return true; }));
 }
 
 TEST(VectorIndexTruthStoreTest, InnodbFacadeRejectsInvalidArguments) {
@@ -1027,7 +1271,7 @@ TEST(VectorIndexTruthStoreTest, InnodbFacadeRejectsInvalidArguments) {
   EXPECT_FALSE(
       innodb_vector_truth_store::load_artifact("metadata", &payload, &found));
   EXPECT_FALSE(innodb_vector_truth_store::load_artifact("not_an_artifact",
-                                                       &payload, &found));
+                                                        &payload, &found));
   EXPECT_FALSE(innodb_vector_truth_store::save_artifact(nullptr, payload));
   EXPECT_FALSE(innodb_vector_truth_store::save_artifact("metadata", payload));
   EXPECT_FALSE(
@@ -1036,26 +1280,25 @@ TEST(VectorIndexTruthStoreTest, InnodbFacadeRejectsInvalidArguments) {
   EXPECT_FALSE(innodb_vector_truth_store::delete_artifact("metadata"));
   EXPECT_FALSE(innodb_vector_truth_store::delete_artifact("not_an_artifact"));
 
-  EXPECT_FALSE(
-      innodb_vector_truth_store::load_committed_rows(nullptr, &found));
+  EXPECT_FALSE(innodb_vector_truth_store::load_committed_rows(nullptr, &found));
   EXPECT_FALSE(
       innodb_vector_truth_store::load_committed_rows(&committed_rows, nullptr));
-  EXPECT_FALSE(innodb_vector_truth_store::load_committed_rows(&committed_rows,
-                                                             &found));
+  EXPECT_FALSE(
+      innodb_vector_truth_store::load_committed_rows(&committed_rows, &found));
   EXPECT_FALSE(innodb_vector_truth_store::save_committed_rows(committed_rows));
-  EXPECT_FALSE(innodb_vector_truth_store::apply_committed_delta(
-      change_log_rows));
+  EXPECT_FALSE(
+      innodb_vector_truth_store::apply_committed_delta(change_log_rows));
 
   EXPECT_FALSE(
       innodb_vector_truth_store::load_change_log_rows(nullptr, &found));
-  EXPECT_FALSE(innodb_vector_truth_store::load_change_log_rows(
-      &change_log_rows, nullptr));
-  EXPECT_FALSE(innodb_vector_truth_store::load_change_log_rows(
-      &change_log_rows, &found));
-  EXPECT_FALSE(innodb_vector_truth_store::save_change_log_rows(
-      change_log_rows));
-  EXPECT_FALSE(innodb_vector_truth_store::append_change_log_delta(
-      change_log_rows));
+  EXPECT_FALSE(innodb_vector_truth_store::load_change_log_rows(&change_log_rows,
+                                                               nullptr));
+  EXPECT_FALSE(innodb_vector_truth_store::load_change_log_rows(&change_log_rows,
+                                                               &found));
+  EXPECT_FALSE(
+      innodb_vector_truth_store::save_change_log_rows(change_log_rows));
+  EXPECT_FALSE(
+      innodb_vector_truth_store::append_change_log_delta(change_log_rows));
 
   EXPECT_FALSE(innodb_vector_truth_store::load_prepared_rows(nullptr, &found));
   EXPECT_FALSE(
@@ -1065,20 +1308,21 @@ TEST(VectorIndexTruthStoreTest, InnodbFacadeRejectsInvalidArguments) {
 
 TEST(VectorIndexTruthStoreTest, InternalFlagsDefaultToFalseWithoutSystemThd) {
   EXPECT_FALSE(vector_index_truth_store::internal_sql_active());
-  EXPECT_FALSE(vector_index_truth_store::internal_truth_store_access_allowed(nullptr));
+  EXPECT_FALSE(
+      vector_index_truth_store::internal_truth_store_access_allowed(nullptr));
 }
 
 TEST(VectorIndexTruthStoreTest,
-     MysqlTruthStoreQuarantineCommittedRejectsMissingTables) {
+     MysqlTruthStoreQuarantineSegmentTasksRejectsMissingTables) {
   EnvVarGuard guard("MYSQL_VECTOR_TRUTH_STORE");
   unsetenv("MYSQL_VECTOR_TRUTH_STORE");
   vector_index_truth_store::reset_for_testing();
 
-  vector_index_truth_store::truth_store *store = vector_index_truth_store::get();
+  vector_index_truth_store::truth_store *store =
+      vector_index_truth_store::get();
   ASSERT_NE(nullptr, store);
   EXPECT_STREQ("mysql", store->backend_name());
 
-  EXPECT_FALSE(store->quarantine_committed());
   EXPECT_FALSE(store->quarantine_segment_tasks());
 }
 
@@ -1097,6 +1341,7 @@ TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {
   std::remove((path + ".manifest").c_str());
   std::remove((path + ".changelog").c_str());
   std::remove((path + ".prepared").c_str());
+  std::remove((path + ".quarantine").c_str());
   std::remove((path + ".corrupt").c_str());
   std::remove((path + ".committed.corrupt").c_str());
   std::remove((path + ".manifest.corrupt").c_str());
@@ -1105,7 +1350,8 @@ TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {
   setenv("MYSQL_VECTOR_DIAG_FILE", diag_path.c_str(), 1);
 
   vector_index_truth_store::reset_for_testing();
-  vector_index_truth_store::truth_store *store = vector_index_truth_store::get();
+  vector_index_truth_store::truth_store *store =
+      vector_index_truth_store::get();
   ASSERT_NE(nullptr, store);
 
   vector_index_metadata_store::metadata_row metadata_row;
@@ -1203,11 +1449,33 @@ TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {
   ASSERT_EQ(1U, loaded_segment_rows.size());
   EXPECT_EQ(7U, loaded_segment_rows[0].segment_id);
 
-  ASSERT_TRUE(store->quarantine_metadata());
-  ASSERT_TRUE(store->quarantine_committed());
-  ASSERT_TRUE(store->quarantine_manifest());
-  ASSERT_TRUE(store->quarantine_change_log());
-  ASSERT_TRUE(store->quarantine_prepared());
+  std::string quarantine_identity;
+  ASSERT_TRUE(store->stage_quarantine("committed", "decode_failure", 3,
+                                      &quarantine_identity));
+  EXPECT_FALSE(quarantine_identity.empty());
+  ASSERT_TRUE(store->update_quarantine_state(
+      quarantine_identity,
+      vector_index_truth_store::quarantine_state::kSourceUpdateFailed));
+  ASSERT_TRUE(store->update_quarantine_state(
+      quarantine_identity,
+      vector_index_truth_store::quarantine_state::kComplete));
+  std::string quarantine_payload;
+  bool quarantine_found = false;
+  ASSERT_TRUE(vector_index_metadata_store::load_raw_artifact(
+      "quarantine_store", &quarantine_payload, &quarantine_found));
+  ASSERT_TRUE(quarantine_found);
+  std::vector<vector_index_truth_store::quarantine_record> quarantine_records;
+  ASSERT_TRUE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          quarantine_payload, &quarantine_records));
+  ASSERT_EQ(1U, quarantine_records.size());
+  EXPECT_EQ(quarantine_identity, quarantine_records[0].identity);
+  EXPECT_EQ("committed", quarantine_records[0].artifact_name);
+  EXPECT_EQ("decode_failure", quarantine_records[0].reason);
+  EXPECT_EQ(3U, quarantine_records[0].generation);
+  EXPECT_EQ(vector_index_truth_store::quarantine_state::kComplete,
+            quarantine_records[0].state);
+
   ASSERT_TRUE(store->quarantine_segment_tasks());
 
   vector_index_metadata_store::reset_path_for_testing();
@@ -1217,6 +1485,7 @@ TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {
   std::remove((path + ".manifest").c_str());
   std::remove((path + ".changelog").c_str());
   std::remove((path + ".prepared").c_str());
+  std::remove((path + ".quarantine").c_str());
   std::remove((path + ".segment_tasks").c_str());
   std::remove((path + ".corrupt").c_str());
   std::remove((path + ".committed.corrupt").c_str());

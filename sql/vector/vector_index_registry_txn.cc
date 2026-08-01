@@ -251,7 +251,8 @@ bool persisted_prepared_xid_exists_locked(const XID &xid, bool *exists) {
 bool ensure_metadata_loaded_for_search() {
   {
     std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
-    if (g_metadata_loaded) return true;
+    if (g_metadata_loaded)
+      return g_registry_health == registry_health_state::kReady;
   }
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
@@ -262,6 +263,7 @@ bool ensure_runtime_loaded_for_search(const std::string &index_name) {
   {
     std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
     if (g_metadata_loaded &&
+        g_registry_health == registry_health_state::kReady &&
         g_index_service.runtime_loaded_for_search(index_name)) {
       return true;
     }

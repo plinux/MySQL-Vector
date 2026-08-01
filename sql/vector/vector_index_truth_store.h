@@ -35,6 +35,21 @@ class THD;
 
 namespace vector_index_truth_store {
 
+/** Durable progress state for one quarantined truth-store artifact. */
+enum class quarantine_state { kCopied, kSourceUpdateFailed, kComplete };
+
+/** Byte-exact evidence retained for one truth-store corruption event. */
+struct quarantine_record {
+  std::string identity;
+  std::string artifact_name;
+  quarantine_state state{quarantine_state::kCopied};
+  std::string reason;
+  uint64_t checksum{0};
+  uint64_t generation{0};
+  uint64_t timestamp{0};
+  std::string payload;
+};
+
 /**
   Truth-store abstraction for persisted vector index state.
 
@@ -105,11 +120,44 @@ class truth_store {
   */
   virtual void rollback_persist() {}
 
+  /**
+    Copy an artifact into durable quarantine history without changing it.
+
+    @param artifact_name Logical truth-store artifact name.
+    @param reason Stable diagnostic reason for the quarantine event.
+    @param generation Generation observed by the recovery caller.
+    @param identity Receives the new or resumed quarantine identity.
+
+    @retval true Byte-exact evidence is durable.
+    @retval false The source or quarantine history could not be read or saved.
+  */
+  virtual bool stage_quarantine(const std::string &artifact_name [[maybe_unused]],
+                                const std::string &reason [[maybe_unused]],
+                                uint64_t generation [[maybe_unused]],
+                                std::string *identity [[maybe_unused]]) {
+    return false;
+  }
+
+  /**
+    Advance an existing quarantine record after source recovery progresses.
+
+    @param identity Quarantine identity returned by stage_quarantine().
+    @param state New durable recovery state.
+
+    @retval true The state transition is durable.
+    @retval false The record is absent, the transition regresses a completed
+      event, or persistence failed.
+  */
+  virtual bool update_quarantine_state(
+      const std::string &identity [[maybe_unused]],
+      quarantine_state state [[maybe_unused]]) {
+    return false;
+  }
+
   virtual bool load_metadata(
       std::vector<vector_index_metadata_store::metadata_row> *rows) = 0;
   virtual bool save_metadata(
       const std::vector<vector_index_metadata_store::metadata_row> &rows) = 0;
-  virtual bool quarantine_metadata() = 0;
 
   virtual bool load_committed(
       std::vector<vector_index_metadata_store::committed_row> *rows) = 0;
@@ -152,12 +200,9 @@ class truth_store {
       const std::vector<vector_index_metadata_store::change_log_row> &) {
     return false;
   }
-  virtual bool quarantine_committed() = 0;
-
   virtual bool load_manifest(vector_index_metadata_store::manifest_row *row) = 0;
   virtual bool save_manifest(
       const vector_index_metadata_store::manifest_row &row) = 0;
-  virtual bool quarantine_manifest() = 0;
 
   virtual bool load_change_log(
       std::vector<vector_index_metadata_store::change_log_row> *rows) = 0;
@@ -170,13 +215,10 @@ class truth_store {
       const std::vector<vector_index_metadata_store::change_log_row> &) {
     return false;
   }
-  virtual bool quarantine_change_log() = 0;
-
   virtual bool load_prepared(
       std::vector<vector_index_metadata_store::prepared_change_row> *rows) = 0;
   virtual bool save_prepared(
       const std::vector<vector_index_metadata_store::prepared_change_row> &rows) = 0;
-  virtual bool quarantine_prepared() = 0;
 
   virtual bool load_segment_tasks(
       std::vector<vector_index_metadata_store::segment_task_row> *rows) = 0;
@@ -212,7 +254,7 @@ std::string sql_string_literal_for_testing(const char *text);
 bool decode_hex_bytes_for_testing(const std::string &encoded, std::string *decoded);
 bool deserialize_quarantine_entries_for_testing(
     const std::string &payload,
-    std::vector<std::pair<std::string, std::string>> *entries);
+    std::vector<quarantine_record> *entries);
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 }  // namespace vector_index_truth_store

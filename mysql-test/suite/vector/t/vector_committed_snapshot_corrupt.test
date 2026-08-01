@@ -1,12 +1,32 @@
 --source include/have_vector_debug_native.inc
 
 --echo #
---echo # WL#vector-v1: replay change-log when committed snapshot is corrupt
+--echo # WL#vector-v1: recover corrupt committed projection from bound tables
 --echo #
 
-SELECT VEC_INDEX_CREATE('idx_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
-SELECT VEC_INDEX_UPSERT('idx_corrupt', 1, VEC_FROMTEXT('[1,2]'));
-SELECT VEC_INDEX_SEARCH('idx_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+DROP TABLE IF EXISTS t_vec_committed_corrupt_a;
+DROP TABLE IF EXISTS t_vec_committed_corrupt_b;
+CREATE TABLE t_vec_committed_corrupt_a (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE TABLE t_vec_committed_corrupt_b (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vec_committed_corrupt_a VALUES
+  (1, VEC_FROMTEXT('[1,2]')),
+  (2, NULL);
+INSERT INTO t_vec_committed_corrupt_b VALUES
+  (7, VEC_FROMTEXT('[7,8]'));
+CREATE VECTOR INDEX ON t_vec_committed_corrupt_a(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+CREATE VECTOR INDEX ON t_vec_committed_corrupt_b(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+                        VEC_FROMTEXT('[1,2]'), 1);
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_b.v',
+                        VEC_FROMTEXT('[7,8]'), 1);
 
 --source suite/vector/include/vector_truth_store_backend.inc
 
@@ -27,9 +47,44 @@ if (!$is_mysql_truth_store)
 --source include/restart_mysqld.inc
 
 SELECT VEC_INDEX_LIST();
---source suite/vector/include/vector_normalize_lifecycle.inc
-SELECT VEC_INDEX_INFO('idx_corrupt');
-SELECT VEC_INDEX_SEARCH('idx_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+SELECT JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_INFO('test.t_vec_committed_corrupt_a.v'),
+         '$.lifecycle_state')) AS lifecycle_a,
+       JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_INFO('test.t_vec_committed_corrupt_b.v'),
+         '$.lifecycle_state')) AS lifecycle_b;
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+                        VEC_FROMTEXT('[1,2]'), 1);
+START TRANSACTION;
+SELECT COUNT(*) FROM t_vec_committed_corrupt_a;
+--error ER_LOCK_OR_ACTIVE_TRANSACTION
+SELECT VEC_INDEX_RECOVER_ALL();
+ROLLBACK;
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_RECOVER('test.t_vec_committed_corrupt_a.v');
+SELECT VEC_INDEX_RECOVER_ALL();
+SELECT JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_INFO('test.t_vec_committed_corrupt_a.v'),
+         '$.lifecycle_state')) AS lifecycle_a,
+       JSON_EXTRACT(VEC_INDEX_INFO('test.t_vec_committed_corrupt_a.v'),
+                    '$.committed_entry_count') AS entries_a,
+       JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_INFO('test.t_vec_committed_corrupt_b.v'),
+         '$.lifecycle_state')) AS lifecycle_b,
+       JSON_EXTRACT(VEC_INDEX_INFO('test.t_vec_committed_corrupt_b.v'),
+                    '$.committed_entry_count') AS entries_b;
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+                        VEC_FROMTEXT('[1,2]'), 1);
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_b.v',
+                        VEC_FROMTEXT('[7,8]'), 1);
 SHOW GLOBAL STATUS LIKE 'Vector_committed_load_failures';
 
-SELECT VEC_INDEX_DROP('idx_corrupt');
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_a.v',
+                        VEC_FROMTEXT('[1,2]'), 1);
+SELECT VEC_INDEX_SEARCH('test.t_vec_committed_corrupt_b.v',
+                        VEC_FROMTEXT('[7,8]'), 1);
+DROP TABLE t_vec_committed_corrupt_a;
+DROP TABLE t_vec_committed_corrupt_b;

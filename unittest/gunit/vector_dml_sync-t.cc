@@ -103,11 +103,6 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
     metadata_rows = rows;
     return true;
   }
-  bool quarantine_metadata() override {
-    metadata_rows.clear();
-    return true;
-  }
-
   bool load_committed(
       std::vector<vector_index_metadata_store::committed_row> *rows) override {
     if (rows == nullptr) return false;
@@ -119,11 +114,6 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
     committed_rows = rows;
     return true;
   }
-  bool quarantine_committed() override {
-    committed_rows.clear();
-    return true;
-  }
-
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
     if (row == nullptr) return false;
     *row = manifest_row;
@@ -134,11 +124,6 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
     manifest_row = row;
     return true;
   }
-  bool quarantine_manifest() override {
-    manifest_row = vector_index_metadata_store::manifest_row();
-    return true;
-  }
-
   bool load_change_log(
       std::vector<vector_index_metadata_store::change_log_row> *rows) override {
     if (rows == nullptr) return false;
@@ -150,11 +135,6 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
     change_log_rows = rows;
     return true;
   }
-  bool quarantine_change_log() override {
-    change_log_rows.clear();
-    return true;
-  }
-
   bool load_prepared(
       std::vector<vector_index_metadata_store::prepared_change_row> *rows) override {
     if (rows == nullptr) return false;
@@ -166,11 +146,6 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
     prepared_rows = rows;
     return true;
   }
-  bool quarantine_prepared() override {
-    prepared_rows.clear();
-    return true;
-  }
-
   bool load_segment_tasks(
       std::vector<vector_index_metadata_store::segment_task_row> *rows)
       override {

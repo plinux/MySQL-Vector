@@ -84,7 +84,7 @@ bool decode_hex_bytes_for_testing(const std::string &encoded,
 
 bool deserialize_quarantine_entries_for_testing(
     const std::string &payload,
-    std::vector<std::pair<std::string, std::string>> *entries) {
+    std::vector<quarantine_record> *entries) {
   return detail::deserialize_quarantine_entries_impl(payload, entries);
 }
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING

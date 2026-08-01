@@ -1,12 +1,23 @@
 --source include/have_vector_debug_native.inc
 
 --echo #
---echo # WL#vector-v1: fallback to committed snapshot when change-log is corrupt
+--echo # WL#vector-v1: recover corrupt changelog from a bound table
 --echo #
 
-SELECT VEC_INDEX_CREATE('idx_changelog_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
-SELECT VEC_INDEX_UPSERT('idx_changelog_corrupt', 1, VEC_FROMTEXT('[1,2]'));
-SELECT VEC_INDEX_SEARCH('idx_changelog_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+DROP TABLE IF EXISTS t_vec_changelog_corrupt;
+CREATE TABLE t_vec_changelog_corrupt (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+INSERT INTO t_vec_changelog_corrupt VALUES
+  (1, VEC_FROMTEXT('[1,2]'));
+CREATE VECTOR INDEX ON t_vec_changelog_corrupt(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+INSERT INTO t_vec_changelog_corrupt VALUES
+  (2, VEC_FROMTEXT('[2,3]'));
+DELETE FROM t_vec_changelog_corrupt WHERE id = 1;
+SELECT VEC_INDEX_SEARCH('test.t_vec_changelog_corrupt.v',
+                        VEC_FROMTEXT('[2,3]'), 8);
 
 --source suite/vector/include/vector_truth_store_backend.inc
 
@@ -27,10 +38,25 @@ if (!$is_mysql_truth_store)
 --source include/restart_mysqld.inc
 
 SELECT VEC_INDEX_LIST();
---source suite/vector/include/vector_normalize_lifecycle.inc
-SELECT VEC_INDEX_INFO('idx_changelog_corrupt');
-SELECT VEC_INDEX_SEARCH('idx_changelog_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+SELECT JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_INFO('test.t_vec_changelog_corrupt.v'),
+         '$.lifecycle_state')) AS lifecycle;
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH('test.t_vec_changelog_corrupt.v',
+                        VEC_FROMTEXT('[2,3]'), 8);
+SELECT VEC_INDEX_RECOVER('test.t_vec_changelog_corrupt.v');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_INFO('test.t_vec_changelog_corrupt.v'),
+         '$.lifecycle_state')) AS lifecycle,
+       JSON_EXTRACT(VEC_INDEX_INFO('test.t_vec_changelog_corrupt.v'),
+                    '$.committed_entry_count') AS entries;
+SELECT VEC_INDEX_SEARCH('test.t_vec_changelog_corrupt.v',
+                        VEC_FROMTEXT('[2,3]'), 8);
 SHOW GLOBAL STATUS LIKE 'Vector_change_log_load_failures';
 SHOW GLOBAL STATUS LIKE 'Vector_change_log_replay_failures';
 
-SELECT VEC_INDEX_DROP('idx_changelog_corrupt');
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_SEARCH('test.t_vec_changelog_corrupt.v',
+                        VEC_FROMTEXT('[2,3]'), 8);
+DROP TABLE t_vec_changelog_corrupt;

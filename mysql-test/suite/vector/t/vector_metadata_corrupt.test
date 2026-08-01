@@ -11,21 +11,26 @@ SELECT VEC_INDEX_SEARCH('idx_metadata_corrupt', VEC_FROMTEXT('[1,2]'), 1);
 --source suite/vector/include/vector_truth_store_backend.inc
 
 --let $datadir=`SELECT @@datadir`
+--let $metadata_file=$datadir/mysql_vector_index/metadata.v1
+--let $metadata_backup_file=$MYSQLTEST_VARDIR/tmp/vector_metadata_corrupt.v1
 if ($is_mysql_truth_store)
 {
   --disable_query_log
   --disable_result_log
+  --let $metadata_backup= query_get_value("SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata') AS value", value, 1)
   SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', '6261640a726f770a');
   --enable_result_log
   --enable_query_log
 }
 if (!$is_mysql_truth_store)
 {
-  --exec printf 'bad\nrow\n' > $datadir/mysql_vector_index/metadata.v1
+  --exec cp $metadata_file $metadata_backup_file
+  --exec printf 'bad\nrow\n' > $metadata_file
 }
 
 --source include/restart_mysqld.inc
 
+--error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_LIST();
 --echo SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata');
 --disable_query_log
@@ -40,3 +45,23 @@ SELECT '' AS `VEC_DEBUG_TRUTH_STORE_GET_HEX('metadata')`;
 --enable_query_log
 --replace_column 2 <num>
 SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';
+
+if ($is_mysql_truth_store)
+{
+  --disable_query_log
+  --disable_result_log
+  --eval SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('metadata', '$metadata_backup');
+  --enable_result_log
+  --enable_query_log
+}
+if (!$is_mysql_truth_store)
+{
+  --exec mv $metadata_backup_file $metadata_file
+}
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_SEARCH('idx_metadata_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+SELECT VEC_INDEX_DROP('idx_metadata_corrupt');
+--exec rm -f $metadata_backup_file

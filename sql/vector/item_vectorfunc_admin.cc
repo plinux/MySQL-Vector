@@ -58,6 +58,40 @@ static bool eval_string_arg(Item *arg, String *buffer, std::string *value) {
   return true;
 }
 
+static bool capture_admin_state(
+    const char *function_name,
+    vector_index_registry::registry_state_snapshot *snapshot) {
+  if (vector_index_registry::snapshot_runtime_state(snapshot)) return true;
+  my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
+  return false;
+}
+
+static bool binlog_or_restore_admin_state(
+    THD *thd, const char *function_name,
+    const vector_index_registry::registry_state_snapshot &snapshot) {
+  if (maybe_binlog_vector_write_query(thd)) return true;
+
+  if (!vector_index_registry::restore_runtime_state(snapshot, true)) {
+    std::string message(function_name);
+    message.append(" rollback failed");
+    my_error(ER_INTERNAL_ERROR, MYF(0), message.c_str());
+  } else if (thd == nullptr || !thd->is_error()) {
+    my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
+  }
+  return false;
+}
+
+static bool check_truth_recovery_statement_context(THD *thd,
+                                                   bool recovery_required) {
+  if (!recovery_required) return false;
+  if (thd == nullptr || thd->locked_tables_mode != LTM_NONE ||
+      thd->in_multi_stmt_transaction_mode()) {
+    my_error(ER_LOCK_OR_ACTIVE_TRANSACTION, MYF(0));
+    return true;
+  }
+  return false;
+}
+
 longlong Item_func_vec_index_create::val_int() {
   assert_fixed_arg_count_between(fixed, arg_count, 2, 7);
   null_value = true;
@@ -762,11 +796,27 @@ longlong Item_func_vec_index_recover::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::recover_index(index_name)) {
+  const bool repairing_truth_projection =
+      vector_index_registry::registry_health() ==
+      vector_index_registry::registry_health_state::kRecoveryRequired;
+  if (check_truth_recovery_statement_context(current_thd,
+                                             repairing_truth_projection)) {
+    return error_int();
+  }
+  vector_index_registry::registry_state_snapshot before_change;
+  if (!repairing_truth_projection &&
+      !capture_admin_state(func_name(), &before_change)) {
+    return error_int();
+  }
+  if (!vector_index_registry::recover_index(current_thd, index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+  // Corruption repair is local reconstruction from replicated base-table rows;
+  // replaying it on replicas would couple independent derived-artifact health.
+  if (!repairing_truth_projection &&
+      !binlog_or_restore_admin_state(current_thd, func_name(), before_change))
+    return error_int();
 
   null_value = false;
   return 1;
@@ -808,11 +858,26 @@ longlong Item_func_vec_index_recover_all::val_int() {
   size_t recovered_count = 0;
   if (check_vector_all_indexes_access(current_thd, ALTER_ACL, func_name()))
     return error_int();
-  if (!vector_index_registry::recover_all_indexes(&recovered_count)) {
+  const bool repairing_truth_projection =
+      vector_index_registry::registry_health() ==
+      vector_index_registry::registry_health_state::kRecoveryRequired;
+  if (check_truth_recovery_statement_context(current_thd,
+                                             repairing_truth_projection)) {
+    return error_int();
+  }
+  vector_index_registry::registry_state_snapshot before_change;
+  if (!repairing_truth_projection &&
+      !capture_admin_state(func_name(), &before_change)) {
+    return error_int();
+  }
+  if (!vector_index_registry::recover_all_indexes(current_thd,
+                                                  &recovered_count)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+  if (!repairing_truth_projection &&
+      !binlog_or_restore_admin_state(current_thd, func_name(), before_change))
+    return error_int();
 
   null_value = false;
   return static_cast<longlong>(recovered_count);

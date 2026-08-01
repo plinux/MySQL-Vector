@@ -40,6 +40,7 @@
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_status.h"
+#include "sql/vector/vector_truth_recovery.h"
 
 namespace vector_index_registry {
 
@@ -713,6 +714,184 @@ bool recover_standalone_plan_locked(const lifecycle_backend_plan &plan) {
   }
   if (!persist_registry_state_or_rollback_locked(snapshot, true)) return false;
   return evict_committed_cache_to_budget_locked();
+}
+
+struct truth_recovery_plan {
+  lifecycle_backend_plan expected_backend;
+  index_binding binding;
+};
+
+struct prepared_truth_recovery {
+  truth_recovery_plan plan;
+  vector_index::index_service::committed_entries entries;
+  std::unique_ptr<vector_index::backend> backend;
+};
+
+bool index_bindings_equal(const index_binding &lhs, const index_binding &rhs) {
+  return lhs.schema_name == rhs.schema_name &&
+         lhs.table_name == rhs.table_name &&
+         lhs.column_name == rhs.column_name &&
+         lhs.doc_id_column_name == rhs.doc_id_column_name;
+}
+
+bool snapshot_truth_recovery_plans_locked(
+    std::vector<truth_recovery_plan> *plans) {
+  if (plans == nullptr ||
+      g_registry_health != registry_health_state::kRecoveryRequired) {
+    return false;
+  }
+
+  std::vector<std::string> index_names(
+      g_truth_recovery_state.pending_index_names.begin(),
+      g_truth_recovery_state.pending_index_names.end());
+  std::sort(index_names.begin(), index_names.end());
+
+  vector_index::index_service::committed_state committed_state;
+  if (!g_index_service.snapshot_committed_state(&committed_state)) return false;
+
+  plans->clear();
+  plans->reserve(index_names.size());
+  for (const std::string &index_name : index_names) {
+    truth_recovery_plan plan;
+    plan.expected_backend.index_name = index_name;
+    if (!g_index_service.describe_index(
+            index_name, &plan.expected_backend.config, nullptr, nullptr,
+            nullptr, nullptr, &plan.expected_backend.lifecycle_version)) {
+      return false;
+    }
+    if (plan.expected_backend.config.consistency_mode !=
+            vector_index::index_consistency_mode::kTransactional ||
+        plan.expected_backend.lifecycle_version == 0 ||
+        g_index_service.has_pending_changes_for_index(index_name)) {
+      return false;
+    }
+    const auto entries_it = committed_state.find(index_name);
+    if (entries_it != committed_state.end()) {
+      plan.expected_backend.entries = entries_it->second;
+    }
+    plan.binding = binding_for_index_locked(index_name);
+    if (plan.binding.schema_name.empty() || plan.binding.table_name.empty() ||
+        plan.binding.column_name.empty() ||
+        plan.binding.doc_id_column_name.empty()) {
+      return false;
+    }
+    plans->push_back(std::move(plan));
+  }
+  return true;
+}
+
+bool validate_truth_recovery_plans_locked(
+    const std::vector<prepared_truth_recovery> &prepared) {
+  if (g_registry_health != registry_health_state::kRecoveryRequired ||
+      prepared.size() != g_truth_recovery_state.pending_index_names.size()) {
+    return false;
+  }
+
+  vector_index::index_service::committed_state current_state;
+  if (!g_index_service.snapshot_committed_state(&current_state)) return false;
+  for (const auto &candidate : prepared) {
+    if (g_truth_recovery_state.pending_index_names.find(
+            candidate.plan.expected_backend.index_name) ==
+            g_truth_recovery_state.pending_index_names.end() ||
+        !validate_backend_plan_against_state_locked(
+            candidate.plan.expected_backend, current_state) ||
+        !index_bindings_equal(
+            candidate.plan.binding,
+            binding_for_index_locked(
+                candidate.plan.expected_backend.index_name))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool update_recovery_quarantine_state_locked(
+    vector_index_truth_store::quarantine_state state) {
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  bool ok = true;
+  for (const auto &entry : g_truth_recovery_state.quarantine_identities) {
+    if (!truth_store->update_quarantine_state(entry.second, state)) ok = false;
+  }
+  return ok;
+}
+
+bool publish_truth_recovery_locked(
+    std::vector<prepared_truth_recovery> *prepared) {
+  if (prepared == nullptr || !validate_truth_recovery_plans_locked(*prepared)) {
+    return false;
+  }
+
+  runtime_state_snapshot snapshot;
+  if (!capture_runtime_state_locked(&snapshot)) return false;
+  for (auto &candidate : *prepared) {
+    const std::string &index_name = candidate.plan.expected_backend.index_name;
+    if (!g_index_service.install_rebuilt_index(index_name, candidate.entries,
+                                               std::move(candidate.backend)) ||
+        !refresh_segment_tasks_from_service_locked(index_name)) {
+      return rollback_runtime_state_and_fail_locked(snapshot);
+    }
+  }
+  g_change_log_rows.clear();
+  g_next_change_log_sequence = 1;
+
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
+    (void)update_recovery_quarantine_state_locked(
+        vector_index_truth_store::quarantine_state::kSourceUpdateFailed);
+    g_registry_failure_reason = "truth_projection_recovery_persist_failed";
+    return rollback_runtime_state_and_fail_locked(snapshot);
+  }
+  if (!update_recovery_quarantine_state_locked(
+          vector_index_truth_store::quarantine_state::kComplete)) {
+    g_registry_health = registry_health_state::kFailed;
+    g_registry_failure_reason = "truth_recovery_quarantine_finalize_failed";
+    return false;
+  }
+
+  g_truth_recovery_state = truth_recovery_state{};
+  g_registry_health = registry_health_state::kReady;
+  g_registry_failure_reason.clear();
+  return evict_committed_cache_to_budget_locked();
+}
+
+bool recover_truth_projection(THD *thd,
+                              const std::vector<truth_recovery_plan> &plans,
+                              size_t *recovered_count) {
+  if (thd == nullptr || recovered_count == nullptr) return false;
+
+  std::vector<vector_truth_recovery::index_scan_spec> specs;
+  specs.reserve(plans.size());
+  for (const auto &plan : plans) {
+    specs.push_back({plan.expected_backend.index_name, plan.binding.schema_name,
+                     plan.binding.table_name, plan.binding.column_name,
+                     plan.binding.doc_id_column_name});
+  }
+
+  const bool ok = vector_truth_recovery::scan_and_publish(
+      thd, std::move(specs),
+      [&plans](const vector_truth_recovery::recovered_state &state) {
+        std::vector<prepared_truth_recovery> prepared;
+        prepared.reserve(plans.size());
+        for (const auto &plan : plans) {
+          const auto entries_it = state.find(plan.expected_backend.index_name);
+          if (entries_it == state.end()) return false;
+          prepared_truth_recovery candidate;
+          candidate.plan = plan;
+          candidate.entries = entries_it->second;
+          lifecycle_backend_plan rebuilt_plan = plan.expected_backend;
+          rebuilt_plan.entries = candidate.entries;
+          candidate.backend = build_rebuilt_backend(rebuilt_plan);
+          if (candidate.backend == nullptr) return false;
+          prepared.push_back(std::move(candidate));
+        }
+
+        std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+        if (!ensure_metadata_available_locked()) return false;
+        return publish_truth_recovery_locked(&prepared);
+      });
+  if (ok) *recovered_count = plans.size();
+  return ok;
 }
 
 bool snapshot_drop_artifact_plan_locked(const std::string &index_name,
@@ -1606,10 +1785,65 @@ bool build_backend_from_config_for_testing(
     const vector_index::index_service::index_config &config) {
   return build_backend_from_config(index_name, config) != nullptr;
 }
+
+bool recover_truth_projection_for_testing(
+    const vector_index::index_service::committed_state &state) {
+  std::vector<truth_recovery_plan> plans;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_available_locked() ||
+        !snapshot_truth_recovery_plans_locked(&plans) ||
+        plans.size() != state.size()) {
+      return false;
+    }
+  }
+
+  std::vector<prepared_truth_recovery> prepared;
+  prepared.reserve(plans.size());
+  for (const auto &plan : plans) {
+    const auto entries_it = state.find(plan.expected_backend.index_name);
+    if (entries_it == state.end()) return false;
+    prepared_truth_recovery candidate;
+    candidate.plan = plan;
+    candidate.entries = entries_it->second;
+    lifecycle_backend_plan rebuilt_plan = plan.expected_backend;
+    rebuilt_plan.entries = candidate.entries;
+    candidate.backend = build_rebuilt_backend(rebuilt_plan);
+    if (candidate.backend == nullptr) return false;
+    prepared.push_back(std::move(candidate));
+  }
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_available_locked()) return false;
+  return publish_truth_recovery_locked(&prepared);
+}
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 bool recover_index(const std::string &index_name) {
+  return recover_index(nullptr, index_name);
+}
+
+bool recover_index(THD *thd, const std::string &index_name) {
   vector_status::record_recover_request();
+  std::vector<truth_recovery_plan> truth_recovery_plans;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_available_locked()) return false;
+    if (g_registry_health == registry_health_state::kRecoveryRequired) {
+      if (!snapshot_truth_recovery_plans_locked(&truth_recovery_plans) ||
+          truth_recovery_plans.size() != 1 ||
+          truth_recovery_plans[0].expected_backend.index_name != index_name) {
+        return false;
+      }
+    }
+  }
+  if (!truth_recovery_plans.empty()) {
+    size_t recovered_count = 0;
+    return recover_truth_projection(thd, truth_recovery_plans,
+                                    &recovered_count) &&
+           recovered_count == 1;
+  }
+
   lifecycle_backend_plan plan;
   {
     std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
@@ -1970,8 +2204,38 @@ bool rebuild_all_indexes(size_t *rebuilt_count) {
 }
 
 bool recover_all_indexes(size_t *recovered_count) {
+  return recover_all_indexes(nullptr, recovered_count);
+}
+
+bool recover_all_indexes(THD *thd, size_t *recovered_count) {
   vector_status::record_recover_all_request();
   if (recovered_count == nullptr) return false;
+
+  std::vector<truth_recovery_plan> truth_recovery_plans;
+  bool truth_recovery_required = false;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_available_locked()) return false;
+    truth_recovery_required =
+        g_registry_health == registry_health_state::kRecoveryRequired;
+    if (truth_recovery_required &&
+        !snapshot_truth_recovery_plans_locked(&truth_recovery_plans)) {
+      return false;
+    }
+  }
+  if (truth_recovery_required) {
+    if (truth_recovery_plans.empty()) {
+      std::vector<prepared_truth_recovery> prepared;
+      std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+      if (!ensure_metadata_available_locked() ||
+          !publish_truth_recovery_locked(&prepared)) {
+        return false;
+      }
+      *recovered_count = 0;
+      return true;
+    }
+    return recover_truth_projection(thd, truth_recovery_plans, recovered_count);
+  }
 
   std::vector<lifecycle_backend_plan> plans;
   {
@@ -2027,7 +2291,7 @@ bool get_index_info(const std::string &index_name, index_info *info) {
   if (info == nullptr) return false;
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
+  if (!ensure_metadata_available_locked()) return false;
   return populate_index_info_locked(index_name, info);
 }
 
@@ -2035,7 +2299,7 @@ bool get_global_status_summary(global_status_summary *summary) {
   if (summary == nullptr) return false;
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
+  if (!ensure_metadata_available_locked()) return false;
 
   *summary = global_status_summary{};
   std::vector<std::string> index_names;
@@ -2116,7 +2380,7 @@ bool get_global_status_summary(global_status_summary *summary) {
 
 bool list_indexes(std::vector<std::string> *index_names) {
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
+  if (!ensure_metadata_available_locked()) return false;
   return g_index_service.list_indexes(index_names);
 }
 

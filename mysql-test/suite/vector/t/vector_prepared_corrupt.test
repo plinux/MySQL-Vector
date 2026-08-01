@@ -1,7 +1,7 @@
 --source include/have_vector_debug_native.inc
 
 --echo #
---echo # WL#vector-v1: quarantine corrupt prepared artifact during startup load
+--echo # WL#vector-v1: fail stop without deleting a corrupt prepared artifact
 --echo #
 
 --let $datadir=`SELECT @@datadir`
@@ -12,15 +12,45 @@ SELECT VEC_INDEX_CREATE('idx_prepared_corrupt', 2, 'EUCLIDEAN', 'MEMORY', 'NATIV
 SELECT VEC_INDEX_UPSERT('idx_prepared_corrupt', 1, VEC_FROMTEXT('[1,2]'));
 SELECT VEC_INDEX_SEARCH('idx_prepared_corrupt', VEC_FROMTEXT('[1,2]'), 1);
 
---exec mkdir -p $datadir/mysql_vector_index
---exec printf 'bad\nrow\n' > $prepared_file
+--source suite/vector/include/vector_truth_store_backend.inc
+
+if ($is_mysql_truth_store)
+{
+  --disable_query_log
+  --disable_result_log
+  SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('prepared', '6261640a726f770a');
+  --enable_result_log
+  --enable_query_log
+}
+if (!$is_mysql_truth_store)
+{
+  --exec mkdir -p $datadir/mysql_vector_index
+  --exec printf 'bad\nrow\n' > $prepared_file
+}
+
+--source include/restart_mysqld.inc
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_LIST();
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SEARCH('idx_prepared_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+--replace_column 2 <num>
+SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';
+
+if ($is_mysql_truth_store)
+{
+  SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('prepared');
+  SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('prepared', NULL);
+}
+if (!$is_mysql_truth_store)
+{
+  --exec test -s $prepared_file
+  --exec rm -f $prepared_file
+}
 
 --source include/restart_mysqld.inc
 
 SELECT VEC_INDEX_LIST();
 SELECT VEC_INDEX_SEARCH('idx_prepared_corrupt', VEC_FROMTEXT('[1,2]'), 1);
---replace_column 2 <num>
-SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';
-
 SELECT VEC_INDEX_DROP('idx_prepared_corrupt');
 --exec rm -f $prepared_file

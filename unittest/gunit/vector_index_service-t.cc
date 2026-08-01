@@ -639,8 +639,6 @@ class committed_rows_truth_store final : public vector_index_truth_store::truth_
     return true;
   }
 
-  bool quarantine_metadata() override { return true; }
-
   bool load_segment_tasks(
       std::vector<vector_index_metadata_store::segment_task_row> *rows)
       override {
@@ -713,8 +711,6 @@ class committed_rows_truth_store final : public vector_index_truth_store::truth_
     return true;
   }
 
-  bool quarantine_committed() override { return true; }
-
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
     if (row == nullptr) return false;
     *row = vector_index_metadata_store::manifest_row();
@@ -725,8 +721,6 @@ class committed_rows_truth_store final : public vector_index_truth_store::truth_
       const vector_index_metadata_store::manifest_row &) override {
     return true;
   }
-
-  bool quarantine_manifest() override { return true; }
 
   bool load_change_log(
       std::vector<vector_index_metadata_store::change_log_row> *rows) override {
@@ -739,8 +733,6 @@ class committed_rows_truth_store final : public vector_index_truth_store::truth_
       const std::vector<vector_index_metadata_store::change_log_row> &) override {
     return true;
   }
-
-  bool quarantine_change_log() override { return true; }
 
   bool load_prepared(
       std::vector<vector_index_metadata_store::prepared_change_row> *rows)
@@ -755,8 +747,6 @@ class committed_rows_truth_store final : public vector_index_truth_store::truth_
       override {
     return true;
   }
-
-  bool quarantine_prepared() override { return true; }
 
  private:
   std::vector<vector_index_metadata_store::committed_row> m_rows;

@@ -363,6 +363,8 @@ TEST_F(MetadataStoreTest, DetailHelpersCoverParserAndArtifactPathEdges) {
     EXPECT_TRUE(detail::raw_path_for_artifact(artifact_name, &path));
     EXPECT_FALSE(path.empty());
   }
+  EXPECT_TRUE(detail::raw_path_for_artifact("quarantine_store", &path));
+  EXPECT_NE(std::string::npos, path.find(".quarantine"));
 
   {
     DataHomeGuard data_home;
@@ -376,6 +378,13 @@ TEST_F(MetadataStoreTest, DetailHelpersCoverParserAndArtifactPathEdges) {
     EXPECT_TRUE(detail::raw_path_for_artifact("changelog", &path));
     EXPECT_NE(std::string::npos,
               path.find("/tmp/mysql-vector-datadir/mysql_vector_index/"));
+
+    data_home.Set("C:\\mysql-vector-datadir\\");
+    for (const char *artifact_name : {"metadata", "committed", "manifest",
+                                      "changelog", "prepared", "segment_tasks"}) {
+      EXPECT_TRUE(detail::raw_path_for_artifact(artifact_name, &path));
+      EXPECT_NE(std::string::npos, path.find("\\mysql_vector_index/"));
+    }
     vector_index_metadata_store::set_path_for_testing(m_path);
   }
 
@@ -1089,6 +1098,51 @@ TEST_F(MetadataStoreTest, SaveThenLoadRoundTrip) {
   EXPECT_EQ("v", loaded[1].column_name);
 }
 
+TEST_F(MetadataStoreTest, SaveApisRejectInvalidSegmentRows) {
+  vector_index_metadata_store::segment_task_row segment_task;
+  EXPECT_FALSE(vector_index_metadata_store::save_segment_tasks({segment_task}));
+}
+
+TEST_F(MetadataStoreTest,
+       AtomicWriteRejectsTempOpenRenameAndNonemptyRemovalFailures) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_metadata_atomic_failures_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+
+  const std::string open_failure = root + "/open_failure";
+  std::filesystem::create_directories(open_failure + ".tmp", ec);
+  ASSERT_FALSE(ec);
+  vector_index_metadata_store::set_path_for_testing(open_failure);
+  EXPECT_FALSE(vector_index_metadata_store::save_raw_artifact("metadata",
+                                                              "payload"));
+
+  const std::string rename_failure = root + "/rename_failure";
+  std::filesystem::create_directories(rename_failure, ec);
+  ASSERT_FALSE(ec);
+  vector_index_metadata_store::set_path_for_testing(rename_failure);
+  EXPECT_FALSE(vector_index_metadata_store::save_raw_artifact("metadata",
+                                                              "payload"));
+  EXPECT_FALSE(std::filesystem::exists(rename_failure + ".tmp"));
+
+  const std::string remove_failure = root + "/remove_failure";
+  std::filesystem::create_directories(remove_failure, ec);
+  ASSERT_FALSE(ec);
+  {
+    std::ofstream child(remove_failure + "/child");
+    ASSERT_TRUE(child.good());
+    child << "keep directory nonempty";
+  }
+  vector_index_metadata_store::set_path_for_testing(remove_failure);
+  EXPECT_FALSE(vector_index_metadata_store::delete_raw_artifact("metadata"));
+
+  vector_index_metadata_store::set_path_for_testing(m_path);
+  std::filesystem::remove_all(root, ec);
+  EXPECT_FALSE(ec);
+}
+
 TEST_F(MetadataStoreTest, MetadataSerializationRoundTrip) {
   std::vector<vector_index_metadata_store::metadata_row> rows{
       {"idx_mem",
@@ -1771,18 +1825,6 @@ TEST_F(MetadataStoreTest, DeleteRawArtifactFailsWhenRemovalIsInjected) {
   EXPECT_FALSE(vector_index_metadata_store::delete_raw_artifact("manifest"));
 }
 
-TEST_F(MetadataStoreTest, QuarantinePreparedStoreRenamesPreparedFile) {
-  ASSERT_TRUE(
-      vector_index_metadata_store::save_raw_artifact("prepared", "bad\nrow\n"));
-
-  ASSERT_TRUE(vector_index_metadata_store::quarantine_prepared_store());
-
-  std::ifstream current(m_prepared_path);
-  EXPECT_FALSE(current.good());
-  std::ifstream quarantined(m_prepared_path + ".corrupt");
-  EXPECT_TRUE(quarantined.good());
-}
-
 TEST_F(MetadataStoreTest, SavePreparedFailsWhenParentDirectoryCannotBeCreated) {
   const std::string blocked_parent = m_path + ".prepared_blocked_parent";
   std::ofstream blocker(blocked_parent,
@@ -1873,12 +1915,50 @@ TEST_F(MetadataStoreTest, PreparedXidHelpersEnforceMysqlComponentLimits) {
 
   vector_index_metadata_store::prepared_change_row row;
   ASSERT_TRUE(vector_index_metadata_store::set_prepared_xid(xid, &row));
+  const vector_index_metadata_store::prepared_change_row valid_row = row;
   EXPECT_TRUE(vector_index_metadata_store::valid_prepared_xid(row));
   EXPECT_TRUE(vector_index_metadata_store::prepared_xid_matches(row, xid));
 
   XID restored;
   ASSERT_TRUE(vector_index_metadata_store::get_prepared_xid(row, &restored));
   EXPECT_TRUE(restored.eq(&xid));
+
+  XID shorter_data;
+  shorter_data.set(7, "global", 6, "branc", 5);
+  EXPECT_FALSE(vector_index_metadata_store::prepared_xid_matches(valid_row,
+                                                                 shorter_data));
+
+  XID invalid_xid;
+  invalid_xid.reset();
+  EXPECT_FALSE(
+      vector_index_metadata_store::prepared_xid_matches(valid_row, invalid_xid));
+
+  XID different_format;
+  different_format.set(8, "global", 6, "branch", 6);
+  EXPECT_FALSE(vector_index_metadata_store::prepared_xid_matches(
+      valid_row, different_format));
+
+  XID different_payload;
+  different_payload.set(7, "Global", 6, "branch", 6);
+  EXPECT_FALSE(vector_index_metadata_store::prepared_xid_matches(
+      valid_row, different_payload));
+
+  XID different_component_split;
+  different_component_split.set(7, "globa", 5, "branchx", 7);
+  EXPECT_FALSE(vector_index_metadata_store::prepared_xid_matches(
+      valid_row, different_component_split));
+
+  XID empty;
+  empty.reset();
+  empty.set_format_id(9);
+  empty.set_gtrid_length(0);
+  empty.set_bqual_length(0);
+  vector_index_metadata_store::prepared_change_row empty_row;
+  ASSERT_TRUE(vector_index_metadata_store::set_prepared_xid(empty, &empty_row));
+  EXPECT_TRUE(empty_row.xid_data.empty());
+  EXPECT_TRUE(vector_index_metadata_store::prepared_xid_matches(empty_row, empty));
+  ASSERT_TRUE(vector_index_metadata_store::get_prepared_xid(empty_row, &restored));
+  EXPECT_TRUE(restored.eq(&empty));
 
   row.gtrid_length = MAXGTRIDSIZE + 1;
   row.bqual_length = 0;
@@ -2251,39 +2331,6 @@ TEST_F(MetadataStoreTest, LoadCommittedRejectsMismatchedVectorSize) {
 
   std::vector<vector_index_metadata_store::committed_row> loaded;
   EXPECT_FALSE(vector_index_metadata_store::load_committed_all(&loaded));
-}
-
-TEST_F(MetadataStoreTest, QuarantineRenamesCommittedStore) {
-  std::ofstream file(m_committed_path,
-                     std::ios::out | std::ios::binary | std::ios::trunc);
-  ASSERT_TRUE(file.good());
-  file << "mysql-vector-committed-v1\n";
-  file << "bad\trow\n";
-  file.close();
-  ASSERT_TRUE(file);
-
-  ASSERT_TRUE(vector_index_metadata_store::quarantine_committed_store());
-
-  std::ifstream current(m_committed_path);
-  EXPECT_FALSE(current.good());
-  std::ifstream quarantined(m_committed_path + ".corrupt");
-  EXPECT_TRUE(quarantined.good());
-}
-
-TEST_F(MetadataStoreTest, QuarantineRenamesCurrentStore) {
-  std::ofstream file(m_path, std::ios::out | std::ios::binary | std::ios::trunc);
-  ASSERT_TRUE(file.good());
-  file << "VECTOR_INDEX_METADATA_V1\n";
-  file << "bad\trow\n";
-  file.close();
-  ASSERT_TRUE(file);
-
-  ASSERT_TRUE(vector_index_metadata_store::quarantine_current_store());
-
-  std::ifstream current(m_path);
-  EXPECT_FALSE(current.good());
-  std::ifstream quarantined(m_path + ".corrupt");
-  EXPECT_TRUE(quarantined.good());
 }
 
 TEST_F(MetadataStoreTest, SaveThenLoadManifestRoundTrip) {
@@ -2680,66 +2727,26 @@ TEST_F(MetadataStoreTest, LoadAllRejectsUnknownMetricToken) {
   EXPECT_FALSE(vector_index_metadata_store::load_all(&loaded));
 }
 
-TEST_F(MetadataStoreTest, QuarantineRenamesManifestStore) {
-  std::ofstream file(m_manifest_path,
-                     std::ios::out | std::ios::binary | std::ios::trunc);
-  ASSERT_TRUE(file.good());
-  file << "mysql-vector-manifest-v1\n";
-  file << "bad\trow\n";
-  file.close();
-  ASSERT_TRUE(file);
-
-  ASSERT_TRUE(vector_index_metadata_store::quarantine_manifest_store());
-  std::ifstream current(m_manifest_path);
-  EXPECT_FALSE(current.good());
-  std::ifstream quarantined(m_manifest_path + ".corrupt");
-  EXPECT_TRUE(quarantined.good());
-}
-
-TEST_F(MetadataStoreTest, QuarantineRenamesChangeLogStore) {
-  std::ofstream file(m_change_log_path,
-                     std::ios::out | std::ios::binary | std::ios::trunc);
-  ASSERT_TRUE(file.good());
-  file << "mysql-vector-changelog-v1\n";
-  file << "bad\trow\n";
-  file.close();
-  ASSERT_TRUE(file);
-
-  ASSERT_TRUE(vector_index_metadata_store::quarantine_change_log_store());
-  std::ifstream current(m_change_log_path);
-  EXPECT_FALSE(current.good());
-  std::ifstream quarantined(m_change_log_path + ".corrupt");
-  EXPECT_TRUE(quarantined.good());
-}
-
-TEST_F(MetadataStoreTest, QuarantineMissingStoresReturnsTrue) {
-  EXPECT_TRUE(vector_index_metadata_store::quarantine_current_store());
-  EXPECT_TRUE(vector_index_metadata_store::quarantine_committed_store());
-  EXPECT_TRUE(vector_index_metadata_store::quarantine_manifest_store());
-  EXPECT_TRUE(vector_index_metadata_store::quarantine_change_log_store());
-  EXPECT_TRUE(vector_index_metadata_store::quarantine_prepared_store());
+TEST_F(MetadataStoreTest, QuarantineMissingSegmentTaskStoreReturnsTrue) {
   EXPECT_TRUE(vector_index_metadata_store::quarantine_segment_task_store());
 }
 
-TEST_F(MetadataStoreTest, QuarantineFailsWhenCorruptTargetIsDirectory) {
-  std::ofstream file(m_path, std::ios::out | std::ios::binary | std::ios::trunc);
-  ASSERT_TRUE(file.good());
-  file << "VECTOR_INDEX_METADATA_V1\n";
-  file << "bad\trow\n";
-  file.close();
-  ASSERT_TRUE(file);
+TEST_F(MetadataStoreTest,
+       SegmentTaskQuarantineFailsWhenCorruptTargetIsDirectory) {
+  ASSERT_TRUE(vector_index_metadata_store::save_raw_artifact(
+      "segment_tasks", "bad\nrow\n"));
 
   std::error_code ec;
-  std::filesystem::create_directories(m_path + ".corrupt", ec);
+  std::filesystem::create_directories(m_segment_task_path + ".corrupt", ec);
   ASSERT_FALSE(ec);
-  std::ofstream blocker(m_path + ".corrupt/blocker.txt",
+  std::ofstream blocker(m_segment_task_path + ".corrupt/blocker.txt",
                         std::ios::out | std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(blocker.good());
   blocker << "block";
   blocker.close();
   ASSERT_TRUE(blocker);
 
-  EXPECT_FALSE(vector_index_metadata_store::quarantine_current_store());
+  EXPECT_FALSE(vector_index_metadata_store::quarantine_segment_task_store());
 }
 
 TEST(VectorIndexMetadataCodecTest, EmptyTransactionalStoresDecodeCleanly) {

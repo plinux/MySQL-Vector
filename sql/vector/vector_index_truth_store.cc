@@ -23,8 +23,11 @@
 
 #include "sql/vector/vector_index_truth_store.h"
 
-#include <cstdlib>
+#include <atomic>
+#include <charconv>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -34,8 +37,9 @@
 #include <utility>
 #include <vector>
 
-#include "m_ctype.h"
 #include "lex_string.h"
+#include "m_ctype.h"
+#include "my_checksum.h"
 #include "my_dbug.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h"
 #include "sql/mysqld.h"
@@ -54,8 +58,8 @@ constexpr const char *kChangeLogArtifactName = "changelog";
 constexpr const char *kPreparedArtifactName = "prepared";
 constexpr const char *kSegmentTasksArtifactName = "segment_tasks";
 constexpr const char *kQuarantineStoreArtifactName = "quarantine_store";
-constexpr const char *kQuarantinePayloadHeaderV1 =
-    "mysql-vector-quarantine-v1";
+constexpr const char *kQuarantinePayloadHeaderV1 = "mysql-vector-quarantine-v1";
+std::atomic<uint64_t> g_quarantine_identity_sequence{1};
 
 enum class row_artifact_kind { kNone, kCommitted, kChangeLog, kPrepared };
 
@@ -117,7 +121,8 @@ bool decode_hex_bytes(const std::string &encoded, std::string *decoded) {
   return true;
 }
 
-bool split_tab_fields(const std::string &line, std::vector<std::string> *fields) {
+bool split_tab_fields(const std::string &line,
+                      std::vector<std::string> *fields) {
   if (fields == nullptr) return false;
   fields->clear();
   size_t pos = 0;
@@ -133,13 +138,70 @@ bool split_tab_fields(const std::string &line, std::vector<std::string> *fields)
   return true;
 }
 
-using quarantine_entries = std::vector<std::pair<std::string, std::string>>;
+using quarantine_entries =
+    std::vector<vector_index_truth_store::quarantine_record>;
+
+const char *quarantine_state_name(
+    vector_index_truth_store::quarantine_state state) {
+  using vector_index_truth_store::quarantine_state;
+  switch (state) {
+    case quarantine_state::kCopied:
+      return "copied";
+    case quarantine_state::kSourceUpdateFailed:
+      return "source_update_failed";
+    case quarantine_state::kComplete:
+      return "complete";
+  }
+  return nullptr;
+}
+
+bool parse_quarantine_state(const std::string &value,
+                            vector_index_truth_store::quarantine_state *state) {
+  using vector_index_truth_store::quarantine_state;
+  if (state == nullptr) return false;
+  if (value == "copied") {
+    *state = quarantine_state::kCopied;
+    return true;
+  }
+  if (value == "source_update_failed") {
+    *state = quarantine_state::kSourceUpdateFailed;
+    return true;
+  }
+  if (value == "complete") {
+    *state = quarantine_state::kComplete;
+    return true;
+  }
+  return false;
+}
+
+bool parse_uint64(const std::string &value, uint64_t *result) {
+  if (result == nullptr || value.empty()) return false;
+  uint64_t parsed = 0;
+  const char *begin = value.data();
+  const char *end = begin + value.size();
+  const auto conversion = std::from_chars(begin, end, parsed);
+  if (conversion.ec != std::errc() || conversion.ptr != end) return false;
+  *result = parsed;
+  return true;
+}
+
+uint64_t quarantine_payload_checksum(const std::string &payload) {
+  return static_cast<uint64_t>(
+      my_checksum(0, reinterpret_cast<const unsigned char *>(payload.data()),
+                  payload.size()));
+}
+
+uint64_t quarantine_timestamp() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+}
 
 void record_artifact_persist_event(const char *backend_name,
                                    const char *artifact_name, size_t row_count,
-                                   size_t payload_bytes,
-                                   uint64_t serialize_ms, uint64_t save_ms,
-                                   bool ok) {
+                                   size_t payload_bytes, uint64_t serialize_ms,
+                                   uint64_t save_ms, bool ok) {
   if (!vector_index_diagnostics::enabled()) return;
   vector_index_diagnostics::record_event(
       "vector_truth_store_artifact",
@@ -183,7 +245,8 @@ bool truth_payload_to_vector(uint32_t dimension, const std::string &payload,
   return true;
 }
 
-bool encode_truth_op(vector_index_metadata_store::change_op op, uint8_t *value) {
+bool encode_truth_op(vector_index_metadata_store::change_op op,
+                     uint8_t *value) {
   if (value == nullptr) return false;
   switch (op) {
     case vector_index_metadata_store::change_op::kUpsert:
@@ -196,7 +259,8 @@ bool encode_truth_op(vector_index_metadata_store::change_op op, uint8_t *value) 
   return false;
 }
 
-bool decode_truth_op(uint8_t value, vector_index_metadata_store::change_op *op) {
+bool decode_truth_op(uint8_t value,
+                     vector_index_metadata_store::change_op *op) {
   if (op == nullptr) return false;
   if (value == kTruthRowOpUpsert) {
     *op = vector_index_metadata_store::change_op::kUpsert;
@@ -335,8 +399,7 @@ bool to_innodb_prepared_rows(
     stored.prepared_in_tc = row.prepared_in_tc ? 1 : 0;
     stored.index_name = row.index_name;
     stored.doc_id = row.doc_id;
-    if (stored.index_name.empty() ||
-        !encode_truth_op(row.op, &stored.op) ||
+    if (stored.index_name.empty() || !encode_truth_op(row.op, &stored.op) ||
         !vector_to_truth_payload(row.vector, &stored.dimension,
                                  &stored.vector_payload)) {
       return false;
@@ -376,8 +439,7 @@ bool from_innodb_prepared_rows(
     loaded.doc_id = row.doc_id;
     if (loaded.txn_id == 0 ||
         !vector_index_metadata_store::valid_prepared_xid(loaded) ||
-        loaded.index_name.empty() ||
-        !decode_truth_op(row.op, &loaded.op) ||
+        loaded.index_name.empty() || !decode_truth_op(row.op, &loaded.op) ||
         !truth_payload_to_vector(row.dimension, row.vector_payload,
                                  &loaded.vector)) {
       return false;
@@ -436,10 +498,9 @@ bool extract_debug_payload(
   if (rows.size() != 1 || payload == nullptr) return false;
   const auto &row = rows.front();
   if (row.txn_id != 0 || row.row_no != 1 || row.format_id != 0 ||
-      row.gtrid_length != 0 || row.bqual_length != 0 ||
-      !row.xid_data.empty() || row.prepared_in_tc != 0 ||
-      row.op != kTruthRowOpUpsert || !row.index_name.empty() ||
-      row.doc_id != 0 || row.dimension != 0) {
+      row.gtrid_length != 0 || row.bqual_length != 0 || !row.xid_data.empty() ||
+      row.prepared_in_tc != 0 || row.op != kTruthRowOpUpsert ||
+      !row.index_name.empty() || row.doc_id != 0 || row.dimension != 0) {
     return false;
   }
   *payload = row.vector_payload;
@@ -484,7 +545,7 @@ innodb_vector_truth_store::prepared_change_row make_debug_prepared_row(
 }
 
 bool deserialize_quarantine_entries(const std::string &payload,
-                                  quarantine_entries *entries) {
+                                    quarantine_entries *entries) {
   if (entries == nullptr) return false;
   entries->clear();
   if (payload.empty()) return true;
@@ -497,52 +558,112 @@ bool deserialize_quarantine_entries(const std::string &payload,
   while (std::getline(stream, line)) {
     if (line.empty()) continue;
     std::vector<std::string> fields;
-    if (!split_tab_fields(line, &fields) || fields.size() != 2) return false;
-    std::string artifact_name;
-    std::string artifact_payload;
-    if (!decode_hex_bytes(fields[0], &artifact_name) ||
-        !decode_hex_bytes(fields[1], &artifact_payload) ||
-        artifact_name.empty()) {
+    if (!split_tab_fields(line, &fields) || fields.size() != 8) return false;
+    vector_index_truth_store::quarantine_record record;
+    if (!decode_hex_bytes(fields[0], &record.identity) ||
+        !decode_hex_bytes(fields[1], &record.artifact_name) ||
+        !parse_quarantine_state(fields[2], &record.state) ||
+        !decode_hex_bytes(fields[3], &record.reason) ||
+        !parse_uint64(fields[4], &record.checksum) ||
+        !parse_uint64(fields[5], &record.generation) ||
+        !parse_uint64(fields[6], &record.timestamp) ||
+        !decode_hex_bytes(fields[7], &record.payload) ||
+        record.identity.empty() || record.artifact_name.empty() ||
+        record.reason.empty() ||
+        record.checksum != quarantine_payload_checksum(record.payload)) {
       return false;
     }
-    entries->push_back({std::move(artifact_name), std::move(artifact_payload)});
+    entries->push_back(std::move(record));
   }
   return true;
 }
 
 bool serialize_quarantine_entries(const quarantine_entries &entries,
-                                std::string *payload) {
+                                  std::string *payload) {
   if (payload == nullptr) return false;
   std::ostringstream stream;
   stream << kQuarantinePayloadHeaderV1 << "\n";
   for (const auto &entry : entries) {
-    stream << encode_hex_bytes(entry.first) << "\t"
-           << encode_hex_bytes(entry.second) << "\n";
+    const char *state = quarantine_state_name(entry.state);
+    if (entry.identity.empty() || entry.artifact_name.empty() ||
+        entry.reason.empty() || state == nullptr ||
+        entry.checksum != quarantine_payload_checksum(entry.payload)) {
+      return false;
+    }
+    stream << encode_hex_bytes(entry.identity) << "\t"
+           << encode_hex_bytes(entry.artifact_name) << "\t" << state << "\t"
+           << encode_hex_bytes(entry.reason) << "\t" << entry.checksum << "\t"
+           << entry.generation << "\t" << entry.timestamp << "\t"
+           << encode_hex_bytes(entry.payload) << "\n";
   }
   *payload = stream.str();
   return true;
 }
 
-void upsert_quarantine_entry(quarantine_entries *entries,
-                           const std::string &artifact_name,
-                           const std::string &payload) {
-  for (auto &entry : *entries) {
-    if (entry.first == artifact_name) {
-      entry.second = payload;
-      return;
+bool append_quarantine_entry(quarantine_entries *entries,
+                             const std::string &artifact_name,
+                             const std::string &reason, uint64_t generation,
+                             const std::string &payload,
+                             std::string *identity) {
+  using vector_index_truth_store::quarantine_record;
+  using vector_index_truth_store::quarantine_state;
+  if (entries == nullptr || identity == nullptr || artifact_name.empty() ||
+      reason.empty()) {
+    return false;
+  }
+
+  const uint64_t checksum = quarantine_payload_checksum(payload);
+  for (auto it = entries->rbegin(); it != entries->rend(); ++it) {
+    if (it->artifact_name == artifact_name && it->checksum == checksum &&
+        it->state != quarantine_state::kComplete) {
+      *identity = it->identity;
+      return true;
     }
   }
-  entries->push_back({artifact_name, payload});
+
+  quarantine_record record;
+  record.artifact_name = artifact_name;
+  record.state = quarantine_state::kCopied;
+  record.reason = reason;
+  record.checksum = checksum;
+  record.generation = generation;
+  record.timestamp = quarantine_timestamp();
+  record.payload = payload;
+  const uint64_t sequence =
+      g_quarantine_identity_sequence.fetch_add(1, std::memory_order_relaxed);
+  record.identity = artifact_name + "-" + std::to_string(record.timestamp) +
+                    "-" + std::to_string(sequence) + "-" +
+                    std::to_string(checksum);
+  *identity = record.identity;
+  entries->push_back(std::move(record));
+  return true;
+}
+
+bool update_quarantine_entry_state(
+    quarantine_entries *entries, const std::string &identity,
+    vector_index_truth_store::quarantine_state state) {
+  using vector_index_truth_store::quarantine_state;
+  if (entries == nullptr || identity.empty()) return false;
+  for (auto &entry : *entries) {
+    if (entry.identity != identity) continue;
+    if (entry.state == quarantine_state::kComplete &&
+        state != quarantine_state::kComplete) {
+      return false;
+    }
+    entry.state = state;
+    return true;
+  }
+  return false;
 }
 
 bool is_valid_artifact_name(const char *artifact_name) {
   return artifact_name != nullptr &&
          (std::strcmp(artifact_name, kMetadataArtifactName) == 0 ||
-         std::strcmp(artifact_name, kCommittedArtifactName) == 0 ||
-         std::strcmp(artifact_name, kManifestArtifactName) == 0 ||
-         std::strcmp(artifact_name, kChangeLogArtifactName) == 0 ||
-         std::strcmp(artifact_name, kPreparedArtifactName) == 0 ||
-         std::strcmp(artifact_name, kSegmentTasksArtifactName) == 0);
+          std::strcmp(artifact_name, kCommittedArtifactName) == 0 ||
+          std::strcmp(artifact_name, kManifestArtifactName) == 0 ||
+          std::strcmp(artifact_name, kChangeLogArtifactName) == 0 ||
+          std::strcmp(artifact_name, kPreparedArtifactName) == 0 ||
+          std::strcmp(artifact_name, kSegmentTasksArtifactName) == 0);
 }
 
 bool use_file_truth_store_backend() {
@@ -555,9 +676,11 @@ bool use_file_truth_store_backend() {
 #endif
 }
 
-bool is_truth_store_table_name(const char *schema_name, const char *table_name) {
+bool is_truth_store_table_name(const char *schema_name,
+                               const char *table_name) {
   if (schema_name == nullptr || table_name == nullptr) return false;
-  if (my_strcasecmp(system_charset_info, schema_name, "mysql") != 0) return false;
+  if (my_strcasecmp(system_charset_info, schema_name, "mysql") != 0)
+    return false;
   return my_strcasecmp(system_charset_info, table_name,
                        "vector_index_truth_metadata") == 0 ||
          my_strcasecmp(system_charset_info, table_name,
@@ -621,7 +744,8 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   bool commit_persist() override {
     std::lock_guard<std::mutex> guard(m_mutex);
     if (m_persist_session == nullptr) return false;
-    const bool ok = innodb_vector_truth_store::commit_session(m_persist_session);
+    const bool ok =
+        innodb_vector_truth_store::commit_session(m_persist_session);
     innodb_vector_truth_store::close_session(m_persist_session);
     m_persist_session = nullptr;
     return ok;
@@ -636,23 +760,68 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     }
   }
 
+  bool stage_quarantine(const std::string &artifact_name,
+                        const std::string &reason, uint64_t generation,
+                        std::string *identity) override {
+    if (!ensure_tables() || identity == nullptr ||
+        !is_valid_artifact_name(artifact_name.c_str())) {
+      return false;
+    }
+    DBUG_EXECUTE_IF("vector_truth_store_fail_stage_quarantine", return false;);
+
+    std::string artifact_payload;
+    bool artifact_found = false;
+    if (!load_source_artifact_payload(artifact_name.c_str(), &artifact_payload,
+                                      &artifact_found)) {
+      return false;
+    }
+    if (!artifact_found) artifact_payload.clear();
+
+    quarantine_entries entries;
+    if (!load_quarantine_entries(&entries) ||
+        !append_quarantine_entry(&entries, artifact_name, reason, generation,
+                                 artifact_payload, identity)) {
+      return false;
+    }
+    return save_quarantine_entries(entries);
+  }
+
+  bool update_quarantine_state(
+      const std::string &identity,
+      vector_index_truth_store::quarantine_state state) override {
+    DBUG_EXECUTE_IF("vector_truth_store_fail_quarantine_state", return false;);
+    quarantine_entries entries;
+    if (!load_quarantine_entries(&entries) ||
+        !update_quarantine_entry_state(&entries, identity, state)) {
+      return false;
+    }
+    return save_quarantine_entries(entries);
+  }
+
   bool load_metadata(
       std::vector<vector_index_metadata_store::metadata_row> *rows) override {
+    if (rows == nullptr) return false;
     std::string payload;
-    if (!load_artifact(kMetadataArtifactName, &payload)) return false;
-    return vector_index_metadata_store::deserialize_metadata_rows(payload, rows);
+    bool found = false;
+    if (!load_structured_artifact(kMetadataArtifactName, &payload, &found)) {
+      return false;
+    }
+    if (!found) {
+      rows->clear();
+      return true;
+    }
+    if (payload.empty()) return false;
+    return vector_index_metadata_store::deserialize_metadata_rows(payload,
+                                                                  rows);
   }
 
   bool save_metadata(
-      const std::vector<vector_index_metadata_store::metadata_row> &rows) override {
+      const std::vector<vector_index_metadata_store::metadata_row> &rows)
+      override {
     std::string payload;
     if (!vector_index_metadata_store::serialize_metadata_rows(rows, &payload))
       return false;
     return save_artifact(kMetadataArtifactName, payload);
-  }
-
-  bool quarantine_metadata() override {
-    return quarantine_artifact(kMetadataArtifactName);
   }
 
   bool load_committed(
@@ -672,9 +841,8 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
 
   bool for_each_committed(
       const std::string &index_name,
-      const std::function<bool(
-          const vector_index_metadata_store::committed_row &row)> &visitor)
-      override {
+      const std::function<bool(const vector_index_metadata_store::committed_row
+                                   &row)> &visitor) override {
     if (visitor == nullptr || index_name.empty()) return false;
     bool found = false;
     return innodb_vector_truth_store::visit_committed_rows_for_index(
@@ -703,29 +871,28 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   }
 
   bool save_committed(
-      const std::vector<vector_index_metadata_store::committed_row> &rows) override {
+      const std::vector<vector_index_metadata_store::committed_row> &rows)
+      override {
     const bool diagnostics_enabled = vector_index_diagnostics::enabled();
     const auto serialize_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
     std::vector<innodb_vector_truth_store::committed_row> stored_rows;
-    if (!to_innodb_committed_rows(rows, &stored_rows))
-      return false;
-    const uint64_t serialize_ms =
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                serialize_start);
+    if (!to_innodb_committed_rows(rows, &stored_rows)) return false;
+    const uint64_t serialize_ms = vector_index_diagnostics::elapsed_ms_if(
+        diagnostics_enabled, serialize_start);
     const auto save_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
     const bool ok = innodb_vector_truth_store::save_committed_rows(
         stored_rows, m_persist_session);
     if (diagnostics_enabled) {
       size_t payload_bytes = 0;
-      for (const auto &row : stored_rows) payload_bytes += row.vector_payload.size();
-      record_artifact_persist_event(
-          backend_name(), kCommittedArtifactName, rows.size(), payload_bytes,
-          serialize_ms,
-          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                  save_start),
-          ok);
+      for (const auto &row : stored_rows)
+        payload_bytes += row.vector_payload.size();
+      record_artifact_persist_event(backend_name(), kCommittedArtifactName,
+                                    rows.size(), payload_bytes, serialize_ms,
+                                    vector_index_diagnostics::elapsed_ms_if(
+                                        diagnostics_enabled, save_start),
+                                    ok);
     }
     return ok;
   }
@@ -738,33 +905,37 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
         vector_index_diagnostics::now_if(diagnostics_enabled);
     std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
     if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
-    const uint64_t serialize_ms =
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                serialize_start);
+    const uint64_t serialize_ms = vector_index_diagnostics::elapsed_ms_if(
+        diagnostics_enabled, serialize_start);
     const auto save_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
     const bool ok = innodb_vector_truth_store::apply_committed_delta(
         stored_rows, m_persist_session);
     if (diagnostics_enabled) {
       size_t payload_bytes = 0;
-      for (const auto &row : stored_rows) payload_bytes += row.vector_payload.size();
-      record_artifact_persist_event(
-          backend_name(), "committed_delta", rows.size(), payload_bytes,
-          serialize_ms,
-          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                  save_start),
-          ok);
+      for (const auto &row : stored_rows)
+        payload_bytes += row.vector_payload.size();
+      record_artifact_persist_event(backend_name(), "committed_delta",
+                                    rows.size(), payload_bytes, serialize_ms,
+                                    vector_index_diagnostics::elapsed_ms_if(
+                                        diagnostics_enabled, save_start),
+                                    ok);
     }
     return ok;
   }
 
-  bool quarantine_committed() override {
-    return quarantine_row_artifact(kCommittedArtifactName);
-  }
-
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
+    if (row == nullptr) return false;
     std::string payload;
-    if (!load_artifact(kManifestArtifactName, &payload)) return false;
+    bool found = false;
+    if (!load_structured_artifact(kManifestArtifactName, &payload, &found)) {
+      return false;
+    }
+    if (!found) {
+      *row = vector_index_metadata_store::manifest_row();
+      return true;
+    }
+    if (payload.empty()) return false;
     return vector_index_metadata_store::deserialize_manifest_row(payload, row);
   }
 
@@ -774,10 +945,6 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     if (!vector_index_metadata_store::serialize_manifest_row(row, &payload))
       return false;
     return save_artifact(kManifestArtifactName, payload);
-  }
-
-  bool quarantine_manifest() override {
-    return quarantine_artifact(kManifestArtifactName);
   }
 
   bool load_change_log(
@@ -796,29 +963,28 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   }
 
   bool save_change_log(
-      const std::vector<vector_index_metadata_store::change_log_row> &rows) override {
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
     const bool diagnostics_enabled = vector_index_diagnostics::enabled();
     const auto serialize_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
     std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
-    if (!to_innodb_change_log_rows(rows, &stored_rows))
-      return false;
-    const uint64_t serialize_ms =
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                serialize_start);
+    if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
+    const uint64_t serialize_ms = vector_index_diagnostics::elapsed_ms_if(
+        diagnostics_enabled, serialize_start);
     const auto save_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
     const bool ok = innodb_vector_truth_store::save_change_log_rows(
         stored_rows, m_persist_session);
     if (diagnostics_enabled) {
       size_t payload_bytes = 0;
-      for (const auto &row : stored_rows) payload_bytes += row.vector_payload.size();
-      record_artifact_persist_event(
-          backend_name(), kChangeLogArtifactName, rows.size(), payload_bytes,
-          serialize_ms,
-          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                  save_start),
-          ok);
+      for (const auto &row : stored_rows)
+        payload_bytes += row.vector_payload.size();
+      record_artifact_persist_event(backend_name(), kChangeLogArtifactName,
+                                    rows.size(), payload_bytes, serialize_ms,
+                                    vector_index_diagnostics::elapsed_ms_if(
+                                        diagnostics_enabled, save_start),
+                                    ok);
     }
     return ok;
   }
@@ -831,28 +997,23 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
         vector_index_diagnostics::now_if(diagnostics_enabled);
     std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
     if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
-    const uint64_t serialize_ms =
-        vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                serialize_start);
+    const uint64_t serialize_ms = vector_index_diagnostics::elapsed_ms_if(
+        diagnostics_enabled, serialize_start);
     const auto save_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
     const bool ok = innodb_vector_truth_store::append_change_log_delta(
         stored_rows, m_persist_session);
     if (diagnostics_enabled) {
       size_t payload_bytes = 0;
-      for (const auto &row : stored_rows) payload_bytes += row.vector_payload.size();
-      record_artifact_persist_event(
-          backend_name(), "changelog_delta", rows.size(), payload_bytes,
-          serialize_ms,
-          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                  save_start),
-          ok);
+      for (const auto &row : stored_rows)
+        payload_bytes += row.vector_payload.size();
+      record_artifact_persist_event(backend_name(), "changelog_delta",
+                                    rows.size(), payload_bytes, serialize_ms,
+                                    vector_index_diagnostics::elapsed_ms_if(
+                                        diagnostics_enabled, save_start),
+                                    ok);
     }
     return ok;
-  }
-
-  bool quarantine_change_log() override {
-    return quarantine_row_artifact(kChangeLogArtifactName);
   }
 
   bool load_prepared(
@@ -876,26 +1037,28 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       override {
     DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
     std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
-    if (!to_innodb_prepared_rows(rows, &stored_rows))
-      return false;
+    if (!to_innodb_prepared_rows(rows, &stored_rows)) return false;
     return innodb_vector_truth_store::save_prepared_rows(stored_rows,
                                                          m_persist_session);
-  }
-
-  bool quarantine_prepared() override {
-    bool found = false;
-    if (!row_artifact_exists(kPreparedArtifactName, &found)) return false;
-    if (found) return quarantine_row_artifact(kPreparedArtifactName);
-    return vector_index_metadata_store::quarantine_prepared_store();
   }
 
   bool load_segment_tasks(
       std::vector<vector_index_metadata_store::segment_task_row> *rows)
       override {
+    if (rows == nullptr) return false;
     std::string payload;
-    if (!load_artifact(kSegmentTasksArtifactName, &payload)) return false;
+    bool found = false;
+    if (!load_structured_artifact(kSegmentTasksArtifactName, &payload,
+                                  &found)) {
+      return false;
+    }
+    if (!found) {
+      rows->clear();
+      return true;
+    }
+    if (payload.empty()) return false;
     return vector_index_metadata_store::deserialize_segment_task_rows(payload,
-                                                                     rows);
+                                                                      rows);
   }
 
   bool save_segment_tasks(
@@ -924,7 +1087,8 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   }
 
   bool debug_get_artifact(const char *artifact_name, std::string *payload) {
-    if (payload == nullptr || !is_valid_artifact_name(artifact_name)) return false;
+    if (payload == nullptr || !is_valid_artifact_name(artifact_name))
+      return false;
     if (is_row_artifact_name(artifact_name)) {
       bool found = false;
       return load_row_artifact_payload(artifact_name, payload, &found);
@@ -932,7 +1096,8 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     return load_artifact(artifact_name, payload);
   }
 
-  bool debug_set_artifact(const char *artifact_name, const std::string &payload) {
+  bool debug_set_artifact(const char *artifact_name,
+                          const std::string &payload) {
     if (!is_valid_artifact_name(artifact_name)) return false;
     if (is_row_artifact_name(artifact_name)) {
       return save_row_artifact_payload(artifact_name, payload);
@@ -942,24 +1107,18 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
 
   bool debug_delete_artifact(const char *artifact_name) {
     if (!is_valid_artifact_name(artifact_name)) return false;
-    if (is_row_artifact_name(artifact_name) && !clear_row_artifact(artifact_name)) {
+    if (is_row_artifact_name(artifact_name) &&
+        !clear_row_artifact(artifact_name)) {
       return false;
     }
-    const bool structured_deleted =
-        is_row_artifact_name(artifact_name) ||
-        delete_structured_artifact(artifact_name);
+    const bool structured_deleted = is_row_artifact_name(artifact_name) ||
+                                    delete_structured_artifact(artifact_name);
     return structured_deleted;
   }
 
  private:
-  bool row_artifact_exists(const char *artifact_name, bool *found) {
-    if (found == nullptr || !is_row_artifact_name(artifact_name)) return false;
-    std::string payload;
-    return load_row_artifact_payload(artifact_name, &payload, found);
-  }
-
-  bool load_row_artifact_payload(const char *artifact_name, std::string *payload,
-                                 bool *found) {
+  bool load_row_artifact_payload(const char *artifact_name,
+                                 std::string *payload, bool *found) {
     if (payload == nullptr || found == nullptr ||
         !is_row_artifact_name(artifact_name)) {
       return false;
@@ -1005,8 +1164,8 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     }
 
     std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
-    if (!innodb_vector_truth_store::load_prepared_rows(
-            &stored_rows, found, m_persist_session)) {
+    if (!innodb_vector_truth_store::load_prepared_rows(&stored_rows, found,
+                                                       m_persist_session)) {
       return false;
     }
     if (!*found) {
@@ -1062,10 +1221,12 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     std::vector<vector_index_metadata_store::prepared_change_row> rows;
     std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
     if (payload.empty() ||
-        (!vector_index_metadata_store::deserialize_prepared_rows(payload, &rows) ||
+        (!vector_index_metadata_store::deserialize_prepared_rows(payload,
+                                                                 &rows) ||
          !to_innodb_prepared_rows(rows, &stored_rows))) {
       stored_rows.clear();
-      if (!payload.empty()) stored_rows.push_back(make_debug_prepared_row(payload));
+      if (!payload.empty())
+        stored_rows.push_back(make_debug_prepared_row(payload));
     }
     return innodb_vector_truth_store::save_prepared_rows(stored_rows,
                                                          m_persist_session);
@@ -1075,36 +1236,41 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     return save_row_artifact_payload(artifact_name, std::string());
   }
 
-  bool save_quarantine_payload(const char *artifact_name,
-                               const std::string &payload) {
+  bool load_quarantine_entries(quarantine_entries *entries) {
+    if (entries == nullptr) return false;
     std::string quarantine_payload;
-    quarantine_entries entries;
     bool quarantine_found = false;
     if (!load_structured_artifact(kQuarantineStoreArtifactName,
                                   &quarantine_payload, &quarantine_found)) {
       return false;
     }
-    if (quarantine_found &&
-        !deserialize_quarantine_entries(quarantine_payload, &entries)) {
-      return false;
+    if (!quarantine_found) {
+      entries->clear();
+      return true;
     }
-    upsert_quarantine_entry(&entries, artifact_name, payload);
-    if (!serialize_quarantine_entries(entries, &quarantine_payload)) return false;
+    return deserialize_quarantine_entries(quarantine_payload, entries);
+  }
+
+  bool save_quarantine_entries(const quarantine_entries &entries) {
+    std::string quarantine_payload;
+    if (!serialize_quarantine_entries(entries, &quarantine_payload))
+      return false;
     return save_structured_artifact(kQuarantineStoreArtifactName,
                                     quarantine_payload);
   }
 
-  bool quarantine_row_artifact(const char *artifact_name) {
-    std::string payload;
-    bool found = false;
-    if (!load_row_artifact_payload(artifact_name, &payload, &found)) return false;
-    if (!found) return true;
-    return save_quarantine_payload(artifact_name, payload) &&
-           clear_row_artifact(artifact_name);
+  bool load_source_artifact_payload(const char *artifact_name,
+                                    std::string *payload, bool *found) {
+    if (is_row_artifact_name(artifact_name)) {
+      return load_row_artifact_payload(artifact_name, payload, found);
+    }
+    return load_structured_artifact(artifact_name, payload, found);
   }
 
-  bool load_structured_artifact(const char *artifact_name,
-                                std::string *payload, bool *found) {
+  bool ensure_tables() { return true; }
+
+  bool load_structured_artifact(const char *artifact_name, std::string *payload,
+                                bool *found) {
     DBUG_EXECUTE_IF("vector_truth_store_fail_load_structured_artifact",
                     return false;);
     DBUG_EXECUTE_IF("vector_truth_store_force_structured_artifact_missing", {
@@ -1113,12 +1279,12 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       return true;
     };);
     if (payload == nullptr || found == nullptr) return false;
-    return innodb_vector_truth_store::load_artifact(artifact_name, payload, found,
-                                                    m_persist_session);
+    return innodb_vector_truth_store::load_artifact(artifact_name, payload,
+                                                    found, m_persist_session);
   }
 
   bool save_structured_artifact(const char *artifact_name,
-                              const std::string &payload) {
+                                const std::string &payload) {
     return innodb_vector_truth_store::save_artifact(artifact_name, payload,
                                                     m_persist_session);
   }
@@ -1134,8 +1300,7 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     if (payload == nullptr) return false;
 
     bool found = false;
-    if (!load_structured_artifact(artifact_name, payload, &found))
-      return false;
+    if (!load_structured_artifact(artifact_name, payload, &found)) return false;
     if (found) return true;
     payload->clear();
     return true;
@@ -1147,13 +1312,19 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   }
 
   bool quarantine_artifact(const char *artifact_name) {
-    std::string payload;
-    bool found = false;
-    if (!load_structured_artifact(artifact_name, &payload, &found)) return false;
-    if (!found) return true;
+    if (!ensure_tables()) return false;
 
-    return save_quarantine_payload(artifact_name, payload) &&
-           delete_structured_artifact(artifact_name);
+    std::string identity;
+    if (!stage_quarantine(artifact_name, "legacy_quarantine", 0, &identity))
+      return false;
+    if (!delete_structured_artifact(artifact_name)) {
+      (void)update_quarantine_state(
+          identity,
+          vector_index_truth_store::quarantine_state::kSourceUpdateFailed);
+      return false;
+    }
+    return update_quarantine_state(
+        identity, vector_index_truth_store::quarantine_state::kComplete);
   }
 
   mutable std::mutex m_mutex;
@@ -1166,19 +1337,66 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
 
   bool is_transactional() const override { return false; }
 
+  bool stage_quarantine(const std::string &artifact_name,
+                        const std::string &reason, uint64_t generation,
+                        std::string *identity) override {
+    if (identity == nullptr || !is_valid_artifact_name(artifact_name.c_str())) {
+      return false;
+    }
+    std::string artifact_payload;
+    bool artifact_found = false;
+    if (!vector_index_metadata_store::load_raw_artifact(
+            artifact_name, &artifact_payload, &artifact_found)) {
+      return false;
+    }
+    if (!artifact_found) artifact_payload.clear();
+
+    std::string quarantine_payload;
+    bool quarantine_found = false;
+    quarantine_entries entries;
+    if (!vector_index_metadata_store::load_raw_artifact(
+            kQuarantineStoreArtifactName, &quarantine_payload,
+            &quarantine_found) ||
+        (quarantine_found &&
+         !deserialize_quarantine_entries(quarantine_payload, &entries)) ||
+        !append_quarantine_entry(&entries, artifact_name, reason, generation,
+                                 artifact_payload, identity) ||
+        !serialize_quarantine_entries(entries, &quarantine_payload)) {
+      return false;
+    }
+    return vector_index_metadata_store::save_raw_artifact(
+        kQuarantineStoreArtifactName, quarantine_payload);
+  }
+
+  bool update_quarantine_state(
+      const std::string &identity,
+      vector_index_truth_store::quarantine_state state) override {
+    std::string quarantine_payload;
+    bool quarantine_found = false;
+    quarantine_entries entries;
+    if (!vector_index_metadata_store::load_raw_artifact(
+            kQuarantineStoreArtifactName, &quarantine_payload,
+            &quarantine_found) ||
+        !quarantine_found ||
+        !deserialize_quarantine_entries(quarantine_payload, &entries) ||
+        !update_quarantine_entry_state(&entries, identity, state) ||
+        !serialize_quarantine_entries(entries, &quarantine_payload)) {
+      return false;
+    }
+    return vector_index_metadata_store::save_raw_artifact(
+        kQuarantineStoreArtifactName, quarantine_payload);
+  }
+
   bool load_metadata(
       std::vector<vector_index_metadata_store::metadata_row> *rows) override {
     return vector_index_metadata_store::load_all(rows);
   }
 
   bool save_metadata(
-      const std::vector<vector_index_metadata_store::metadata_row> &rows) override {
+      const std::vector<vector_index_metadata_store::metadata_row> &rows)
+      override {
     DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
     return vector_index_metadata_store::save_all(rows);
-  }
-
-  bool quarantine_metadata() override {
-    return vector_index_metadata_store::quarantine_current_store();
   }
 
   bool load_committed(
@@ -1187,7 +1405,8 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
   }
 
   bool save_committed(
-      const std::vector<vector_index_metadata_store::committed_row> &rows) override {
+      const std::vector<vector_index_metadata_store::committed_row> &rows)
+      override {
     DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
     const bool diagnostics_enabled = vector_index_diagnostics::enabled();
     std::string payload;
@@ -1195,7 +1414,8 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
     if (diagnostics_enabled) {
       const auto serialize_start =
           vector_index_diagnostics::now_if(diagnostics_enabled);
-      if (!vector_index_metadata_store::serialize_committed_rows(rows, &payload))
+      if (!vector_index_metadata_store::serialize_committed_rows(rows,
+                                                                 &payload))
         return false;
       serialize_ms = vector_index_diagnostics::elapsed_ms_if(
           diagnostics_enabled, serialize_start);
@@ -1204,18 +1424,13 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
         vector_index_diagnostics::now_if(diagnostics_enabled);
     const bool ok = vector_index_metadata_store::save_committed_all(rows);
     if (diagnostics_enabled) {
-      record_artifact_persist_event(
-          backend_name(), kCommittedArtifactName, rows.size(), payload.size(),
-          serialize_ms,
-          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                  save_start),
-          ok);
+      record_artifact_persist_event(backend_name(), kCommittedArtifactName,
+                                    rows.size(), payload.size(), serialize_ms,
+                                    vector_index_diagnostics::elapsed_ms_if(
+                                        diagnostics_enabled, save_start),
+                                    ok);
     }
     return ok;
-  }
-
-  bool quarantine_committed() override {
-    return vector_index_metadata_store::quarantine_committed_store();
   }
 
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
@@ -1228,17 +1443,14 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
     return vector_index_metadata_store::save_manifest(row);
   }
 
-  bool quarantine_manifest() override {
-    return vector_index_metadata_store::quarantine_manifest_store();
-  }
-
   bool load_change_log(
       std::vector<vector_index_metadata_store::change_log_row> *rows) override {
     return vector_index_metadata_store::load_change_log(rows);
   }
 
   bool save_change_log(
-      const std::vector<vector_index_metadata_store::change_log_row> &rows) override {
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
     DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
     const bool diagnostics_enabled = vector_index_diagnostics::enabled();
     std::string payload;
@@ -1246,7 +1458,8 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
     if (diagnostics_enabled) {
       const auto serialize_start =
           vector_index_diagnostics::now_if(diagnostics_enabled);
-      if (!vector_index_metadata_store::serialize_change_log_rows(rows, &payload))
+      if (!vector_index_metadata_store::serialize_change_log_rows(rows,
+                                                                  &payload))
         return false;
       serialize_ms = vector_index_diagnostics::elapsed_ms_if(
           diagnostics_enabled, serialize_start);
@@ -1255,18 +1468,13 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
         vector_index_diagnostics::now_if(diagnostics_enabled);
     const bool ok = vector_index_metadata_store::save_change_log(rows);
     if (diagnostics_enabled) {
-      record_artifact_persist_event(
-          backend_name(), kChangeLogArtifactName, rows.size(), payload.size(),
-          serialize_ms,
-          vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
-                                                  save_start),
-          ok);
+      record_artifact_persist_event(backend_name(), kChangeLogArtifactName,
+                                    rows.size(), payload.size(), serialize_ms,
+                                    vector_index_diagnostics::elapsed_ms_if(
+                                        diagnostics_enabled, save_start),
+                                    ok);
     }
     return ok;
-  }
-
-  bool quarantine_change_log() override {
-    return vector_index_metadata_store::quarantine_change_log_store();
   }
 
   bool load_prepared(
@@ -1280,10 +1488,6 @@ class file_truth_store final : public vector_index_truth_store::truth_store {
       override {
     DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
     return vector_index_metadata_store::save_prepared(rows);
-  }
-
-  bool quarantine_prepared() override {
-    return vector_index_metadata_store::quarantine_prepared_store();
   }
 
   bool load_segment_tasks(
@@ -1390,8 +1594,7 @@ bool decode_hex_bytes_impl(const std::string &encoded, std::string *decoded) {
 }
 
 bool deserialize_quarantine_entries_impl(
-    const std::string &payload,
-    std::vector<std::pair<std::string, std::string>> *entries) {
+    const std::string &payload, std::vector<quarantine_record> *entries) {
   return deserialize_quarantine_entries(payload, entries);
 }
 
@@ -1401,16 +1604,42 @@ bool split_tab_fields_impl(const std::string &line,
   return split_tab_fields(line, fields);
 }
 
+const char *quarantine_state_name_impl(quarantine_state state) {
+  return quarantine_state_name(state);
+}
+
+bool parse_quarantine_state_impl(const std::string &value,
+                                 quarantine_state *state) {
+  return parse_quarantine_state(value, state);
+}
+
+bool parse_uint64_impl(const std::string &value, uint64_t *result) {
+  return parse_uint64(value, result);
+}
+
+uint64_t quarantine_payload_checksum_impl(const std::string &payload) {
+  return quarantine_payload_checksum(payload);
+}
+
 bool serialize_quarantine_entries_impl(
-    const std::vector<std::pair<std::string, std::string>> &entries,
-    std::string *payload) {
+    const std::vector<quarantine_record> &entries, std::string *payload) {
   return serialize_quarantine_entries(entries, payload);
 }
 
-void upsert_quarantine_entry_impl(
-    std::vector<std::pair<std::string, std::string>> *entries,
-    const std::string &artifact_name, const std::string &payload) {
-  upsert_quarantine_entry(entries, artifact_name, payload);
+bool append_quarantine_entry_impl(std::vector<quarantine_record> *entries,
+                                  const std::string &artifact_name,
+                                  const std::string &reason,
+                                  uint64_t generation,
+                                  const std::string &payload,
+                                  std::string *identity) {
+  return append_quarantine_entry(entries, artifact_name, reason, generation,
+                                 payload, identity);
+}
+
+bool update_quarantine_entry_state_impl(std::vector<quarantine_record> *entries,
+                                        const std::string &identity,
+                                        quarantine_state state) {
+  return update_quarantine_entry_state(entries, identity, state);
 }
 
 void record_artifact_persist_event_impl(const char *backend_name,
@@ -1422,7 +1651,9 @@ void record_artifact_persist_event_impl(const char *backend_name,
                                 payload_bytes, serialize_ms, save_ms, ok);
 }
 
-bool use_file_truth_store_backend_impl() { return use_file_truth_store_backend(); }
+bool use_file_truth_store_backend_impl() {
+  return use_file_truth_store_backend();
+}
 
 bool vector_to_truth_payload_impl(const vector_index::vector_data &vector,
                                   uint32_t *dimension, std::string *payload) {
@@ -1528,8 +1759,8 @@ bool from_innodb_prepared_rows_impl(
 namespace vector_index_truth_store {
 
 bool truth_store::for_each_committed(
-    const std::function<bool(
-        const vector_index_metadata_store::committed_row &row)> &visitor) {
+    const std::function<
+        bool(const vector_index_metadata_store::committed_row &row)> &visitor) {
   if (!visitor) return false;
 
   std::vector<vector_index_metadata_store::committed_row> rows;
@@ -1544,8 +1775,8 @@ bool truth_store::for_each_committed(
 
 bool truth_store::for_each_committed(
     const std::string &index_name,
-    const std::function<bool(
-        const vector_index_metadata_store::committed_row &row)> &visitor) {
+    const std::function<
+        bool(const vector_index_metadata_store::committed_row &row)> &visitor) {
   if (index_name.empty() || !visitor) return false;
   return for_each_committed(
       [&](const vector_index_metadata_store::committed_row &row) {

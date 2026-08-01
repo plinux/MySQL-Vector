@@ -12,20 +12,25 @@ VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1)
 [1]
 # restart
 SELECT VEC_INDEX_LIST();
-VEC_INDEX_LIST()
-["idx_manifest_corrupt"]
+ERROR HY000: Incorrect arguments to vec_index_list
 SELECT VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1);
-VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1)
-[1]
+ERROR HY000: Incorrect arguments to vec_index_search
 SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest');
 VEC_DEBUG_TRUTH_STORE_GET_HEX('manifest')
-
+6261640a726f770a
 SHOW GLOBAL STATUS LIKE 'Vector_metadata_load_failures';
 Variable_name	Value
 Vector_metadata_load_failures	<num>
 SHOW GLOBAL STATUS LIKE 'Vector_manifest_load_failures';
 Variable_name	Value
 Vector_manifest_load_failures	<num>
+# restart
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_manifest_corrupt"]
+SELECT VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1);
+VEC_INDEX_SEARCH('idx_manifest_corrupt', VEC_FROMTEXT('[1,2]'), 1)
+[1]
 SELECT VEC_INDEX_DROP('idx_manifest_corrupt');
 VEC_INDEX_DROP('idx_manifest_corrupt')
 1

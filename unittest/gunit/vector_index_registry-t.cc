@@ -401,6 +401,42 @@ class in_memory_truth_store final
 
   void rollback_persist() override { ++rollback_persist_calls; }
 
+  bool stage_quarantine(const std::string &artifact_name,
+                        const std::string &reason, uint64_t generation,
+                        std::string *identity) override {
+    if (identity == nullptr || fail_stage_quarantine ||
+        (artifact_name == "metadata" && fail_quarantine_metadata) ||
+        (artifact_name == "committed" && fail_quarantine_committed) ||
+        (artifact_name == "manifest" && fail_quarantine_manifest) ||
+        (artifact_name == "changelog" && fail_quarantine_change_log) ||
+        (artifact_name == "prepared" && fail_quarantine_prepared) ||
+        (artifact_name == "segment_tasks" &&
+         fail_quarantine_segment_tasks)) {
+      return false;
+    }
+    vector_index_truth_store::quarantine_record record;
+    record.identity = artifact_name + "-" +
+                      std::to_string(++quarantine_identity_sequence);
+    record.artifact_name = artifact_name;
+    record.reason = reason;
+    record.generation = generation;
+    quarantine_records.push_back(record);
+    *identity = record.identity;
+    return true;
+  }
+
+  bool update_quarantine_state(
+      const std::string &identity,
+      vector_index_truth_store::quarantine_state state) override {
+    if (fail_update_quarantine_state) return false;
+    for (auto &record : quarantine_records) {
+      if (record.identity != identity) continue;
+      record.state = state;
+      return true;
+    }
+    return false;
+  }
+
   bool load_metadata(
       std::vector<vector_index_metadata_store::metadata_row> *rows) override {
     if (fail_load_metadata) return false;
@@ -418,12 +454,6 @@ class in_memory_truth_store final
         save_metadata_calls == fail_save_metadata_at_call)
       return false;
     metadata_rows = rows;
-    return true;
-  }
-
-  bool quarantine_metadata() override {
-    if (fail_quarantine_metadata) return false;
-    metadata_rows.clear();
     return true;
   }
 
@@ -470,12 +500,6 @@ class in_memory_truth_store final
     return true;
   }
 
-  bool quarantine_committed() override {
-    if (fail_quarantine_committed) return false;
-    committed_rows.clear();
-    return true;
-  }
-
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
     if (fail_load_manifest) return false;
     if (row == nullptr) return false;
@@ -492,12 +516,6 @@ class in_memory_truth_store final
     }
     if (fail_save_manifest) return false;
     manifest_row = row;
-    return true;
-  }
-
-  bool quarantine_manifest() override {
-    if (fail_quarantine_manifest) return false;
-    manifest_row = vector_index_metadata_store::manifest_row();
     return true;
   }
 
@@ -527,12 +545,6 @@ class in_memory_truth_store final
     return true;
   }
 
-  bool quarantine_change_log() override {
-    if (fail_quarantine_change_log) return false;
-    change_log_rows.clear();
-    return true;
-  }
-
   bool load_prepared(
       std::vector<vector_index_metadata_store::prepared_change_row> *rows)
       override {
@@ -548,12 +560,6 @@ class in_memory_truth_store final
     ++save_prepared_calls;
     if (fail_save_prepared) return false;
     prepared_rows = rows;
-    return true;
-  }
-
-  bool quarantine_prepared() override {
-    if (fail_quarantine_prepared) return false;
-    prepared_rows.clear();
     return true;
   }
 
@@ -603,6 +609,8 @@ class in_memory_truth_store final
   bool fail_load_segment_tasks{false};
   bool fail_save_segment_tasks{false};
   bool fail_quarantine_segment_tasks{false};
+  bool fail_stage_quarantine{false};
+  bool fail_update_quarantine_state{false};
   bool fail_begin_persist{false};
   bool fail_commit_persist{false};
   bool transactional{true};
@@ -618,6 +626,9 @@ class in_memory_truth_store final
   uint64_t save_prepared_calls{0};
   uint64_t save_segment_tasks_calls{0};
   uint64_t save_manifest_calls{0};
+  uint64_t quarantine_identity_sequence{0};
+  std::vector<vector_index_truth_store::quarantine_record>
+      quarantine_records;
 
   void ResetPersistCountersForTesting() {
     save_metadata_calls = 0;
@@ -1403,13 +1414,24 @@ TEST_F(VectorIndexRegistryTest,
       [&](const std::vector<vector_index_metadata_store::prepared_change_row>
               &rows) {
         store_.SetPreparedRowsForTesting(rows);
-        store_.fail_quarantine_prepared = true;
         vector_index_registry::reset_for_testing();
+        const size_t quarantine_count_before = store_.quarantine_records.size();
 
         std::vector<std::string> index_names;
         EXPECT_FALSE(vector_index_registry::list_indexes(&index_names));
+        EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
+                  vector_index_registry::registry_health());
+        EXPECT_EQ("prepared_validation_failed",
+                  vector_index_registry::registry_failure_reason());
+        ASSERT_EQ(quarantine_count_before + 1,
+                  store_.quarantine_records.size());
+        EXPECT_EQ("prepared",
+                  store_.quarantine_records.back().artifact_name);
+        std::vector<vector_index_metadata_store::prepared_change_row>
+            preserved_rows;
+        ASSERT_TRUE(store_.load_prepared(&preserved_rows));
+        EXPECT_EQ(rows.size(), preserved_rows.size());
 
-        store_.fail_quarantine_prepared = false;
         store_.SetPreparedRowsForTesting({});
         vector_index_registry::reset_for_testing();
       };
@@ -5064,7 +5086,7 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
-       InvalidChangeLogReplayFallsBackToCommittedSnapshot) {
+       InvalidChangeLogReplayFailStopsWithoutTableBinding) {
   const std::string index_name = "idx_registry_changelog_invalid";
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
                                                   "memory", "native"));
@@ -5085,15 +5107,17 @@ TEST_F(VectorIndexRegistryTest,
   vector_index_registry::reset_for_testing();
 
   std::vector<vector_index::search_result> result;
-  ASSERT_TRUE(
+  EXPECT_FALSE(
       vector_index_registry::search(index_name, {1.0F, 1.0F}, 1, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
   EXPECT_EQ(failures_before + 1, vector_status::change_log_load_failures());
   EXPECT_EQ(replay_failures_before + 1,
             vector_status::change_log_replay_failures());
-
-  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
+            vector_index_registry::registry_health());
+  EXPECT_EQ("changelog_replay_failed",
+            vector_index_registry::registry_failure_reason());
+  ASSERT_EQ(1U, store_.quarantine_records.size());
+  EXPECT_EQ("changelog", store_.quarantine_records[0].artifact_name);
 }
 
 TEST_F(VectorIndexRegistryTest,
@@ -5153,7 +5177,7 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
-       InvalidChangeLogOpFallsBackToCommittedSnapshot) {
+       InvalidChangeLogOpFailStopsWithoutTableBinding) {
   const std::string index_name = "idx_registry_changelog_invalid_op";
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
                                                   "memory", "native"));
@@ -5174,28 +5198,39 @@ TEST_F(VectorIndexRegistryTest,
   vector_index_registry::reset_for_testing();
 
   std::vector<vector_index::search_result> result;
-  ASSERT_TRUE(
+  EXPECT_FALSE(
       vector_index_registry::search(index_name, {1.0F, 1.0F}, 2, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
   EXPECT_EQ(failures_before + 1, vector_status::change_log_load_failures());
   EXPECT_EQ(replay_failures_before + 1,
             vector_status::change_log_replay_failures());
-
-  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
+            vector_index_registry::registry_health());
+  EXPECT_EQ("changelog_replay_failed",
+            vector_index_registry::registry_failure_reason());
 }
 
 TEST_F(VectorIndexRegistryTest,
-       MetadataLoadFailureFallsBackWhenQuarantineSucceeds) {
+       MetadataLoadFailureFailStopsAfterQuarantineCopy) {
   store_.fail_load_metadata = true;
   const uint64_t metadata_load_failures_before =
       vector_status::metadata_load_failures();
 
   std::vector<std::string> index_names;
-  ASSERT_TRUE(vector_index_registry::list_indexes(&index_names));
+  EXPECT_FALSE(vector_index_registry::list_indexes(&index_names));
   EXPECT_TRUE(index_names.empty());
   EXPECT_EQ(metadata_load_failures_before + 1,
             vector_status::metadata_load_failures());
+  EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
+            vector_index_registry::registry_health());
+  EXPECT_EQ("metadata_load_failed",
+            vector_index_registry::registry_failure_reason());
+  ASSERT_EQ(1U, store_.quarantine_records.size());
+  EXPECT_EQ("metadata", store_.quarantine_records[0].artifact_name);
+  EXPECT_EQ(vector_index_truth_store::quarantine_state::kCopied,
+            store_.quarantine_records[0].state);
+
+  store_.fail_load_metadata = false;
+  EXPECT_FALSE(vector_index_registry::list_indexes(&index_names));
 }
 
 TEST_F(VectorIndexRegistryTest,
@@ -5304,10 +5339,11 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
-       CommittedLoadFailureFallsBackWhenQuarantineSucceeds) {
-  const std::string index_name = "idx_registry_committed_quarantine";
-  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
-                                                  "memory", "native"));
+       CommittedLoadFailureRequiresMappedTruthRecovery) {
+  const std::string index_name = "db_recovery.t_recovery.v";
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      index_name, 2, "euclidean", "memory", "native", "db_recovery",
+      "t_recovery", "v", "id"));
   ASSERT_TRUE(vector_index_registry::upsert(index_name, 1, {1.0F, 1.0F}));
 
   const uint64_t committed_failures_before =
@@ -5315,15 +5351,41 @@ TEST_F(VectorIndexRegistryTest,
   store_.fail_load_committed = true;
   vector_index_registry::reset_for_testing();
 
-  std::vector<vector_index::search_result> result;
-  ASSERT_TRUE(
-      vector_index_registry::search(index_name, {1.0F, 1.0F}, 1, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
-  EXPECT_EQ(committed_failures_before + 2,
-            vector_status::committed_load_failures());
+  std::vector<std::string> index_names;
+  ASSERT_TRUE(vector_index_registry::list_indexes(&index_names));
+  ASSERT_EQ(1U, index_names.size());
+  EXPECT_EQ(index_name, index_names[0]);
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ("recovery_required", info.lifecycle_state);
+  EXPECT_EQ(vector_index_registry::registry_health_state::kRecoveryRequired,
+            vector_index_registry::registry_health());
+  EXPECT_EQ("truth_projection_recovery_required",
+            vector_index_registry::registry_failure_reason());
 
-  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  std::vector<vector_index::search_result> result;
+  EXPECT_FALSE(
+      vector_index_registry::search(index_name, {1.0F, 1.0F}, 1, &result));
+  EXPECT_FALSE(vector_index_registry::upsert(index_name, 2, {2.0F, 2.0F}));
+  EXPECT_EQ(committed_failures_before + 1,
+            vector_status::committed_load_failures());
+  ASSERT_EQ(1U, store_.quarantine_records.size());
+  EXPECT_EQ("committed", store_.quarantine_records[0].artifact_name);
+  EXPECT_EQ(vector_index_truth_store::quarantine_state::kCopied,
+            store_.quarantine_records[0].state);
+
+  vector_index::index_service::committed_state recovered_state;
+  recovered_state[index_name][7] = {7.0F, 7.0F};
+  ASSERT_TRUE(vector_index_registry::recover_truth_projection_for_testing(
+      recovered_state));
+  EXPECT_EQ(vector_index_registry::registry_health_state::kReady,
+            vector_index_registry::registry_health());
+  EXPECT_EQ(vector_index_truth_store::quarantine_state::kComplete,
+            store_.quarantine_records[0].state);
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {7.0F, 7.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(7U, result[0].doc_id);
 }
 
 TEST_F(VectorIndexRegistryTest,
@@ -5360,7 +5422,7 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
-       ManifestLoadFailureFallsBackWhenQuarantineSucceeds) {
+       ManifestLoadFailureFailStopsAfterQuarantineCopy) {
   const std::string index_name = "idx_registry_manifest_quarantine";
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
                                                   "memory", "native"));
@@ -5374,16 +5436,18 @@ TEST_F(VectorIndexRegistryTest,
   vector_index_registry::reset_for_testing();
 
   std::vector<vector_index::search_result> result;
-  ASSERT_TRUE(
+  EXPECT_FALSE(
       vector_index_registry::search(index_name, {1.0F, 1.0F}, 1, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
   EXPECT_EQ(metadata_failures_before + 1,
             vector_status::metadata_load_failures());
   EXPECT_EQ(manifest_failures_before + 1,
             vector_status::manifest_load_failures());
-
-  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
+            vector_index_registry::registry_health());
+  EXPECT_EQ("manifest_load_failed",
+            vector_index_registry::registry_failure_reason());
+  ASSERT_EQ(1U, store_.quarantine_records.size());
+  EXPECT_EQ("manifest", store_.quarantine_records[0].artifact_name);
 }
 
 TEST_F(VectorIndexRegistryTest,
@@ -5420,10 +5484,11 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
-       ChangeLogLoadFailureFallsBackWhenQuarantineSucceeds) {
-  const std::string index_name = "idx_registry_changelog_quarantine";
-  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
-                                                  "memory", "native"));
+       ChangeLogLoadFailureRequiresMappedTruthRecovery) {
+  const std::string index_name = "db_recovery.t_recovery.v";
+  ASSERT_TRUE(vector_index_registry::create_mapped_index(
+      index_name, 2, "euclidean", "memory", "native", "db_recovery",
+      "t_recovery", "v", "id"));
   ASSERT_TRUE(vector_index_registry::upsert(index_name, 1, {1.0F, 1.0F}));
 
   const uint64_t metadata_failures_before =
@@ -5433,17 +5498,39 @@ TEST_F(VectorIndexRegistryTest,
   store_.fail_load_change_log = true;
   vector_index_registry::reset_for_testing();
 
-  std::vector<vector_index::search_result> result;
-  ASSERT_TRUE(
-      vector_index_registry::search(index_name, {1.0F, 1.0F}, 1, &result));
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(1U, result[0].doc_id);
-  EXPECT_EQ(metadata_failures_before + 2,
-            vector_status::metadata_load_failures());
-  EXPECT_EQ(changelog_failures_before + 2,
-            vector_status::change_log_load_failures());
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ("recovery_required", info.lifecycle_state);
+  EXPECT_EQ(vector_index_registry::registry_health_state::kRecoveryRequired,
+            vector_index_registry::registry_health());
 
-  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  std::vector<vector_index::search_result> result;
+  EXPECT_FALSE(
+      vector_index_registry::search(index_name, {1.0F, 1.0F}, 1, &result));
+  EXPECT_EQ(metadata_failures_before + 1,
+            vector_status::metadata_load_failures());
+  EXPECT_EQ(changelog_failures_before + 1,
+            vector_status::change_log_load_failures());
+  ASSERT_EQ(1U, store_.quarantine_records.size());
+  EXPECT_EQ("changelog", store_.quarantine_records[0].artifact_name);
+
+  vector_index::index_service::committed_state recovered_state;
+  recovered_state[index_name][9] = {9.0F, 9.0F};
+  store_.fail_save_committed = true;
+  EXPECT_FALSE(vector_index_registry::recover_truth_projection_for_testing(
+      recovered_state));
+  EXPECT_EQ(vector_index_registry::registry_health_state::kRecoveryRequired,
+            vector_index_registry::registry_health());
+  EXPECT_EQ(vector_index_truth_store::quarantine_state::kSourceUpdateFailed,
+            store_.quarantine_records[0].state);
+
+  store_.fail_save_committed = false;
+  ASSERT_TRUE(vector_index_registry::recover_truth_projection_for_testing(
+      recovered_state));
+  EXPECT_EQ(vector_index_registry::registry_health_state::kReady,
+            vector_index_registry::registry_health());
+  EXPECT_EQ(vector_index_truth_store::quarantine_state::kComplete,
+            store_.quarantine_records[0].state);
 }
 
 TEST_F(VectorIndexRegistryTest,
@@ -5470,7 +5557,7 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
-       PreparedLoadFailureFallsBackWhenQuarantineSucceeds) {
+       PreparedLoadFailureFailStopsAfterQuarantineCopy) {
   store_.fail_load_prepared = true;
 
   XA_recover_txn recovered[2]{};
@@ -5481,14 +5568,20 @@ TEST_F(VectorIndexRegistryTest,
 
   EXPECT_EQ(
       0, vector_index_registry::recover_prepared_xids(recovered, 2, nullptr));
-  EXPECT_EQ(0, vector_index_registry::recover_prepared_in_tc(*xa_state_list));
+  EXPECT_EQ(1, vector_index_registry::recover_prepared_in_tc(*xa_state_list));
   EXPECT_FALSE(vector_index_registry::has_prepared_xid(xid));
-  EXPECT_EQ(XAER_NOTA, vector_index_registry::commit_prepared_xid(xid));
-  EXPECT_EQ(XAER_NOTA, vector_index_registry::rollback_prepared_xid(xid));
-  EXPECT_EQ(XAER_NOTA,
+  EXPECT_EQ(XAER_RMERR, vector_index_registry::commit_prepared_xid(xid));
+  EXPECT_EQ(XAER_RMERR, vector_index_registry::rollback_prepared_xid(xid));
+  EXPECT_EQ(XAER_RMERR,
             vector_index_registry::commit_prepared_xid_for_thd(77, xid));
-  EXPECT_EQ(XAER_NOTA,
+  EXPECT_EQ(XAER_RMERR,
             vector_index_registry::rollback_prepared_xid_for_thd(77, xid));
+  EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
+            vector_index_registry::registry_health());
+  EXPECT_EQ("prepared_load_failed",
+            vector_index_registry::registry_failure_reason());
+  ASSERT_EQ(1U, store_.quarantine_records.size());
+  EXPECT_EQ("prepared", store_.quarantine_records[0].artifact_name);
 }
 
 TEST_F(VectorIndexRegistryTest,

@@ -196,6 +196,29 @@ bool open_read_primary(const std::string &path, std::ifstream *file) {
   return file->good();
 }
 
+bool read_payload_file(const std::string &path, std::string *payload,
+                       bool *found) {
+  if (payload == nullptr || found == nullptr) return false;
+  payload->clear();
+  *found = false;
+
+  std::error_code ec;
+  const std::filesystem::file_status status =
+      std::filesystem::symlink_status(path, ec);
+  if (ec == std::errc::no_such_file_or_directory) return true;
+  if (ec) return false;
+  if (!std::filesystem::exists(status)) return true;
+  if (!std::filesystem::is_regular_file(status)) return false;
+
+  std::ifstream file;
+  if (!open_read_primary(path, &file)) return false;
+  payload->assign(std::istreambuf_iterator<char>(file),
+                  std::istreambuf_iterator<char>());
+  if (file.bad()) return false;
+  *found = true;
+  return true;
+}
+
 bool remove_if_exists(const std::string &path) {
   DBUG_EXECUTE_IF("vector_metadata_store_fail_remove_if_exists", return false;);
   if (std::remove(path.c_str()) != 0 && errno != ENOENT) return false;
@@ -257,6 +280,10 @@ bool raw_path_for_artifact(const std::string &artifact_name, std::string *path) 
   }
   if (artifact_name == "segment_tasks") {
     *path = segment_task_path();
+    return true;
+  }
+  if (artifact_name == "quarantine_store") {
+    *path = metadata_path() + ".quarantine";
     return true;
   }
   return false;
@@ -381,12 +408,11 @@ bool load_all(std::vector<metadata_row> *rows) {
   if (rows == nullptr) return false;
   rows->clear();
 
-  const std::string primary_path = metadata_path();
-  std::ifstream file;
-  if (!open_read_primary(primary_path, &file)) return true;
-  std::string payload((std::istreambuf_iterator<char>(file)),
-                      std::istreambuf_iterator<char>());
-  if (file.bad()) return false;
+  std::string payload;
+  bool found = false;
+  if (!read_payload_file(metadata_path(), &payload, &found)) return false;
+  if (!found) return true;
+  if (payload.empty()) return false;
   return deserialize_metadata_rows(payload, rows);
 }
 
@@ -413,12 +439,11 @@ bool load_committed_all(std::vector<committed_row> *rows) {
   if (rows == nullptr) return false;
   rows->clear();
 
-  const std::string primary_path = committed_path();
-  std::ifstream file;
-  if (!open_read_primary(primary_path, &file)) return true;
-  std::string payload((std::istreambuf_iterator<char>(file)),
-                      std::istreambuf_iterator<char>());
-  if (file.bad()) return false;
+  std::string payload;
+  bool found = false;
+  if (!read_payload_file(committed_path(), &payload, &found)) return false;
+  if (!found) return true;
+  if (payload.empty()) return false;
   return deserialize_committed_rows(payload, rows);
 }
 
@@ -443,12 +468,11 @@ bool load_manifest(manifest_row *row) {
   if (row == nullptr) return false;
 
   *row = manifest_row();
-  const std::string primary_path = manifest_path();
-  std::ifstream file;
-  if (!open_read_primary(primary_path, &file)) return true;
-  std::string payload((std::istreambuf_iterator<char>(file)),
-                      std::istreambuf_iterator<char>());
-  if (file.bad()) return false;
+  std::string payload;
+  bool found = false;
+  if (!read_payload_file(manifest_path(), &payload, &found)) return false;
+  if (!found) return true;
+  if (payload.empty()) return false;
   return deserialize_manifest_row(payload, row);
 }
 
@@ -475,12 +499,11 @@ bool load_change_log(std::vector<change_log_row> *rows) {
   if (rows == nullptr) return false;
   rows->clear();
 
-  const std::string primary_path = change_log_path();
-  std::ifstream file;
-  if (!open_read_primary(primary_path, &file)) return true;
-  std::string payload((std::istreambuf_iterator<char>(file)),
-                      std::istreambuf_iterator<char>());
-  if (file.bad()) return false;
+  std::string payload;
+  bool found = false;
+  if (!read_payload_file(change_log_path(), &payload, &found)) return false;
+  if (!found) return true;
+  if (payload.empty()) return false;
   return deserialize_change_log_rows(payload, rows);
 }
 
@@ -507,12 +530,11 @@ bool load_prepared(std::vector<prepared_change_row> *rows) {
   if (rows == nullptr) return false;
   rows->clear();
 
-  const std::string primary_path = prepared_path();
-  std::ifstream file;
-  if (!open_read_primary(primary_path, &file)) return true;
-  std::string payload((std::istreambuf_iterator<char>(file)),
-                      std::istreambuf_iterator<char>());
-  if (file.bad()) return false;
+  std::string payload;
+  bool found = false;
+  if (!read_payload_file(prepared_path(), &payload, &found)) return false;
+  if (!found) return true;
+  if (payload.empty()) return false;
   return deserialize_prepared_rows(payload, rows);
 }
 
@@ -539,12 +561,11 @@ bool load_segment_tasks(std::vector<segment_task_row> *rows) {
   if (rows == nullptr) return false;
   rows->clear();
 
-  const std::string primary_path = segment_task_path();
-  std::ifstream file;
-  if (!open_read_primary(primary_path, &file)) return true;
-  std::string payload((std::istreambuf_iterator<char>(file)),
-                      std::istreambuf_iterator<char>());
-  if (file.bad()) return false;
+  std::string payload;
+  bool found = false;
+  if (!read_payload_file(segment_task_path(), &payload, &found)) return false;
+  if (!found) return true;
+  if (payload.empty()) return false;
   return deserialize_segment_task_rows(payload, rows);
 }
 
@@ -566,13 +587,7 @@ bool load_raw_artifact(const std::string &artifact_name, std::string *payload,
   std::string path;
   if (!raw_path_for_artifact(artifact_name, &path)) return false;
 
-  std::ifstream file;
-  if (!open_read_primary(path, &file)) return true;
-  *payload = std::string((std::istreambuf_iterator<char>(file)),
-                         std::istreambuf_iterator<char>());
-  if (file.bad()) return false;
-  *found = true;
-  return true;
+  return read_payload_file(path, payload, found);
 }
 
 bool save_raw_artifact(const std::string &artifact_name,
@@ -592,26 +607,6 @@ bool delete_raw_artifact(const std::string &artifact_name) {
   if (!raw_path_for_artifact(artifact_name, &path)) return false;
   if (!remove_if_exists(path)) return false;
   return true;
-}
-
-bool quarantine_current_store() {
-  return quarantine_file_if_exists(metadata_path());
-}
-
-bool quarantine_committed_store() {
-  return quarantine_file_if_exists(committed_path());
-}
-
-bool quarantine_manifest_store() {
-  return quarantine_file_if_exists(manifest_path());
-}
-
-bool quarantine_change_log_store() {
-  return quarantine_file_if_exists(change_log_path());
-}
-
-bool quarantine_prepared_store() {
-  return quarantine_file_if_exists(prepared_path());
 }
 
 bool quarantine_segment_task_store() {
