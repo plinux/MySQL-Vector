@@ -403,17 +403,23 @@ void schedule_publication_intent_recovery();
 /** Publish and acknowledge committed intents before exposing registry state. */
 bool ensure_publication_intents_recovered();
 
-uint64_t begin_txn();
-bool commit_txn(uint64_t txn_id);
-bool rollback_txn(uint64_t txn_id);
-size_t pending_txn_changes(uint64_t txn_id);
-bool savepoint_txn(uint64_t txn_id, const std::string &name);
-bool rollback_to_savepoint_txn(uint64_t txn_id, const std::string &name);
-bool release_savepoint_txn(uint64_t txn_id, const std::string &name);
+uint64_t begin_txn(THD *thd);
+bool commit_txn(THD *thd, uint64_t txn_id);
+bool rollback_txn(THD *thd, uint64_t txn_id);
+bool pending_txn_changes(THD *thd, uint64_t txn_id, size_t *pending_count);
+bool savepoint_txn(THD *thd, uint64_t txn_id, const std::string &name);
+bool rollback_to_savepoint_txn(THD *thd, uint64_t txn_id,
+                               const std::string &name);
+bool release_savepoint_txn(THD *thd, uint64_t txn_id,
+                           const std::string &name);
 
-bool stage_upsert(uint64_t txn_id, const std::string &index_name, uint64_t doc_id,
-                 const vector_index::vector_data &vector);
-bool stage_erase(uint64_t txn_id, const std::string &index_name, uint64_t doc_id);
+bool stage_upsert(THD *thd, uint64_t txn_id, const std::string &index_name,
+                  uint64_t doc_id,
+                  const vector_index::vector_data &vector);
+bool stage_erase(THD *thd, uint64_t txn_id, const std::string &index_name,
+                 uint64_t doc_id);
+/** Roll back every explicit vector transaction owned by this connection. */
+size_t rollback_explicit_txns_for_thd(THD *thd);
 bool stage_upsert_for_thd_txn(uint64_t thd_id, uint64_t statement_id,
                           const std::string &index_name, uint64_t doc_id,
                           const vector_index::vector_data &vector);
@@ -505,6 +511,18 @@ bool search_batch_for_thd_txn(
 /**
   Test-only wrappers for internal registry helper logic.
 */
+uint64_t begin_txn();
+bool commit_txn(uint64_t txn_id);
+bool rollback_txn(uint64_t txn_id);
+size_t pending_txn_changes(uint64_t txn_id);
+bool savepoint_txn(uint64_t txn_id, const std::string &name);
+bool rollback_to_savepoint_txn(uint64_t txn_id, const std::string &name);
+bool release_savepoint_txn(uint64_t txn_id, const std::string &name);
+bool stage_upsert(uint64_t txn_id, const std::string &index_name,
+                  uint64_t doc_id,
+                  const vector_index::vector_data &vector);
+bool stage_erase(uint64_t txn_id, const std::string &index_name,
+                 uint64_t doc_id);
 bool parse_mapped_index_name_for_testing(const std::string &index_name,
                                     std::string *schema_name,
                                     std::string *table_name,

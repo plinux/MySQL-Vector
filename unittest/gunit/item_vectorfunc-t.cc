@@ -1210,30 +1210,42 @@ TEST_F(ItemVectorFuncFixture, TxnItemHelpersCoverMissingMarkerBranches) {
   EXPECT_FALSE(rollback_item->null_value);
 }
 
-TEST_F(ItemVectorFuncFixture, TxnItemHelpersTreatUnknownTxnAsNoopOrEmpty) {
+TEST_F(ItemVectorFuncFixture, TxnItemHelpersRejectUnknownTransactions) {
   auto *pending_item =
       new Item_func_vec_index_txn_pending(POS(), make_item_list({new Item_int(999)}));
   fix_item(thd(), pending_item);
+  Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
   EXPECT_EQ(0, pending_item->val_int());
   EXPECT_FALSE(pending_item->null_value);
+  thd()->clear_error();
+  Server_initializer::set_expected_error(0);
 
   auto *commit_item =
       new Item_func_vec_index_txn_commit(POS(), make_item_list({new Item_int(999)}));
   fix_item(thd(), commit_item);
-  EXPECT_EQ(1, commit_item->val_int());
+  Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
+  EXPECT_EQ(0, commit_item->val_int());
   EXPECT_FALSE(commit_item->null_value);
+  thd()->clear_error();
+  Server_initializer::set_expected_error(0);
 
   auto *rollback_item = new Item_func_vec_index_txn_rollback(
       POS(), make_item_list({new Item_int(999)}));
   fix_item(thd(), rollback_item);
-  EXPECT_EQ(1, rollback_item->val_int());
+  Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
+  EXPECT_EQ(0, rollback_item->val_int());
   EXPECT_FALSE(rollback_item->null_value);
+  thd()->clear_error();
+  Server_initializer::set_expected_error(0);
 
   auto *savepoint_item = new Item_func_vec_index_txn_savepoint(
       POS(), make_item_list({new Item_int(999), make_string_item("spx")}));
   fix_item(thd(), savepoint_item);
-  EXPECT_EQ(1, savepoint_item->val_int());
+  Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
+  EXPECT_EQ(0, savepoint_item->val_int());
   EXPECT_FALSE(savepoint_item->null_value);
+  thd()->clear_error();
+  Server_initializer::set_expected_error(0);
 }
 
 TEST_F(ItemVectorFuncFixture, RebuildAllAndRecoverAllItemsCoverErrorAndSuccess) {

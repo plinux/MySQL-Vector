@@ -1,0 +1,109 @@
+#
+# WL#Vector: explicit commits do not hold publication while waiting rows
+#
+DROP TABLE IF EXISTS t_vector_explicit_lock_order;
+CREATE TABLE t_vector_explicit_lock_order (
+id BIGINT UNSIGNED PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vector_explicit_lock_order(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+INSERT INTO t_vector_explicit_lock_order
+VALUES (1, VEC_FROMTEXT('[1,1]'));
+START TRANSACTION;
+UPDATE t_vector_explicit_lock_order
+SET v=VEC_FROMTEXT('[2,2]') WHERE id=1;
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT(
+'test.t_vector_explicit_lock_order.v', @txn, 1, '[3,3]');
+SET DEBUG_SYNC =
+'vector_truth_store_row_lock_wait SIGNAL explicit_waiting_for_truth_row';
+SELECT VEC_INDEX_TXN_COMMIT(@txn);
+SET DEBUG_SYNC =
+'now WAIT_FOR explicit_waiting_for_truth_row TIMEOUT 30';
+COMMIT;
+SET DEBUG_SYNC = 'RESET';
+SELECT VEC_INDEX_TXN_PENDING(@txn);
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
+SELECT VEC_INDEX_SEARCH(
+'test.t_vector_explicit_lock_order.v', '[3,3]', 1);
+VEC_INDEX_SEARCH(
+'test.t_vector_explicit_lock_order.v', '[3,3]', 1)
+[1]
+DROP VECTOR INDEX ON t_vector_explicit_lock_order(v);
+DROP TABLE t_vector_explicit_lock_order;
+#
+# Reverse row-lock order across two indexes remains retryable
+#
+CREATE TABLE t_vector_explicit_lock_a (
+id BIGINT UNSIGNED PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE TABLE t_vector_explicit_lock_b LIKE t_vector_explicit_lock_a;
+CREATE VECTOR INDEX ON t_vector_explicit_lock_a(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+CREATE VECTOR INDEX ON t_vector_explicit_lock_b(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+INSERT INTO t_vector_explicit_lock_a VALUES
+(1, VEC_FROMTEXT('[1,1]')),
+(2, VEC_FROMTEXT('[1,1]'));
+INSERT INTO t_vector_explicit_lock_b VALUES (1, VEC_FROMTEXT('[1,1]'));
+START TRANSACTION;
+UPDATE t_vector_explicit_lock_b SET v=VEC_FROMTEXT('[2,2]') WHERE id=1;
+UPDATE t_vector_explicit_lock_a SET v=VEC_FROMTEXT('[2,2]') WHERE id=1;
+SET @txn_reverse = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT(
+'test.t_vector_explicit_lock_a.v', @txn_reverse, 1, '[3,3]');
+SELECT VEC_INDEX_STAGE_UPSERT(
+'test.t_vector_explicit_lock_a.v', @txn_reverse, 2, '[3,3]');
+SELECT VEC_INDEX_STAGE_UPSERT(
+'test.t_vector_explicit_lock_b.v', @txn_reverse, 1, '[3,3]');
+SET SESSION debug = '+d,vector_truth_store_compact_after_3_rows';
+SET DEBUG_SYNC =
+'vector_truth_store_row_lock_wait SIGNAL reverse_waiting_for_truth_row';
+SELECT VEC_INDEX_TXN_COMMIT(@txn_reverse);
+SET DEBUG_SYNC =
+'now WAIT_FOR reverse_waiting_for_truth_row TIMEOUT 30';
+COMMIT;
+SET DEBUG_SYNC = 'RESET';
+SET SESSION debug = '-d,vector_truth_store_compact_after_3_rows';
+SELECT VEC_INDEX_TXN_PENDING(@txn_reverse);
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
+SELECT VEC_INDEX_SEARCH('test.t_vector_explicit_lock_a.v', '[3,3]', 1);
+VEC_INDEX_SEARCH('test.t_vector_explicit_lock_a.v', '[3,3]', 1)
+[1]
+SELECT VEC_INDEX_SEARCH('test.t_vector_explicit_lock_b.v', '[3,3]', 1);
+VEC_INDEX_SEARCH('test.t_vector_explicit_lock_b.v', '[3,3]', 1)
+[1]
+DROP VECTOR INDEX ON t_vector_explicit_lock_a(v);
+DROP VECTOR INDEX ON t_vector_explicit_lock_b(v);
+DROP TABLE t_vector_explicit_lock_a;
+DROP TABLE t_vector_explicit_lock_b;
+#
+# DROP cleanup and explicit commit do not form a publication-row cycle
+#
+SELECT VEC_INDEX_CREATE('idx_explicit_drop_cycle', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_explicit_drop_cycle', 1,
+VEC_FROMTEXT('[1,1]'));
+SET @txn_drop_cycle = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT(
+'idx_explicit_drop_cycle', @txn_drop_cycle, 1, '[2,2]');
+SET DEBUG_SYNC =
+'vector_explicit_txn_after_truth_stage SIGNAL explicit_truth_staged WAIT_FOR allow_explicit_publication';
+SELECT VEC_INDEX_TXN_COMMIT(@txn_drop_cycle);
+SET DEBUG_SYNC = 'now WAIT_FOR explicit_truth_staged TIMEOUT 30';
+SET DEBUG_SYNC =
+'vector_truth_store_row_lock_wait SIGNAL drop_waiting_for_truth_row';
+SELECT VEC_INDEX_DROP('idx_explicit_drop_cycle');
+SET DEBUG_SYNC =
+'now WAIT_FOR drop_waiting_for_truth_row TIMEOUT 30';
+SET DEBUG_SYNC = 'now SIGNAL allow_explicit_publication';
+SET DEBUG_SYNC = 'RESET';
+SELECT VEC_INDEX_TXN_PENDING(@txn_drop_cycle);
+VEC_INDEX_TXN_PENDING(@txn_drop_cycle)
+1
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_drop_cycle);
+VEC_INDEX_TXN_ROLLBACK(@txn_drop_cycle)
+1
+SET DEBUG_SYNC = 'RESET';

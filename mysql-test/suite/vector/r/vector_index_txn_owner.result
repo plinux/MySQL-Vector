@@ -1,0 +1,72 @@
+#
+# WL#Vector: explicit transaction ownership and disconnect cleanup
+#
+DROP USER IF EXISTS 'vec_txn_other'@'localhost';
+Warnings:
+Note	3162	Authorization ID 'vec_txn_other'@'localhost' does not exist.
+DROP DATABASE IF EXISTS vector_txn_owner_db;
+Warnings:
+Note	1008	Can't drop database 'vector_txn_owner_db'; database doesn't exist
+CREATE DATABASE vector_txn_owner_db;
+CREATE USER 'vec_txn_other'@'localhost';
+GRANT ALL ON vector_txn_owner_db.*
+TO 'vec_txn_other'@'localhost';
+USE vector_txn_owner_db;
+CREATE TABLE txn_handles(id BIGINT UNSIGNED NOT NULL PRIMARY KEY);
+SELECT VEC_INDEX_CREATE('idx_txn_owner', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'transactional');
+VEC_INDEX_CREATE('idx_txn_owner', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'transactional')
+1
+SET @txn_owner = VEC_INDEX_TXN_BEGIN();
+INSERT INTO txn_handles VALUES (@txn_owner);
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn_owner', @txn_owner, 1, '[1,1]');
+VEC_INDEX_STAGE_UPSERT('idx_txn_owner', @txn_owner, 1, '[1,1]')
+1
+SET @txn_owner_second = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn_owner', @txn_owner_second, 4, '[4,4]');
+VEC_INDEX_STAGE_UPSERT('idx_txn_owner', @txn_owner_second, 4, '[4,4]')
+1
+SET @foreign_txn = (SELECT id FROM txn_handles);
+SELECT VEC_INDEX_TXN_PENDING(@foreign_txn);
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
+SELECT VEC_INDEX_TXN_SAVEPOINT(@foreign_txn, 'peer_savepoint');
+ERROR HY000: Incorrect arguments to vec_index_txn_savepoint
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn_owner', @foreign_txn, 2, '[2,2]');
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VEC_INDEX_TXN_COMMIT(@foreign_txn);
+ERROR HY000: Incorrect arguments to vec_index_txn_commit
+SELECT VEC_INDEX_TXN_ROLLBACK(@foreign_txn);
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback
+SET @foreign_txn = (SELECT id FROM txn_handles);
+SELECT VEC_INDEX_TXN_PENDING(@foreign_txn);
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
+SELECT VEC_INDEX_TXN_COMMIT(@foreign_txn);
+ERROR HY000: Incorrect arguments to vec_index_txn_commit
+USE vector_txn_owner_db;
+SELECT VEC_INDEX_TXN_PENDING(99999);
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn_owner', 18446744073709551615,
+3, '[3,3]');
+ERROR HY000: Incorrect arguments to vec_index_stage_upsert
+SELECT VARIABLE_VALUE
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Vector_pending_txn_changes';
+VARIABLE_VALUE
+0
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_owner'),
+'$.committed_entry_count') AS committed_entry_count;
+committed_entry_count
+0
+SET @txn_after_cleanup = VEC_INDEX_TXN_BEGIN();
+SELECT @txn_after_cleanup > 0 AS allocator_available;
+allocator_available
+1
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_after_cleanup);
+VEC_INDEX_TXN_ROLLBACK(@txn_after_cleanup)
+1
+SELECT VEC_INDEX_DROP('idx_txn_owner');
+VEC_INDEX_DROP('idx_txn_owner')
+1
+DROP DATABASE vector_txn_owner_db;
+DROP USER 'vec_txn_other'@'localhost';

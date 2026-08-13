@@ -82,7 +82,8 @@ TEST(VectorTrxParticipantTest, TestingWrappersCoverTransactionScopeHelpers) {
   EXPECT_EQ(0U, vector_trx_participant::thd_id_for_testing(nullptr));
   EXPECT_EQ(0U, vector_trx_participant::stmt_id_for_testing(nullptr));
   EXPECT_FALSE(vector_trx_participant::in_multi_stmt_for_testing(nullptr));
-  EXPECT_TRUE(vector_trx_participant::is_real_scope_for_testing(nullptr, false));
+  EXPECT_TRUE(
+      vector_trx_participant::is_real_scope_for_testing(nullptr, false));
   EXPECT_TRUE(vector_trx_participant::is_real_scope_for_testing(nullptr, true));
 
   my_testing::Server_initializer initializer;
@@ -98,6 +99,12 @@ TEST(VectorTrxParticipantTest, TestingWrappersCoverTransactionScopeHelpers) {
   EXPECT_TRUE(vector_trx_participant::is_real_scope_for_testing(thd, true));
   thd->variables.option_bits = original_option_bits;
 
+  LEX *const original_lex = thd->lex;
+  thd->lex = nullptr;
+  EXPECT_FALSE(
+      vector_trx_participant::is_xa_commit_publication_fallback_for_testing(
+          thd, thd->thread_id()));
+  thd->lex = original_lex;
   const enum_sql_command original_command = thd->lex->sql_command;
   EXPECT_FALSE(
       vector_trx_participant::is_xa_commit_publication_fallback_for_testing(
@@ -115,6 +122,134 @@ TEST(VectorTrxParticipantTest, TestingWrappersCoverTransactionScopeHelpers) {
           thd, thd->thread_id()));
   thd->lex->sql_command = original_command;
   initializer.TearDown();
+}
+
+TEST(VectorTrxParticipantTest,
+     LifecycleCallbacksCoverStatementTransactionAndObserverBoundaries) {
+  handlerton hton{};
+  hton.slot = HA_SLOT_UNDEF;
+  ASSERT_EQ(0, vector_trx_participant::init_plugin(&hton));
+
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  THD *thd = initializer.thd();
+
+  EXPECT_FALSE(vector_trx_participant::has_context_for_testing(nullptr));
+  EXPECT_EQ(0, vector_trx_participant::prepare_for_testing(nullptr, true));
+  EXPECT_EQ(0, vector_trx_participant::commit_for_testing(nullptr, true));
+  EXPECT_EQ(0, vector_trx_participant::rollback_for_testing(nullptr, true));
+
+  vector_trx_participant::set_context_for_testing(thd, true);
+  ASSERT_TRUE(vector_trx_participant::has_context_for_testing(thd));
+  const ulonglong original_option_bits = thd->variables.option_bits;
+  thd->variables.option_bits |= OPTION_BEGIN;
+  EXPECT_EQ(0, vector_trx_participant::prepare_for_testing(thd, false));
+  EXPECT_EQ(0, vector_trx_participant::commit_for_testing(thd, false));
+  EXPECT_EQ(0, vector_trx_participant::rollback_for_testing(thd, false));
+  EXPECT_TRUE(vector_trx_participant::has_context_for_testing(thd));
+
+  EXPECT_EQ(0, vector_trx_participant::prepare_for_testing(thd, true));
+  EXPECT_EQ(0, vector_trx_participant::commit_for_testing(thd, true));
+  EXPECT_FALSE(vector_trx_participant::has_context_for_testing(thd));
+  EXPECT_TRUE(thd->get_transaction()->m_flags.run_hooks);
+  thd->variables.option_bits = original_option_bits;
+
+  vector_trx_participant::after_commit_for_testing(nullptr);
+  vector_trx_participant::before_rollback_for_testing(nullptr);
+
+  Trans_param statement_param{};
+  statement_param.thread_id = thd->thread_id();
+  vector_trx_participant::after_commit_for_testing(&statement_param);
+  vector_trx_participant::before_rollback_for_testing(&statement_param);
+
+  Trans_param transaction_param{};
+  transaction_param.thread_id = thd->thread_id();
+  transaction_param.flags = TRANS_IS_REAL_TRANS;
+  vector_trx_participant::after_commit_for_testing(&transaction_param);
+  vector_trx_participant::before_rollback_for_testing(&transaction_param);
+
+  vector_trx_participant::set_context_for_testing(thd, true);
+  ASSERT_TRUE(vector_trx_participant::has_context_for_testing(thd));
+  EXPECT_EQ(0, vector_trx_participant::close_connection_for_testing(thd));
+  EXPECT_FALSE(vector_trx_participant::has_context_for_testing(thd));
+
+  vector_trx_participant::set_registration_bypass_for_testing(true);
+  EXPECT_FALSE(vector_trx_participant::register_participant(nullptr));
+  EXPECT_TRUE(vector_trx_participant::register_participant(thd));
+  vector_trx_participant::set_registration_bypass_for_testing(false);
+
+  initializer.TearDown();
+  EXPECT_EQ(0, vector_trx_participant::deinit_plugin(&hton));
+}
+
+TEST(VectorTrxParticipantTest,
+     ExplicitOwnerRoleSurvivesSqlTransactionCompletionUntilConnectionClose) {
+  handlerton hton{};
+  hton.slot = HA_SLOT_UNDEF;
+  ASSERT_EQ(0, vector_trx_participant::init_plugin(&hton));
+
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  THD *thd = initializer.thd();
+
+  vector_trx_participant::set_registration_bypass_for_testing(true);
+  vector_trx_participant::set_context_for_testing(thd, true);
+  ASSERT_TRUE(vector_trx_participant::register_explicit_txn_owner(thd));
+  ASSERT_TRUE(vector_trx_participant::has_context_for_testing(thd));
+  ASSERT_TRUE(
+      vector_trx_participant::has_explicit_txn_owner_for_testing(thd));
+
+  ASSERT_EQ(0, vector_trx_participant::commit_for_testing(thd, true));
+  EXPECT_FALSE(vector_trx_participant::has_context_for_testing(thd));
+  EXPECT_TRUE(
+      vector_trx_participant::has_explicit_txn_owner_for_testing(thd));
+
+  ASSERT_EQ(0, vector_trx_participant::close_connection_for_testing(thd));
+  EXPECT_FALSE(vector_trx_participant::has_context_for_testing(thd));
+  EXPECT_FALSE(
+      vector_trx_participant::has_explicit_txn_owner_for_testing(thd));
+
+  vector_trx_participant::set_registration_bypass_for_testing(false);
+  initializer.TearDown();
+  EXPECT_EQ(0, vector_trx_participant::deinit_plugin(&hton));
+}
+
+TEST(VectorTrxParticipantTest,
+     ParticipantAndExplicitOwnerRolesCanBeReleasedIndependently) {
+  handlerton hton{};
+  hton.slot = HA_SLOT_UNDEF;
+  ASSERT_EQ(0, vector_trx_participant::init_plugin(&hton));
+
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  THD *thd = initializer.thd();
+
+  vector_trx_participant::set_context_for_testing(thd, false);
+  vector_trx_participant::set_registration_bypass_for_testing(true);
+  EXPECT_FALSE(vector_trx_participant::register_explicit_txn_owner(nullptr));
+  vector_trx_participant::release_explicit_txn_owner(nullptr);
+
+  ASSERT_TRUE(vector_trx_participant::register_participant(thd));
+  EXPECT_TRUE(vector_trx_participant::has_context_for_testing(thd));
+  EXPECT_FALSE(vector_trx_participant::has_explicit_txn_owner_for_testing(thd));
+
+  ASSERT_TRUE(vector_trx_participant::register_explicit_txn_owner(thd));
+  EXPECT_TRUE(vector_trx_participant::has_context_for_testing(thd));
+  EXPECT_TRUE(vector_trx_participant::has_explicit_txn_owner_for_testing(thd));
+
+  vector_trx_participant::release_explicit_txn_owner(thd);
+  EXPECT_TRUE(vector_trx_participant::has_context_for_testing(thd));
+  EXPECT_FALSE(vector_trx_participant::has_explicit_txn_owner_for_testing(thd));
+
+  ASSERT_EQ(0, vector_trx_participant::close_connection_for_testing(thd));
+  EXPECT_FALSE(vector_trx_participant::has_context_for_testing(thd));
+  vector_trx_participant::set_context_for_testing(nullptr, false);
+  vector_trx_participant::set_context_for_testing(thd, false);
+  EXPECT_FALSE(vector_trx_participant::has_context_for_testing(thd));
+  vector_trx_participant::set_registration_bypass_for_testing(false);
+
+  initializer.TearDown();
+  EXPECT_EQ(0, vector_trx_participant::deinit_plugin(&hton));
 }
 
 }  // namespace vector_trx_participant_unittest

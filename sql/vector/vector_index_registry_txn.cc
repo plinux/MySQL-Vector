@@ -49,6 +49,7 @@
 #include "sql/vector/vector_mapped_search.h"
 #include "sql/vector/vector_statement_publication.h"
 #include "sql/vector/vector_status.h"
+#include "sql/vector/vector_trx_participant.h"
 
 namespace vector_index_registry {
 
@@ -2270,53 +2271,134 @@ bool commit_index_service_txn(const char *scope, uint64_t txn_id,
   return true;
 }
 
-uint64_t begin_txn() {
+namespace {
+
+std::string account_component(LEX_CSTRING value) {
+  return value.str == nullptr ? std::string()
+                              : std::string(value.str, value.length);
+}
+
+explicit_txn_owner explicit_owner_for_thd(const THD *thd) {
+  explicit_txn_owner owner;
+  if (thd == nullptr) return owner;
+  owner.thd_id = static_cast<uint64_t>(thd->thread_id());
+  owner.user = account_component(thd->m_main_security_ctx.priv_user());
+  owner.host = account_component(thd->m_main_security_ctx.priv_host());
+  return owner;
+}
+
+bool explicit_owner_matches(const explicit_txn_owner &expected,
+                            const explicit_txn_owner &caller) {
+  return expected.thd_id == caller.thd_id && expected.user == caller.user &&
+         expected.host == caller.host;
+}
+
+bool active_explicit_txn_owned_by_locked(
+    uint64_t txn_id, const explicit_txn_owner &caller) {
+  const auto it = g_explicit_txn_owners.find(txn_id);
+  return it != g_explicit_txn_owners.end() &&
+         it->second.state == explicit_txn_state::kActive &&
+         explicit_owner_matches(it->second, caller);
+}
+
+bool erase_explicit_txn_owner_locked(uint64_t txn_id) {
+  const auto owner_it = g_explicit_txn_owners.find(txn_id);
+  if (owner_it == g_explicit_txn_owners.end()) return false;
+
+  const uint64_t thd_id = owner_it->second.thd_id;
+  g_explicit_txn_owners.erase(owner_it);
+  auto thd_it = g_explicit_txns_by_thd.find(thd_id);
+  if (thd_it == g_explicit_txns_by_thd.end()) return true;
+  thd_it->second.erase(txn_id);
+  if (!thd_it->second.empty()) return false;
+  g_explicit_txns_by_thd.erase(thd_it);
+  return true;
+}
+
+uint64_t begin_txn_for_owner(const explicit_txn_owner &owner) {
+  if (owner.thd_id == 0) return 0;
   if (!ensure_publication_intents_recovered()) return 0;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return 0;
-  return allocate_txn_id();
+
+  const uint64_t txn_id = allocate_txn_id();
+  if (txn_id == 0) return 0;
+  g_explicit_txn_owners.emplace(txn_id, owner);
+  g_explicit_txns_by_thd[owner.thd_id].insert(txn_id);
+  return txn_id;
 }
 
-bool commit_txn(uint64_t txn_id) {
+bool commit_txn_for_owner(const explicit_txn_owner &caller, uint64_t txn_id,
+                          bool *last_for_thd) {
+  if (last_for_thd != nullptr) *last_for_thd = false;
   vector_status::record_txn_commit_request();
   if (txn_id == 0) return false;
-  return commit_index_service_txn("explicit", txn_id, false);
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!active_explicit_txn_owned_by_locked(txn_id, caller)) return false;
+    g_explicit_txn_owners[txn_id].state = explicit_txn_state::kCommitting;
+  }
+
+  const bool committed = commit_index_service_txn("explicit", txn_id, false);
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  const auto owner_it = g_explicit_txn_owners.find(txn_id);
+  if (owner_it == g_explicit_txn_owners.end() ||
+      !explicit_owner_matches(owner_it->second, caller)) {
+    return false;
+  }
+  if (!committed) {
+    owner_it->second.state = explicit_txn_state::kActive;
+    return false;
+  }
+  const bool last = erase_explicit_txn_owner_locked(txn_id);
+  if (last_for_thd != nullptr) *last_for_thd = last;
+  return true;
 }
 
-bool rollback_txn(uint64_t txn_id) {
+bool rollback_txn_for_owner(const explicit_txn_owner &caller, uint64_t txn_id,
+                            bool *last_for_thd) {
+  if (last_for_thd != nullptr) *last_for_thd = false;
   vector_status::record_txn_rollback_request();
   if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
-  const size_t pending_change_count = g_index_service.pending_change_count(txn_id);
+  if (!active_explicit_txn_owned_by_locked(txn_id, caller)) return false;
+
+  const size_t pending_change_count =
+      g_index_service.pending_change_count(txn_id);
   g_index_service.rollback(txn_id);
   if (pending_change_count > 0) {
     vector_status::subtract_pending_txn_changes(pending_change_count);
   }
+  const bool last = erase_explicit_txn_owner_locked(txn_id);
+  if (last_for_thd != nullptr) *last_for_thd = last;
   return true;
 }
 
-size_t pending_txn_changes(uint64_t txn_id) {
-  if (txn_id == 0) return 0;
+bool pending_txn_changes_for_owner(const explicit_txn_owner &caller,
+                                   uint64_t txn_id, size_t *pending_count) {
+  if (txn_id == 0 || pending_count == nullptr) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return 0;
-  return g_index_service.pending_change_count(txn_id);
+  if (!active_explicit_txn_owned_by_locked(txn_id, caller)) return false;
+  *pending_count = g_index_service.pending_change_count(txn_id);
+  return true;
 }
 
-bool savepoint_txn(uint64_t txn_id, const std::string &name) {
+bool savepoint_txn_for_owner(const explicit_txn_owner &caller, uint64_t txn_id,
+                             const std::string &name) {
   if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
+  if (!active_explicit_txn_owned_by_locked(txn_id, caller)) return false;
   return g_index_service.savepoint(txn_id, name);
 }
 
-bool rollback_to_savepoint_txn(uint64_t txn_id, const std::string &name) {
+bool rollback_to_savepoint_txn_for_owner(const explicit_txn_owner &caller,
+                                         uint64_t txn_id,
+                                         const std::string &name) {
   if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
+  if (!active_explicit_txn_owned_by_locked(txn_id, caller)) return false;
   const size_t pending_before = g_index_service.pending_change_count(txn_id);
-  const bool ok = g_index_service.rollback_to_savepoint(txn_id, name);
-  if (!ok) return false;
+  if (!g_index_service.rollback_to_savepoint(txn_id, name)) return false;
 
   const size_t pending_after = g_index_service.pending_change_count(txn_id);
   if (pending_before > pending_after) {
@@ -2325,39 +2407,215 @@ bool rollback_to_savepoint_txn(uint64_t txn_id, const std::string &name) {
   return true;
 }
 
-bool release_savepoint_txn(uint64_t txn_id, const std::string &name) {
+bool release_savepoint_txn_for_owner(const explicit_txn_owner &caller,
+                                     uint64_t txn_id,
+                                     const std::string &name) {
   if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
+  if (!active_explicit_txn_owned_by_locked(txn_id, caller)) return false;
   return g_index_service.release_savepoint(txn_id, name);
 }
 
-bool stage_upsert(uint64_t txn_id, const std::string &index_name, uint64_t doc_id,
-                 const vector_index::vector_data &vector) {
+bool stage_upsert_for_owner(const explicit_txn_owner &caller, uint64_t txn_id,
+                            const std::string &index_name, uint64_t doc_id,
+                            const vector_index::vector_data &vector) {
   vector_status::record_stage_upsert_request();
   if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
+  if (!active_explicit_txn_owned_by_locked(txn_id, caller)) return false;
   const bool ok = g_index_service.stage_upsert(txn_id, index_name, doc_id, vector);
-  if (ok) {
-    advance_txn_id_high_water(txn_id);
-    vector_status::add_pending_txn_changes(1);
-  }
+  if (ok) vector_status::add_pending_txn_changes(1);
   return ok;
 }
 
-bool stage_erase(uint64_t txn_id, const std::string &index_name, uint64_t doc_id) {
+bool stage_erase_for_owner(const explicit_txn_owner &caller, uint64_t txn_id,
+                           const std::string &index_name, uint64_t doc_id) {
   vector_status::record_stage_erase_request();
   if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
+  if (!active_explicit_txn_owned_by_locked(txn_id, caller)) return false;
   const bool ok = g_index_service.stage_erase(txn_id, index_name, doc_id);
-  if (ok) {
-    advance_txn_id_high_water(txn_id);
-    vector_status::add_pending_txn_changes(1);
-  }
+  if (ok) vector_status::add_pending_txn_changes(1);
   return ok;
 }
+
+bool stage_internal_upsert(uint64_t txn_id, const std::string &index_name,
+                           uint64_t doc_id,
+                           const vector_index::vector_data &vector) {
+  vector_status::record_stage_upsert_request();
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  const bool ok = g_index_service.stage_upsert(txn_id, index_name, doc_id, vector);
+  if (ok) vector_status::add_pending_txn_changes(1);
+  return ok;
+}
+
+bool stage_internal_erase(uint64_t txn_id, const std::string &index_name,
+                          uint64_t doc_id) {
+  vector_status::record_stage_erase_request();
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return false;
+  const bool ok = g_index_service.stage_erase(txn_id, index_name, doc_id);
+  if (ok) vector_status::add_pending_txn_changes(1);
+  return ok;
+}
+
+void rollback_internal_txn(uint64_t txn_id) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  const size_t pending_change_count =
+      g_index_service.pending_change_count(txn_id);
+  g_index_service.rollback(txn_id);
+  if (pending_change_count > 0) {
+    vector_status::subtract_pending_txn_changes(pending_change_count);
+  }
+}
+
+size_t rollback_explicit_txns_for_thd_id(uint64_t thd_id) {
+  if (thd_id == 0) return 0;
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  const auto thd_it = g_explicit_txns_by_thd.find(thd_id);
+  if (thd_it == g_explicit_txns_by_thd.end()) return 0;
+
+  size_t rolled_back = 0;
+  for (const uint64_t txn_id : thd_it->second) {
+    const size_t pending_change_count =
+        g_index_service.pending_change_count(txn_id);
+    g_index_service.rollback(txn_id);
+    if (pending_change_count > 0) {
+      vector_status::subtract_pending_txn_changes(pending_change_count);
+    }
+    g_explicit_txn_owners.erase(txn_id);
+    ++rolled_back;
+  }
+  g_explicit_txns_by_thd.erase(thd_it);
+  return rolled_back;
+}
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+const explicit_txn_owner &unit_test_explicit_owner() {
+  static const explicit_txn_owner owner{1, "vector_unit", "localhost",
+                                        explicit_txn_state::kActive};
+  return owner;
+}
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+
+}  // namespace
+
+uint64_t begin_txn(THD *thd) {
+  const explicit_txn_owner owner = explicit_owner_for_thd(thd);
+  const uint64_t txn_id = begin_txn_for_owner(owner);
+  if (txn_id == 0) return 0;
+  if (vector_trx_participant::register_explicit_txn_owner(thd)) return txn_id;
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  (void)erase_explicit_txn_owner_locked(txn_id);
+  return 0;
+}
+
+bool commit_txn(THD *thd, uint64_t txn_id) {
+  bool last_for_thd = false;
+  const bool ok =
+      commit_txn_for_owner(explicit_owner_for_thd(thd), txn_id, &last_for_thd);
+  if (last_for_thd) vector_trx_participant::release_explicit_txn_owner(thd);
+  return ok;
+}
+
+bool rollback_txn(THD *thd, uint64_t txn_id) {
+  bool last_for_thd = false;
+  const bool ok = rollback_txn_for_owner(explicit_owner_for_thd(thd), txn_id,
+                                         &last_for_thd);
+  if (last_for_thd) vector_trx_participant::release_explicit_txn_owner(thd);
+  return ok;
+}
+
+bool pending_txn_changes(THD *thd, uint64_t txn_id, size_t *pending_count) {
+  return pending_txn_changes_for_owner(explicit_owner_for_thd(thd), txn_id,
+                                       pending_count);
+}
+
+bool savepoint_txn(THD *thd, uint64_t txn_id, const std::string &name) {
+  return savepoint_txn_for_owner(explicit_owner_for_thd(thd), txn_id, name);
+}
+
+bool rollback_to_savepoint_txn(THD *thd, uint64_t txn_id,
+                               const std::string &name) {
+  return rollback_to_savepoint_txn_for_owner(explicit_owner_for_thd(thd),
+                                              txn_id, name);
+}
+
+bool release_savepoint_txn(THD *thd, uint64_t txn_id,
+                           const std::string &name) {
+  return release_savepoint_txn_for_owner(explicit_owner_for_thd(thd), txn_id,
+                                         name);
+}
+
+bool stage_upsert(THD *thd, uint64_t txn_id, const std::string &index_name,
+                  uint64_t doc_id,
+                  const vector_index::vector_data &vector) {
+  return stage_upsert_for_owner(explicit_owner_for_thd(thd), txn_id,
+                                index_name, doc_id, vector);
+}
+
+bool stage_erase(THD *thd, uint64_t txn_id, const std::string &index_name,
+                 uint64_t doc_id) {
+  return stage_erase_for_owner(explicit_owner_for_thd(thd), txn_id, index_name,
+                               doc_id);
+}
+
+size_t rollback_explicit_txns_for_thd(THD *thd) {
+  if (thd == nullptr) return 0;
+  const size_t rolled_back = rollback_explicit_txns_for_thd_id(
+      static_cast<uint64_t>(thd->thread_id()));
+  vector_trx_participant::release_explicit_txn_owner(thd);
+  return rolled_back;
+}
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+uint64_t begin_txn() { return begin_txn_for_owner(unit_test_explicit_owner()); }
+
+bool commit_txn(uint64_t txn_id) {
+  return commit_txn_for_owner(unit_test_explicit_owner(), txn_id, nullptr);
+}
+
+bool rollback_txn(uint64_t txn_id) {
+  return rollback_txn_for_owner(unit_test_explicit_owner(), txn_id, nullptr);
+}
+
+size_t pending_txn_changes(uint64_t txn_id) {
+  size_t pending_count = 0;
+  return pending_txn_changes_for_owner(unit_test_explicit_owner(), txn_id,
+                                       &pending_count)
+             ? pending_count
+             : 0;
+}
+
+bool savepoint_txn(uint64_t txn_id, const std::string &name) {
+  return savepoint_txn_for_owner(unit_test_explicit_owner(), txn_id, name);
+}
+
+bool rollback_to_savepoint_txn(uint64_t txn_id, const std::string &name) {
+  return rollback_to_savepoint_txn_for_owner(unit_test_explicit_owner(),
+                                              txn_id, name);
+}
+
+bool release_savepoint_txn(uint64_t txn_id, const std::string &name) {
+  return release_savepoint_txn_for_owner(unit_test_explicit_owner(), txn_id,
+                                         name);
+}
+
+bool stage_upsert(uint64_t txn_id, const std::string &index_name,
+                  uint64_t doc_id,
+                  const vector_index::vector_data &vector) {
+  return stage_upsert_for_owner(unit_test_explicit_owner(), txn_id, index_name,
+                                doc_id, vector);
+}
+
+bool stage_erase(uint64_t txn_id, const std::string &index_name,
+                 uint64_t doc_id) {
+  return stage_erase_for_owner(unit_test_explicit_owner(), txn_id, index_name,
+                               doc_id);
+}
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 bool stage_upsert_for_thd_txn(uint64_t thd_id, uint64_t statement_id,
                           const std::string &index_name, uint64_t doc_id,
@@ -3234,9 +3492,10 @@ bool upsert(const std::string &index_name, uint64_t doc_id,
 
   const uint64_t txn_id = allocate_txn_id();
   if (txn_id == 0) return false;
-  if (!stage_upsert(txn_id, index_name, doc_id, vector)) return false;
-  if (!commit_txn(txn_id)) {
-    rollback_txn(txn_id);
+  if (!stage_internal_upsert(txn_id, index_name, doc_id, vector)) return false;
+  vector_status::record_txn_commit_request();
+  if (!commit_index_service_txn("direct_upsert", txn_id, false)) {
+    rollback_internal_txn(txn_id);
     return false;
   }
   return true;
@@ -3259,9 +3518,10 @@ bool erase(const std::string &index_name, uint64_t doc_id) {
 
   const uint64_t txn_id = allocate_txn_id();
   if (txn_id == 0) return false;
-  if (!stage_erase(txn_id, index_name, doc_id)) return false;
-  if (!commit_txn(txn_id)) {
-    rollback_txn(txn_id);
+  if (!stage_internal_erase(txn_id, index_name, doc_id)) return false;
+  vector_status::record_txn_commit_request();
+  if (!commit_index_service_txn("direct_erase", txn_id, false)) {
+    rollback_internal_txn(txn_id);
     return false;
   }
   return true;

@@ -46,6 +46,7 @@ SET GLOBAL debug = '-d,vector_truth_store_fail_save';
 SELECT VEC_INDEX_TXN_PENDING(@txn_fail);
 SELECT VEC_INDEX_SEARCH('idx_persist_fail', VEC_FROMTEXT('[2,2]'), 10);
 SELECT VEC_INDEX_TXN_ROLLBACK(@txn_fail);
+--error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_TXN_PENDING(@txn_fail);
 --source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_persist_fail');

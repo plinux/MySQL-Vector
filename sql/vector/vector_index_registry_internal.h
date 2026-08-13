@@ -71,6 +71,15 @@ struct thd_txn_context {
       publication_intents;
 };
 
+enum class explicit_txn_state { kActive, kCommitting };
+
+struct explicit_txn_owner {
+  uint64_t thd_id{0};
+  std::string user;
+  std::string host;
+  explicit_txn_state state{explicit_txn_state::kActive};
+};
+
 struct index_binding {
   std::string schema_name;
   std::string table_name;
@@ -172,6 +181,9 @@ extern std::vector<vector_index_metadata_store::prepared_change_row>
     g_prepared_change_rows;
 extern std::vector<vector_index_metadata_store::segment_task_row>
     g_segment_task_rows;
+extern std::unordered_map<uint64_t, explicit_txn_owner> g_explicit_txn_owners;
+extern std::unordered_map<uint64_t, std::unordered_set<uint64_t>>
+    g_explicit_txns_by_thd;
 extern std::vector<recovery_action> g_recovery_actions;
 extern std::unordered_map<uint64_t, thd_txn_context> g_thd_txn_contexts;
 extern std::unordered_map<std::string, index_binding> g_index_bindings;

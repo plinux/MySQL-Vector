@@ -106,6 +106,9 @@
 #include "sql/thr_malloc.h"
 #include "sql/transaction.h"  // trans_rollback
 #include "sql/transaction_info.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_registry.h"
+#endif  // HAVE_VECTOR_INDEX
 #include "sql/xa.h"
 #include "sql/xa/sql_cmd_xa.h"                   // Sql_cmd_xa_*
 #include "sql/xa/transaction_cache.h"            // xa::Transaction_cache
@@ -1255,6 +1258,10 @@ void THD::cleanup(void) {
     trans_rollback(this);
     xa::Transaction_cache::remove(trn_ctx);
   }
+
+#ifdef HAVE_VECTOR_INDEX
+  (void)vector_index_registry::rollback_explicit_txns_for_thd(this);
+#endif  // HAVE_VECTOR_INDEX
 
   locked_tables_list.unlock_locked_tables(this);
   mysql_ha_cleanup(this);

@@ -73,6 +73,9 @@ std::vector<vector_index_metadata_store::change_log_row> g_change_log_rows;
 std::vector<vector_index_metadata_store::prepared_change_row>
     g_prepared_change_rows;
 std::vector<vector_index_metadata_store::segment_task_row> g_segment_task_rows;
+std::unordered_map<uint64_t, explicit_txn_owner> g_explicit_txn_owners;
+std::unordered_map<uint64_t, std::unordered_set<uint64_t>>
+    g_explicit_txns_by_thd;
 
 std::vector<recovery_action> g_recovery_actions;
 
@@ -2898,6 +2901,8 @@ void reset_for_testing() {
   g_change_log_rows.clear();
   g_prepared_change_rows.clear();
   g_segment_task_rows.clear();
+  g_explicit_txn_owners.clear();
+  g_explicit_txns_by_thd.clear();
   g_thd_txn_contexts.clear();
   g_index_bindings.clear();
   g_index_owner_schemas.clear();

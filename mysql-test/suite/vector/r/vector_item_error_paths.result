@@ -147,11 +147,9 @@ ERROR HY000: Incorrect arguments to vec_index_txn_pending
 SELECT VEC_INDEX_TXN_PENDING(NULL);
 ERROR HY000: Incorrect arguments to vec_index_txn_pending
 SELECT VEC_INDEX_TXN_PENDING(18446744073709551615);
-VEC_INDEX_TXN_PENDING(18446744073709551615)
-0
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
 SELECT VEC_INDEX_TXN_PENDING(99999);
-VEC_INDEX_TXN_PENDING(99999)
-0
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
 SET @txn_item = VEC_INDEX_TXN_BEGIN();
 SELECT VEC_INDEX_TXN_PENDING(@txn_item);
 VEC_INDEX_TXN_PENDING(@txn_item)
@@ -230,15 +228,13 @@ ERROR HY000: Incorrect arguments to vec_index_txn_rollback_to
 SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(NULL, 'sp_null_txn');
 ERROR HY000: Incorrect arguments to vec_index_txn_release_savepoint
 SELECT VEC_INDEX_TXN_SAVEPOINT(99999, 'sp_missing_txn');
-VEC_INDEX_TXN_SAVEPOINT(99999, 'sp_missing_txn')
-1
+ERROR HY000: Incorrect arguments to vec_index_txn_savepoint
 SELECT VEC_INDEX_TXN_COMMIT(NULL);
 ERROR HY000: Incorrect arguments to vec_index_txn_commit
 SELECT VEC_INDEX_TXN_COMMIT(-1);
 ERROR HY000: Incorrect arguments to vec_index_txn_commit
 SELECT VEC_INDEX_TXN_COMMIT(99999);
-VEC_INDEX_TXN_COMMIT(99999)
-1
+ERROR HY000: Incorrect arguments to vec_index_txn_commit
 SELECT VEC_INDEX_TXN_ROLLBACK(NULL);
 ERROR HY000: Incorrect arguments to vec_index_txn_rollback
 SELECT VEC_INDEX_TXN_ROLLBACK(-1);
@@ -247,8 +243,7 @@ SELECT VEC_INDEX_TXN_ROLLBACK(@txn_item);
 VEC_INDEX_TXN_ROLLBACK(@txn_item)
 1
 SELECT VEC_INDEX_TXN_ROLLBACK(99999);
-VEC_INDEX_TXN_ROLLBACK(99999)
-1
+ERROR HY000: Incorrect arguments to vec_index_txn_rollback
 SELECT VEC_INDEX_DROP('idx_item_err');
 VEC_INDEX_DROP('idx_item_err')
 1

@@ -78,6 +78,10 @@ bool stage_statement_publication(
     THD *thd,
     std::vector<vector_index_truth_store::publication_intent> intents,
     bool catalog_exclusive, bool require_stable_catalog_set = false);
+/** Mark a connection as owning one or more explicit vector transactions. */
+bool register_explicit_txn_owner(THD *thd);
+/** Clear explicit ownership after the connection's last transaction ends. */
+void release_explicit_txn_owner(THD *thd);
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 uint64_t thd_id_for_testing(const THD *thd);
 uint64_t stmt_id_for_testing(const THD *thd);
@@ -86,8 +90,13 @@ bool is_real_scope_for_testing(THD *thd, bool all);
 bool is_xa_commit_publication_fallback_for_testing(THD *thd,
                                                    uint64_t thread_id);
 void set_registration_bypass_for_testing(bool bypass);
+void set_context_for_testing(THD *thd, bool active);
+bool has_context_for_testing(THD *thd);
+bool has_explicit_txn_owner_for_testing(THD *thd);
+int prepare_for_testing(THD *thd, bool all);
 int commit_for_testing(THD *thd, bool all);
 int rollback_for_testing(THD *thd, bool all);
+int close_connection_for_testing(THD *thd);
 void after_commit_for_testing(Trans_param *param);
 void before_rollback_for_testing(Trans_param *param);
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING

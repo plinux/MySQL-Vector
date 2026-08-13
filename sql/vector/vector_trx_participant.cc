@@ -32,9 +32,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "my_base.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/plugin.h"
-#include "my_base.h"
 #include "sql/handler.h"
 #include "sql/replication.h"
 #include "sql/sql_class.h"
@@ -47,7 +47,15 @@
 namespace {
 
 handlerton *vector_trx_hton = nullptr;
-unsigned char vector_trx_token = 0;
+unsigned char vector_trx_participant_token = 0;
+unsigned char vector_explicit_txn_token = 0;
+unsigned char vector_combined_txn_token = 0;
+
+enum vector_context_role : unsigned int {
+  kNoVectorContext = 0,
+  kTransactionParticipant = 1U << 0,
+  kExplicitTxnOwner = 1U << 1,
+};
 
 std::mutex publication_mutex;
 std::unordered_set<my_thread_id> publication_threads;
@@ -65,6 +73,9 @@ std::mutex observer_registration_mutex;
 bool observer_registered = false;
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 bool registration_bypass_for_testing = false;
+bool context_override_enabled_for_testing = false;
+THD *context_thd_for_testing = nullptr;
+unsigned int context_roles_for_testing = kNoVectorContext;
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 uint64_t vector_thd_id(const THD *thd) {
@@ -79,14 +90,60 @@ bool in_multi_stmt_vector_trx(THD *thd) {
   return thd != nullptr && thd->in_multi_stmt_transaction_mode();
 }
 
+unsigned int vector_context_roles(THD *thd) {
+  if (thd == nullptr) return kNoVectorContext;
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  if (context_override_enabled_for_testing)
+    return context_thd_for_testing == thd ? context_roles_for_testing
+                                          : kNoVectorContext;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+  if (vector_trx_hton == nullptr) return kNoVectorContext;
+
+  const void *context = thd_get_ha_data(thd, vector_trx_hton);
+  if (context == &vector_trx_participant_token) return kTransactionParticipant;
+  if (context == &vector_explicit_txn_token) return kExplicitTxnOwner;
+  if (context == &vector_combined_txn_token)
+    return kTransactionParticipant | kExplicitTxnOwner;
+  return kNoVectorContext;
+}
+
+void set_vector_context_roles(THD *thd, unsigned int roles) {
+  if (thd == nullptr) return;
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  if (context_override_enabled_for_testing) {
+    context_thd_for_testing = roles == kNoVectorContext ? nullptr : thd;
+    context_roles_for_testing = roles;
+    return;
+  }
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+  if (vector_trx_hton == nullptr) return;
+  void *context = nullptr;
+  if (roles == kTransactionParticipant) {
+    context = &vector_trx_participant_token;
+  } else if (roles == kExplicitTxnOwner) {
+    context = &vector_explicit_txn_token;
+  } else if (roles == (kTransactionParticipant | kExplicitTxnOwner)) {
+    context = &vector_combined_txn_token;
+  }
+  thd_set_ha_data(thd, vector_trx_hton, context);
+}
+
 bool has_vector_trx_context(THD *thd) {
-  return thd != nullptr && vector_trx_hton != nullptr &&
-         thd_get_ha_data(thd, vector_trx_hton) != nullptr;
+  return (vector_context_roles(thd) & kTransactionParticipant) != 0;
+}
+
+void clear_vector_trx_context(THD *thd) {
+  set_vector_context_roles(thd,
+                           vector_context_roles(thd) & ~kTransactionParticipant);
+}
+
+void clear_all_vector_context(THD *thd) {
+  set_vector_context_roles(thd, kNoVectorContext);
 }
 
 bool is_xa_commit_publication_fallback(THD *thd, my_thread_id thread_id) {
-  return thd != nullptr && thd->thread_id() == thread_id && thd->lex != nullptr &&
-         thd->lex->sql_command == SQLCOM_XA_COMMIT;
+  return thd != nullptr && thd->thread_id() == thread_id &&
+         thd->lex != nullptr && thd->lex->sql_command == SQLCOM_XA_COMMIT;
 }
 
 bool is_real_vector_scope(THD *thd, bool all) {
@@ -192,7 +249,7 @@ int vector_trx_commit(handlerton *, THD *thd, bool all) {
       publication_threads.insert(thd->thread_id());
     }
     thd->get_transaction()->m_flags.run_hooks = true;
-    thd_set_ha_data(thd, vector_trx_hton, nullptr);
+    clear_vector_trx_context(thd);
     return 0;
   }
 
@@ -208,16 +265,18 @@ int vector_trx_rollback(handlerton *, THD *thd, bool all) {
     ok = vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
   } else {
     ok = in_multi_stmt_vector_trx(thd)
-             ? vector_index_registry::rollback_stmt_for_thd_txn(vector_thd_id(thd),
-                                                           vector_stmt_id(thd))
+             ? vector_index_registry::rollback_stmt_for_thd_txn(
+                   vector_thd_id(thd), vector_stmt_id(thd))
              : vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
   }
   if (ok && is_real_vector_scope(thd, all)) {
-    std::lock_guard<std::mutex> guard(publication_mutex);
-    publication_threads.erase(thd->thread_id());
-    publication_guards.erase(thd->thread_id());
-    statement_publications.erase(thd->thread_id());
-    thd_set_ha_data(thd, vector_trx_hton, nullptr);
+    {
+      std::lock_guard<std::mutex> guard(publication_mutex);
+      publication_threads.erase(thd->thread_id());
+      publication_guards.erase(thd->thread_id());
+      statement_publications.erase(thd->thread_id());
+    }
+    clear_vector_trx_context(thd);
   }
   return ok ? 0 : HA_ERR_INTERNAL_ERROR;
 }
@@ -231,7 +290,8 @@ int vector_trx_close_connection(handlerton *, THD *thd) {
       statement_publications.erase(thd->thread_id());
     }
     (void)vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
-    thd_set_ha_data(thd, vector_trx_hton, nullptr);
+    (void)vector_index_registry::rollback_explicit_txns_for_thd(thd);
+    clear_all_vector_context(thd);
   }
   return 0;
 }
@@ -286,7 +346,8 @@ void vector_trx_after_commit(void *arg) {
   }
   if (!publication_ok) {
     const std::string message =
-        "Vector runtime publication failed after transaction commit at stage '" +
+        "Vector runtime publication failed after transaction commit at stage "
+        "'" +
         (failure_stage.empty() ? "unknown" : failure_stage) + "'";
     LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG, message.c_str());
   }
@@ -346,7 +407,8 @@ bool ensure_observer_registered_impl() {
   }
 
   st_plugin_int *plugin = hton2plugin(vector_trx_hton->slot);
-  if (plugin == nullptr || register_trans_observer(&vector_trx_observer, plugin)) {
+  if (plugin == nullptr ||
+      register_trans_observer(&vector_trx_observer, plugin)) {
     return false;
   }
   observer_registered = true;
@@ -379,8 +441,7 @@ int vector_trx_init(void *p) {
   hton->rollback = vector_trx_rollback;
   hton->prepare = vector_trx_prepare;
   hton->set_prepared_in_tc = vector_trx_set_prepared_in_tc;
-  hton->flags =
-      HTON_NOT_USER_SELECTABLE | HTON_HIDDEN | HTON_NO_GLOBAL_2PC;
+  hton->flags = HTON_NOT_USER_SELECTABLE | HTON_HIDDEN | HTON_NO_GLOBAL_2PC;
   return 0;
 }
 
@@ -399,6 +460,11 @@ int vector_trx_deinit(void *) {
     statement_publications.clear();
   }
   vector_trx_hton = nullptr;
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  context_thd_for_testing = nullptr;
+  context_roles_for_testing = kNoVectorContext;
+  context_override_enabled_for_testing = false;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
   return 0;
 }
 
@@ -415,7 +481,9 @@ uint64_t thd_id_for_testing(const THD *thd) { return vector_thd_id(thd); }
 
 uint64_t stmt_id_for_testing(const THD *thd) { return vector_stmt_id(thd); }
 
-bool in_multi_stmt_for_testing(THD *thd) { return in_multi_stmt_vector_trx(thd); }
+bool in_multi_stmt_for_testing(THD *thd) {
+  return in_multi_stmt_vector_trx(thd);
+}
 
 bool is_real_scope_for_testing(THD *thd, bool all) {
   return is_real_vector_scope(thd, all);
@@ -431,12 +499,34 @@ void set_registration_bypass_for_testing(bool bypass) {
   registration_bypass_for_testing = bypass;
 }
 
+void set_context_for_testing(THD *thd, bool active) {
+  if (thd == nullptr) return;
+  context_override_enabled_for_testing = true;
+  context_thd_for_testing = active ? thd : nullptr;
+  context_roles_for_testing =
+      active ? kTransactionParticipant : kNoVectorContext;
+}
+
+bool has_context_for_testing(THD *thd) { return has_vector_trx_context(thd); }
+
+bool has_explicit_txn_owner_for_testing(THD *thd) {
+  return (vector_context_roles(thd) & kExplicitTxnOwner) != 0;
+}
+
+int prepare_for_testing(THD *thd, bool all) {
+  return vector_trx_prepare(nullptr, thd, all);
+}
+
 int commit_for_testing(THD *thd, bool all) {
   return vector_trx_commit(nullptr, thd, all);
 }
 
 int rollback_for_testing(THD *thd, bool all) {
   return vector_trx_rollback(nullptr, thd, all);
+}
+
+int close_connection_for_testing(THD *thd) {
+  return vector_trx_close_connection(nullptr, thd);
 }
 
 void after_commit_for_testing(Trans_param *param) {
@@ -463,16 +553,20 @@ bool in_user_multi_statement_transaction(THD *thd) {
 
 bool register_participant(THD *thd) {
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
-  if (registration_bypass_for_testing) return thd != nullptr;
+  if (registration_bypass_for_testing) {
+    if (thd == nullptr) return false;
+    set_vector_context_roles(
+        thd, vector_context_roles(thd) | kTransactionParticipant);
+    return true;
+  }
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
   if (thd == nullptr || vector_trx_hton == nullptr ||
       !vector_trx_participant::ensure_observer_registered()) {
     return false;
   }
 
-  if (thd_get_ha_data(thd, vector_trx_hton) == nullptr) {
-    thd_set_ha_data(thd, vector_trx_hton, &vector_trx_token);
-  }
+  set_vector_context_roles(thd,
+                           vector_context_roles(thd) | kTransactionParticipant);
 
   vector_index_truth_store::truth_store *truth_store =
       vector_index_truth_store::get();
@@ -576,6 +670,27 @@ bool stage_statement_publication(
     }
   }
   return true;
+}
+
+bool register_explicit_txn_owner(THD *thd) {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  if (registration_bypass_for_testing) {
+    if (thd == nullptr) return false;
+    set_vector_context_roles(thd,
+                             vector_context_roles(thd) | kExplicitTxnOwner);
+    return true;
+  }
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+  if (thd == nullptr || vector_trx_hton == nullptr) return false;
+  set_vector_context_roles(thd,
+                           vector_context_roles(thd) | kExplicitTxnOwner);
+  return true;
+}
+
+void release_explicit_txn_owner(THD *thd) {
+  if (thd == nullptr) return;
+  set_vector_context_roles(thd,
+                           vector_context_roles(thd) & ~kExplicitTxnOwner);
 }
 
 }  // namespace vector_trx_participant

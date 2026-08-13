@@ -3712,7 +3712,12 @@ TEST_F(VectorIndexRegistryTest,
 
   ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
       400, 10, index_name, 1, {1.0F, 1.0F}));
-  ASSERT_TRUE(vector_index_registry::release_savepoint_txn(1, "__stmt_10"));
+  {
+    std::lock_guard<std::shared_mutex> guard(
+        vector_index_registry::detail::g_registry_mutex);
+    ASSERT_TRUE(vector_index_registry::detail::g_index_service
+                    .release_savepoint(1, "__stmt_10"));
+  }
   EXPECT_FALSE(vector_index_registry::commit_stmt_for_thd_txn(400, 10));
 
   ASSERT_TRUE(vector_index_registry::rollback_thd_txn(400));
@@ -3731,7 +3736,12 @@ TEST_F(VectorIndexRegistryTest,
 
   ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
       401, 11, index_name, 2, {2.0F, 2.0F}));
-  ASSERT_TRUE(vector_index_registry::release_savepoint_txn(1, "__stmt_11"));
+  {
+    std::lock_guard<std::shared_mutex> guard(
+        vector_index_registry::detail::g_registry_mutex);
+    ASSERT_TRUE(vector_index_registry::detail::g_index_service
+                    .release_savepoint(1, "__stmt_11"));
+  }
   EXPECT_FALSE(vector_index_registry::rollback_stmt_for_thd_txn(401, 11));
 
   ASSERT_TRUE(vector_index_registry::rollback_thd_txn(401));
@@ -7170,8 +7180,9 @@ TEST_F(VectorIndexRegistryTest,
 
   const uint64_t txn_id = vector_index_registry::begin_txn();
   EXPECT_EQ(0U, vector_index_registry::pending_txn_changes(txn_id));
-  EXPECT_TRUE(vector_index_registry::savepoint_txn(9999, "sp_missing"));
-  EXPECT_TRUE(vector_index_registry::release_savepoint_txn(9999, "sp_missing"));
+  EXPECT_FALSE(vector_index_registry::savepoint_txn(9999, "sp_missing"));
+  EXPECT_FALSE(
+      vector_index_registry::release_savepoint_txn(9999, "sp_missing"));
 
   ASSERT_TRUE(
       vector_index_registry::stage_upsert(txn_id, index_name, 1, {1.0F, 1.0F}));

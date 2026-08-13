@@ -42,11 +42,7 @@ SET DEBUG_SYNC = 'now WAIT_FOR commit_b_waiting TIMEOUT 30';
 COMMIT;
 SET DEBUG_SYNC = 'RESET';
 SELECT VEC_INDEX_TXN_PENDING(@txn_commit_b);
-VEC_INDEX_TXN_PENDING(@txn_commit_b)
-0
-SELECT VEC_INDEX_TXN_COMMIT(@txn_commit_b);
-VEC_INDEX_TXN_COMMIT(@txn_commit_b)
-1
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
 SELECT VEC_INDEX_SEARCH(
 'test.t_vector_delete_mark_locking.v', '[2,2]', 1);
 VEC_INDEX_SEARCH(

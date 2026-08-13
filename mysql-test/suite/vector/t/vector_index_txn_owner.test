@@ -1,0 +1,70 @@
+--source include/have_vector_index.inc
+--source include/have_vector_hnsw.inc
+
+--echo #
+--echo # WL#Vector: explicit transaction ownership and disconnect cleanup
+--echo #
+
+DROP USER IF EXISTS 'vec_txn_other'@'localhost';
+DROP DATABASE IF EXISTS vector_txn_owner_db;
+CREATE DATABASE vector_txn_owner_db;
+CREATE USER 'vec_txn_other'@'localhost';
+GRANT ALL ON vector_txn_owner_db.*
+  TO 'vec_txn_other'@'localhost';
+
+USE vector_txn_owner_db;
+CREATE TABLE txn_handles(id BIGINT UNSIGNED NOT NULL PRIMARY KEY);
+SELECT VEC_INDEX_CREATE('idx_txn_owner', 2, 'EUCLIDEAN', 'MEMORY',
+                        'HNSWLIB', 0, 'transactional');
+
+--connect (txn_owner,localhost,root,,vector_txn_owner_db)
+SET @txn_owner = VEC_INDEX_TXN_BEGIN();
+INSERT INTO txn_handles VALUES (@txn_owner);
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn_owner', @txn_owner, 1, '[1,1]');
+SET @txn_owner_second = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn_owner', @txn_owner_second, 4, '[4,4]');
+
+--connect (txn_peer,localhost,root,,vector_txn_owner_db)
+SET @foreign_txn = (SELECT id FROM txn_handles);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_PENDING(@foreign_txn);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_SAVEPOINT(@foreign_txn, 'peer_savepoint');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn_owner', @foreign_txn, 2, '[2,2]');
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_COMMIT(@foreign_txn);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_ROLLBACK(@foreign_txn);
+--disconnect txn_peer
+
+--connect (txn_other,localhost,vec_txn_other,,vector_txn_owner_db)
+SET @foreign_txn = (SELECT id FROM txn_handles);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_PENDING(@foreign_txn);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_COMMIT(@foreign_txn);
+--disconnect txn_other
+
+--connection default
+USE vector_txn_owner_db;
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_PENDING(99999);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_STAGE_UPSERT('idx_txn_owner', 18446744073709551615,
+                              3, '[3,3]');
+
+--disconnect txn_owner
+SELECT VARIABLE_VALUE
+  FROM performance_schema.global_status
+ WHERE VARIABLE_NAME = 'Vector_pending_txn_changes';
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_txn_owner'),
+                    '$.committed_entry_count') AS committed_entry_count;
+
+SET @txn_after_cleanup = VEC_INDEX_TXN_BEGIN();
+SELECT @txn_after_cleanup > 0 AS allocator_available;
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_after_cleanup);
+
+SELECT VEC_INDEX_DROP('idx_txn_owner');
+DROP DATABASE vector_txn_owner_db;
+DROP USER 'vec_txn_other'@'localhost';

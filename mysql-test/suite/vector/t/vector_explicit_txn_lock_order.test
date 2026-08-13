@@ -1,0 +1,178 @@
+--source include/have_vector_debug_native.inc
+--source include/have_debug_sync.inc
+
+--echo #
+--echo # WL#Vector: explicit commits do not hold publication while waiting rows
+--echo #
+
+--disable_result_log
+DROP TABLE IF EXISTS t_vector_explicit_lock_order;
+CREATE TABLE t_vector_explicit_lock_order (
+  id BIGINT UNSIGNED PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vector_explicit_lock_order(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+INSERT INTO t_vector_explicit_lock_order
+  VALUES (1, VEC_FROMTEXT('[1,1]'));
+
+connect (con_attached,localhost,root,,test,,);
+connect (con_explicit,localhost,root,,test,,);
+
+connection con_attached;
+START TRANSACTION;
+UPDATE t_vector_explicit_lock_order
+  SET v=VEC_FROMTEXT('[2,2]') WHERE id=1;
+
+connection con_explicit;
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT(
+  'test.t_vector_explicit_lock_order.v', @txn, 1, '[3,3]');
+SET DEBUG_SYNC =
+  'vector_truth_store_row_lock_wait SIGNAL explicit_waiting_for_truth_row';
+--send SELECT VEC_INDEX_TXN_COMMIT(@txn)
+
+connection default;
+SET DEBUG_SYNC =
+  'now WAIT_FOR explicit_waiting_for_truth_row TIMEOUT 30';
+
+connection con_attached;
+COMMIT;
+
+connection con_explicit;
+--reap
+SET DEBUG_SYNC = 'RESET';
+--enable_result_log
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_PENDING(@txn);
+SELECT VEC_INDEX_SEARCH(
+  'test.t_vector_explicit_lock_order.v', '[3,3]', 1);
+
+--disable_result_log
+connection default;
+disconnect con_attached;
+disconnect con_explicit;
+DROP VECTOR INDEX ON t_vector_explicit_lock_order(v);
+DROP TABLE t_vector_explicit_lock_order;
+--enable_result_log
+
+--echo #
+--echo # Reverse row-lock order across two indexes remains retryable
+--echo #
+
+--disable_result_log
+CREATE TABLE t_vector_explicit_lock_a (
+  id BIGINT UNSIGNED PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE TABLE t_vector_explicit_lock_b LIKE t_vector_explicit_lock_a;
+CREATE VECTOR INDEX ON t_vector_explicit_lock_a(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+CREATE VECTOR INDEX ON t_vector_explicit_lock_b(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+INSERT INTO t_vector_explicit_lock_a VALUES
+  (1, VEC_FROMTEXT('[1,1]')),
+  (2, VEC_FROMTEXT('[1,1]'));
+INSERT INTO t_vector_explicit_lock_b VALUES (1, VEC_FROMTEXT('[1,1]'));
+
+connect (con_attached_reverse,localhost,root,,test,,);
+connect (con_explicit_reverse,localhost,root,,test,,);
+
+connection con_attached_reverse;
+START TRANSACTION;
+UPDATE t_vector_explicit_lock_b SET v=VEC_FROMTEXT('[2,2]') WHERE id=1;
+UPDATE t_vector_explicit_lock_a SET v=VEC_FROMTEXT('[2,2]') WHERE id=1;
+
+connection con_explicit_reverse;
+SET @txn_reverse = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT(
+  'test.t_vector_explicit_lock_a.v', @txn_reverse, 1, '[3,3]');
+SELECT VEC_INDEX_STAGE_UPSERT(
+  'test.t_vector_explicit_lock_a.v', @txn_reverse, 2, '[3,3]');
+SELECT VEC_INDEX_STAGE_UPSERT(
+  'test.t_vector_explicit_lock_b.v', @txn_reverse, 1, '[3,3]');
+SET SESSION debug = '+d,vector_truth_store_compact_after_3_rows';
+SET DEBUG_SYNC =
+  'vector_truth_store_row_lock_wait SIGNAL reverse_waiting_for_truth_row';
+--send SELECT VEC_INDEX_TXN_COMMIT(@txn_reverse)
+
+connection default;
+SET DEBUG_SYNC =
+  'now WAIT_FOR reverse_waiting_for_truth_row TIMEOUT 30';
+
+connection con_attached_reverse;
+COMMIT;
+
+connection con_explicit_reverse;
+--reap
+SET DEBUG_SYNC = 'RESET';
+SET SESSION debug = '-d,vector_truth_store_compact_after_3_rows';
+--enable_result_log
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_PENDING(@txn_reverse);
+SELECT VEC_INDEX_SEARCH('test.t_vector_explicit_lock_a.v', '[3,3]', 1);
+SELECT VEC_INDEX_SEARCH('test.t_vector_explicit_lock_b.v', '[3,3]', 1);
+
+--disable_result_log
+connection default;
+disconnect con_attached_reverse;
+disconnect con_explicit_reverse;
+DROP VECTOR INDEX ON t_vector_explicit_lock_a(v);
+DROP VECTOR INDEX ON t_vector_explicit_lock_b(v);
+DROP TABLE t_vector_explicit_lock_a;
+DROP TABLE t_vector_explicit_lock_b;
+--enable_result_log
+
+--echo #
+--echo # DROP cleanup and explicit commit do not form a publication-row cycle
+--echo #
+
+--disable_result_log
+SELECT VEC_INDEX_CREATE('idx_explicit_drop_cycle', 2,
+                        'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_explicit_drop_cycle', 1,
+                        VEC_FROMTEXT('[1,1]'));
+
+connect (con_drop_cycle,localhost,root,,test,,);
+connect (con_explicit_drop_cycle,localhost,root,,test,,);
+
+connection con_explicit_drop_cycle;
+SET @txn_drop_cycle = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT(
+  'idx_explicit_drop_cycle', @txn_drop_cycle, 1, '[2,2]');
+SET DEBUG_SYNC =
+  'vector_explicit_txn_after_truth_stage SIGNAL explicit_truth_staged WAIT_FOR allow_explicit_publication';
+--send SELECT VEC_INDEX_TXN_COMMIT(@txn_drop_cycle)
+
+connection default;
+SET DEBUG_SYNC = 'now WAIT_FOR explicit_truth_staged TIMEOUT 30';
+
+connection con_drop_cycle;
+SET DEBUG_SYNC =
+  'vector_truth_store_row_lock_wait SIGNAL drop_waiting_for_truth_row';
+--send SELECT VEC_INDEX_DROP('idx_explicit_drop_cycle')
+
+connection default;
+SET DEBUG_SYNC =
+  'now WAIT_FOR drop_waiting_for_truth_row TIMEOUT 30';
+SET DEBUG_SYNC = 'now SIGNAL allow_explicit_publication';
+
+connection con_explicit_drop_cycle;
+--error ER_WRONG_ARGUMENTS
+--reap
+SET DEBUG_SYNC = 'RESET';
+--enable_result_log
+SELECT VEC_INDEX_TXN_PENDING(@txn_drop_cycle);
+SELECT VEC_INDEX_TXN_ROLLBACK(@txn_drop_cycle);
+
+--disable_result_log
+connection con_drop_cycle;
+--reap
+SET DEBUG_SYNC = 'RESET';
+
+connection default;
+disconnect con_drop_cycle;
+disconnect con_explicit_drop_cycle;
+--enable_result_log

@@ -73,8 +73,7 @@ DEALLOCATE PREPARE stmt_rollback;
 PREPARE stmt_pending_after FROM
 'SELECT VEC_INDEX_TXN_PENDING(?)';
 EXECUTE stmt_pending_after USING @txn_id;
-VEC_INDEX_TXN_PENDING(?)
-0
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
 DEALLOCATE PREPARE stmt_pending_after;
 PREPARE stmt_drop FROM
 'SELECT VEC_INDEX_DROP(?)';

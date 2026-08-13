@@ -81,8 +81,8 @@ connection con_delete_commit_b;
 SET DEBUG_SYNC = 'RESET';
 --enable_result_log
 
+--error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_TXN_PENDING(@txn_commit_b);
-SELECT VEC_INDEX_TXN_COMMIT(@txn_commit_b);
 SELECT VEC_INDEX_SEARCH(
   'test.t_vector_delete_mark_locking.v', '[2,2]', 1);
 

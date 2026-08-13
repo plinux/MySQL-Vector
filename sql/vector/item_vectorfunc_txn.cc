@@ -44,7 +44,12 @@ bool Item_func_vec_index_txn_begin::resolve_type(THD *thd) {
 longlong Item_func_vec_index_txn_begin::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 0);
   null_value = false;
-  return static_cast<longlong>(vector_index_registry::begin_txn());
+  const uint64_t txn_id = vector_index_registry::begin_txn(current_thd);
+  if (txn_id == 0) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_int();
+  }
+  return static_cast<longlong>(txn_id);
 }
 
 bool Item_func_vec_index_txn_pending::resolve_type(THD *thd) {
@@ -63,10 +68,15 @@ longlong Item_func_vec_index_txn_pending::val_int() {
     return error_int();
   }
 
+  size_t pending_count = 0;
+  if (!vector_index_registry::pending_txn_changes(
+          current_thd, static_cast<uint64_t>(txn_id), &pending_count)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_int();
+  }
+
   null_value = false;
-  return static_cast<longlong>(
-      vector_index_registry::pending_txn_changes(
-          static_cast<uint64_t>(txn_id)));
+  return static_cast<longlong>(pending_count);
 }
 
 bool Item_func_vec_index_stage_upsert::resolve_type(THD *thd) {
@@ -102,10 +112,9 @@ longlong Item_func_vec_index_stage_upsert::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::stage_upsert(static_cast<uint64_t>(txn_id),
-                                           index_name,
-                                           static_cast<uint64_t>(doc_id),
-                                           vector)) {
+  if (!vector_index_registry::stage_upsert(
+          current_thd, static_cast<uint64_t>(txn_id), index_name,
+          static_cast<uint64_t>(doc_id), vector)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -140,9 +149,9 @@ longlong Item_func_vec_index_stage_erase::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::stage_erase(static_cast<uint64_t>(txn_id),
-                                          index_name,
-                                          static_cast<uint64_t>(doc_id))) {
+  if (!vector_index_registry::stage_erase(
+          current_thd, static_cast<uint64_t>(txn_id), index_name,
+          static_cast<uint64_t>(doc_id))) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -167,7 +176,8 @@ longlong Item_func_vec_index_txn_commit::val_int() {
     return error_int();
   }
 
-  if (!vector_index_registry::commit_txn(static_cast<uint64_t>(txn_id))) {
+  if (!vector_index_registry::commit_txn(current_thd,
+                                         static_cast<uint64_t>(txn_id))) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -192,7 +202,8 @@ longlong Item_func_vec_index_txn_rollback::val_int() {
     return error_int();
   }
 
-  if (!vector_index_registry::rollback_txn(static_cast<uint64_t>(txn_id))) {
+  if (!vector_index_registry::rollback_txn(
+          current_thd, static_cast<uint64_t>(txn_id))) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -220,7 +231,8 @@ longlong Item_func_vec_index_txn_savepoint::val_int() {
     return error_int();
   }
 
-  if (!vector_index_registry::savepoint_txn(txn_id, savepoint_name)) {
+  if (!vector_index_registry::savepoint_txn(current_thd, txn_id,
+                                             savepoint_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -248,7 +260,8 @@ longlong Item_func_vec_index_txn_rollback_to::val_int() {
     return error_int();
   }
 
-  if (!vector_index_registry::rollback_to_savepoint_txn(txn_id, savepoint_name)) {
+  if (!vector_index_registry::rollback_to_savepoint_txn(
+          current_thd, txn_id, savepoint_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
@@ -276,7 +289,8 @@ longlong Item_func_vec_index_txn_release_savepoint::val_int() {
     return error_int();
   }
 
-  if (!vector_index_registry::release_savepoint_txn(txn_id, savepoint_name)) {
+  if (!vector_index_registry::release_savepoint_txn(
+          current_thd, txn_id, savepoint_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }

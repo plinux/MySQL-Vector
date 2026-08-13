@@ -76,6 +76,7 @@ DEALLOCATE PREPARE stmt_rollback;
 
 PREPARE stmt_pending_after FROM
   'SELECT VEC_INDEX_TXN_PENDING(?)';
+--error ER_WRONG_ARGUMENTS
 EXECUTE stmt_pending_after USING @txn_id;
 DEALLOCATE PREPARE stmt_pending_after;
 

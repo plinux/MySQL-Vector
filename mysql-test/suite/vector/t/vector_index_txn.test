@@ -12,6 +12,7 @@ SELECT VEC_INDEX_STAGE_UPSERT('idx_txn', @txn1, 1, '[1,1]');
 SELECT VEC_INDEX_TXN_PENDING(@txn1);
 SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
 SELECT VEC_INDEX_TXN_COMMIT(@txn1);
+--error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_TXN_PENDING(@txn1);
 SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
@@ -47,6 +48,7 @@ SELECT VEC_INDEX_TXN_ROLLBACK_TO(@txn_sp, 'sp2');
 SELECT VEC_INDEX_TXN_PENDING(@txn_sp);
 SELECT VEC_INDEX_TXN_RELEASE_SAVEPOINT(@txn_sp, 'sp2');
 SELECT VEC_INDEX_TXN_COMMIT(@txn_sp);
+--error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_TXN_PENDING(@txn_sp);
 SELECT VEC_INDEX_SEARCH('idx_txn', '[12,12]', 10);
 

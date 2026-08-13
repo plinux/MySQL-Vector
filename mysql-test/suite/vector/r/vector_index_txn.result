@@ -18,8 +18,7 @@ SELECT VEC_INDEX_TXN_COMMIT(@txn1);
 VEC_INDEX_TXN_COMMIT(@txn1)
 1
 SELECT VEC_INDEX_TXN_PENDING(@txn1);
-VEC_INDEX_TXN_PENDING(@txn1)
-0
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
 SELECT VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10);
 VEC_INDEX_SEARCH('idx_txn', '[1,1]', 10)
 [1]
@@ -91,8 +90,7 @@ SELECT VEC_INDEX_TXN_COMMIT(@txn_sp);
 VEC_INDEX_TXN_COMMIT(@txn_sp)
 1
 SELECT VEC_INDEX_TXN_PENDING(@txn_sp);
-VEC_INDEX_TXN_PENDING(@txn_sp)
-0
+ERROR HY000: Incorrect arguments to vec_index_txn_pending
 SELECT VEC_INDEX_SEARCH('idx_txn', '[12,12]', 10);
 VEC_INDEX_SEARCH('idx_txn', '[12,12]', 10)
 [101,100]
