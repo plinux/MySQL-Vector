@@ -77,8 +77,6 @@ std::unordered_map<uint64_t, explicit_txn_owner> g_explicit_txn_owners;
 std::unordered_map<uint64_t, std::unordered_set<uint64_t>>
     g_explicit_txns_by_thd;
 
-std::vector<recovery_action> g_recovery_actions;
-
 std::unordered_map<uint64_t, thd_txn_context> g_thd_txn_contexts;
 std::unordered_map<std::string, index_binding> g_index_bindings;
 std::unordered_map<std::string, std::string> g_index_owner_schemas;
@@ -645,18 +643,6 @@ void erase_prepared_rows_for_xid_locked(const XID &xid) {
           g_prepared_change_rows.begin(), g_prepared_change_rows.end(),
           [&xid](const auto &row) { return xid_matches_row(xid, row); }),
       g_prepared_change_rows.end());
-}
-
-void queue_recovery_action_locked(const XID &xid, recovery_action_type type,
-                                  bool conditional) {
-  for (auto &action : g_recovery_actions) {
-    if (action.xid.eq(&xid)) {
-      action.type = type;
-      action.conditional = action.conditional && conditional;
-      return;
-    }
-  }
-  g_recovery_actions.push_back(recovery_action{xid, type, conditional});
 }
 
 bool snapshot_runtime_state_locked(
@@ -2022,42 +2008,6 @@ bool ensure_metadata_available_locked() {
   if (truth_recovery_required) segment_task_rows.clear();
   g_segment_task_rows = std::move(segment_task_rows);
 
-  if (truth_recovery_required && !g_recovery_actions.empty()) {
-    g_registry_health = registry_health_state::kFailed;
-    g_registry_failure_reason = "truth_recovery_has_pending_xa_actions";
-    return false;
-  }
-  if (mysqld_server_started && !g_recovery_actions.empty()) {
-    const auto actions = g_recovery_actions;
-    g_recovery_actions.clear();
-    for (const auto &action : actions) {
-      xa_status_code rc = XA_OK;
-      switch (action.type) {
-        case recovery_action_type::kCommit:
-          rc = apply_prepared_xid_locked(action.xid, true, 0);
-          break;
-        case recovery_action_type::kRollback:
-          rc = apply_prepared_xid_locked(action.xid, false, 0);
-          break;
-        case recovery_action_type::kPreparedInTc:
-          rc = XAER_NOTA;
-          for (auto &row : g_prepared_change_rows) {
-            if (xid_matches_row(action.xid, row)) {
-              row.prepared_in_tc = true;
-              rc = XA_OK;
-            }
-          }
-          if (rc == XA_OK && !persist_prepared_locked()) rc = XAER_RMERR;
-          break;
-      }
-      if (rc == XAER_NOTA && action.conditional) continue;
-      if (rc != XA_OK) {
-        g_recovery_actions = actions;
-        return false;
-      }
-    }
-  }
-
   if (!truth_recovery_required) {
     g_manifest_metadata_checkpoint = rows.size();
     std::vector<vector_index_metadata_store::committed_row>
@@ -2615,6 +2565,7 @@ bool restore_runtime_state_locked(
   for (const std::string &index_name : lagging_index_names) {
     if (!g_index_service.rebuild_index(index_name)) return false;
   }
+
   g_manifest_metadata_checkpoint = metadata_rows.size();
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
   if (!snapshot_committed_rows_locked(&committed_rows)) return false;

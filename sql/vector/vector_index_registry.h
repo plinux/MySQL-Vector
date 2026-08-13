@@ -488,9 +488,14 @@ xa_status_code rollback_prepared_xid_if_loaded(const XID &xid);
 xa_status_code rollback_prepared_xid_for_thd(uint64_t thd_id, const XID &xid);
 int recover_prepared_xids(XA_recover_txn *txn_list, uint len, MEM_ROOT *mem_root);
 int recover_prepared_in_tc(Xa_state_list &xa_list);
-void queue_recovery_commit_xid(const XID &xid);
-void queue_recovery_rollback_xid(const XID &xid);
-void queue_recovery_set_prepared_in_tc(const XID &xid);
+/** Validate a SQL savepoint operation without changing vector state. */
+bool preflight_savepoint_thd_txn(uint64_t thd_id, const std::string &name);
+/** Validate SQL rollback-to-savepoint without changing vector state. */
+bool preflight_rollback_to_savepoint_thd_txn(uint64_t thd_id,
+                                             const std::string &name);
+/** Validate SQL savepoint release without changing vector state. */
+bool preflight_release_savepoint_thd_txn(uint64_t thd_id,
+                                         const std::string &name);
 bool savepoint_thd_txn(uint64_t thd_id, const std::string &name);
 bool rollback_to_savepoint_thd_txn(uint64_t thd_id, const std::string &name);
 bool release_savepoint_thd_txn(uint64_t thd_id, const std::string &name);

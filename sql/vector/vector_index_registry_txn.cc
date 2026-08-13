@@ -3309,19 +3309,50 @@ int recover_prepared_in_tc(Xa_state_list &xa_list) {
   return 0;
 }
 
-void queue_recovery_commit_xid(const XID &xid) {
+bool preflight_savepoint_thd_txn(uint64_t thd_id,
+                                 const std::string &name) {
+  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  queue_recovery_action_locked(xid, recovery_action_type::kCommit, true);
+  if (name.empty() || !ensure_metadata_loaded_locked()) return false;
+
+  const auto it = g_thd_txn_contexts.find(thd_id);
+  return it == g_thd_txn_contexts.end() ||
+         g_index_service.preflight_savepoint(
+             it->second.txn_id, make_user_savepoint_name(name));
 }
 
-void queue_recovery_rollback_xid(const XID &xid) {
+bool preflight_rollback_to_savepoint_thd_txn(
+    uint64_t thd_id, const std::string &name) {
+  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  queue_recovery_action_locked(xid, recovery_action_type::kRollback, true);
+  if (name.empty()) return false;
+
+  const auto it = g_thd_txn_contexts.find(thd_id);
+  if (it == g_thd_txn_contexts.end()) return true;
+  if (!ensure_metadata_loaded_locked()) return false;
+
+  size_t target_change_count = 0;
+  const thd_txn_context &ctx = it->second;
+  if (!g_index_service.preflight_rollback_to_savepoint(
+          ctx.txn_id, make_user_savepoint_name(name),
+          &target_change_count)) {
+    return false;
+  }
+  return !ctx.attached_dml ||
+         target_change_count <= ctx.durable_change_log_rows.size();
 }
 
-void queue_recovery_set_prepared_in_tc(const XID &xid) {
+bool preflight_release_savepoint_thd_txn(uint64_t thd_id,
+                                         const std::string &name) {
+  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  queue_recovery_action_locked(xid, recovery_action_type::kPreparedInTc, true);
+  if (name.empty()) return false;
+
+  const auto it = g_thd_txn_contexts.find(thd_id);
+  if (it == g_thd_txn_contexts.end()) return true;
+  if (!ensure_metadata_loaded_locked()) return false;
+  return g_index_service.preflight_release_savepoint(
+      it->second.txn_id, make_user_savepoint_name(name));
 }
 
 bool savepoint_thd_txn(uint64_t thd_id, const std::string &name) {

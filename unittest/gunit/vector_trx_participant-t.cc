@@ -91,10 +91,21 @@ TEST(VectorTrxParticipantTest, TestingWrappersCoverTransactionScopeHelpers) {
   THD *thd = initializer.thd();
   EXPECT_NE(0U, vector_trx_participant::thd_id_for_testing(thd));
   EXPECT_FALSE(vector_trx_participant::in_multi_stmt_for_testing(thd));
+  EXPECT_FALSE(
+      vector_trx_participant::in_user_multi_statement_transaction(nullptr));
+  EXPECT_FALSE(
+      vector_trx_participant::in_user_multi_statement_transaction(thd));
   EXPECT_TRUE(vector_trx_participant::is_real_scope_for_testing(thd, false));
   const ulonglong original_option_bits = thd->variables.option_bits;
   thd->variables.option_bits |= OPTION_BEGIN;
   EXPECT_TRUE(vector_trx_participant::in_multi_stmt_for_testing(thd));
+  EXPECT_TRUE(
+      vector_trx_participant::in_user_multi_statement_transaction(thd));
+  const bool original_slave_thread = thd->slave_thread;
+  thd->slave_thread = true;
+  EXPECT_FALSE(
+      vector_trx_participant::in_user_multi_statement_transaction(thd));
+  thd->slave_thread = original_slave_thread;
   EXPECT_FALSE(vector_trx_participant::is_real_scope_for_testing(thd, false));
   EXPECT_TRUE(vector_trx_participant::is_real_scope_for_testing(thd, true));
   thd->variables.option_bits = original_option_bits;
@@ -250,6 +261,25 @@ TEST(VectorTrxParticipantTest,
 
   initializer.TearDown();
   EXPECT_EQ(0, vector_trx_participant::deinit_plugin(&hton));
+}
+
+TEST(VectorTrxParticipantTest, ContextTokensPreserveEverySupportedRoleSet) {
+  constexpr unsigned int kParticipant = 1U << 0;
+  constexpr unsigned int kExplicitOwner = 1U << 1;
+
+  EXPECT_EQ(0U,
+            vector_trx_participant::round_trip_context_roles_for_testing(0));
+  EXPECT_EQ(kParticipant,
+            vector_trx_participant::round_trip_context_roles_for_testing(
+                kParticipant));
+  EXPECT_EQ(kExplicitOwner,
+            vector_trx_participant::round_trip_context_roles_for_testing(
+                kExplicitOwner));
+  EXPECT_EQ(kParticipant | kExplicitOwner,
+            vector_trx_participant::round_trip_context_roles_for_testing(
+                kParticipant | kExplicitOwner));
+  EXPECT_EQ(0U, vector_trx_participant::round_trip_context_roles_for_testing(
+                    1U << 2));
 }
 
 }  // namespace vector_trx_participant_unittest

@@ -67,6 +67,34 @@ bool in_user_multi_statement_transaction(THD *thd);
 */
 bool register_participant(THD *thd);
 /**
+  Register the current statement for one deferred query-log event.
+
+  Repeated calls for the same query id are idempotent. Statements for which
+  query logging is disabled are accepted without creating pending state.
+
+  @param thd Thread context.
+  @param function_name Function name used if final logging fails.
+  @return true when the statement is registered or needs no query event.
+*/
+bool stage_statement_binlog(THD *thd, const char *function_name);
+/**
+  Finish deferred vector query logging at the top-level statement boundary.
+
+  @param thd Thread context.
+  @param statement_succeeded Whether execution succeeded before statement
+         commit.
+  @return true when no event is required, the event was written, or failed
+          statement state was discarded; false on a logging error.
+*/
+bool finish_statement_binlog(THD *thd, bool statement_succeeded);
+/**
+  Return whether the current statement already owns a statement publication.
+
+  @param thd Thread context.
+  @return true when this THD has a publication for the current query id.
+*/
+bool has_statement_publication(THD *thd);
+/**
   Stage one statement-scoped publication for after-commit installation.
 
   @param thd current user thread
@@ -93,6 +121,7 @@ void set_registration_bypass_for_testing(bool bypass);
 void set_context_for_testing(THD *thd, bool active);
 bool has_context_for_testing(THD *thd);
 bool has_explicit_txn_owner_for_testing(THD *thd);
+unsigned int round_trip_context_roles_for_testing(unsigned int roles);
 int prepare_for_testing(THD *thd, bool all);
 int commit_for_testing(THD *thd, bool all);
 int rollback_for_testing(THD *thd, bool all);

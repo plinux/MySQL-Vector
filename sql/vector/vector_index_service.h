@@ -565,6 +565,21 @@ class index_service {
   bool savepoint(uint64_t txn_id, const std::string &name);
   bool rollback_to_savepoint(uint64_t txn_id, const std::string &name);
   bool release_savepoint(uint64_t txn_id, const std::string &name);
+  /** Validate savepoint creation without changing pending transaction state. */
+  bool preflight_savepoint(uint64_t txn_id, const std::string &name) const;
+  /**
+    Validate rollback-to-savepoint without changing pending transaction state.
+
+    @param txn_id transaction identifier
+    @param name savepoint name
+    @param target_change_count pending change count at the savepoint
+  */
+  bool preflight_rollback_to_savepoint(
+      uint64_t txn_id, const std::string &name,
+      size_t *target_change_count) const;
+  /** Validate savepoint release without changing pending transaction state. */
+  bool preflight_release_savepoint(uint64_t txn_id,
+                                   const std::string &name) const;
   /** Remove spill files left by a previous mysqld process for this datadir. */
   bool cleanup_orphaned_pending_spills();
   /** Discard all in-memory pending state and its owned spill files. */

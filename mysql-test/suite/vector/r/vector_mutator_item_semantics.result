@@ -1,0 +1,33 @@
+#
+# WL#Vector: mutator functions keep side effects out of value generators
+#
+CREATE TABLE t_vector_mutator_generated (
+id BIGINT,
+generated_value BIGINT AS (VEC_INDEX_TXN_BEGIN()) STORED
+);
+ERROR HY000: Expression of generated column 'generated_value' contains a disallowed function: vec_index_txn_begin.
+CREATE TABLE t_vector_mutator_default (
+id BIGINT DEFAULT (VEC_INDEX_TXN_BEGIN())
+);
+ERROR HY000: Default value expression of column 'id' contains a disallowed function: vec_index_txn_begin.
+CREATE TABLE t_vector_mutator_check (
+id BIGINT,
+CHECK (VEC_INDEX_TXN_BEGIN() > 0)
+);
+ERROR HY000: An expression of a check constraint 't_vector_mutator_check_chk_1' contains disallowed function: vec_index_txn_begin.
+CREATE TABLE t_vector_mutator_functional_index (
+id BIGINT,
+INDEX ((VEC_INDEX_TXN_BEGIN()))
+);
+ERROR HY000: Expression of functional index 'functional_index' contains a disallowed function.
+# A literal-only mutator expression must execute once for every row.
+CREATE TABLE t_vector_mutator_rows (id INT PRIMARY KEY);
+INSERT INTO t_vector_mutator_rows VALUES (1), (2), (3);
+SELECT VEC_INDEX_TXN_ROLLBACK(VEC_INDEX_TXN_BEGIN()) AS rolled_back
+FROM t_vector_mutator_rows
+ORDER BY id;
+rolled_back
+1
+1
+1
+DROP TABLE t_vector_mutator_rows;

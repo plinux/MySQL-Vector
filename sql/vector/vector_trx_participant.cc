@@ -34,8 +34,11 @@
 #include <vector>
 
 #include "my_base.h"
+#include "my_dbug.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/plugin.h"
+#include "mysqld_error.h"
+#include "sql/binlog.h"
 #include "sql/handler.h"
 #include "sql/replication.h"
 #include "sql/sql_class.h"
@@ -71,6 +74,12 @@ struct statement_publication_context {
 };
 std::unordered_map<my_thread_id, statement_publication_context>
     statement_publications;
+struct statement_binlog_context {
+  uint64_t statement_id{0};
+  std::string query;
+  std::string function_name;
+};
+std::unordered_map<my_thread_id, statement_binlog_context> statement_binlogs;
 std::mutex observer_registration_mutex;
 bool observer_registered = false;
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
@@ -85,6 +94,7 @@ erase_publication_state_locked(my_thread_id thread_id) {
   std::vector<vector_index_truth_store::publication_intent> intents;
   publication_threads.erase(thread_id);
   publication_guards.erase(thread_id);
+  statement_binlogs.erase(thread_id);
   const auto statement_it = statement_publications.find(thread_id);
   if (statement_it != statement_publications.end()) {
     intents = std::move(statement_it->second.intents);
@@ -139,12 +149,7 @@ unsigned int vector_context_roles(THD *thd) {
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
   if (vector_trx_hton == nullptr) return kNoVectorContext;
 
-  const void *context = thd_get_ha_data(thd, vector_trx_hton);
-  if (context == &vector_trx_participant_token) return kTransactionParticipant;
-  if (context == &vector_explicit_txn_token) return kExplicitTxnOwner;
-  if (context == &vector_combined_txn_token)
-    return kTransactionParticipant | kExplicitTxnOwner;
-  return kNoVectorContext;
+  return vector_context_roles_from_token(thd_get_ha_data(thd, vector_trx_hton));
 }
 
 void set_vector_context_roles(THD *thd, unsigned int roles) {
@@ -157,15 +162,8 @@ void set_vector_context_roles(THD *thd, unsigned int roles) {
   }
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
   if (vector_trx_hton == nullptr) return;
-  void *context = nullptr;
-  if (roles == kTransactionParticipant) {
-    context = &vector_trx_participant_token;
-  } else if (roles == kExplicitTxnOwner) {
-    context = &vector_explicit_txn_token;
-  } else if (roles == (kTransactionParticipant | kExplicitTxnOwner)) {
-    context = &vector_combined_txn_token;
-  }
-  thd_set_ha_data(thd, vector_trx_hton, context);
+  thd_set_ha_data(thd, vector_trx_hton,
+                  vector_context_token_for_roles(roles));
 }
 
 bool has_vector_trx_context(THD *thd) {
@@ -205,9 +203,10 @@ bool prepare_vector_publication(THD *thd) {
           vector_thd_id(thd), &index_names)) {
     return false;
   }
-  // The handlerton prepare callback and the binlog observer can both reach
-  // this function for the same commit. Once the guard exists, publication
-  // metadata and index ownership have already been prepared.
+  // The handlerton prepare and commit callbacks can both reach
+  // this function for the same commit. The existing guard proves that this
+  // transaction has already completed publication preparation; statement
+  // execution cannot add more changes after that point.
   if (has_publication_guard) return true;
 
   bool catalog_exclusive = false;
@@ -231,8 +230,12 @@ bool prepare_vector_publication(THD *thd) {
   const bool locked = catalog_exclusive
                           ? publication_guard->lock_catalog()
                           : publication_guard->lock_indexes(index_names);
-  if (!locked || !vector_index_registry::prepare_thd_txn_publication(
-                     thd, vector_thd_id(thd))) {
+  if (!locked) {
+    return false;
+  }
+
+  if (!vector_index_registry::prepare_thd_txn_publication(
+          thd, vector_thd_id(thd))) {
     return false;
   }
 
@@ -386,18 +389,6 @@ void vector_trx_after_commit(void *arg) {
   }
 }
 
-int vector_trx_observe_before_commit(Trans_param *param) {
-  if (param == nullptr || (param->flags & TRANS_IS_REAL_TRANS) == 0) return 0;
-
-  THD *thd = current_thd;
-  if (thd == nullptr || thd->thread_id() != param->thread_id ||
-      !has_vector_trx_context(thd)) {
-    return 0;
-  }
-
-  return prepare_vector_publication(thd) ? 0 : 1;
-}
-
 void vector_trx_before_rollback(void *arg) {
   auto *param = static_cast<Trans_param *>(arg);
   if (param == nullptr || (param->flags & TRANS_IS_REAL_TRANS) == 0) return;
@@ -420,7 +411,7 @@ int vector_trx_observe_after_commit(Trans_param *param) {
 Trans_observer vector_trx_observer{
     sizeof(Trans_observer),
     nullptr,
-    vector_trx_observe_before_commit,
+    nullptr,
     vector_trx_observe_before_rollback,
     vector_trx_observe_after_commit,
     nullptr,
@@ -450,6 +441,7 @@ int vector_trx_init(void *p) {
     publication_threads.clear();
     publication_guards.clear();
     statement_publications.clear();
+    statement_binlogs.clear();
   }
   {
     std::lock_guard<std::mutex> guard(observer_registration_mutex);
@@ -493,6 +485,7 @@ int vector_trx_deinit(void *) {
                             std::make_move_iterator(intents.end()));
     }
     statement_publications.clear();
+    statement_binlogs.clear();
   }
   vector_index::discard_load_staging_intents(staged_intents);
   vector_trx_hton = nullptr;
@@ -549,6 +542,10 @@ bool has_explicit_txn_owner_for_testing(THD *thd) {
   return (vector_context_roles(thd) & kExplicitTxnOwner) != 0;
 }
 
+unsigned int round_trip_context_roles_for_testing(unsigned int roles) {
+  return vector_context_roles_from_token(vector_context_token_for_roles(roles));
+}
+
 int prepare_for_testing(THD *thd, bool all) {
   return vector_trx_prepare(nullptr, thd, all);
 }
@@ -601,9 +598,6 @@ bool register_participant(THD *thd) {
     return false;
   }
 
-  set_vector_context_roles(thd,
-                           vector_context_roles(thd) | kTransactionParticipant);
-
   vector_index_truth_store::truth_store *truth_store =
       vector_index_truth_store::get();
   if (truth_store->supports_attached_dml() &&
@@ -611,16 +605,83 @@ bool register_participant(THD *thd) {
     return false;
   }
 
+  set_vector_context_roles(thd,
+                           vector_context_roles(thd) | kTransactionParticipant);
+
   trans_register_ha(thd, false, vector_trx_hton, nullptr);
-  // Publication metadata uses the attached InnoDB transaction. Mark this
-  // participant read-write so its prepare callback runs before InnoDB enters
-  // the prepared state.
+  // Publication metadata is written through the attached InnoDB transaction.
+  // Mark this participant read-write so its prepare callback runs before the
+  // previously registered InnoDB participant enters the prepared state.
   thd->get_ha_data(vector_trx_hton->slot)->ha_info[0].set_trx_read_write();
   if (thd->in_multi_stmt_transaction_mode()) {
     trans_register_ha(thd, true, vector_trx_hton, nullptr);
     thd->get_ha_data(vector_trx_hton->slot)->ha_info[1].set_trx_read_write();
   }
   return true;
+}
+
+bool stage_statement_binlog(THD *thd, const char *function_name) {
+  if (thd == nullptr) return false;
+  bool should_log = mysql_bin_log.is_open() &&
+                    (thd->variables.option_bits & OPTION_BIN_LOG) != 0 &&
+                    !thd->slave_thread && !thd->in_sub_stmt;
+  DBUG_EXECUTE_IF("vector_item_force_binlog_registration", should_log = true;);
+  if (!should_log) return true;
+  if (thd->query().str == nullptr || thd->query().length == 0) return false;
+
+  const my_thread_id thread_id = thd->thread_id();
+  const uint64_t statement_id = vector_stmt_id(thd);
+  std::lock_guard<std::mutex> guard(publication_mutex);
+  const auto existing = statement_binlogs.find(thread_id);
+  if (existing != statement_binlogs.end()) {
+    return existing->second.statement_id == statement_id;
+  }
+
+  statement_binlog_context context;
+  context.statement_id = statement_id;
+  context.query.assign(thd->query().str, thd->query().length);
+  if (function_name != nullptr) context.function_name = function_name;
+  return statement_binlogs.emplace(thread_id, std::move(context)).second;
+}
+
+bool finish_statement_binlog(THD *thd, bool statement_succeeded) {
+  if (thd == nullptr) return false;
+
+  statement_binlog_context context;
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    const auto pending = statement_binlogs.find(thd->thread_id());
+    if (pending == statement_binlogs.end()) return true;
+    context = std::move(pending->second);
+    statement_binlogs.erase(pending);
+  }
+
+  if (!statement_succeeded) return true;
+  const char *function_name = context.function_name.empty()
+                                  ? "vector statement"
+                                  : context.function_name.c_str();
+  if (context.statement_id != vector_stmt_id(thd) || context.query.empty()) {
+    my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
+    return false;
+  }
+  DBUG_EXECUTE_IF("vector_item_fail_binlog_write", {
+    my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
+    return false;
+  });
+  if (thd->binlog_query(THD::STMT_QUERY_TYPE, context.query.data(),
+                        context.query.size(), false, false, false, 0) == 0) {
+    return true;
+  }
+  if (!thd->is_error()) my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
+  return false;
+}
+
+bool has_statement_publication(THD *thd) {
+  if (thd == nullptr) return false;
+  std::lock_guard<std::mutex> guard(publication_mutex);
+  const auto statement_it = statement_publications.find(thd->thread_id());
+  return statement_it != statement_publications.end() &&
+         statement_it->second.statement_id == vector_stmt_id(thd);
 }
 
 bool stage_statement_publication(
@@ -652,6 +713,10 @@ bool stage_statement_publication(
     return false;
   }
 
+  // The durable table admits one pending operation per index, and a second
+  // side-effect function in the same SELECT would otherwise try to reacquire
+  // this THD's publication ownership. Reject it before reserving so statement
+  // rollback can discard the first staged operation without self-deadlocking.
   {
     std::lock_guard<std::mutex> guard(publication_mutex);
     if (statement_publications.find(thd->thread_id()) !=
@@ -674,8 +739,8 @@ bool stage_statement_publication(
     std::vector<std::string> current_index_names;
     if (!vector_index_registry::list_indexes_for_publication_catalog_guard(
             &current_index_names) ||
-        !vector_statement_publication::index_sets_equal(current_index_names,
-                                                        index_names)) {
+        !vector_statement_publication::index_sets_equal(
+            current_index_names, index_names)) {
       return false;
     }
   }

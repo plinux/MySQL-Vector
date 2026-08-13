@@ -1,0 +1,54 @@
+include/master-slave.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+#
+# WL#Vector: mutator statements emit one query event after success
+#
+SELECT VEC_INDEX_CREATE('idx_vec_rpl_mutator', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'transactional');
+VEC_INDEX_CREATE('idx_vec_rpl_mutator', 2, 'EUCLIDEAN', 'MEMORY',
+'HNSWLIB', 0, 'transactional')
+1
+# Two mutators in one successful statement must produce one event.
+SELECT VEC_INDEX_UPSERT('idx_vec_rpl_mutator', 1, VEC_FROMTEXT('[1,1]')),
+VEC_INDEX_UPSERT('idx_vec_rpl_mutator', 2, VEC_FROMTEXT('[2,2]'));
+VEC_INDEX_UPSERT('idx_vec_rpl_mutator', 1, VEC_FROMTEXT('[1,1]'))	VEC_INDEX_UPSERT('idx_vec_rpl_mutator', 2, VEC_FROMTEXT('[2,2]'))
+1	1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_vec_rpl_mutator'),
+'$.truth_generation') AS master_truth_generation;
+master_truth_generation
+1
+# A later expression error rolls back staging and emits no event.
+SELECT VEC_INDEX_UPSERT('idx_vec_rpl_mutator', 3, VEC_FROMTEXT('[3,3]')),
+VEC_FROMTEXT('[invalid]');
+ERROR HY000: Incorrect arguments to vec_fromtext
+SELECT VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[3,3]', 8);
+VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[3,3]', 8)
+[2,1]
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_vec_rpl_mutator'),
+'$.committed_entry_count') AS master_entry_count;
+master_entry_count
+2
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_vec_rpl_mutator'),
+'$.truth_generation') AS slave_truth_generation;
+slave_truth_generation
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_vec_rpl_mutator'),
+'$.committed_entry_count') AS slave_entry_count;
+slave_entry_count
+2
+SELECT VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[1,1]', 8);
+VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[1,1]', 8)
+[1,2]
+SELECT VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[2,2]', 8);
+VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[2,2]', 8)
+[2,1]
+SELECT VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[3,3]', 8);
+VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[3,3]', 8)
+[2,1]
+SELECT VEC_INDEX_DROP('idx_vec_rpl_mutator');
+VEC_INDEX_DROP('idx_vec_rpl_mutator')
+1
+include/rpl_end.inc

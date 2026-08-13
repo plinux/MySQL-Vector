@@ -1,0 +1,47 @@
+--source include/have_vector_index.inc
+--source include/have_vector_hnsw.inc
+--source include/not_group_replication_plugin.inc
+--source include/master-slave.inc
+
+--echo #
+--echo # WL#Vector: mutator statements emit one query event after success
+--echo #
+
+--connection master
+SELECT VEC_INDEX_CREATE('idx_vec_rpl_mutator', 2, 'EUCLIDEAN', 'MEMORY',
+                        'HNSWLIB', 0, 'transactional');
+
+--echo # Two mutators in one successful statement must produce one event.
+SELECT VEC_INDEX_UPSERT('idx_vec_rpl_mutator', 1, VEC_FROMTEXT('[1,1]')),
+       VEC_INDEX_UPSERT('idx_vec_rpl_mutator', 2, VEC_FROMTEXT('[2,2]'));
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_vec_rpl_mutator'),
+                    '$.truth_generation') AS master_truth_generation;
+
+--echo # A later expression error rolls back staging and emits no event.
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_UPSERT('idx_vec_rpl_mutator', 3, VEC_FROMTEXT('[3,3]')),
+       VEC_FROMTEXT('[invalid]');
+SELECT VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[3,3]', 8);
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_vec_rpl_mutator'),
+                    '$.committed_entry_count') AS master_entry_count;
+
+save_master_pos;
+
+--connection slave
+sync_with_master;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_vec_rpl_mutator'),
+                    '$.truth_generation') AS slave_truth_generation;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_vec_rpl_mutator'),
+                    '$.committed_entry_count') AS slave_entry_count;
+SELECT VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[1,1]', 8);
+SELECT VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[2,2]', 8);
+SELECT VEC_INDEX_SEARCH('idx_vec_rpl_mutator', '[3,3]', 8);
+
+--connection master
+SELECT VEC_INDEX_DROP('idx_vec_rpl_mutator');
+save_master_pos;
+
+--connection slave
+sync_with_master;
+
+--source include/rpl_end.inc

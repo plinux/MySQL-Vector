@@ -1,0 +1,10 @@
+# A passive vector observer must not change non-vector commit semantics.
+DROP TABLE IF EXISTS t_nonvector_binlog_boundary;
+CREATE TABLE t_nonvector_binlog_boundary (a INT) ENGINE=MyISAM;
+INSERT INTO t_nonvector_binlog_boundary VALUES (1);
+RESET MASTER;
+UPDATE t_nonvector_binlog_boundary SET a=2;
+SELECT a FROM t_nonvector_binlog_boundary;
+a
+2
+DROP TABLE t_nonvector_binlog_boundary;

@@ -1452,15 +1452,20 @@ TEST_F(ItemVectorFuncFixture, ItemAdminApisRollbackInjectedBinlogFailure) {
       std::to_string(reinterpret_cast<uintptr_t>(this));
   const std::string index_name = failed_create + "_existing";
   const std::string standalone_index = index_name + "_standalone";
+  static constexpr char kVectorMutatorQuery[] = "SELECT vector mutator";
+  thd()->set_query(kVectorMutatorQuery, sizeof(kVectorMutatorQuery) - 1);
 
   auto expect_binlog_failure = [this, &store](Item *item) {
     fix_item(thd(), item);
     Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
     {
       VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
-                               "+d,vector_item_fail_binlog_write");
-      EXPECT_EQ(0, item->val_int());
+                               "+d,vector_item_force_binlog_registration,"
+                               "vector_item_fail_binlog_write");
+      EXPECT_EQ(1, item->val_int());
       EXPECT_FALSE(item->null_value);
+      EXPECT_FALSE(
+          vector_trx_participant::finish_statement_binlog(thd(), true));
     }
     rollback_statement_publication(thd(), &store);
     thd()->clear_error();
@@ -1548,9 +1553,13 @@ TEST_F(ItemVectorFuncFixture, ItemMutationApisRollbackInjectedBinlogFailure) {
       "idx_item_mut_binlog_" + std::to_string(reinterpret_cast<uintptr_t>(this));
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
                                                  "memory", "native"));
+  static constexpr char kVectorMutatorQuery[] = "SELECT vector mutator";
+  thd()->set_query(kVectorMutatorQuery, sizeof(kVectorMutatorQuery) - 1);
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag, "+d,vector_item_fail_binlog_write");
+    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
+                             "+d,vector_item_force_binlog_registration,"
+                             "vector_item_fail_binlog_write");
 
     auto *upsert_item = new Item_func_vec_index_upsert(
         POS(), make_item_list({make_string_item(index_name.c_str()),
@@ -1558,8 +1567,9 @@ TEST_F(ItemVectorFuncFixture, ItemMutationApisRollbackInjectedBinlogFailure) {
                                make_binary_vector_item({1.0F, 7.0F})}));
     fix_item(thd(), upsert_item);
     Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
-    EXPECT_EQ(0, upsert_item->val_int());
+    EXPECT_EQ(1, upsert_item->val_int());
     EXPECT_FALSE(upsert_item->null_value);
+    EXPECT_FALSE(vector_trx_participant::finish_statement_binlog(thd(), true));
     rollback_statement_publication(thd(), &store);
     thd()->clear_error();
     Server_initializer::set_expected_error(0);
@@ -1573,15 +1583,18 @@ TEST_F(ItemVectorFuncFixture, ItemMutationApisRollbackInjectedBinlogFailure) {
   ASSERT_TRUE(vector_index_registry::upsert(index_name, 17, {1.0F, 7.0F}));
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag, "+d,vector_item_fail_binlog_write");
+    VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
+                             "+d,vector_item_force_binlog_registration,"
+                             "vector_item_fail_binlog_write");
 
     auto *erase_item = new Item_func_vec_index_erase(
         POS(), make_item_list({make_string_item(index_name.c_str()),
                                new Item_int(17)}));
     fix_item(thd(), erase_item);
     Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
-    EXPECT_EQ(0, erase_item->val_int());
+    EXPECT_EQ(1, erase_item->val_int());
     EXPECT_FALSE(erase_item->null_value);
+    EXPECT_FALSE(vector_trx_participant::finish_statement_binlog(thd(), true));
     rollback_statement_publication(thd(), &store);
     thd()->clear_error();
     Server_initializer::set_expected_error(0);

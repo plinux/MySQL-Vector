@@ -605,7 +605,8 @@ class Sql_cmd_drop_vector_index final : public Sql_cmd {
       return true;
     }
     if (!log_vector_ddl(thd)) {
-      if (!vector_index_registry::restore_runtime_state(before_drop, true)) {
+      if (!vector_index_registry::restore_runtime_state_after_drop_rollback(
+              before_drop, dropped_artifacts)) {
         my_error(ER_INTERNAL_ERROR, MYF(0),
                  "DROP VECTOR INDEX rollback failed");
       } else if (!thd->is_error()) {

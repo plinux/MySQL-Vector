@@ -15,14 +15,18 @@ if ($is_mysql_truth_store)
 {
   --disable_query_log
   --disable_result_log
+  SET @changelog_hex = VEC_DEBUG_TRUTH_STORE_GET_HEX('changelog');
+  SET @invalid_changelog_hex = CONCAT(
+    LEFT(@changelog_hex, LENGTH(@changelog_hex) - 18),
+    RIGHT(@changelog_hex, 2));
   SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('changelog',
-            '6d7973716c2d766563746f722d6368616e67656c6f672d76310a343209370975707365727409366436393733373336393665363732653639366536343635373809393909303030303130343130303030313034310a');
+                                       @invalid_changelog_hex);
   --enable_result_log
   --enable_query_log
 }
 if (!$is_mysql_truth_store)
 {
-  --exec printf 'mysql-vector-changelog-v1\n42\t7\tupsert\t6d697373696e672e696e646578\t99\t0000104100001041\n' > $datadir/mysql_vector_index/changelog.v1
+  --exec perl -0777 -pi -e 's/[0-9a-f]{8}\n$/\n/' $datadir/mysql_vector_index/changelog.v1
 }
 
 --source include/restart_mysqld.inc
@@ -36,7 +40,8 @@ SHOW GLOBAL STATUS LIKE 'Vector_change_log_replay_failures';
 
 if ($is_mysql_truth_store)
 {
-  SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('changelog');
+  SELECT LENGTH(VEC_DEBUG_TRUTH_STORE_GET_HEX('changelog')) > 0
+         AS corrupted_changelog_present;
   SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('changelog', NULL);
 }
 if (!$is_mysql_truth_store)

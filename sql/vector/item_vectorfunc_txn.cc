@@ -109,8 +109,8 @@ longlong Item_func_vec_index_stage_upsert::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!vector_index_registry::stage_upsert(
           current_thd, static_cast<uint64_t>(txn_id), index_name,
@@ -146,8 +146,8 @@ longlong Item_func_vec_index_stage_erase::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!vector_index_registry::stage_erase(
           current_thd, static_cast<uint64_t>(txn_id), index_name,

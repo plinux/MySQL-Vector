@@ -136,40 +136,56 @@ class Item_func_vec_distance final : public Item_real_func {
   const char *func_name() const override { return "vec_distance"; }
 };
 
-class Item_func_vec_index_create final : public Item_int_func {
+/** Common SQL Item semantics for vector functions that mutate state. */
+class Item_func_vector_mutator : public Item_int_func {
+ protected:
+  explicit Item_func_vector_mutator(const POS &pos) : Item_int_func(pos) {}
+  Item_func_vector_mutator(const POS &pos, Item *a, Item *b)
+      : Item_int_func(pos, a, b) {}
+  Item_func_vector_mutator(const POS &pos, PT_item_list *arg_list)
+      : Item_int_func(pos, arg_list) {}
+
+ public:
+  bool itemize(Parse_context *pc, Item **res) override;
+  bool is_non_const_over_literals(uchar *) override { return true; }
+  bool check_function_as_value_generator(uchar *checker_args) override;
+};
+
+class Item_func_vec_index_create final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_create(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_create"; }
 };
 
-class Item_func_vec_index_drop final : public Item_int_func {
+class Item_func_vec_index_drop final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_drop(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_drop"; }
 };
 
-class Item_func_vec_index_rebuild final : public Item_int_func {
+class Item_func_vec_index_rebuild final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_rebuild(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_rebuild"; }
 };
 
-class Item_func_vec_index_bulk_load_begin final : public Item_int_func {
+class Item_func_vec_index_bulk_load_begin final
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_bulk_load_begin(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -178,38 +194,40 @@ class Item_func_vec_index_bulk_load_begin final : public Item_int_func {
   }
 };
 
-class Item_func_vec_index_bulk_build final : public Item_int_func {
+class Item_func_vec_index_bulk_build final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_bulk_build(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_bulk_build"; }
 };
 
-class Item_func_vec_index_recover final : public Item_int_func {
+class Item_func_vec_index_recover final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_recover(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_recover"; }
 };
 
-class Item_func_vec_index_rebuild_all final : public Item_int_func {
+class Item_func_vec_index_rebuild_all final : public Item_func_vector_mutator {
  public:
-  Item_func_vec_index_rebuild_all(const POS &pos) : Item_int_func(pos) {}
+  Item_func_vec_index_rebuild_all(const POS &pos)
+      : Item_func_vector_mutator(pos) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_rebuild_all"; }
 };
 
-class Item_func_vec_index_recover_all final : public Item_int_func {
+class Item_func_vec_index_recover_all final : public Item_func_vector_mutator {
  public:
-  Item_func_vec_index_recover_all(const POS &pos) : Item_int_func(pos) {}
+  Item_func_vec_index_recover_all(const POS &pos)
+      : Item_func_vector_mutator(pos) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -229,20 +247,21 @@ class Item_func_vec_index_info final : public Item_str_func {
   const char *func_name() const override { return "vec_index_info"; }
 };
 
-class Item_func_vec_index_set_search_ef final : public Item_int_func {
+class Item_func_vec_index_set_search_ef final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_search_ef(const POS &pos, Item *a, Item *b)
-      : Item_int_func(pos, a, b) {}
+      : Item_func_vector_mutator(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_set_search_ef"; }
 };
 
-class Item_func_vec_index_set_hnsw_build_params final : public Item_int_func {
+class Item_func_vec_index_set_hnsw_build_params final
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_hnsw_build_params(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -251,10 +270,11 @@ class Item_func_vec_index_set_hnsw_build_params final : public Item_int_func {
   }
 };
 
-class Item_func_vec_index_set_faiss_ivf_params final : public Item_int_func {
+class Item_func_vec_index_set_faiss_ivf_params final
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_faiss_ivf_params(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -263,11 +283,12 @@ class Item_func_vec_index_set_faiss_ivf_params final : public Item_int_func {
   }
 };
 
-class Item_func_vec_index_set_faiss_ivfpq_params final : public Item_int_func {
+class Item_func_vec_index_set_faiss_ivfpq_params final
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_faiss_ivfpq_params(const POS &pos,
                                              PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -276,11 +297,12 @@ class Item_func_vec_index_set_faiss_ivfpq_params final : public Item_int_func {
   }
 };
 
-class Item_func_vec_index_set_diskann_build_params final : public Item_int_func {
+class Item_func_vec_index_set_diskann_build_params final
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_diskann_build_params(const POS &pos,
                                                PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -290,11 +312,11 @@ class Item_func_vec_index_set_diskann_build_params final : public Item_int_func 
 };
 
 class Item_func_vec_index_set_diskann_search_complexity final
-    : public Item_int_func {
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_diskann_search_complexity(const POS &pos, Item *a,
                                                     Item *b)
-      : Item_int_func(pos, a, b) {}
+      : Item_func_vector_mutator(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -304,11 +326,11 @@ class Item_func_vec_index_set_diskann_search_complexity final
 };
 
 class Item_func_vec_index_set_diskann_search_beamwidth final
-    : public Item_int_func {
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_diskann_search_beamwidth(const POS &pos, Item *a,
                                                    Item *b)
-      : Item_int_func(pos, a, b) {}
+      : Item_func_vector_mutator(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -318,11 +340,11 @@ class Item_func_vec_index_set_diskann_search_beamwidth final
 };
 
 class Item_func_vec_index_set_diskann_pq_code_budget_size final
-    : public Item_int_func {
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_diskann_pq_code_budget_size(const POS &pos, Item *a,
                                                       Item *b)
-      : Item_int_func(pos, a, b) {}
+      : Item_func_vector_mutator(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -332,11 +354,11 @@ class Item_func_vec_index_set_diskann_pq_code_budget_size final
 };
 
 class Item_func_vec_index_set_diskann_disk_pq_dims final
-    : public Item_int_func {
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_diskann_disk_pq_dims(const POS &pos, Item *a,
                                                Item *b)
-      : Item_int_func(pos, a, b) {}
+      : Item_func_vector_mutator(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -346,11 +368,11 @@ class Item_func_vec_index_set_diskann_disk_pq_dims final
 };
 
 class Item_func_vec_index_set_diskann_accelerate_build final
-    : public Item_int_func {
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_diskann_accelerate_build(const POS &pos, Item *a,
                                                    Item *b)
-      : Item_int_func(pos, a, b) {}
+      : Item_func_vector_mutator(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -360,11 +382,11 @@ class Item_func_vec_index_set_diskann_accelerate_build final
 };
 
 class Item_func_vec_index_set_diskann_shuffle_build final
-    : public Item_int_func {
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_diskann_shuffle_build(const POS &pos, Item *a,
                                                 Item *b)
-      : Item_int_func(pos, a, b) {}
+      : Item_func_vector_mutator(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -374,11 +396,11 @@ class Item_func_vec_index_set_diskann_shuffle_build final
 };
 
 class Item_func_vec_index_set_diskann_use_bfs_cache final
-    : public Item_int_func {
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_diskann_use_bfs_cache(const POS &pos, Item *a,
                                                 Item *b)
-      : Item_int_func(pos, a, b) {}
+      : Item_func_vector_mutator(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -387,10 +409,11 @@ class Item_func_vec_index_set_diskann_use_bfs_cache final
   }
 };
 
-class Item_func_vec_index_set_diskann_build_mode final : public Item_int_func {
+class Item_func_vec_index_set_diskann_build_mode final
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_set_diskann_build_mode(const POS &pos, Item *a, Item *b)
-      : Item_int_func(pos, a, b) {}
+      : Item_func_vector_mutator(pos, a, b) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -410,30 +433,30 @@ class Item_func_vec_index_list final : public Item_str_func {
   const char *func_name() const override { return "vec_index_list"; }
 };
 
-class Item_func_vec_index_upsert final : public Item_int_func {
+class Item_func_vec_index_upsert final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_upsert(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_upsert"; }
 };
 
-class Item_func_vec_index_upsert_batch final : public Item_int_func {
+class Item_func_vec_index_upsert_batch final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_upsert_batch(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_upsert_batch"; }
 };
 
-class Item_func_vec_index_erase final : public Item_int_func {
+class Item_func_vec_index_erase final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_erase(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -481,9 +504,10 @@ class Item_func_vec_index_search_with_distance final : public Item_str_func {
   }
 };
 
-class Item_func_vec_index_txn_begin final : public Item_int_func {
+class Item_func_vec_index_txn_begin final : public Item_func_vector_mutator {
  public:
-  Item_func_vec_index_txn_begin(const POS &pos) : Item_int_func(pos) {}
+  Item_func_vec_index_txn_begin(const POS &pos)
+      : Item_func_vector_mutator(pos) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -500,60 +524,61 @@ class Item_func_vec_index_txn_pending final : public Item_int_func {
   const char *func_name() const override { return "vec_index_txn_pending"; }
 };
 
-class Item_func_vec_index_stage_upsert final : public Item_int_func {
+class Item_func_vec_index_stage_upsert final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_stage_upsert(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_stage_upsert"; }
 };
 
-class Item_func_vec_index_stage_erase final : public Item_int_func {
+class Item_func_vec_index_stage_erase final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_stage_erase(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_stage_erase"; }
 };
 
-class Item_func_vec_index_txn_commit final : public Item_int_func {
+class Item_func_vec_index_txn_commit final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_txn_commit(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_txn_commit"; }
 };
 
-class Item_func_vec_index_txn_rollback final : public Item_int_func {
+class Item_func_vec_index_txn_rollback final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_txn_rollback(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_txn_rollback"; }
 };
 
-class Item_func_vec_index_txn_savepoint final : public Item_int_func {
+class Item_func_vec_index_txn_savepoint final : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_txn_savepoint(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
   const char *func_name() const override { return "vec_index_txn_savepoint"; }
 };
 
-class Item_func_vec_index_txn_rollback_to final : public Item_int_func {
+class Item_func_vec_index_txn_rollback_to final
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_txn_rollback_to(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -562,11 +587,12 @@ class Item_func_vec_index_txn_rollback_to final : public Item_int_func {
   }
 };
 
-class Item_func_vec_index_txn_release_savepoint final : public Item_int_func {
+class Item_func_vec_index_txn_release_savepoint final
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_index_txn_release_savepoint(const POS &pos,
                                             PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;
@@ -589,10 +615,11 @@ class Item_func_vec_debug_truth_store_get_hex final : public Item_str_func {
   }
 };
 
-class Item_func_vec_debug_truth_store_set_hex final : public Item_int_func {
+class Item_func_vec_debug_truth_store_set_hex final
+    : public Item_func_vector_mutator {
  public:
   Item_func_vec_debug_truth_store_set_hex(const POS &pos, PT_item_list *arg_list)
-      : Item_int_func(pos, arg_list) {}
+      : Item_func_vector_mutator(pos, arg_list) {}
 
   bool resolve_type(THD *thd) override;
   longlong val_int() override;

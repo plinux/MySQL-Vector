@@ -1,0 +1,2 @@
+--binlog-format=statement
+--loose-debug=d,simulate_kill_bug27571

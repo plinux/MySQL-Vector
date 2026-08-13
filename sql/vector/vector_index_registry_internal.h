@@ -43,20 +43,7 @@
 
 namespace vector_index_registry::detail {
 
-enum class recovery_action_type { kCommit, kRollback, kPreparedInTc };
-
-struct recovery_action {
-  XID xid;
-  recovery_action_type type{recovery_action_type::kCommit};
-  bool conditional{false};
-};
-
-struct runtime_state_snapshot {
-  std::vector<vector_index_metadata_store::metadata_row> metadata_rows;
-  vector_index::index_service::committed_state committed_state;
-  std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
-  std::vector<std::string> lagging_index_names;
-};
+using runtime_state_snapshot = registry_state_snapshot;
 
 struct thd_txn_context {
   uint64_t txn_id{0};
@@ -184,7 +171,6 @@ extern std::vector<vector_index_metadata_store::segment_task_row>
 extern std::unordered_map<uint64_t, explicit_txn_owner> g_explicit_txn_owners;
 extern std::unordered_map<uint64_t, std::unordered_set<uint64_t>>
     g_explicit_txns_by_thd;
-extern std::vector<recovery_action> g_recovery_actions;
 extern std::unordered_map<uint64_t, thd_txn_context> g_thd_txn_contexts;
 extern std::unordered_map<std::string, index_binding> g_index_bindings;
 extern std::unordered_map<std::string, std::string> g_index_owner_schemas;
@@ -266,8 +252,6 @@ bool find_prepared_rows_for_xid_locked(
     std::vector<vector_index_metadata_store::prepared_change_row> *rows);
 bool has_prepared_xid_locked(const XID &xid);
 void erase_prepared_rows_for_xid_locked(const XID &xid);
-void queue_recovery_action_locked(const XID &xid, recovery_action_type type,
-                                  bool conditional);
 bool snapshot_prepared_rows_for_txn_locked(
     uint64_t txn_id, const XID &xid,
     std::vector<vector_index_metadata_store::prepared_change_row> *rows);

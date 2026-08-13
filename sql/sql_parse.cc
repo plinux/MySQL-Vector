@@ -169,6 +169,7 @@
 #include "sql/sql_udf.h"
 #ifdef HAVE_VECTOR_INDEX
 #include "sql/vector/vector_index_registry.h"
+#include "sql/vector/vector_trx_participant.h"
 #endif
 #include "sql/sql_view.h"  // mysql_create_view
 #include "sql/strfunc.h"
@@ -4981,11 +4982,19 @@ finish:
 
     /* report error issued during command execution */
     if ((thd->is_error() && !early_error_on_rep_command) ||
-        (thd->variables.option_bits & OPTION_MASTER_SQL_ERROR))
+        (thd->variables.option_bits & OPTION_MASTER_SQL_ERROR)) {
+#ifdef HAVE_VECTOR_INDEX
+      (void)vector_trx_participant::finish_statement_binlog(thd, false);
+#endif
       trans_rollback_stmt(thd);
-    else {
+    } else {
       /* If commit fails, we should be able to reset the OK status. */
       thd->get_stmt_da()->set_overwrite_status(true);
+#ifdef HAVE_VECTOR_INDEX
+      if (!vector_trx_participant::finish_statement_binlog(thd, true))
+        trans_rollback_stmt(thd);
+      else
+#endif
       trans_commit_stmt(thd);
       thd->get_stmt_da()->set_overwrite_status(false);
     }

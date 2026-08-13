@@ -28,10 +28,8 @@
 #include <utility>
 
 #include "my_byteorder.h"
-#include "my_dbug.h"
 #include "mysqld_error.h"
 #include "sql/auth/auth_common.h"
-#include "sql/binlog.h"
 #include "sql/sql_class.h"
 #include "sql/table.h"
 #include "sql/vector/vector_utils.h"
@@ -152,9 +150,9 @@ static bool check_vector_index_access_impl(
   return check_grant(thd, privilege, &table_ref, false, 1, no_errors);
 }
 
-bool check_vector_index_access(
-    THD *thd, const vector_index_registry::index_info &info,
-    Access_bitmask privilege) {
+bool check_vector_index_access(THD *thd,
+                               const vector_index_registry::index_info &info,
+                               Access_bitmask privilege) {
   return check_vector_index_access_impl(thd, info, privilege, false);
 }
 
@@ -164,9 +162,10 @@ bool has_vector_index_access(THD *thd,
   return !check_vector_index_access_impl(thd, info, privilege, true);
 }
 
-bool check_vector_existing_index_access(
-    THD *thd, const std::string &index_name, Access_bitmask privilege,
-    const char *func_name, bool missing_index_uses_current_db) {
+bool check_vector_existing_index_access(THD *thd, const std::string &index_name,
+                                        Access_bitmask privilege,
+                                        const char *func_name,
+                                        bool missing_index_uses_current_db) {
   vector_index_registry::index_info info;
   if (!vector_index_registry::get_index_info(index_name, &info)) {
     if (missing_index_uses_current_db) {
@@ -179,15 +178,15 @@ bool check_vector_existing_index_access(
 }
 
 bool check_vector_all_indexes_access(THD *thd, Access_bitmask privilege,
-                                         const char *func_name) {
+                                     const char *func_name) {
   std::vector<std::string> index_names;
   if (!vector_index_registry::list_indexes(&index_names)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name);
     return true;
   }
   for (const std::string &index_name : index_names) {
-    if (check_vector_existing_index_access(
-            thd, index_name, privilege, func_name, false)) {
+    if (check_vector_existing_index_access(thd, index_name, privilege,
+                                           func_name, false)) {
       return true;
     }
   }
@@ -213,20 +212,13 @@ bool stage_vector_statement_publication(
       thd, std::move(intents), catalog_exclusive);
 }
 
-bool maybe_binlog_vector_transactional_write_query(THD *thd) {
-  DBUG_EXECUTE_IF("vector_item_fail_binlog_write", return false;);
-  if (thd == nullptr) return false;
-  if (!mysql_bin_log.is_open() ||
-      (thd->variables.option_bits & OPTION_BIN_LOG) == 0 ||
-      thd->slave_thread || thd->in_sub_stmt) {
-    return true;
-  }
-  return thd->binlog_query(THD::STMT_QUERY_TYPE, thd->query().str,
-                           thd->query().length, false, false, false, 0) == 0;
+bool maybe_binlog_vector_transactional_write_query(THD *thd,
+                                                   const char *function_name) {
+  return vector_trx_participant::stage_statement_binlog(thd, function_name);
 }
 
-bool maybe_binlog_vector_write_query(THD *thd) {
-  return maybe_binlog_vector_transactional_write_query(thd);
+bool maybe_binlog_vector_write_query(THD *thd, const char *function_name) {
+  return maybe_binlog_vector_transactional_write_query(thd, function_name);
 }
 
 bool decode_vector_arg(Item *arg, String *buf, std::vector<float> *out) {

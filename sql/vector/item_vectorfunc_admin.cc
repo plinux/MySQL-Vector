@@ -91,7 +91,7 @@ static bool stage_and_binlog_statement(
              argument_error == nullptr ? function_name : argument_error);
     return false;
   }
-  if (maybe_binlog_vector_write_query(current_thd)) return true;
+  if (maybe_binlog_vector_write_query(current_thd, function_name)) return true;
   if (!current_thd->is_error())
     my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
   return false;
@@ -191,7 +191,7 @@ static bool stage_all_index_statements(
     my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
     return false;
   }
-  if (maybe_binlog_vector_write_query(current_thd)) return true;
+  if (maybe_binlog_vector_write_query(current_thd, function_name)) return true;
   if (!current_thd->is_error())
     my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
   return false;
@@ -207,7 +207,10 @@ static bool stage_transactional_changes(
     my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
     return false;
   }
-  if (maybe_binlog_vector_transactional_write_query(current_thd)) return true;
+  if (maybe_binlog_vector_transactional_write_query(current_thd,
+                                                    function_name)) {
+    return true;
+  }
   if (!current_thd->is_error())
     my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
   return false;
@@ -337,8 +340,8 @@ longlong Item_func_vec_index_set_search_ef::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!stage_config_statement(
           index_name, vector_statement_publication::config_change::kSearchEf,
@@ -371,8 +374,8 @@ longlong Item_func_vec_index_set_hnsw_build_params::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!stage_config_statement(
           index_name,
@@ -406,8 +409,8 @@ longlong Item_func_vec_index_set_faiss_ivf_params::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!stage_config_statement(
           index_name,
@@ -447,8 +450,8 @@ longlong Item_func_vec_index_set_faiss_ivfpq_params::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!stage_config_statement(
           index_name,
@@ -487,8 +490,8 @@ longlong Item_func_vec_index_set_diskann_build_params::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   const uint32_t diskann_build_threads =
       arg_count >= 4 && diskann_build_threads_arg != 0
@@ -525,8 +528,8 @@ longlong Item_func_vec_index_set_diskann_search_complexity::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!stage_config_statement(
           index_name,
@@ -558,8 +561,8 @@ longlong Item_func_vec_index_set_diskann_search_beamwidth::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!stage_config_statement(
           index_name,
@@ -590,8 +593,8 @@ longlong Item_func_vec_index_set_diskann_pq_code_budget_size::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!stage_config_statement(
           index_name,
@@ -623,8 +626,8 @@ longlong Item_func_vec_index_set_diskann_disk_pq_dims::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   if (!stage_config_statement(
           index_name,
@@ -717,8 +720,8 @@ longlong Item_func_vec_index_set_diskann_build_mode::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
 
   vector_index::diskann_build_mode build_mode;
@@ -767,8 +770,8 @@ longlong Item_func_vec_index_drop::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, DROP_ACL, func_name(), true))
+  if (check_vector_existing_index_access(current_thd, index_name, DROP_ACL,
+                                         func_name(), true))
     return error_int();
   vector_index_registry::index_info info;
   if (!vector_index_registry::get_index_info(index_name, &info)) {
@@ -860,8 +863,8 @@ longlong Item_func_vec_index_recover::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   const bool repairing_truth_projection =
       vector_index_registry::registry_health() ==
@@ -976,8 +979,8 @@ longlong Item_func_vec_index_upsert::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   vector_index_registry::index_info info;
   if (!vector_index_registry::get_index_info(index_name, &info)) {
@@ -1040,8 +1043,8 @@ longlong Item_func_vec_index_upsert_batch::val_int() {
 
   std::string index_name;
   to_std_string(name, &index_name);
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
 
   vector_index_registry::index_info info;
@@ -1150,8 +1153,8 @@ longlong Item_func_vec_index_erase::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         func_name(), false))
     return error_int();
   vector_index_registry::index_info info;
   if (!vector_index_registry::get_index_info(index_name, &info)) {

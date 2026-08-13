@@ -551,12 +551,87 @@ static bool se_before_commit(THD *, plugin_ref plugin, void *arg) {
   return false;
 }
 
+#ifdef HAVE_VECTOR_INDEX
+enum class trans_observer_hook {
+  k_before_commit,
+  k_before_dml,
+  k_after_rollback,
+  k_begin,
+};
+
+/**
+  Check whether a transaction observer implements a concrete callback.
+
+  The vector transaction participant intentionally implements only rollback
+  and post-commit callbacks. Pure observer entry points can skip preprocessing
+  for unimplemented callbacks, but entry points that also dispatch storage
+  engine hooks must always run.
+*/
+static bool trans_delegate_has_observer_callback(Trans_delegate *delegate,
+                                                 trans_observer_hook hook) {
+  if (delegate->read_lock()) return false;
+
+  bool found = false;
+  Trans_delegate::Observer_info_iterator iter = delegate->observer_info_iter();
+  for (Observer_info *info = iter++; info != nullptr; info = iter++) {
+    const auto *observer =
+        static_cast<const Trans_delegate::Observer *>(info->observer);
+    switch (hook) {
+      case trans_observer_hook::k_before_commit:
+        found = observer->before_commit != nullptr;
+        break;
+      case trans_observer_hook::k_before_dml:
+        found = observer->before_dml != nullptr;
+        break;
+      case trans_observer_hook::k_after_rollback:
+        found = observer->after_rollback != nullptr;
+        break;
+      case trans_observer_hook::k_begin:
+        found = observer->begin != nullptr;
+        break;
+    }
+    if (found) break;
+  }
+
+  delegate->unlock();
+  return found;
+}
+
+static bool find_se_before_commit_callback(THD *, plugin_ref plugin,
+                                           void *arg) {
+  auto *found = static_cast<bool *>(arg);
+  handlerton *hton = plugin_data<handlerton *>(plugin);
+  if (hton->se_before_commit == nullptr) return false;
+  *found = true;
+  return true;
+}
+
+static bool trans_delegate_has_before_commit_callback(Trans_delegate *delegate,
+                                                      THD *thd) {
+  if (trans_delegate_has_observer_callback(
+          delegate, trans_observer_hook::k_before_commit)) {
+    return true;
+  }
+
+  bool found = false;
+  (void)plugin_foreach(thd, find_se_before_commit_callback,
+                       MYSQL_STORAGE_ENGINE_PLUGIN, &found);
+  return found;
+}
+#endif  // HAVE_VECTOR_INDEX
+
 int Trans_delegate::before_commit(THD *thd, bool all,
                                   Binlog_cache_storage *trx_cache_log,
                                   Binlog_cache_storage *stmt_cache_log,
                                   ulonglong cache_log_max_size,
                                   bool is_atomic_ddl_arg) {
   DBUG_TRACE;
+#ifdef HAVE_VECTOR_INDEX
+  if (!m_rollback_transaction_not_reached_before_commit &&
+      !trans_delegate_has_before_commit_callback(this, thd)) {
+    return 0;
+  }
+#endif  // HAVE_VECTOR_INDEX
   Trans_param param;
   TRANS_PARAM_ZERO(param);
   param.server_id = thd->server_id;
@@ -577,6 +652,9 @@ int Trans_delegate::before_commit(THD *thd, bool all,
   param.immediate_server_version = &(thd->variables.immediate_server_version);
   param.is_create_table_as_query_block =
       ((thd->lex->sql_command == SQLCOM_CREATE_TABLE &&
+#ifdef HAVE_VECTOR_INDEX
+        thd->lex->query_block != nullptr &&
+#endif  // HAVE_VECTOR_INDEX
         !thd->lex->query_block->field_list_is_empty()) ||
        thd->m_transactional_ddl.inited());
 
@@ -751,6 +829,12 @@ static void prepare_transaction_context(THD *thd,
 
 int Trans_delegate::before_dml(THD *thd, int &result) {
   DBUG_TRACE;
+#ifdef HAVE_VECTOR_INDEX
+  if (!trans_delegate_has_observer_callback(
+          this, trans_observer_hook::k_before_dml)) {
+    return 0;
+  }
+#endif  // HAVE_VECTOR_INDEX
   Trans_param param;
   TRANS_PARAM_ZERO(param);
 
@@ -834,6 +918,12 @@ int Trans_delegate::after_commit(THD *thd, bool all) {
 
 int Trans_delegate::after_rollback(THD *thd, bool all) {
   DBUG_TRACE;
+#ifdef HAVE_VECTOR_INDEX
+  if (!trans_delegate_has_observer_callback(
+          this, trans_observer_hook::k_after_rollback)) {
+    return 0;
+  }
+#endif  // HAVE_VECTOR_INDEX
   Trans_param param;
   TRANS_PARAM_ZERO(param);
   param.server_uuid = server_uuid;
@@ -853,6 +943,13 @@ int Trans_delegate::after_rollback(THD *thd, bool all) {
 
 int Trans_delegate::trans_begin(THD *thd, int &out) {
   DBUG_TRACE;
+#ifdef HAVE_VECTOR_INDEX
+  if (!m_rollback_transaction_on_begin &&
+      !trans_delegate_has_observer_callback(this,
+                                            trans_observer_hook::k_begin)) {
+    return 0;
+  }
+#endif  // HAVE_VECTOR_INDEX
   if (m_rollback_transaction_on_begin) {
     out = ER_OPERATION_NOT_ALLOWED_WHILE_PRIMARY_CHANGE_IS_RUNNING;
     return 0;

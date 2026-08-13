@@ -3739,6 +3739,54 @@ TEST_F(VectorIndexRegistryTest, ThdTxnUserSavepointRollbackFlow) {
 }
 
 TEST_F(VectorIndexRegistryTest,
+       ThdTxnSavepointPreflightDoesNotMutatePendingState) {
+  const std::string index_name = "idx_registry_savepoint_preflight";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+
+  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
+      204, 1, index_name, 1, {1.0F, 1.0F}));
+  ASSERT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(204, 1));
+  ASSERT_TRUE(
+      vector_index_registry::preflight_savepoint_thd_txn(204, "sp1"));
+  EXPECT_FALSE(vector_index_registry::preflight_rollback_to_savepoint_thd_txn(
+      204, "sp1"));
+  ASSERT_TRUE(vector_index_registry::savepoint_thd_txn(204, "sp1"));
+
+  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
+      204, 2, index_name, 2, {2.0F, 2.0F}));
+  ASSERT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(204, 2));
+  ASSERT_TRUE(vector_index_registry::preflight_rollback_to_savepoint_thd_txn(
+      204, "SP1"));
+  ASSERT_TRUE(
+      vector_index_registry::preflight_release_savepoint_thd_txn(204, "sp1"));
+
+  // Both preflight calls are read-only, so the original marker can still
+  // roll back the second row.
+  ASSERT_TRUE(
+      vector_index_registry::rollback_to_savepoint_thd_txn(204, "sp1"));
+  ASSERT_TRUE(vector_index_registry::commit_thd_txn(204));
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {0.0F, 0.0F}, 10, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+
+  EXPECT_TRUE(vector_index_registry::preflight_rollback_to_savepoint_thd_txn(
+      999, "missing"));
+  EXPECT_TRUE(vector_index_registry::preflight_release_savepoint_thd_txn(
+      999, "missing"));
+  ASSERT_TRUE(
+      vector_index_registry::preflight_savepoint_thd_txn(999, "missing"));
+  EXPECT_EQ(vector_index_registry::detail::g_thd_txn_contexts.end(),
+            vector_index_registry::detail::g_thd_txn_contexts.find(999));
+  EXPECT_FALSE(
+      vector_index_registry::preflight_savepoint_thd_txn(999, ""));
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
        ThdTxnSavepointNamesFollowMysqlCollationSemantics) {
   const std::string index_name = "idx_registry_savepoint_collation";
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",

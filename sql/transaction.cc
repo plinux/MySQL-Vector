@@ -80,6 +80,28 @@ bool report_vector_sync_error(const char *msg) {
   return true;
 }
 
+bool report_vector_post_savepoint_error(THD *thd, const char *msg) {
+  // SAVEPOINT control statements have already changed handler state here.
+  // A substatement cannot end the enclosing statement transaction. Mark the
+  // whole transaction for rollback and let the outer command cleanup do it.
+  if (thd->in_sub_stmt) {
+    thd->mark_transaction_to_rollback(true);
+    return report_vector_sync_error(msg);
+  }
+
+  // MYSQL_BIN_LOG treats SQLCOM_ROLLBACK_TO_SAVEPOINT as a recursive
+  // handlerton callback and deliberately skips engine rollback. This path is
+  // no longer a partial rollback: temporarily expose the full-rollback command
+  // identity while ending statement and session state in MySQL's normal order.
+  const enum_sql_command saved_sql_command = thd->lex->sql_command;
+  thd->lex->sql_command = SQLCOM_ROLLBACK;
+  (void)trans_rollback_stmt(thd);
+  const bool rollback_failed = trans_rollback(thd);
+  thd->lex->sql_command = saved_sql_command;
+  if (rollback_failed) thd->mark_transaction_to_rollback(true);
+  return report_vector_sync_error(msg);
+}
+
 void discard_empty_vector_thd_txn(THD *thd) {
   vector_index_registry::discard_empty_thd_txn(vector_thd_id(thd));
 }
@@ -743,6 +765,14 @@ bool trans_savepoint(THD *thd, LEX_STRING name) {
   if (thd->get_transaction()->xid_state()->check_has_uncommitted_xa())
     return true;
 
+#ifdef HAVE_VECTOR_INDEX
+  const std::string vector_savepoint_name = to_savepoint_name(name);
+  if (!vector_index_registry::preflight_savepoint_thd_txn(
+          vector_thd_id(thd), vector_savepoint_name)) {
+    return report_vector_sync_error("vector savepoint preflight failed");
+  }
+#endif
+
   sv = find_savepoint(thd, name);
 
   if (*sv) /* old savepoint of the same name exists */
@@ -789,9 +819,14 @@ bool trans_savepoint(THD *thd, LEX_STRING name) {
   }
 
 #ifdef HAVE_VECTOR_INDEX
+  DBUG_EXECUTE_IF("vector_fail_savepoint_after_core", {
+    return report_vector_post_savepoint_error(
+        thd, "vector savepoint creation failed after core savepoint");
+  });
   if (!vector_index_registry::savepoint_thd_txn(vector_thd_id(thd),
-                                                to_savepoint_name(name))) {
-    return report_vector_sync_error("vector savepoint creation failed");
+                                                vector_savepoint_name)) {
+    return report_vector_post_savepoint_error(
+        thd, "vector savepoint creation failed after core savepoint");
   }
 #endif
 
@@ -827,6 +862,15 @@ bool trans_rollback_to_savepoint(THD *thd, LEX_STRING name) {
 
   if (thd->get_transaction()->xid_state()->check_has_uncommitted_xa())
     return true;
+
+#ifdef HAVE_VECTOR_INDEX
+  const std::string vector_savepoint_name = to_savepoint_name(name);
+  if (!vector_index_registry::preflight_rollback_to_savepoint_thd_txn(
+          vector_thd_id(thd), vector_savepoint_name)) {
+    return report_vector_sync_error(
+        "vector rollback to savepoint preflight failed");
+  }
+#endif
 
   if (ha_rollback_to_savepoint(thd, sv))
     res = true;
@@ -867,9 +911,16 @@ bool trans_rollback_to_savepoint(THD *thd, LEX_STRING name) {
   }
 
 #ifdef HAVE_VECTOR_INDEX
+  DBUG_EXECUTE_IF("vector_fail_rollback_to_savepoint_after_core", {
+    if (!res) {
+      return report_vector_post_savepoint_error(
+          thd, "vector rollback to savepoint failed after core rollback");
+    }
+  });
   if (!res && !vector_index_registry::rollback_to_savepoint_thd_txn(
-                  vector_thd_id(thd), to_savepoint_name(name))) {
-    return report_vector_sync_error("vector rollback to savepoint failed");
+                  vector_thd_id(thd), vector_savepoint_name)) {
+    return report_vector_post_savepoint_error(
+        thd, "vector rollback to savepoint failed after core rollback");
   }
 #endif
 
@@ -903,6 +954,14 @@ bool trans_release_savepoint(THD *thd, LEX_STRING name) {
   if (thd->get_transaction()->xid_state()->check_has_uncommitted_xa())
     return true;
 
+#ifdef HAVE_VECTOR_INDEX
+  const std::string vector_savepoint_name = to_savepoint_name(name);
+  if (!vector_index_registry::preflight_release_savepoint_thd_txn(
+          vector_thd_id(thd), vector_savepoint_name)) {
+    return report_vector_sync_error("vector release savepoint preflight failed");
+  }
+#endif
+
   if (ha_release_savepoint(thd, sv)) res = true;
 
   thd->get_transaction()->m_savepoints = sv->prev;
@@ -913,9 +972,16 @@ bool trans_release_savepoint(THD *thd, LEX_STRING name) {
   }
 
 #ifdef HAVE_VECTOR_INDEX
+  DBUG_EXECUTE_IF("vector_fail_release_savepoint_after_core", {
+    if (!res) {
+      return report_vector_post_savepoint_error(
+          thd, "vector release savepoint failed after core release");
+    }
+  });
   if (!res && !vector_index_registry::release_savepoint_thd_txn(
-                  vector_thd_id(thd), to_savepoint_name(name))) {
-    return report_vector_sync_error("vector release savepoint failed");
+                  vector_thd_id(thd), vector_savepoint_name)) {
+    return report_vector_post_savepoint_error(
+        thd, "vector release savepoint failed after core release");
   }
 #endif
 

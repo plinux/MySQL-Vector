@@ -55,6 +55,9 @@ SELECT VEC_INDEX_STAGE_UPSERT('idx_txn_owner', 18446744073709551615,
                               3, '[3,3]');
 
 --disconnect txn_owner
+--let $wait_timeout= 10
+--let $wait_condition= SELECT VARIABLE_VALUE = 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Vector_pending_txn_changes'
+--source include/wait_condition.inc
 SELECT VARIABLE_VALUE
   FROM performance_schema.global_status
  WHERE VARIABLE_NAME = 'Vector_pending_txn_changes';

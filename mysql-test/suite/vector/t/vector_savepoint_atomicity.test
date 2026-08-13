@@ -1,0 +1,50 @@
+--source include/have_vector_debug_native.inc
+
+CREATE TABLE t_vector_savepoint_atomicity (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vector_savepoint_atomicity(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+
+--echo # A post-core SAVEPOINT failure must roll back the complete transaction.
+START TRANSACTION;
+INSERT INTO t_vector_savepoint_atomicity
+  VALUES (1, VEC_FROMTEXT('[1,1]'));
+SET SESSION debug='+d,vector_fail_savepoint_after_core';
+--error ER_INTERNAL_ERROR
+SAVEPOINT sp_create_failure;
+SET SESSION debug='';
+SELECT COUNT(*) FROM t_vector_savepoint_atomicity WHERE id=1;
+SELECT VEC_INDEX_SEARCH('test.t_vector_savepoint_atomicity.v',
+  VEC_FROMTEXT('[1,1]'), 1);
+
+--echo # A post-core ROLLBACK TO failure must not leave a partial transaction.
+START TRANSACTION;
+INSERT INTO t_vector_savepoint_atomicity
+  VALUES (2, VEC_FROMTEXT('[2,2]'));
+SAVEPOINT sp_rollback_failure;
+INSERT INTO t_vector_savepoint_atomicity
+  VALUES (3, VEC_FROMTEXT('[3,3]'));
+SET SESSION debug='+d,vector_fail_rollback_to_savepoint_after_core';
+--error ER_INTERNAL_ERROR
+ROLLBACK TO SAVEPOINT sp_rollback_failure;
+SET SESSION debug='';
+SELECT COUNT(*) FROM t_vector_savepoint_atomicity WHERE id IN (2,3);
+SELECT VEC_INDEX_SEARCH('test.t_vector_savepoint_atomicity.v',
+  VEC_FROMTEXT('[2,2]'), 2);
+
+--echo # A post-core RELEASE failure must also force a complete rollback.
+START TRANSACTION;
+INSERT INTO t_vector_savepoint_atomicity
+  VALUES (4, VEC_FROMTEXT('[4,4]'));
+SAVEPOINT sp_release_failure;
+SET SESSION debug='+d,vector_fail_release_savepoint_after_core';
+--error ER_INTERNAL_ERROR
+RELEASE SAVEPOINT sp_release_failure;
+SET SESSION debug='';
+SELECT COUNT(*) FROM t_vector_savepoint_atomicity WHERE id=4;
+SELECT VEC_INDEX_SEARCH('test.t_vector_savepoint_atomicity.v',
+  VEC_FROMTEXT('[4,4]'), 1);
+
+DROP TABLE t_vector_savepoint_atomicity;

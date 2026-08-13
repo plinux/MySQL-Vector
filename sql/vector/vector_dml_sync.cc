@@ -292,6 +292,13 @@ bool stage_prepared_changes(THD *thd, const prepared_changes &changes) {
   if (thd == nullptr) return true;
   if (changes.empty()) return false;
 
+  if (vector_trx_participant::has_statement_publication(thd)) {
+    my_error(ER_INTERNAL_ERROR, MYF(0),
+             "Cannot mix vector index management and table DML in one "
+             "statement");
+    return true;
+  }
+
   if (!vector_trx_participant::register_participant(thd)) {
     my_error(ER_INTERNAL_ERROR, MYF(0),
              "Failed to register vector transaction participant");

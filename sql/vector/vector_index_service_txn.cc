@@ -855,6 +855,44 @@ bool index_service::savepoint(uint64_t txn_id, const std::string &name) {
   return true;
 }
 
+bool index_service::preflight_savepoint(uint64_t txn_id,
+                                        const std::string &name) const {
+  return txn_id != 0 && !name.empty();
+}
+
+bool index_service::preflight_rollback_to_savepoint(
+    uint64_t txn_id, const std::string &name,
+    size_t *target_change_count) const {
+  if (txn_id == 0 || name.empty() || target_change_count == nullptr) {
+    return false;
+  }
+
+  const auto savepoint_it = m_savepoints.find(txn_id);
+  if (savepoint_it == m_savepoints.end()) return false;
+  const auto marker_it =
+      std::find_if(savepoint_it->second.begin(), savepoint_it->second.end(),
+                   [&](const savepoint_marker &marker) {
+                     return savepoint_names_equal(marker.name, name);
+                   });
+  if (marker_it == savepoint_it->second.end() ||
+      marker_it->change_count > pending_change_count(txn_id)) {
+    return false;
+  }
+  *target_change_count = marker_it->change_count;
+  return true;
+}
+
+bool index_service::preflight_release_savepoint(
+    uint64_t txn_id, const std::string &name) const {
+  if (txn_id == 0 || name.empty()) return false;
+  const auto savepoint_it = m_savepoints.find(txn_id);
+  if (savepoint_it == m_savepoints.end()) return false;
+  return std::any_of(savepoint_it->second.begin(), savepoint_it->second.end(),
+                     [&](const savepoint_marker &marker) {
+                       return savepoint_names_equal(marker.name, name);
+                     });
+}
+
 bool index_service::rollback_to_savepoint(uint64_t txn_id,
                                           const std::string &name) {
   auto savepoint_it = m_savepoints.find(txn_id);

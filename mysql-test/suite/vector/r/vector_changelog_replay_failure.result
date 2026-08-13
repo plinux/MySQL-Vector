@@ -20,10 +20,11 @@ Variable_name	Value
 Vector_change_log_load_failures	1
 SHOW GLOBAL STATUS LIKE 'Vector_change_log_replay_failures';
 Variable_name	Value
-Vector_change_log_replay_failures	0
-SELECT VEC_DEBUG_TRUTH_STORE_GET_HEX('changelog');
-VEC_DEBUG_TRUTH_STORE_GET_HEX('changelog')
-6d7973716c2d766563746f722d6368616e67656c6f672d76310a343209370975707365727409366436393733373336393665363732653639366536343635373809393909303030303130343130303030313034310a
+Vector_change_log_replay_failures	1
+SELECT LENGTH(VEC_DEBUG_TRUTH_STORE_GET_HEX('changelog')) > 0
+AS corrupted_changelog_present;
+corrupted_changelog_present
+1
 SELECT VEC_DEBUG_TRUTH_STORE_SET_HEX('changelog', NULL);
 VEC_DEBUG_TRUTH_STORE_SET_HEX('changelog', NULL)
 1

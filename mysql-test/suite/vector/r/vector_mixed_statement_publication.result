@@ -1,0 +1,65 @@
+#
+# WL#Vector: statement publication cannot mix with attached table DML
+#
+DROP TABLE IF EXISTS t_vector_mixed_publication;
+CREATE TABLE t_vector_mixed_publication (
+id INT PRIMARY KEY,
+v VECTOR(2),
+marker INT NOT NULL
+) ENGINE=InnoDB;
+INSERT INTO t_vector_mixed_publication VALUES
+(1, VEC_FROMTEXT('[1,1]'), 0),
+(2, VEC_FROMTEXT('[2,2]'), 0);
+CREATE VECTOR INDEX ON t_vector_mixed_publication(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_SET_SEARCH_EF('test.t_vector_mixed_publication.v', 80);
+VEC_INDEX_SET_SEARCH_EF('test.t_vector_mixed_publication.v', 80)
+1
+# Statement publication is evaluated before attached DML staging.
+UPDATE t_vector_mixed_publication
+SET marker = VEC_INDEX_SET_SEARCH_EF(
+'test.t_vector_mixed_publication.v', 96),
+v = VEC_FROMTEXT('[9,9]')
+WHERE id = 1;
+ERROR HY000: Internal error: Cannot mix vector index management and table DML in one statement
+SELECT id, VEC_TOTEXT(v), marker
+FROM t_vector_mixed_publication ORDER BY id;
+id	VEC_TOTEXT(v)	marker
+1	[1,1]	0
+2	[2,2]	0
+SELECT JSON_EXTRACT(
+VEC_INDEX_INFO('test.t_vector_mixed_publication.v'), '$.search_ef') AS search_ef;
+search_ef
+80
+# Attached DML from the first row is staged before the second row calls
+# the statement publication function.
+UPDATE t_vector_mixed_publication
+SET v = VEC_FROMTEXT(CONCAT('[', id + 10, ',', id + 10, ']')),
+marker = IF(id = 2,
+VEC_INDEX_SET_SEARCH_EF('test.t_vector_mixed_publication.v', 112),
+marker)
+ORDER BY id;
+ERROR HY000: Incorrect arguments to vec_index_set_search_ef
+SELECT id, VEC_TOTEXT(v), marker
+FROM t_vector_mixed_publication ORDER BY id;
+id	VEC_TOTEXT(v)	marker
+1	[1,1]	0
+2	[2,2]	0
+SELECT JSON_EXTRACT(
+VEC_INDEX_INFO('test.t_vector_mixed_publication.v'), '$.search_ef') AS search_ef;
+search_ef
+80
+# Restart verifies that neither rejected statement left durable truth or
+# configuration state.
+# restart
+SELECT id, VEC_TOTEXT(v), marker
+FROM t_vector_mixed_publication ORDER BY id;
+id	VEC_TOTEXT(v)	marker
+1	[1,1]	0
+2	[2,2]	0
+SELECT JSON_EXTRACT(
+VEC_INDEX_INFO('test.t_vector_mixed_publication.v'), '$.search_ef') AS search_ef;
+search_ef
+80
+DROP VECTOR INDEX ON t_vector_mixed_publication(v);
+DROP TABLE t_vector_mixed_publication;
