@@ -1,0 +1,40 @@
+--source include/have_vector_index.inc
+--source include/have_vector_hnsw.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#Vector: CREATE TABLE LIKE rolls back a partially copied vector index
+--echo #
+
+--disable_warnings
+DROP TABLE IF EXISTS t_vector_like_rollback_dst;
+DROP TABLE IF EXISTS t_vector_like_rollback_src;
+--enable_warnings
+
+CREATE TABLE t_vector_like_rollback_src (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vector_like_rollback_src(v)
+  WITH (2, 'COSINE', 'MEMORY', 'HNSWLIB');
+
+--disable_query_log
+SET GLOBAL debug = '+d,vector_create_like_fail_after_index_create';
+--enable_query_log
+
+--error ER_INTERNAL_ERROR
+CREATE TABLE t_vector_like_rollback_dst LIKE t_vector_like_rollback_src;
+
+--disable_query_log
+SET GLOBAL debug = '-d,vector_create_like_fail_after_index_create';
+--enable_query_log
+
+SELECT COUNT(*) AS target_table_count
+  FROM INFORMATION_SCHEMA.TABLES
+ WHERE TABLE_SCHEMA = 'test'
+   AND TABLE_NAME = 't_vector_like_rollback_dst';
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_INFO('test.t_vector_like_rollback_dst.v');
+SELECT VEC_INDEX_LIST();
+
+DROP TABLE t_vector_like_rollback_src;

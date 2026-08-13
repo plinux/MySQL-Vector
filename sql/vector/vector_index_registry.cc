@@ -920,11 +920,27 @@ bool resolve_create_index_definition(
   return true;
 }
 
+bool drop_cleanup_allows_create_locked(const std::string &index_name) {
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  if (!truth_store->supports_publication_intents()) return true;
+
+  std::vector<vector_index_truth_store::publication_intent> intents;
+  if (!truth_store->load_publication_intents(&intents)) return false;
+  return std::none_of(
+      intents.begin(), intents.end(), [&](const auto &intent) {
+        return intent.index_name == index_name &&
+               intent.operation == vector_index_truth_store::
+                                       publication_operation::kDropIndex;
+      });
+}
+
 bool create_index_locked(
     const std::string &index_name, size_t dimension, const std::string &metric,
     const std::string &mode, const std::string &provider,
     const index_binding *binding, const std::string &owner_schema,
     const vector_index_registry::create_index_options &options) {
+  if (!drop_cleanup_allows_create_locked(index_name)) return false;
   std::vector<vector_index_metadata_store::metadata_row> metadata_before;
   vector_index::index_service::committed_state committed_before;
   std::vector<vector_index_metadata_store::change_log_row> change_log_before;
@@ -2689,6 +2705,66 @@ bool restore_runtime_state(const registry_state_snapshot &snapshot,
     return false;
   }
   return true;
+}
+
+bool restore_runtime_state_after_drop_rollback(
+    const registry_state_snapshot &snapshot,
+    const dropped_index_artifacts &artifacts) {
+  if (!artifacts.valid) {
+    return false;
+  }
+  if (!artifacts.has_cleanup_intent) {
+    return restore_runtime_state(snapshot, true);
+  }
+  if (artifacts.cleanup_intent.operation !=
+      vector_index_truth_store::publication_operation::kDropIndex) {
+    return false;
+  }
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  runtime_state_snapshot dropped_state;
+  if (!capture_runtime_state_locked(&dropped_state)) return false;
+
+  const uint64_t manifest_version = g_manifest_version;
+  const uint64_t metadata_checkpoint = g_manifest_metadata_checkpoint;
+  const uint64_t committed_checkpoint = g_manifest_committed_checkpoint;
+  const uint64_t change_log_checkpoint = g_manifest_change_log_checkpoint;
+  const uint64_t next_change_log_sequence = g_next_change_log_sequence;
+  if (!restore_runtime_state_locked(snapshot.metadata_rows,
+                                    snapshot.committed_state,
+                                    snapshot.change_log_rows,
+                                    snapshot.lagging_index_names)) {
+    fail_stop_registry_locked("drop_rollback_state_restore_failed");
+    return false;
+  }
+
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  vector_status::record_truth_store_persist_request();
+  bool persisted = truth_store->begin_persist();
+  if (persisted) {
+    persisted = persist_metadata_locked(nullptr) &&
+                persist_committed_locked(nullptr) &&
+                persist_change_log_locked() && persist_prepared_locked() &&
+                persist_segment_tasks_locked() && persist_manifest_locked() &&
+                truth_store->delete_publication_intent(
+                    artifacts.cleanup_intent.index_name,
+                    artifacts.cleanup_intent.publication_id);
+  }
+  if (persisted) persisted = truth_store->commit_persist();
+  if (persisted) return true;
+
+  truth_store->rollback_persist();
+  g_manifest_version = manifest_version;
+  g_manifest_metadata_checkpoint = metadata_checkpoint;
+  g_manifest_committed_checkpoint = committed_checkpoint;
+  g_manifest_change_log_checkpoint = change_log_checkpoint;
+  g_next_change_log_sequence = next_change_log_sequence;
+  if (!rollback_runtime_state_locked(dropped_state)) {
+    fail_stop_registry_locked("drop_rollback_state_restore_failed");
+  }
+  vector_status::record_truth_store_persist_failure();
+  return false;
 }
 
 size_t committed_vector_memory_bytes() {

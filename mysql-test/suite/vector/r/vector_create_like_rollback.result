@@ -1,0 +1,25 @@
+#
+# WL#Vector: CREATE TABLE LIKE rolls back a partially copied vector index
+#
+DROP TABLE IF EXISTS t_vector_like_rollback_dst;
+DROP TABLE IF EXISTS t_vector_like_rollback_src;
+CREATE TABLE t_vector_like_rollback_src (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vector_like_rollback_src(v)
+WITH (2, 'COSINE', 'MEMORY', 'HNSWLIB');
+CREATE TABLE t_vector_like_rollback_dst LIKE t_vector_like_rollback_src;
+ERROR HY000: Internal error: Injected CREATE TABLE LIKE vector index failure
+SELECT COUNT(*) AS target_table_count
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_SCHEMA = 'test'
+   AND TABLE_NAME = 't_vector_like_rollback_dst';
+target_table_count
+0
+SELECT VEC_INDEX_INFO('test.t_vector_like_rollback_dst.v');
+ERROR HY000: Incorrect arguments to vec_index_info
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["test.t_vector_like_rollback_src.v"]
+DROP TABLE t_vector_like_rollback_src;

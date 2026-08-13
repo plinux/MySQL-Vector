@@ -1,0 +1,67 @@
+#
+# WL#Vector: recover durable DROP physical cleanup
+#
+CALL mtr.add_suppression(
+"Vector runtime publication failed after transaction commit at stage");
+# A committed-row cleanup failure keeps the old name reserved.
+SELECT VEC_INDEX_CREATE('idx_drop_cleanup_erase', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_drop_cleanup_erase', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_drop_cleanup_erase', 7,
+VEC_FROMTEXT('[7,1]'));
+VEC_INDEX_UPSERT('idx_drop_cleanup_erase', 7,
+VEC_FROMTEXT('[7,1]'))
+1
+SELECT VEC_INDEX_DROP('idx_drop_cleanup_erase');
+VEC_INDEX_DROP('idx_drop_cleanup_erase')
+1
+SELECT VEC_INDEX_CREATE('idx_drop_cleanup_erase', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE');
+ERROR HY000: Incorrect arguments to vec_index_create
+# restart
+SELECT VEC_INDEX_CREATE('idx_drop_cleanup_erase', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_drop_cleanup_erase', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_SEARCH('idx_drop_cleanup_erase',
+VEC_FROMTEXT('[7,1]'), 1);
+VEC_INDEX_SEARCH('idx_drop_cleanup_erase',
+VEC_FROMTEXT('[7,1]'), 1)
+[]
+SELECT VEC_INDEX_DROP('idx_drop_cleanup_erase');
+VEC_INDEX_DROP('idx_drop_cleanup_erase')
+1
+# Intent deletion failure retries already-completed cleanup safely.
+SELECT VEC_INDEX_CREATE('idx_drop_cleanup_intent', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_drop_cleanup_intent', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_UPSERT('idx_drop_cleanup_intent', 8,
+VEC_FROMTEXT('[8,1]'));
+VEC_INDEX_UPSERT('idx_drop_cleanup_intent', 8,
+VEC_FROMTEXT('[8,1]'))
+1
+SELECT VEC_INDEX_DROP('idx_drop_cleanup_intent');
+VEC_INDEX_DROP('idx_drop_cleanup_intent')
+1
+SELECT VEC_INDEX_CREATE('idx_drop_cleanup_intent', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE');
+ERROR HY000: Incorrect arguments to vec_index_create
+# restart
+SELECT VEC_INDEX_CREATE('idx_drop_cleanup_intent', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_drop_cleanup_intent', 2,
+'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
+SELECT VEC_INDEX_SEARCH('idx_drop_cleanup_intent',
+VEC_FROMTEXT('[8,1]'), 1);
+VEC_INDEX_SEARCH('idx_drop_cleanup_intent',
+VEC_FROMTEXT('[8,1]'), 1)
+[]
+SELECT VEC_INDEX_DROP('idx_drop_cleanup_intent');
+VEC_INDEX_DROP('idx_drop_cleanup_intent')
+1

@@ -238,43 +238,6 @@ vector_index_metadata_store::change_log_row make_backfill_delta_row(
   return row;
 }
 
-vector_index_metadata_store::change_log_row make_erase_delta_row(
-    const std::string &index_name, uint64_t sequence, uint64_t doc_id) {
-  vector_index_metadata_store::change_log_row row;
-  row.sequence = sequence;
-  row.op = vector_index_metadata_store::change_op::kErase;
-  row.index_name = index_name;
-  row.doc_id = doc_id;
-  return row;
-}
-
-bool persist_committed_delta_batch_locked(
-    const std::vector<vector_index_metadata_store::change_log_row> &rows) {
-  vector_index_truth_store::truth_store *truth_store =
-      vector_index_truth_store::get();
-  vector_status::record_truth_store_persist_request();
-  vector_status::record_truth_store_delta_persist_request();
-  if (!truth_store->begin_persist()) {
-    vector_status::record_truth_store_persist_failure();
-    vector_status::record_truth_store_delta_persist_failure();
-    return false;
-  }
-  const bool ok = persist_committed_delta_locked(rows);
-  if (!ok) {
-    truth_store->rollback_persist();
-    vector_status::record_truth_store_persist_failure();
-    vector_status::record_truth_store_delta_persist_failure();
-    return false;
-  }
-  if (!truth_store->commit_persist()) {
-    truth_store->rollback_persist();
-    vector_status::record_truth_store_persist_failure();
-    vector_status::record_truth_store_delta_persist_failure();
-    return false;
-  }
-  return true;
-}
-
 bool persist_metadata_manifest_locked(bool include_change_log) {
   vector_index_truth_store::truth_store *truth_store =
       vector_index_truth_store::get();
@@ -296,47 +259,6 @@ bool persist_metadata_manifest_locked(bool include_change_log) {
     vector_status::record_truth_store_persist_failure();
     vector_status::record_metadata_persist_failure();
     vector_status::record_manifest_persist_failure();
-    return false;
-  }
-  return true;
-}
-
-bool persist_drop_committed_entries_locked(
-    const std::string &index_name,
-    const vector_index::index_service::committed_entries &entries) {
-  vector_index_truth_store::truth_store *truth_store =
-      vector_index_truth_store::get();
-  if (!truth_store->is_transactional() ||
-      !truth_store->supports_delta_persist()) {
-    return persist_registry_state_locked();
-  }
-
-  const uint64_t checkpoint_before = g_manifest_committed_checkpoint;
-  if (entries.empty()) {
-    g_manifest_committed_checkpoint = g_index_service.committed_entry_count();
-    vector_status::set_committed_snapshot_rows(g_manifest_committed_checkpoint);
-    return true;
-  }
-
-  std::vector<uint64_t> doc_ids;
-  doc_ids.reserve(entries.size());
-  for (const auto &entry : entries) doc_ids.push_back(entry.first);
-  std::sort(doc_ids.begin(), doc_ids.end());
-
-  std::vector<vector_index_metadata_store::change_log_row> batch;
-  batch.reserve(k_committed_persist_batch_rows);
-  uint64_t sequence = 1;
-  for (uint64_t doc_id : doc_ids) {
-    batch.push_back(make_erase_delta_row(index_name, sequence++, doc_id));
-    if (batch.size() < k_committed_persist_batch_rows) continue;
-    if (!persist_committed_delta_batch_locked(batch)) {
-      g_manifest_committed_checkpoint = checkpoint_before;
-      return false;
-    }
-    batch.clear();
-  }
-  if (!batch.empty() && !persist_committed_delta_batch_locked(batch)) {
-    g_manifest_committed_checkpoint = checkpoint_before;
     return false;
   }
   return true;
@@ -585,6 +507,12 @@ struct drop_artifact_plan {
   vector_index::backend_mode mode{vector_index::backend_mode::kMemory};
   vector_index::backend_provider provider{
       vector_index::backend_provider::kNative};
+};
+
+struct drop_cleanup_plan {
+  vector_index_truth_store::publication_intent intent;
+  bool durable{false};
+  bool owned{false};
 };
 
 bool uses_standalone_source(const lifecycle_backend_plan &plan) {
@@ -1127,6 +1055,185 @@ bool snapshot_drop_artifact_plan_locked(const std::string &index_name,
   return true;
 }
 
+bool prepare_drop_cleanup_plan_locked(const std::string &index_name,
+                                      drop_cleanup_plan *plan) {
+  if (index_name.empty() || plan == nullptr) return false;
+  *plan = drop_cleanup_plan{};
+
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  if (!truth_store->is_transactional() ||
+      !truth_store->supports_delta_persist() ||
+      !truth_store->supports_publication_intents()) {
+    return true;
+  }
+
+  vector_index_truth_store::publication_token current;
+  if (!describe_publication_token_locked(index_name, &current) ||
+      !current.exists) {
+    return false;
+  }
+
+  std::vector<vector_index_truth_store::publication_intent> intents;
+  if (!truth_store->load_publication_intents(&intents)) return false;
+  for (const auto &intent : intents) {
+    if (intent.index_name != index_name) continue;
+    if (plan->durable ||
+        intent.operation !=
+            vector_index_truth_store::publication_operation::kDropIndex ||
+        intent.state != vector_index_truth_store::publication_intent_state::
+                            kTargetToBeObserved ||
+        !publication_tokens_equal(intent.expected, current) ||
+        intent.target.exists || !intent.payload.empty()) {
+      return false;
+    }
+    plan->intent = intent;
+    plan->durable = true;
+  }
+  if (plan->durable) return true;
+
+  const uint64_t publication_id = allocate_txn_id();
+  if (publication_id == 0) return false;
+  plan->intent.index_name = index_name;
+  plan->intent.publication_id = publication_id;
+  plan->intent.txn_id = publication_id;
+  plan->intent.operation =
+      vector_index_truth_store::publication_operation::kDropIndex;
+  plan->intent.expected = current;
+  plan->intent.target = vector_index_truth_store::publication_token{};
+  plan->intent.state = vector_index_truth_store::publication_intent_state::
+      kTargetToBeObserved;
+  plan->durable = true;
+  plan->owned = true;
+  return true;
+}
+
+bool persist_drop_states_locked(
+    const std::vector<drop_cleanup_plan> &cleanup_plans) {
+  if (cleanup_plans.empty() || !cleanup_plans.front().durable) {
+    return persist_registry_state_locked();
+  }
+  if (std::any_of(cleanup_plans.begin(), cleanup_plans.end(),
+                  [](const auto &plan) { return !plan.durable; })) {
+    return false;
+  }
+
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  vector_status::record_truth_store_persist_request();
+  if (!truth_store->begin_persist()) {
+    vector_status::record_truth_store_persist_failure();
+    return false;
+  }
+  bool persisted = true;
+  for (const auto &cleanup_plan : cleanup_plans) {
+    if (cleanup_plan.owned &&
+        !truth_store->save_publication_intent(cleanup_plan.intent)) {
+      persisted = false;
+      break;
+    }
+  }
+  if (persisted) persisted = persist_metadata_locked(nullptr);
+  if (persisted) persisted = persist_change_log_locked();
+  if (persisted) persisted = persist_manifest_locked();
+  if (!persisted || !truth_store->commit_persist()) {
+    truth_store->rollback_persist();
+    vector_status::record_truth_store_persist_failure();
+    return false;
+  }
+  return true;
+}
+
+bool persist_drop_state_locked(const drop_cleanup_plan &cleanup_plan) {
+  return persist_drop_states_locked({cleanup_plan});
+}
+
+bool rollback_drop_runtime_state_locked(
+    const runtime_state_snapshot &state_before) {
+  if (rollback_runtime_state_locked(state_before)) return true;
+  fail_stop_registry_locked("drop_runtime_restore_failed");
+  return false;
+}
+
+bool cleanup_drop_artifacts_by_name(const std::string &index_name) {
+  bool removed = g_index_service.remove_standalone_artifacts(index_name);
+  removed = vector_index::remove_backend_artifacts(
+                index_name, vector_index::backend_mode::kExternal,
+                vector_index::backend_provider::kFaiss) &&
+            removed;
+  removed = vector_index::remove_backend_artifacts(
+                index_name, vector_index::backend_mode::kExternal,
+                vector_index::backend_provider::kDiskAnn) &&
+            removed;
+  return removed;
+}
+
+void finish_drop_cleanup(const std::vector<std::string> &index_names,
+                         const std::vector<drop_cleanup_plan> &cleanup_plans) {
+  for (size_t i = 0; i < index_names.size(); ++i) {
+    const auto &cleanup_plan = cleanup_plans[i];
+    if (cleanup_plan.durable) {
+      if (!cleanup_plan.owned) continue;
+      std::string failure_stage;
+      if (!acknowledge_statement_publication_intent(cleanup_plan.intent,
+                                                    &failure_stage)) {
+        schedule_publication_intent_recovery();
+      }
+      continue;
+    }
+    if (cleanup_drop_artifacts_by_name(index_names[i])) {
+      vector_status::record_index_drop_success();
+    } else {
+      vector_status::record_truth_store_persist_failure();
+    }
+  }
+}
+
+template <typename Match>
+bool drop_matching_indexes(Match matches) {
+  std::vector<std::string> dropped_index_names;
+  std::vector<drop_cleanup_plan> cleanup_plans;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!g_metadata_loaded) return true;
+    if (!ensure_metadata_loaded_locked()) return false;
+
+    runtime_state_snapshot state_before;
+    if (!capture_runtime_state_locked(&state_before)) return false;
+
+    std::vector<std::string> index_names;
+    if (!g_index_service.list_indexes(&index_names)) return false;
+    for (const std::string &index_name : index_names) {
+      if (!matches(index_name)) continue;
+
+      drop_cleanup_plan cleanup_plan;
+      vector_status::record_index_drop_request();
+      if (!prepare_drop_cleanup_plan_locked(index_name, &cleanup_plan) ||
+          !g_index_service.unregister_index(index_name, false)) {
+        (void)rollback_drop_runtime_state_locked(state_before);
+        return false;
+      }
+      erase_index_binding_and_owner_schema_locked(index_name);
+      prune_change_log_for_index_locked(index_name);
+      dropped_index_names.push_back(index_name);
+      cleanup_plans.push_back(std::move(cleanup_plan));
+    }
+
+    if (dropped_index_names.empty()) return true;
+    refresh_committed_checkpoint_from_runtime_locked();
+    if (!persist_drop_states_locked(cleanup_plans)) {
+      vector_status::record_truth_store_persist_failure();
+      if (!rollback_drop_runtime_state_locked(state_before)) return false;
+      if (!vector_index_truth_store::get()->is_transactional()) {
+        (void)persist_registry_state_locked();
+      }
+      return false;
+    }
+  }
+  finish_drop_cleanup(dropped_index_names, cleanup_plans);
+  return true;
+}
+
 void cleanup_drop_artifacts(const std::vector<drop_artifact_plan> &plans) {
   for (const drop_artifact_plan &plan : plans) {
     (void)vector_index::remove_backend_artifacts(plan.index_name, plan.mode,
@@ -1197,6 +1304,7 @@ bool create_index(const std::string &index_name, size_t dimension,
                   const std::string &provider, const std::string &owner_schema,
                   const create_index_options &options) {
   vector_status::record_index_create_request();
+  if (!ensure_publication_intents_recovered()) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   return create_index_locked(index_name, dimension, metric, mode, provider,
@@ -1241,6 +1349,7 @@ bool create_mapped_index(const std::string &index_name, size_t dimension,
                          const std::string &doc_id_column_name,
                          const create_index_options &options) {
   vector_status::record_index_create_request();
+  if (!ensure_publication_intents_recovered()) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   const index_binding binding{schema_name, table_name, column_name,
@@ -1254,7 +1363,8 @@ bool drop_index_impl(const std::string &index_name,
                      bool cleanup_artifacts) {
   vector_status::record_index_drop_request();
   if (artifacts != nullptr) *artifacts = dropped_index_artifacts{};
-  std::vector<drop_artifact_plan> drop_artifacts;
+  drop_cleanup_plan cleanup_plan;
+  drop_artifact_plan artifact_plan;
   {
     std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
     if (!ensure_metadata_loaded_locked()) return false;
@@ -1267,46 +1377,52 @@ bool drop_index_impl(const std::string &index_name,
                                        &lagging_indexes_before)) {
       return false;
     }
-    vector_index::index_service::committed_entries dropped_entries;
-    auto dropped_entries_it = committed_before.find(index_name);
-    if (dropped_entries_it != committed_before.end()) {
-      dropped_entries = dropped_entries_it->second;
-    }
-    drop_artifact_plan artifact_plan;
-    if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan))
+    if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan) ||
+        !prepare_drop_cleanup_plan_locked(index_name, &cleanup_plan)) {
       return false;
-    if (!g_index_service.unregister_index(index_name)) return false;
+    }
+    if (!g_index_service.unregister_index(index_name, false)) return false;
     erase_index_binding_and_owner_schema_locked(index_name);
     prune_change_log_for_index_locked(index_name);
     refresh_committed_checkpoint_from_runtime_locked();
-    if (!persist_metadata_manifest_locked(true)) {
+    if (!persist_drop_state_locked(cleanup_plan)) {
       vector_status::record_truth_store_persist_failure();
-      if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                         change_log_before,
-                                         lagging_indexes_before)) {
+      if (!rollback_runtime_state_locked(
+              metadata_before, committed_before, change_log_before,
+              lagging_indexes_before)) {
+        fail_stop_registry_locked("drop_runtime_restore_failed");
         return false;
       }
-      (void)persist_registry_state_locked();
+      if (!vector_index_truth_store::get()->is_transactional()) {
+        (void)persist_registry_state_locked();
+      }
       return false;
-    }
-    if (!persist_drop_committed_entries_locked(index_name, dropped_entries)) {
-      /*
-        The visible DROP state is already durable.  Large hidden truth-store
-        cleanup can exceed tiny redo configurations, so a cleanup failure must
-        not resurrect the index or make the completed DDL look rolled back.
-      */
-      vector_status::record_truth_store_persist_failure();
     }
     if (artifacts != nullptr) {
       artifacts->index_name = artifact_plan.index_name;
       artifacts->mode = artifact_plan.mode;
       artifacts->provider = artifact_plan.provider;
+      artifacts->cleanup_intent = cleanup_plan.intent;
+      artifacts->has_cleanup_intent = cleanup_plan.durable;
       artifacts->valid = true;
     }
-    drop_artifacts.push_back(std::move(artifact_plan));
-    if (cleanup_artifacts) vector_status::record_index_drop_success();
   }
-  if (cleanup_artifacts) cleanup_drop_artifacts(drop_artifacts);
+
+  if (!cleanup_artifacts) return true;
+  if (cleanup_plan.durable) {
+    if (!cleanup_plan.owned) return true;
+    std::string failure_stage;
+    if (!acknowledge_statement_publication_intent(cleanup_plan.intent,
+                                                  &failure_stage)) {
+      schedule_publication_intent_recovery();
+    }
+    return true;
+  }
+  if (cleanup_drop_artifacts_by_name(index_name)) {
+    vector_status::record_index_drop_success();
+  } else {
+    vector_status::record_truth_store_persist_failure();
+  }
   return true;
 }
 
@@ -1319,123 +1435,77 @@ bool drop_index(const std::string &index_name,
   return drop_index_impl(index_name, artifacts, false);
 }
 
+bool cleanup_dropped_index_physical_state(
+    const vector_index_truth_store::publication_intent &intent,
+    std::string *failure_stage) {
+  if (intent.operation !=
+          vector_index_truth_store::publication_operation::kDropIndex ||
+      !intent.expected.exists || intent.target.exists) {
+    if (failure_stage != nullptr) *failure_stage = "invalid_drop_cleanup_intent";
+    return false;
+  }
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked() ||
+        g_index_service.index_exists(intent.index_name)) {
+      if (failure_stage != nullptr) *failure_stage = "drop_cleanup_name_in_use";
+      return false;
+    }
+  }
+
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  if (truth_store->is_transactional() &&
+      truth_store->supports_delta_persist()) {
+    bool done = false;
+    while (!done) {
+      size_t erased_rows = 0;
+      if (!truth_store->erase_committed_index_batch(
+              intent.index_name, k_committed_persist_batch_rows, &erased_rows,
+              &done) || (!done && erased_rows == 0)) {
+        if (failure_stage != nullptr)
+          *failure_stage = "erase_drop_committed_rows";
+        return false;
+      }
+    }
+  }
+  if (!cleanup_drop_artifacts_by_name(intent.index_name)) {
+    if (failure_stage != nullptr) *failure_stage = "remove_drop_artifacts";
+    return false;
+  }
+  return true;
+}
+
 void cleanup_dropped_index_artifacts(
     const dropped_index_artifacts &artifacts) {
   if (!artifacts.valid) return;
-  (void)vector_index::remove_backend_artifacts(artifacts.index_name,
-                                               artifacts.mode,
-                                               artifacts.provider);
-  vector_status::record_index_drop_success();
+  if (artifacts.has_cleanup_intent) {
+    std::string failure_stage;
+    if (!acknowledge_statement_publication_intent(artifacts.cleanup_intent,
+                                                  &failure_stage)) {
+      schedule_publication_intent_recovery();
+    }
+    return;
+  }
+  if (cleanup_drop_artifacts_by_name(artifacts.index_name)) {
+    vector_status::record_index_drop_success();
+  } else {
+    vector_status::record_truth_store_persist_failure();
+  }
 }
 
 bool drop_indexes_for_table(const std::string &db_name,
                             const std::string &table_name) {
-  std::vector<drop_artifact_plan> drop_artifacts;
-  size_t dropped_count = 0;
-  {
-    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-    if (!g_metadata_loaded) return true;
-    if (!ensure_metadata_loaded_locked()) return false;
-    std::vector<vector_index_metadata_store::metadata_row> metadata_before;
-    vector_index::index_service::committed_state committed_before;
-    std::vector<vector_index_metadata_store::change_log_row> change_log_before;
-    std::vector<std::string> lagging_indexes_before;
-    if (!snapshot_runtime_state_locked(&metadata_before, &committed_before,
-                                       &change_log_before,
-                                       &lagging_indexes_before)) {
-      return false;
-    }
-
-    std::vector<std::string> index_names;
-    if (!g_index_service.list_indexes(&index_names)) return false;
-
-    for (const std::string &index_name : index_names) {
-      if (!binding_matches_table(binding_for_index_locked(index_name), db_name,
-                                 table_name)) {
-        continue;
-      }
-
-      drop_artifact_plan artifact_plan;
-      if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan))
-        return false;
-      vector_status::record_index_drop_request();
-      if (!g_index_service.unregister_index(index_name)) return false;
-      erase_index_binding_and_owner_schema_locked(index_name);
-      prune_change_log_for_index_locked(index_name);
-      drop_artifacts.push_back(std::move(artifact_plan));
-      ++dropped_count;
-    }
-
-    if (dropped_count == 0) return true;
-    if (!persist_registry_state_locked()) {
-      vector_status::record_truth_store_persist_failure();
-      if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                         change_log_before,
-                                         lagging_indexes_before)) {
-        return false;
-      }
-      return false;
-    }
-    for (size_t i = 0; i < dropped_count; ++i) {
-      vector_status::record_index_drop_success();
-    }
-  }
-  cleanup_drop_artifacts(drop_artifacts);
-  return true;
+  return drop_matching_indexes([&](const std::string &index_name) {
+    return binding_matches_table(binding_for_index_locked(index_name), db_name,
+                                 table_name);
+  });
 }
 
 bool drop_indexes_for_database(const std::string &db_name) {
-  std::vector<drop_artifact_plan> drop_artifacts;
-  size_t dropped_count = 0;
-  {
-    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-    if (!g_metadata_loaded) return true;
-    if (!ensure_metadata_loaded_locked()) return false;
-    std::vector<vector_index_metadata_store::metadata_row> metadata_before;
-    vector_index::index_service::committed_state committed_before;
-    std::vector<vector_index_metadata_store::change_log_row> change_log_before;
-    std::vector<std::string> lagging_indexes_before;
-    if (!snapshot_runtime_state_locked(&metadata_before, &committed_before,
-                                       &change_log_before,
-                                       &lagging_indexes_before)) {
-      return false;
-    }
-
-    std::vector<std::string> index_names;
-    if (!g_index_service.list_indexes(&index_names)) return false;
-
-    for (const std::string &index_name : index_names) {
-      if (owner_schema_for_index_locked(index_name) != db_name) {
-        continue;
-      }
-
-      drop_artifact_plan artifact_plan;
-      if (!snapshot_drop_artifact_plan_locked(index_name, &artifact_plan))
-        return false;
-      vector_status::record_index_drop_request();
-      if (!g_index_service.unregister_index(index_name)) return false;
-      erase_index_binding_and_owner_schema_locked(index_name);
-      prune_change_log_for_index_locked(index_name);
-      drop_artifacts.push_back(std::move(artifact_plan));
-      ++dropped_count;
-    }
-
-    if (dropped_count == 0) return true;
-    if (!persist_registry_state_locked()) {
-      vector_status::record_truth_store_persist_failure();
-      if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                         change_log_before,
-                                         lagging_indexes_before)) {
-        return false;
-      }
-      return false;
-    }
-    for (size_t i = 0; i < dropped_count; ++i) {
-      vector_status::record_index_drop_success();
-    }
-  }
-  cleanup_drop_artifacts(drop_artifacts);
-  return true;
+  return drop_matching_indexes([&](const std::string &index_name) {
+    return owner_schema_for_index_locked(index_name) == db_name;
+  });
 }
 
 bool reset_mapped_indexes_for_table(const std::string &db_name,

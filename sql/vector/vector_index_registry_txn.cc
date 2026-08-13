@@ -3107,7 +3107,10 @@ bool make_statement_publication_intent(
       operation == vector_index_truth_store::publication_operation::
                        kCreateIndex;
   if (creates_index == candidate.expected.exists) return false;
-  candidate.target = candidate.expected;
+  candidate.target =
+      operation == vector_index_truth_store::publication_operation::kDropIndex
+          ? vector_index_truth_store::publication_token{}
+          : candidate.expected;
   *intent = std::move(candidate);
   return true;
 }
@@ -3190,11 +3193,21 @@ bool publish_statement_publication_intent(
 bool acknowledge_statement_publication_intent(
     const vector_index_truth_store::publication_intent &intent,
     std::string *failure_stage) {
-  if (!vector_index_truth_store::get()->delete_publication_intent(
+  if (intent.operation ==
+          vector_index_truth_store::publication_operation::kDropIndex &&
+      !cleanup_dropped_index_physical_state(intent, failure_stage)) {
+    request_publication_intent_recovery();
+    return false;
+  }
+  if (!vector_index_truth_store::get()->delete_committed_publication_intent(
           intent.index_name, intent.publication_id)) {
     set_publication_failure(failure_stage,
                             "delete_statement_publication_intent");
     return false;
+  }
+  if (intent.operation ==
+      vector_index_truth_store::publication_operation::kDropIndex) {
+    vector_status::record_index_drop_success();
   }
   return true;
 }

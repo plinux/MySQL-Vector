@@ -426,6 +426,30 @@ class in_memory_truth_store final
     return true;
   }
 
+  bool save_publication_intent(
+      const vector_index_truth_store::publication_intent &intent) override {
+    std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
+    if (fail_save_publication_intent || intent.index_name.empty() ||
+        intent.publication_id == 0) {
+      return false;
+    }
+    const auto same_index = [&](const auto &entry) {
+      return entry.index_name == intent.index_name;
+    };
+    if (std::any_of(publication_intents.begin(), publication_intents.end(),
+                    same_index) ||
+        std::any_of(staged_publication_intents.begin(),
+                    staged_publication_intents.end(), same_index)) {
+      return false;
+    }
+    if (persist_active) {
+      staged_publication_intents.push_back(intent);
+    } else {
+      publication_intents.push_back(intent);
+    }
+    return true;
+  }
+
   bool delete_publication_intent(const std::string &index_name,
                                  uint64_t publication_id) override {
     std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
@@ -437,6 +461,11 @@ class in_memory_truth_store final
                  intent.publication_id == publication_id;
         });
     if (it == publication_intents.end()) return false;
+    if (persist_active) {
+      staged_deleted_publication_intents.emplace_back(index_name,
+                                                      publication_id);
+      return true;
+    }
     publication_intents.erase(it);
     return true;
   }
@@ -472,15 +501,51 @@ class in_memory_truth_store final
 
   bool begin_persist() override {
     ++begin_persist_calls;
-    return !fail_begin_persist;
+    std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
+    if (fail_begin_persist || persist_active) return false;
+    persist_active = true;
+    staged_committed_rows = committed_rows;
+    staged_change_log_rows = change_log_rows;
+    staged_publication_intents.clear();
+    staged_deleted_publication_intents.clear();
+    return true;
   }
 
   bool commit_persist() override {
     ++commit_persist_calls;
-    return !fail_commit_persist;
+    std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
+    if (!persist_active || fail_commit_persist) return false;
+    publication_intents.insert(publication_intents.end(),
+                               staged_publication_intents.begin(),
+                               staged_publication_intents.end());
+    for (const auto &deleted : staged_deleted_publication_intents) {
+      publication_intents.erase(
+          std::remove_if(publication_intents.begin(), publication_intents.end(),
+                         [&](const auto &intent) {
+                           return intent.index_name == deleted.first &&
+                                  intent.publication_id == deleted.second;
+                         }),
+          publication_intents.end());
+    }
+    committed_rows = std::move(staged_committed_rows);
+    change_log_rows = std::move(staged_change_log_rows);
+    persist_active = false;
+    staged_committed_rows.clear();
+    staged_change_log_rows.clear();
+    staged_publication_intents.clear();
+    staged_deleted_publication_intents.clear();
+    return true;
   }
 
-  void rollback_persist() override { ++rollback_persist_calls; }
+  void rollback_persist() override {
+    std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
+    persist_active = false;
+    staged_committed_rows.clear();
+    staged_change_log_rows.clear();
+    staged_publication_intents.clear();
+    staged_deleted_publication_intents.clear();
+    ++rollback_persist_calls;
+  }
 
   bool stage_quarantine(const std::string &artifact_name,
                         const std::string &reason, uint64_t generation,
@@ -548,7 +613,8 @@ class in_memory_truth_store final
       override {
     ++save_committed_calls;
     if (fail_save_committed) return false;
-    committed_rows = rows;
+    std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
+    (persist_active ? staged_committed_rows : committed_rows) = rows;
     return true;
   }
 
@@ -558,18 +624,21 @@ class in_memory_truth_store final
     ++apply_committed_delta_calls;
     if (fail_apply_committed_delta) return false;
 
+    std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
+    auto &target_rows =
+        persist_active ? staged_committed_rows : committed_rows;
     for (const auto &row : rows) {
-      auto it = std::find_if(committed_rows.begin(), committed_rows.end(),
+      auto it = std::find_if(target_rows.begin(), target_rows.end(),
                              [&](const auto &entry) {
                                return entry.index_name == row.index_name &&
                                       entry.doc_id == row.doc_id;
                              });
       if (row.op == vector_index_metadata_store::change_op::kErase) {
-        if (it != committed_rows.end()) committed_rows.erase(it);
+        if (it != target_rows.end()) target_rows.erase(it);
         continue;
       }
-      if (it == committed_rows.end()) {
-        committed_rows.push_back(vector_index_metadata_store::committed_row{
+      if (it == target_rows.end()) {
+        target_rows.push_back(vector_index_metadata_store::committed_row{
             row.index_name, row.doc_id, row.vector});
       } else {
         it->vector = row.vector;
@@ -578,6 +647,30 @@ class in_memory_truth_store final
     return true;
   }
 
+  bool erase_committed_index_batch(const std::string &index_name,
+                                   size_t max_rows, size_t *erased_rows,
+                                   bool *done) override {
+    ++erase_committed_index_batch_calls;
+    if (fail_erase_committed_index_batch || index_name.empty() ||
+        max_rows == 0 || erased_rows == nullptr || done == nullptr) {
+      return false;
+    }
+    *erased_rows = 0;
+    for (auto it = committed_rows.begin();
+         it != committed_rows.end() && *erased_rows < max_rows;) {
+      if (it->index_name != index_name) {
+        ++it;
+        continue;
+      }
+      it = committed_rows.erase(it);
+      ++*erased_rows;
+    }
+    *done = std::none_of(committed_rows.begin(), committed_rows.end(),
+                         [&](const auto &row) {
+                           return row.index_name == index_name;
+                         });
+    return true;
+  }
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
     if (fail_load_manifest) return false;
     if (row == nullptr) return false;
@@ -610,7 +703,8 @@ class in_memory_truth_store final
       override {
     ++save_change_log_calls;
     if (fail_save_change_log) return false;
-    change_log_rows = rows;
+    std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
+    (persist_active ? staged_change_log_rows : change_log_rows) = rows;
     return true;
   }
 
@@ -619,7 +713,10 @@ class in_memory_truth_store final
       override {
     ++append_change_log_delta_calls;
     if (fail_append_change_log_delta) return false;
-    change_log_rows.insert(change_log_rows.end(), rows.begin(), rows.end());
+    std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
+    auto &target_rows =
+        persist_active ? staged_change_log_rows : change_log_rows;
+    target_rows.insert(target_rows.end(), rows.begin(), rows.end());
     return true;
   }
 
@@ -631,13 +728,16 @@ class in_memory_truth_store final
                     [](uint64_t sequence) { return sequence == 0; })) {
       return false;
     }
-    change_log_rows.erase(
-        std::remove_if(change_log_rows.begin(), change_log_rows.end(),
+    std::lock_guard<std::mutex> guard(publication_intent_load_mutex);
+    auto &target_rows =
+        persist_active ? staged_change_log_rows : change_log_rows;
+    target_rows.erase(
+        std::remove_if(target_rows.begin(), target_rows.end(),
                        [&](const auto &row) {
                          return std::binary_search(
                              sequences.begin(), sequences.end(), row.sequence);
                        }),
-        change_log_rows.end());
+        target_rows.end());
     return true;
   }
 
@@ -685,14 +785,26 @@ class in_memory_truth_store final
 
   bool fail_load_metadata{false};
   bool fail_load_publication_intents{false};
+  bool fail_save_publication_intent{false};
   bool fail_delete_publication_intent{false};
+  bool persist_active{false};
   std::vector<vector_index_truth_store::publication_intent>
       publication_intents;
+  std::vector<vector_index_truth_store::publication_intent>
+      staged_publication_intents;
+  std::vector<std::pair<std::string, uint64_t>>
+      staged_deleted_publication_intents;
+  std::vector<vector_index_metadata_store::committed_row>
+      staged_committed_rows;
+  std::vector<vector_index_metadata_store::change_log_row>
+      staged_change_log_rows;
   bool fail_save_metadata{false};
   bool fail_quarantine_metadata{false};
   bool fail_load_committed{false};
   bool fail_save_committed{false};
   bool fail_apply_committed_delta{false};
+  bool fail_erase_committed_index_batch{false};
+  uint64_t erase_committed_index_batch_calls{0};
   bool fail_quarantine_committed{false};
   bool fail_load_manifest{false};
   bool fail_save_manifest{false};
@@ -777,6 +889,14 @@ class in_memory_truth_store final
   void SetSegmentTaskRowsForTesting(
       const std::vector<vector_index_metadata_store::segment_task_row> &rows) {
     segment_task_rows = rows;
+  }
+
+  size_t CommittedRowsForIndexForTesting(
+      const std::string &index_name) const {
+    return static_cast<size_t>(std::count_if(
+        committed_rows.begin(), committed_rows.end(), [&](const auto &row) {
+          return row.index_name == index_name;
+        }));
   }
 
  private:
@@ -3006,6 +3126,152 @@ TEST_F(VectorIndexRegistryTest, DropIndexFailsWhenManifestPersistFails) {
   ASSERT_EQ(1U, index_names.size());
   EXPECT_EQ(index_name, index_names[0]);
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       DropCleanupFailureReservesNameUntilRestartRecoveryCompletes) {
+  const std::string index_name = "idx_registry_drop_cleanup_recovery";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 7, {7.0F, 1.0F}));
+
+  store_.fail_erase_committed_index_batch = true;
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  ASSERT_EQ(1U, store_.publication_intents.size());
+  EXPECT_EQ(index_name, store_.publication_intents.front().index_name);
+  EXPECT_EQ(vector_index_truth_store::publication_operation::kDropIndex,
+            store_.publication_intents.front().operation);
+  EXPECT_EQ(1U, store_.CommittedRowsForIndexForTesting(index_name));
+  EXPECT_FALSE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "memory", "native"));
+
+  store_.fail_erase_committed_index_batch = false;
+  vector_index_registry::reset_for_testing();
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  EXPECT_TRUE(store_.publication_intents.empty());
+  EXPECT_EQ(0U, store_.CommittedRowsForIndexForTesting(index_name));
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {7.0F, 1.0F}, 1, &results));
+  EXPECT_TRUE(results.empty());
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       DropIntentDeletionFailureRetriesIdempotentPhysicalCleanup) {
+  const std::string index_name = "idx_registry_drop_intent_delete_retry";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 8, {8.0F, 1.0F}));
+
+  store_.fail_delete_publication_intent = true;
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  ASSERT_EQ(1U, store_.publication_intents.size());
+  EXPECT_EQ(0U, store_.CommittedRowsForIndexForTesting(index_name));
+  const uint64_t cleanup_calls = store_.erase_committed_index_batch_calls;
+  EXPECT_FALSE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "memory", "native"));
+
+  store_.fail_delete_publication_intent = false;
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  EXPECT_TRUE(store_.publication_intents.empty());
+  EXPECT_GT(store_.erase_committed_index_batch_calls, cleanup_calls);
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       DropIntentPersistFailureRestoresRuntimeWithoutReservingName) {
+  const std::string index_name = "idx_registry_drop_intent_persist_fail";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 9, {9.0F, 1.0F}));
+
+  store_.fail_save_publication_intent = true;
+  EXPECT_FALSE(vector_index_registry::drop_index(index_name));
+  store_.fail_save_publication_intent = false;
+  EXPECT_TRUE(store_.publication_intents.empty());
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ(1U, info.committed_entry_count);
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       DeferredDropRollbackRestoresStateAndAtomicallyDeletesCleanupIntent) {
+  const std::string index_name = "idx_registry_drop_statement_rollback";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 10, {10.0F, 1.0F}));
+
+  vector_index_registry::registry_state_snapshot before_drop;
+  ASSERT_TRUE(vector_index_registry::snapshot_runtime_state(&before_drop));
+  vector_index_registry::dropped_index_artifacts artifacts;
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name, &artifacts));
+  ASSERT_TRUE(artifacts.valid);
+  ASSERT_TRUE(artifacts.has_cleanup_intent);
+  ASSERT_EQ(1U, store_.publication_intents.size());
+  EXPECT_EQ(1U, store_.CommittedRowsForIndexForTesting(index_name));
+
+  ASSERT_TRUE(vector_index_registry::restore_runtime_state_after_drop_rollback(
+      before_drop, artifacts));
+  EXPECT_TRUE(store_.publication_intents.empty());
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {10.0F, 1.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(10U, results.front().doc_id);
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       DeferredDropRollbackRestoresNonTransactionalTruthStoreState) {
+  const std::string index_name = "idx_registry_drop_file_rollback";
+  store_.transactional = false;
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 11, {11.0F, 1.0F}));
+
+  vector_index_registry::registry_state_snapshot before_drop;
+  ASSERT_TRUE(vector_index_registry::snapshot_runtime_state(&before_drop));
+  vector_index_registry::dropped_index_artifacts artifacts;
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name, &artifacts));
+  ASSERT_TRUE(artifacts.valid);
+  EXPECT_FALSE(artifacts.has_cleanup_intent);
+
+  ASSERT_TRUE(vector_index_registry::restore_runtime_state_after_drop_rollback(
+      before_drop, artifacts));
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {11.0F, 1.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(11U, results.front().doc_id);
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       DropPersistFailureFailStopsWhenRuntimeCannotBeRestored) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  const std::string index_name = "idx_registry_drop_restore_fail";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+
+  store_.fail_save_manifest = true;
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_registry_fail_restore_runtime_state");
+    EXPECT_FALSE(vector_index_registry::drop_index(index_name));
+  }
+  store_.fail_save_manifest = false;
+  EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
+            vector_index_registry::registry_health());
+  EXPECT_EQ("drop_runtime_restore_failed",
+            vector_index_registry::registry_failure_reason());
 }
 
 TEST_F(VectorIndexRegistryTest, CommitTxnFailsWhenChangeLogPersistFails) {

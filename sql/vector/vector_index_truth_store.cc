@@ -999,6 +999,18 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     return inserted;
   }
 
+  bool save_publication_intent(
+      const vector_index_truth_store::publication_intent &intent) override {
+    if (!valid_publication_intent(intent)) return false;
+    innodb_vector_truth_store::publication_intent_row stored;
+    if (!to_innodb_publication_intent(intent, &stored)) return false;
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::save_publication_intent(stored,
+                                                                    session);
+        });
+  }
+
   bool prepare_attached_publication(
       THD *thd,
       const std::vector<vector_index_metadata_store::change_log_row> &rows,
@@ -1292,6 +1304,22 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
                                     ok);
     }
     return ok;
+  }
+
+  bool erase_committed_index_batch(const std::string &index_name,
+                                   size_t max_rows, size_t *erased_rows,
+                                   bool *done) override {
+    if (index_name.empty() || max_rows == 0 || erased_rows == nullptr ||
+        done == nullptr) {
+      return false;
+    }
+    DBUG_EXECUTE_IF("vector_truth_fail_erase_committed_index_batch",
+                    return false;);
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::erase_committed_rows_for_index(
+              index_name, max_rows, erased_rows, done, session);
+        });
   }
 
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {

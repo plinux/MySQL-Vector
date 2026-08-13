@@ -493,7 +493,7 @@ static bool collect_vector_like_index_specs(
 static bool create_vector_like_indexes(
     THD *thd, const char *db_name, const char *table_name,
     const std::vector<Vector_like_index_spec> &specs,
-    std::vector<std::string> *created_index_names);
+    std::vector<std::string> &created_index_names);
 static void rollback_vector_like_indexes(
     const std::vector<std::string> &created_index_names);
 static bool append_vector_like_index_ddls(
@@ -10930,9 +10930,9 @@ static bool collect_vector_like_index_specs(
 static bool create_vector_like_indexes(
     THD *thd, const char *db_name, const char *table_name,
     const std::vector<Vector_like_index_spec> &specs,
-    std::vector<std::string> *created_index_names) {
+    std::vector<std::string> &created_index_names) {
   if (thd == nullptr || db_name == nullptr || table_name == nullptr) return false;
-  if (created_index_names != nullptr) created_index_names->clear();
+  created_index_names.clear();
 
   dd::cache::Dictionary_client *dd_client = thd->dd_client();
   dd::cache::Dictionary_client::Auto_releaser releaser(dd_client);
@@ -10979,6 +10979,12 @@ static bool create_vector_like_indexes(
             options)) {
       return false;
     }
+    created_index_names.push_back(index_name);
+    DBUG_EXECUTE_IF("vector_create_like_fail_after_index_create", {
+      my_error(ER_INTERNAL_ERROR, MYF(0),
+               "Injected CREATE TABLE LIKE vector index failure");
+      return false;
+    });
     if (info.search_ef != 0 &&
         !vector_index_registry::set_search_ef(index_name, info.search_ef)) {
       return false;
@@ -11050,9 +11056,6 @@ static bool create_vector_like_indexes(
         !vector_index_registry::set_diskann_use_bfs_cache(
             index_name, info.diskann_use_bfs_cache)) {
       return false;
-    }
-    if (created_index_names != nullptr) {
-      created_index_names->push_back(index_name);
     }
   }
   return true;
@@ -11303,7 +11306,7 @@ bool mysql_create_like_table(THD *thd, Table_ref *table, Table_ref *src_table,
 #ifdef HAVE_VECTOR_INDEX
   if (!vector_like_specs.empty() &&
       !create_vector_like_indexes(thd, table->db, table->table_name,
-                                  vector_like_specs, &created_vector_indexes)) {
+                                  vector_like_specs, created_vector_indexes)) {
     goto err;
   }
 #endif

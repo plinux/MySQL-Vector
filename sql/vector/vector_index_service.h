@@ -136,7 +136,7 @@ class standalone_entry_store {
 
   bool register_index(const std::string &index_name, size_t dimension);
   bool drop_index(const std::string &index_name, bool remove_artifacts = true);
-  void remove_artifacts(const std::string &index_name) const;
+  bool remove_artifacts(const std::string &index_name) const;
   index_rename_result rename_index(const std::string &old_index_name,
                                    const std::string &new_index_name);
   bool has_index(const std::string &index_name) const;
@@ -477,7 +477,7 @@ class index_service {
   bool drop_index(const std::string &index_name);
   bool unregister_index(const std::string &index_name,
                         bool remove_standalone_artifacts = true);
-  void remove_standalone_artifacts(const std::string &index_name) const;
+  bool remove_standalone_artifacts(const std::string &index_name) const;
   index_rename_result rename_index(const std::string &old_index_name,
                                    const std::string &new_index_name);
   bool begin_bulk_load(const std::string &index_name);

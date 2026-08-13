@@ -876,10 +876,11 @@ bool standalone_entry_store::drop_index(const std::string &index_name,
   return existed;
 }
 
-void standalone_entry_store::remove_artifacts(
+bool standalone_entry_store::remove_artifacts(
     const std::string &index_name) const {
-  std::error_code ignored;
-  std::filesystem::remove_all(segment_directory(index_name), ignored);
+  std::error_code error;
+  std::filesystem::remove_all(segment_directory(index_name), error);
+  return !error;
 }
 
 index_rename_result standalone_entry_store::rename_index(
@@ -5443,9 +5444,9 @@ bool index_service::unregister_index(const std::string &index_name,
   return true;
 }
 
-void index_service::remove_standalone_artifacts(
+bool index_service::remove_standalone_artifacts(
     const std::string &index_name) const {
-  m_standalone_store.remove_artifacts(index_name);
+  return m_standalone_store.remove_artifacts(index_name);
 }
 
 index_rename_result index_service::rename_index(

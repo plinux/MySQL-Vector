@@ -217,6 +217,8 @@ struct dropped_index_artifacts {
   vector_index::backend_mode mode{vector_index::backend_mode::kMemory};
   vector_index::backend_provider provider{
       vector_index::backend_provider::kNative};
+  vector_index_truth_store::publication_intent cleanup_intent;
+  bool has_cleanup_intent{false};
   bool valid{false};
 };
 
@@ -253,11 +255,17 @@ bool create_mapped_index(const std::string &index_name, size_t dimension,
                          const create_index_options &options);
 bool snapshot_runtime_state(registry_state_snapshot *snapshot);
 bool restore_runtime_state(const registry_state_snapshot &snapshot, bool persist);
+bool restore_runtime_state_after_drop_rollback(
+    const registry_state_snapshot &snapshot,
+    const dropped_index_artifacts &artifacts);
 bool drop_index(const std::string &index_name);
 bool drop_index(const std::string &index_name,
                 dropped_index_artifacts *artifacts);
 void cleanup_dropped_index_artifacts(
     const dropped_index_artifacts &artifacts);
+bool cleanup_dropped_index_physical_state(
+    const vector_index_truth_store::publication_intent &intent,
+    std::string *failure_stage);
 bool drop_indexes_for_table(const std::string &db_name, const std::string &table_name);
 bool drop_indexes_for_database(const std::string &db_name);
 bool reset_mapped_indexes_for_table(const std::string &db_name,

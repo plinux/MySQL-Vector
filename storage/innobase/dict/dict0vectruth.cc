@@ -756,6 +756,34 @@ class Row_truth_table_buffer {
     return true;
   }
 
+  bool erase_committed_index_batch(
+      dict_table_t *table, const std::string &index_name, size_t max_rows,
+      size_t *erased_rows, bool *done,
+      innodb_vector_truth_store::Session *session) {
+    if (!init(table, 4, 2) || index_name.empty() || max_rows == 0 ||
+        erased_rows == nullptr || done == nullptr) {
+      return false;
+    }
+    std::lock_guard<std::mutex> guard(m_mutex);
+    if (!lock_table_for_write_locked(session)) return false;
+
+    std::vector<uint64_t> doc_ids;
+    doc_ids.reserve(max_rows);
+    bool more_rows = false;
+    if (!load_committed_doc_ids_batch_locked(index_name, max_rows, &doc_ids,
+                                             &more_rows, session)) {
+      return false;
+    }
+    for (const uint64_t doc_id : doc_ids) {
+      if (!remove_committed_key_locked(index_name, doc_id, session)) {
+        return false;
+      }
+    }
+    *erased_rows = doc_ids.size();
+    *done = !more_rows;
+    return true;
+  }
+
   bool get_change_log(
       dict_table_t *table,
       std::vector<innodb_vector_truth_store::change_log_row> *rows,
@@ -1255,6 +1283,55 @@ class Row_truth_table_buffer {
     return error == DB_SUCCESS || error == DB_END_OF_INDEX;
   }
 
+  bool load_committed_doc_ids_batch_locked(
+      const std::string &index_name, size_t max_rows,
+      std::vector<uint64_t> *doc_ids, bool *more_rows,
+      innodb_vector_truth_store::Session *session) {
+    if (doc_ids == nullptr || more_rows == nullptr) return false;
+    doc_ids->clear();
+    *more_rows = false;
+    set_search_field(0, index_name);
+    set_search_uint64(1, 0);
+
+    btr_pcur_t pcur;
+    mtr_t mtr;
+    dberr_t error = DB_SUCCESS;
+    mtr.start();
+    pcur.open(m_index, 0, m_search_tuple, PAGE_CUR_GE, BTR_SEARCH_LEAF, &mtr,
+              UT_LOCATION_HERE);
+    Latest_committed_record_reader committed_reader(m_index, &mtr, session);
+    while (error == DB_SUCCESS && pcur.is_on_user_rec()) {
+      std::string current_index_name;
+      if (!read_string_field(pcur.get_rec(), 0, &current_index_name)) {
+        pcur.close();
+        mtr.commit();
+        return false;
+      }
+      if (current_index_name != index_name) break;
+
+      const rec_t *visible_rec = committed_reader.resolve(pcur.get_rec());
+      if (visible_rec != nullptr &&
+          !rec_get_deleted_flag(visible_rec, true)) {
+        if (doc_ids->size() == max_rows) {
+          *more_rows = true;
+          break;
+        }
+        uint64_t doc_id = 0;
+        if (!read_uint64_field(visible_rec, 1, &doc_id)) {
+          pcur.close();
+          mtr.commit();
+          return false;
+        }
+        doc_ids->push_back(doc_id);
+      }
+      error = pcur.move_to_next_user_rec(&mtr);
+    }
+
+    pcur.close();
+    mtr.commit();
+    return error == DB_SUCCESS || error == DB_END_OF_INDEX;
+  }
+
   bool read_committed_row_fields(
       const rec_t *rec, innodb_vector_truth_store::committed_row *row) {
     return row != nullptr && read_string_field(rec, 0, &row->index_name) &&
@@ -1737,6 +1814,25 @@ bool do_apply_committed_delta(
   return commit_session_if_owned(session_guard, active_session);
 }
 
+bool do_erase_committed_rows_for_index(
+    const std::string &index_name, size_t max_rows, size_t *erased_rows,
+    bool *done, innodb_vector_truth_store::Session *session) {
+  dict_table_t *table = hidden_table_for_artifact(kCommittedArtifactName);
+  if (table == nullptr) return false;
+
+  Session_scope_guard session_guard(session, true);
+  auto *active_session = session_guard.get();
+  if (active_session == nullptr) return false;
+
+  Row_truth_table_buffer buffer;
+  if (!buffer.erase_committed_index_batch(table, index_name, max_rows,
+                                          erased_rows, done,
+                                          active_session)) {
+    return false;
+  }
+  return commit_session_if_owned(session_guard, active_session);
+}
+
 bool do_load_change_log_rows(
     std::vector<innodb_vector_truth_store::change_log_row> *rows, bool *found,
     innodb_vector_truth_store::Session *session) {
@@ -1851,6 +1947,24 @@ bool do_insert_publication_intent(
 
   Row_truth_table_buffer buffer;
   return buffer.insert_publication_intent(table, row, session);
+}
+
+bool do_save_publication_intent(
+    const innodb_vector_truth_store::publication_intent_row &row,
+    innodb_vector_truth_store::Session *session) {
+  dict_table_t *table =
+      hidden_table_for_artifact(kPublicationIntentsArtifactName);
+  if (table == nullptr) return false;
+
+  Session_scope_guard session_guard(session, true);
+  auto *active_session = session_guard.get();
+  if (active_session == nullptr) return false;
+
+  Row_truth_table_buffer buffer;
+  if (!buffer.insert_publication_intent(table, row, active_session)) {
+    return false;
+  }
+  return commit_session_if_owned(session_guard, active_session);
 }
 
 bool do_delete_publication_intent(
@@ -2044,6 +2158,13 @@ bool apply_committed_delta(const std::vector<change_log_row> &rows,
   return do_apply_committed_delta(rows, session);
 }
 
+bool erase_committed_rows_for_index(const std::string &index_name,
+                                    size_t max_rows, size_t *erased_rows,
+                                    bool *done, Session *session) {
+  return do_erase_committed_rows_for_index(index_name, max_rows, erased_rows,
+                                           done, session);
+}
+
 bool load_change_log_rows(std::vector<change_log_row> *rows, bool *found,
                           Session *session) {
   return do_load_change_log_rows(rows, found, session);
@@ -2082,6 +2203,11 @@ bool load_publication_intents(std::vector<publication_intent_row> *rows,
 bool insert_publication_intent(const publication_intent_row &row,
                                Session *session) {
   return do_insert_publication_intent(row, session);
+}
+
+bool save_publication_intent(const publication_intent_row &row,
+                             Session *session) {
+  return do_save_publication_intent(row, session);
 }
 
 bool delete_publication_intent(const std::string &index_name,

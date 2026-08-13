@@ -158,6 +158,11 @@ class truth_store {
     return false;
   }
 
+  /** Persist an intent in the current grouped or an internal transaction. */
+  virtual bool save_publication_intent(const publication_intent &) {
+    return false;
+  }
+
   /**
     Append changelog rows and intents while the caller's transaction prepares.
 
@@ -295,6 +300,11 @@ class truth_store {
   */
   virtual bool apply_committed_delta(
       const std::vector<vector_index_metadata_store::change_log_row> &) {
+    return false;
+  }
+  /** Delete at most one bounded batch of one dropped index's truth rows. */
+  virtual bool erase_committed_index_batch(const std::string &, size_t,
+                                           size_t *, bool *) {
     return false;
   }
   virtual bool load_manifest(vector_index_metadata_store::manifest_row *row) = 0;

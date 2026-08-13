@@ -155,11 +155,16 @@ TEST(VectorIndexTruthStoreTest, TruthStoreDefaultsCoverNoopAndDeltaFallbacks) {
   EXPECT_FALSE(store.append_attached_change_log(nullptr, {}));
   EXPECT_FALSE(store.insert_attached_publication_intent(nullptr, {}));
   EXPECT_FALSE(store.load_publication_intents(nullptr));
+  EXPECT_FALSE(store.save_publication_intent({}));
   EXPECT_FALSE(store.delete_publication_intent("idx", 1));
   EXPECT_TRUE(store.begin_persist());
   EXPECT_TRUE(store.commit_persist());
   store.rollback_persist();
   EXPECT_FALSE(store.apply_committed_delta({}));
+  size_t erased_rows = 0;
+  bool done = false;
+  EXPECT_FALSE(
+      store.erase_committed_index_batch("idx", 1, &erased_rows, &done));
   EXPECT_FALSE(store.append_change_log_delta({}));
   std::string identity;
   EXPECT_FALSE(store.stage_quarantine("metadata", "load_failed", 1, &identity));
@@ -1344,6 +1349,10 @@ TEST(VectorIndexTruthStoreTest, InnodbFacadeRejectsInvalidArguments) {
   EXPECT_FALSE(innodb_vector_truth_store::save_committed_rows(committed_rows));
   EXPECT_FALSE(
       innodb_vector_truth_store::apply_committed_delta(change_log_rows));
+  size_t erased_rows = 0;
+  bool done = false;
+  EXPECT_FALSE(innodb_vector_truth_store::erase_committed_rows_for_index(
+      "", 1, &erased_rows, &done));
 
   EXPECT_FALSE(
       innodb_vector_truth_store::load_change_log_rows(nullptr, &found));
@@ -1355,6 +1364,10 @@ TEST(VectorIndexTruthStoreTest, InnodbFacadeRejectsInvalidArguments) {
       innodb_vector_truth_store::save_change_log_rows(change_log_rows));
   EXPECT_FALSE(
       innodb_vector_truth_store::append_change_log_delta(change_log_rows));
+
+  innodb_vector_truth_store::publication_intent_row publication_intent;
+  EXPECT_FALSE(
+      innodb_vector_truth_store::save_publication_intent(publication_intent));
 
   EXPECT_FALSE(innodb_vector_truth_store::load_prepared_rows(nullptr, &found));
   EXPECT_FALSE(

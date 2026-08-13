@@ -28,6 +28,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #ifndef dict0vectruth_h
 #define dict0vectruth_h
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -154,6 +155,9 @@ bool save_committed_rows(const std::vector<committed_row> &rows,
                          Session *session = nullptr);
 bool apply_committed_delta(const std::vector<change_log_row> &rows,
                            Session *session = nullptr);
+bool erase_committed_rows_for_index(const std::string &index_name,
+                                    size_t max_rows, size_t *erased_rows,
+                                    bool *done, Session *session = nullptr);
 bool load_change_log_rows(std::vector<change_log_row> *rows, bool *found,
                           Session *session = nullptr);
 bool save_change_log_rows(const std::vector<change_log_row> &rows,
@@ -171,6 +175,8 @@ bool load_publication_intents(std::vector<publication_intent_row> *rows,
 /** Insert and uniquely lock one per-index intent in the caller transaction. */
 bool insert_publication_intent(const publication_intent_row &row,
                                Session *session);
+bool save_publication_intent(const publication_intent_row &row,
+                             Session *session = nullptr);
 bool delete_publication_intent(const std::string &index_name,
                                uint64_t publication_id,
                                Session *session = nullptr);
