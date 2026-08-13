@@ -1,4 +1,5 @@
 --source include/have_vector_index.inc
+--source include/have_vector_search_library.inc
 
 --echo #
 --echo # WL#vector-v1: XA crash recovery preserves prepared vector changes

@@ -179,7 +179,24 @@ SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
 'test.t_vector_ddl_renamed.v.diskann_segment_build_%_ms'
   AND Variable_name NOT LIKE '%.index_identity'
   AND Variable_name NOT LIKE '%.%generation'
-  AND Variable_name NOT LIKE '%.backend_build_resource_%';
+  AND Variable_name NOT LIKE '%.backend_build_resource_%'
+  AND Variable_name !=
+'test.t_vector_ddl_renamed.v.backend_build_effective_threads'
+  AND Variable_name !=
+'test.t_vector_ddl_renamed.v.backend_build_effective_blas_threads'
+  AND Variable_name !=
+'test.t_vector_ddl_renamed.v.backend_build_pq_train_threads'
+  AND Variable_name !=
+'test.t_vector_ddl_renamed.v.backend_build_pq_compress_threads'
+  AND Variable_name != 'test.t_vector_ddl_renamed.v.scheduler_cpu_budget'
+  AND Variable_name !=
+'test.t_vector_ddl_renamed.v.scheduler_effective_build_threads'
+  AND Variable_name !=
+'test.t_vector_ddl_renamed.v.scheduler_effective_blas_threads'
+  AND Variable_name !=
+'test.t_vector_ddl_renamed.v.scheduler_pq_train_threads'
+  AND Variable_name !=
+'test.t_vector_ddl_renamed.v.scheduler_pq_compress_threads';
 Section	Variable_name	Value
 INDEX_STATE	test.t_vector_ddl_renamed.v.dimension	2
 INDEX_STATE	test.t_vector_ddl_renamed.v.metric	cosine
@@ -245,11 +262,7 @@ BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_rows	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_segments	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_invocations	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_concurrent_tasks	1
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_effective_threads	10
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_effective_blas_threads	10
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_raw_reader_threads	0
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_train_threads	0
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_compress_threads	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_single_index	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_chunks	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_cache_nodes	0
@@ -260,12 +273,7 @@ BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_path	faiss_scheduler
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_segment_count	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_task_count	1
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_concurrent_tasks	1
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_cpu_budget	10
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_effective_build_threads	10
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_effective_blas_threads	10
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_raw_reader_threads	0
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_pq_train_threads	0
-BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_pq_compress_threads	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_single_index_build	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_candidates_per_segment	0
 BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_effective_segment_tasks	0
@@ -289,6 +297,34 @@ BACKEND_HEALTH	test.t_vector_ddl_renamed.v.external_manifest_present	1
 SYNC_PIPELINE	test.t_vector_ddl_renamed.v.pending_apply_count	0
 SYNC_PIPELINE	test.t_vector_ddl_renamed.v.rebuild_progress	100
 SYNC_PIPELINE	test.t_vector_ddl_renamed.v.recover_progress	100
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
+  WHERE Variable_name =
+'test.t_vector_ddl_renamed.v.backend_build_effective_threads'
+     OR Variable_name =
+'test.t_vector_ddl_renamed.v.backend_build_effective_blas_threads'
+     OR Variable_name =
+'test.t_vector_ddl_renamed.v.backend_build_pq_train_threads'
+     OR Variable_name =
+'test.t_vector_ddl_renamed.v.backend_build_pq_compress_threads'
+     OR Variable_name = 'test.t_vector_ddl_renamed.v.scheduler_cpu_budget'
+     OR Variable_name =
+'test.t_vector_ddl_renamed.v.scheduler_effective_build_threads'
+     OR Variable_name =
+'test.t_vector_ddl_renamed.v.scheduler_effective_blas_threads'
+     OR Variable_name =
+'test.t_vector_ddl_renamed.v.scheduler_pq_train_threads'
+     OR Variable_name =
+'test.t_vector_ddl_renamed.v.scheduler_pq_compress_threads';
+Section	Variable_name	Value
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_effective_threads	<threads>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_effective_blas_threads	<threads>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_train_threads	<threads>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.backend_build_pq_compress_threads	<threads>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_cpu_budget	<threads>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_effective_build_threads	<threads>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_effective_blas_threads	<threads>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_pq_train_threads	<threads>
+BACKEND_HEALTH	test.t_vector_ddl_renamed.v.scheduler_pq_compress_threads	<threads>
 SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
   WHERE Variable_name LIKE '%.backend_build_resource_%';
 Section	Variable_name	Value

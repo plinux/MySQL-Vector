@@ -42,9 +42,23 @@ SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
 SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
   '$.backend_build_resource_effective_cpu_slots') > 0
   AS effective_cpu_slots_positive;
+# The compiled provider can use the sidecar fallback when its runtime library
+# is unavailable, so only the backend/scheduler agreement is invariant.
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.backend_build_invocations') IN (0, 1) AS build_invocations_valid,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.scheduler_task_count') =
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.backend_build_invocations') AS scheduler_task_count_matches;
 
 --source suite/vector/include/vector_normalize_lifecycle.inc
-SELECT VEC_INDEX_INFO('idx_diskann_params');
+SELECT REGEXP_REPLACE(
+  REGEXP_REPLACE(
+    VEC_INDEX_INFO('idx_diskann_params'),
+    '"backend_build_invocations":[0-9]+',
+    '"backend_build_invocations":<invocations>'),
+  '"scheduler_task_count":[0-9]+',
+  '"scheduler_task_count":<invocations>') AS index_info;
 --source suite/vector/include/vector_normalize_build_resources.inc
 SHOW VECTOR STATUS
 WHERE Section = 'BACKEND_HEALTH'

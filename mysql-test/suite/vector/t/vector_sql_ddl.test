@@ -66,7 +66,6 @@ SELECT VEC_INDEX_LIST();
 RENAME TABLE t_vector_ddl_rename TO t_vector_ddl_renamed;
 SELECT VEC_INDEX_LIST();
 SELECT VEC_INDEX_SEARCH('test.t_vector_ddl_renamed.v', VEC_FROMTEXT('[5,5]'), 1);
---source suite/vector/include/vector_normalize_resource_threads.inc
 SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
   WHERE Variable_name != 'test.t_vector_ddl_renamed.v.apply_latency_ms'
   AND Variable_name NOT LIKE
@@ -75,7 +74,43 @@ SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
       'test.t_vector_ddl_renamed.v.diskann_segment_build_%_ms'
   AND Variable_name NOT LIKE '%.index_identity'
   AND Variable_name NOT LIKE '%.%generation'
-  AND Variable_name NOT LIKE '%.backend_build_resource_%';
+  AND Variable_name NOT LIKE '%.backend_build_resource_%'
+  AND Variable_name !=
+      'test.t_vector_ddl_renamed.v.backend_build_effective_threads'
+  AND Variable_name !=
+      'test.t_vector_ddl_renamed.v.backend_build_effective_blas_threads'
+  AND Variable_name !=
+      'test.t_vector_ddl_renamed.v.backend_build_pq_train_threads'
+  AND Variable_name !=
+      'test.t_vector_ddl_renamed.v.backend_build_pq_compress_threads'
+  AND Variable_name != 'test.t_vector_ddl_renamed.v.scheduler_cpu_budget'
+  AND Variable_name !=
+      'test.t_vector_ddl_renamed.v.scheduler_effective_build_threads'
+  AND Variable_name !=
+      'test.t_vector_ddl_renamed.v.scheduler_effective_blas_threads'
+  AND Variable_name !=
+      'test.t_vector_ddl_renamed.v.scheduler_pq_train_threads'
+  AND Variable_name !=
+      'test.t_vector_ddl_renamed.v.scheduler_pq_compress_threads';
+--source suite/vector/include/vector_normalize_resource_threads.inc
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
+  WHERE Variable_name =
+        'test.t_vector_ddl_renamed.v.backend_build_effective_threads'
+     OR Variable_name =
+        'test.t_vector_ddl_renamed.v.backend_build_effective_blas_threads'
+     OR Variable_name =
+        'test.t_vector_ddl_renamed.v.backend_build_pq_train_threads'
+     OR Variable_name =
+        'test.t_vector_ddl_renamed.v.backend_build_pq_compress_threads'
+     OR Variable_name = 'test.t_vector_ddl_renamed.v.scheduler_cpu_budget'
+     OR Variable_name =
+        'test.t_vector_ddl_renamed.v.scheduler_effective_build_threads'
+     OR Variable_name =
+        'test.t_vector_ddl_renamed.v.scheduler_effective_blas_threads'
+     OR Variable_name =
+        'test.t_vector_ddl_renamed.v.scheduler_pq_train_threads'
+     OR Variable_name =
+        'test.t_vector_ddl_renamed.v.scheduler_pq_compress_threads';
 --source suite/vector/include/vector_normalize_build_resources.inc
 SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
   WHERE Variable_name LIKE '%.backend_build_resource_%';

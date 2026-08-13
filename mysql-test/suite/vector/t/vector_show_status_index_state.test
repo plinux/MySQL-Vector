@@ -17,11 +17,30 @@ SHOW VECTOR STATUS FOR INDEX idx_mem
   WHERE Variable_name LIKE '%.index_identity'
      OR Variable_name LIKE '%.%generation';
 SHOW VECTOR STATUS LIKE 'idx_ext.metric';
---source suite/vector/include/vector_normalize_resource_threads.inc
 SHOW VECTOR STATUS FOR INDEX idx_ext
   WHERE Variable_name NOT LIKE '%.index_identity'
     AND Variable_name NOT LIKE '%.%generation'
-    AND Variable_name NOT LIKE '%.backend_build_resource_%';
+    AND Variable_name NOT LIKE '%.backend_build_resource_%'
+    AND Variable_name != 'idx_ext.backend_build_effective_threads'
+    AND Variable_name != 'idx_ext.backend_build_effective_blas_threads'
+    AND Variable_name != 'idx_ext.backend_build_pq_train_threads'
+    AND Variable_name != 'idx_ext.backend_build_pq_compress_threads'
+    AND Variable_name != 'idx_ext.scheduler_cpu_budget'
+    AND Variable_name != 'idx_ext.scheduler_effective_build_threads'
+    AND Variable_name != 'idx_ext.scheduler_effective_blas_threads'
+    AND Variable_name != 'idx_ext.scheduler_pq_train_threads'
+    AND Variable_name != 'idx_ext.scheduler_pq_compress_threads';
+--source suite/vector/include/vector_normalize_resource_threads.inc
+SHOW VECTOR STATUS FOR INDEX idx_ext
+  WHERE Variable_name = 'idx_ext.backend_build_effective_threads'
+     OR Variable_name = 'idx_ext.backend_build_effective_blas_threads'
+     OR Variable_name = 'idx_ext.backend_build_pq_train_threads'
+     OR Variable_name = 'idx_ext.backend_build_pq_compress_threads'
+     OR Variable_name = 'idx_ext.scheduler_cpu_budget'
+     OR Variable_name = 'idx_ext.scheduler_effective_build_threads'
+     OR Variable_name = 'idx_ext.scheduler_effective_blas_threads'
+     OR Variable_name = 'idx_ext.scheduler_pq_train_threads'
+     OR Variable_name = 'idx_ext.scheduler_pq_compress_threads';
 --source suite/vector/include/vector_normalize_build_resources.inc
 SHOW VECTOR STATUS FOR INDEX idx_ext
   WHERE Variable_name LIKE '%.backend_build_resource_%';

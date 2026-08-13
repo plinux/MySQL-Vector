@@ -108,7 +108,16 @@ INDEX_STATE	idx_ext.metric	cosine
 SHOW VECTOR STATUS FOR INDEX idx_ext
 WHERE Variable_name NOT LIKE '%.index_identity'
     AND Variable_name NOT LIKE '%.%generation'
-    AND Variable_name NOT LIKE '%.backend_build_resource_%';
+    AND Variable_name NOT LIKE '%.backend_build_resource_%'
+    AND Variable_name != 'idx_ext.backend_build_effective_threads'
+    AND Variable_name != 'idx_ext.backend_build_effective_blas_threads'
+    AND Variable_name != 'idx_ext.backend_build_pq_train_threads'
+    AND Variable_name != 'idx_ext.backend_build_pq_compress_threads'
+    AND Variable_name != 'idx_ext.scheduler_cpu_budget'
+    AND Variable_name != 'idx_ext.scheduler_effective_build_threads'
+    AND Variable_name != 'idx_ext.scheduler_effective_blas_threads'
+    AND Variable_name != 'idx_ext.scheduler_pq_train_threads'
+    AND Variable_name != 'idx_ext.scheduler_pq_compress_threads';
 Section	Variable_name	Value
 INDEX_STATE	idx_ext.dimension	2
 INDEX_STATE	idx_ext.metric	cosine
@@ -174,11 +183,7 @@ BACKEND_HEALTH	idx_ext.backend_build_rows	0
 BACKEND_HEALTH	idx_ext.backend_build_segments	1
 BACKEND_HEALTH	idx_ext.backend_build_invocations	1
 BACKEND_HEALTH	idx_ext.backend_build_concurrent_tasks	1
-BACKEND_HEALTH	idx_ext.backend_build_effective_threads	10
-BACKEND_HEALTH	idx_ext.backend_build_effective_blas_threads	10
 BACKEND_HEALTH	idx_ext.backend_build_raw_reader_threads	0
-BACKEND_HEALTH	idx_ext.backend_build_pq_train_threads	0
-BACKEND_HEALTH	idx_ext.backend_build_pq_compress_threads	0
 BACKEND_HEALTH	idx_ext.backend_build_single_index	0
 BACKEND_HEALTH	idx_ext.backend_build_pq_chunks	0
 BACKEND_HEALTH	idx_ext.backend_build_cache_nodes	0
@@ -197,12 +202,7 @@ BACKEND_HEALTH	idx_ext.scheduler_path	faiss_scheduler
 BACKEND_HEALTH	idx_ext.scheduler_segment_count	1
 BACKEND_HEALTH	idx_ext.scheduler_task_count	1
 BACKEND_HEALTH	idx_ext.scheduler_concurrent_tasks	1
-BACKEND_HEALTH	idx_ext.scheduler_cpu_budget	10
-BACKEND_HEALTH	idx_ext.scheduler_effective_build_threads	10
-BACKEND_HEALTH	idx_ext.scheduler_effective_blas_threads	10
 BACKEND_HEALTH	idx_ext.scheduler_raw_reader_threads	0
-BACKEND_HEALTH	idx_ext.scheduler_pq_train_threads	0
-BACKEND_HEALTH	idx_ext.scheduler_pq_compress_threads	0
 BACKEND_HEALTH	idx_ext.scheduler_single_index_build	0
 BACKEND_HEALTH	idx_ext.scheduler_candidates_per_segment	0
 BACKEND_HEALTH	idx_ext.scheduler_effective_segment_tasks	0
@@ -229,6 +229,26 @@ SYNC_PIPELINE	idx_ext.pending_apply_count	0
 SYNC_PIPELINE	idx_ext.apply_latency_ms	0
 SYNC_PIPELINE	idx_ext.rebuild_progress	100
 SYNC_PIPELINE	idx_ext.recover_progress	100
+SHOW VECTOR STATUS FOR INDEX idx_ext
+WHERE Variable_name = 'idx_ext.backend_build_effective_threads'
+     OR Variable_name = 'idx_ext.backend_build_effective_blas_threads'
+     OR Variable_name = 'idx_ext.backend_build_pq_train_threads'
+     OR Variable_name = 'idx_ext.backend_build_pq_compress_threads'
+     OR Variable_name = 'idx_ext.scheduler_cpu_budget'
+     OR Variable_name = 'idx_ext.scheduler_effective_build_threads'
+     OR Variable_name = 'idx_ext.scheduler_effective_blas_threads'
+     OR Variable_name = 'idx_ext.scheduler_pq_train_threads'
+     OR Variable_name = 'idx_ext.scheduler_pq_compress_threads';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_ext.backend_build_effective_threads	<threads>
+BACKEND_HEALTH	idx_ext.backend_build_effective_blas_threads	<threads>
+BACKEND_HEALTH	idx_ext.backend_build_pq_train_threads	<threads>
+BACKEND_HEALTH	idx_ext.backend_build_pq_compress_threads	<threads>
+BACKEND_HEALTH	idx_ext.scheduler_cpu_budget	<threads>
+BACKEND_HEALTH	idx_ext.scheduler_effective_build_threads	<threads>
+BACKEND_HEALTH	idx_ext.scheduler_effective_blas_threads	<threads>
+BACKEND_HEALTH	idx_ext.scheduler_pq_train_threads	<threads>
+BACKEND_HEALTH	idx_ext.scheduler_pq_compress_threads	<threads>
 SHOW VECTOR STATUS FOR INDEX idx_ext
 WHERE Variable_name LIKE '%.backend_build_resource_%';
 Section	Variable_name	Value
