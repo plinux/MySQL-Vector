@@ -1,0 +1,88 @@
+#
+# Variable name : vector_*_search_threads
+# Scope         : Global dynamic
+#
+# Global defaults.
+SELECT @@global.vector_batch_search_threads,
+@@global.vector_hnsw_search_threads,
+@@global.vector_faiss_search_threads,
+@@global.vector_diskann_search_threads;
+@@global.vector_batch_search_threads	@@global.vector_hnsw_search_threads	@@global.vector_faiss_search_threads	@@global.vector_diskann_search_threads
+32	0	0	0
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME IN ('vector_batch_search_threads',
+'vector_hnsw_search_threads',
+'vector_faiss_search_threads',
+'vector_diskann_search_threads')
+ORDER BY VARIABLE_NAME;
+VARIABLE_NAME	VARIABLE_VALUE
+vector_batch_search_threads	32
+vector_diskann_search_threads	0
+vector_faiss_search_threads	0
+vector_hnsw_search_threads	0
+SELECT @@session.vector_batch_search_threads;
+ERROR HY000: Variable 'vector_batch_search_threads' is a GLOBAL variable
+# Runtime changes are allowed.
+SET GLOBAL vector_batch_search_threads=1;
+SET GLOBAL vector_hnsw_search_threads=2;
+SET GLOBAL vector_faiss_search_threads=3;
+SET GLOBAL vector_diskann_search_threads=4;
+SELECT @@global.vector_batch_search_threads,
+@@global.vector_hnsw_search_threads,
+@@global.vector_faiss_search_threads,
+@@global.vector_diskann_search_threads;
+@@global.vector_batch_search_threads	@@global.vector_hnsw_search_threads	@@global.vector_faiss_search_threads	@@global.vector_diskann_search_threads
+1	2	3	4
+SET GLOBAL vector_batch_search_threads=65535;
+SET GLOBAL vector_hnsw_search_threads=65535;
+SET GLOBAL vector_faiss_search_threads=65535;
+SET GLOBAL vector_diskann_search_threads=65535;
+SELECT @@global.vector_batch_search_threads,
+@@global.vector_hnsw_search_threads,
+@@global.vector_faiss_search_threads,
+@@global.vector_diskann_search_threads;
+@@global.vector_batch_search_threads	@@global.vector_hnsw_search_threads	@@global.vector_faiss_search_threads	@@global.vector_diskann_search_threads
+65535	65535	65535	65535
+SET GLOBAL vector_batch_search_threads=65536;
+ERROR 42000: Variable 'vector_batch_search_threads' can't be set to the value of '65536'
+SET GLOBAL vector_hnsw_search_threads=65536;
+ERROR 42000: Variable 'vector_hnsw_search_threads' can't be set to the value of '65536'
+SET GLOBAL vector_faiss_search_threads=65536;
+ERROR 42000: Variable 'vector_faiss_search_threads' can't be set to the value of '65536'
+SET GLOBAL vector_diskann_search_threads=65536;
+ERROR 42000: Variable 'vector_diskann_search_threads' can't be set to the value of '65536'
+SET GLOBAL vector_batch_search_threads=-1;
+ERROR 42000: Variable 'vector_batch_search_threads' can't be set to the value of '-1'
+# Persist and reset.
+SET PERSIST vector_batch_search_threads=16;
+SET PERSIST vector_hnsw_search_threads=2;
+SET PERSIST vector_faiss_search_threads=3;
+SET PERSIST vector_diskann_search_threads=4;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME IN ('vector_batch_search_threads',
+'vector_hnsw_search_threads',
+'vector_faiss_search_threads',
+'vector_diskann_search_threads')
+ORDER BY VARIABLE_NAME;
+VARIABLE_NAME	VARIABLE_VALUE
+vector_batch_search_threads	16
+vector_diskann_search_threads	4
+vector_faiss_search_threads	3
+vector_hnsw_search_threads	2
+RESET PERSIST IF EXISTS vector_batch_search_threads;
+RESET PERSIST IF EXISTS vector_hnsw_search_threads;
+RESET PERSIST IF EXISTS vector_faiss_search_threads;
+RESET PERSIST IF EXISTS vector_diskann_search_threads;
+SET GLOBAL vector_batch_search_threads=DEFAULT;
+SET GLOBAL vector_hnsw_search_threads=DEFAULT;
+SET GLOBAL vector_faiss_search_threads=DEFAULT;
+SET GLOBAL vector_diskann_search_threads=DEFAULT;
+SELECT @@global.vector_batch_search_threads,
+@@global.vector_hnsw_search_threads,
+@@global.vector_faiss_search_threads,
+@@global.vector_diskann_search_threads;
+@@global.vector_batch_search_threads	@@global.vector_hnsw_search_threads	@@global.vector_faiss_search_threads	@@global.vector_diskann_search_threads
+32	0	0	0
+# End of tests.

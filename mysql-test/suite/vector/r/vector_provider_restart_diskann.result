@@ -1,0 +1,45 @@
+#
+# Provider-gated create, rebuild, search, restart, and drop smoke
+#
+DROP DATABASE IF EXISTS vector_provider_restart;
+Warnings:
+Note	1008	Can't drop database 'vector_provider_restart'; database doesn't exist
+CREATE DATABASE vector_provider_restart;
+USE vector_provider_restart;
+SELECT VEC_INDEX_CREATE('idx_restart_diskann', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN', 0, 'standalone');
+VEC_INDEX_CREATE('idx_restart_diskann', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN', 0, 'standalone')
+1
+SELECT VEC_INDEX_UPSERT('idx_restart_diskann', 1, '[1,0]');
+VEC_INDEX_UPSERT('idx_restart_diskann', 1, '[1,0]')
+1
+SELECT VEC_INDEX_UPSERT('idx_restart_diskann', 2, '[0,1]');
+VEC_INDEX_UPSERT('idx_restart_diskann', 2, '[0,1]')
+1
+SELECT VEC_INDEX_REBUILD('idx_restart_diskann');
+VEC_INDEX_REBUILD('idx_restart_diskann')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_restart_diskann'), '$.provider')) AS provider;
+provider
+diskann
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_restart_diskann'), '$.owner_schema')) AS owner_schema;
+owner_schema
+vector_provider_restart
+SELECT VEC_INDEX_SEARCH('idx_restart_diskann', '[1,0]', 1);
+VEC_INDEX_SEARCH('idx_restart_diskann', '[1,0]', 1)
+[1]
+# restart
+USE vector_provider_restart;
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_restart_diskann'), '$.provider')) AS provider;
+provider
+diskann
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_restart_diskann'), '$.owner_schema')) AS owner_schema;
+owner_schema
+vector_provider_restart
+SELECT VEC_INDEX_SEARCH('idx_restart_diskann', '[1,0]', 1);
+VEC_INDEX_SEARCH('idx_restart_diskann', '[1,0]', 1)
+[1]
+SELECT VEC_INDEX_DROP('idx_restart_diskann');
+VEC_INDEX_DROP('idx_restart_diskann')
+1
+USE test;
+DROP DATABASE vector_provider_restart;

@@ -1,0 +1,4 @@
+#
+# Variable name : vector_hnsw_index_memory_size
+# Covered by grouped vector sys_vars tests.
+#

@@ -1,0 +1,7 @@
+--source include/have_vector_faiss.inc
+
+--let $vector_index_name=idx_direct_faiss
+--let $vector_mode=EXTERNAL
+--let $vector_provider=FAISS
+--let $vector_csv_name=vector_standalone_direct_faiss.csv
+--source suite/vector/include/vector_provider_standalone_direct.inc

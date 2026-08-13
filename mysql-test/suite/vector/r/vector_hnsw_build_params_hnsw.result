@@ -1,0 +1,41 @@
+#
+# WL#Vector: provider HNSW build parameter persistence
+#
+SELECT VEC_INDEX_CREATE('idx_hnsw_params_hnsw', 2, 'COSINE',
+'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_hnsw_params_hnsw', 2, 'COSINE',
+'MEMORY', 'HNSWLIB')
+1
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw_params_hnsw', 24, 320);
+VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw_params_hnsw', 24, 320)
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw_params_hnsw'), '$.hnsw_m')
+AS hnsw_m,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw_params_hnsw'),
+'$.hnsw_ef_construction') AS hnsw_ef_construction;
+hnsw_m	hnsw_ef_construction
+24	320
+SHOW VECTOR STATUS FOR INDEX idx_hnsw_params_hnsw
+WHERE Section = 'INDEX_STATE'
+       AND Variable_name LIKE 'idx_hnsw_params_hnsw.hnsw_%';
+Section	Variable_name	Value
+INDEX_STATE	idx_hnsw_params_hnsw.hnsw_m	24
+INDEX_STATE	idx_hnsw_params_hnsw.hnsw_ef_construction	320
+INDEX_STATE	idx_hnsw_params_hnsw.hnsw_build_threads	0
+# restart
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw_params_hnsw'), '$.hnsw_m')
+AS hnsw_m,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_hnsw_params_hnsw'),
+'$.hnsw_ef_construction') AS hnsw_ef_construction;
+hnsw_m	hnsw_ef_construction
+24	320
+SHOW VECTOR STATUS FOR INDEX idx_hnsw_params_hnsw
+WHERE Section = 'INDEX_STATE'
+       AND Variable_name LIKE 'idx_hnsw_params_hnsw.hnsw_%';
+Section	Variable_name	Value
+INDEX_STATE	idx_hnsw_params_hnsw.hnsw_m	24
+INDEX_STATE	idx_hnsw_params_hnsw.hnsw_ef_construction	320
+INDEX_STATE	idx_hnsw_params_hnsw.hnsw_build_threads	0
+SELECT VEC_INDEX_DROP('idx_hnsw_params_hnsw');
+VEC_INDEX_DROP('idx_hnsw_params_hnsw')
+1

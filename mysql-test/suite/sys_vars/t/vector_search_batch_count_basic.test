@@ -1,0 +1,2 @@
+--let $vector_sysvar_name= vector_search_batch_count
+--source include/vector_sysvar_alias_basic.inc

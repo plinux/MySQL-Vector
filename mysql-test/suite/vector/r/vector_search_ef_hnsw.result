@@ -1,0 +1,33 @@
+#
+# WL#Vector: provider search ef persistence
+#
+SELECT VEC_INDEX_CREATE('idx_search_ef_hnsw', 2, 'COSINE',
+'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_search_ef_hnsw', 2, 'COSINE',
+'MEMORY', 'HNSWLIB')
+1
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_search_ef_hnsw', 96);
+VEC_INDEX_SET_SEARCH_EF('idx_search_ef_hnsw', 96)
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_search_ef_hnsw'), '$.search_ef')
+AS search_ef;
+search_ef
+96
+SHOW VECTOR STATUS FOR INDEX idx_search_ef_hnsw
+WHERE Section = 'INDEX_STATE'
+       AND Variable_name = 'idx_search_ef_hnsw.search_ef';
+Section	Variable_name	Value
+INDEX_STATE	idx_search_ef_hnsw.search_ef	96
+# restart
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_search_ef_hnsw'), '$.search_ef')
+AS search_ef;
+search_ef
+96
+SHOW VECTOR STATUS FOR INDEX idx_search_ef_hnsw
+WHERE Section = 'INDEX_STATE'
+       AND Variable_name = 'idx_search_ef_hnsw.search_ef';
+Section	Variable_name	Value
+INDEX_STATE	idx_search_ef_hnsw.search_ef	96
+SELECT VEC_INDEX_DROP('idx_search_ef_hnsw');
+VEC_INDEX_DROP('idx_search_ef_hnsw')
+1

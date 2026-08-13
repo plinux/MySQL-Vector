@@ -1,0 +1,2 @@
+--source include/restart_mysqld.inc
+--source include/wait_until_connected_again.inc

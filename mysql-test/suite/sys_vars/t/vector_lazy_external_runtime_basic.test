@@ -1,0 +1,27 @@
+--echo #
+--echo # Variable name : vector_lazy_external_runtime
+--echo # Scope         : Global dynamic
+--echo #
+
+--source include/have_vector_index.inc
+
+SELECT @@global.vector_lazy_external_runtime;
+SHOW GLOBAL VARIABLES LIKE 'vector_lazy_external_runtime';
+SHOW SESSION VARIABLES LIKE 'vector_lazy_external_runtime';
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_lazy_external_runtime;
+
+SET GLOBAL vector_lazy_external_runtime=ON;
+SELECT @@global.vector_lazy_external_runtime;
+
+SET PERSIST vector_lazy_external_runtime=OFF;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.persisted_variables
+  WHERE VARIABLE_NAME='vector_lazy_external_runtime';
+
+RESET PERSIST IF EXISTS vector_lazy_external_runtime;
+SET GLOBAL vector_lazy_external_runtime=DEFAULT;
+SELECT @@global.vector_lazy_external_runtime;
+
+--echo # End of tests.

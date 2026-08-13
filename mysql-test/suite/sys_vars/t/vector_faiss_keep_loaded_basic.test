@@ -1,0 +1,27 @@
+--echo #
+--echo # Variable name : vector_faiss_keep_loaded
+--echo # Scope         : Global dynamic
+--echo #
+
+--source include/have_vector_index.inc
+
+SELECT @@global.vector_faiss_keep_loaded;
+SHOW GLOBAL VARIABLES LIKE 'vector_faiss_keep_loaded';
+SHOW SESSION VARIABLES LIKE 'vector_faiss_keep_loaded';
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_faiss_keep_loaded;
+
+SET GLOBAL vector_faiss_keep_loaded=OFF;
+SELECT @@global.vector_faiss_keep_loaded;
+
+SET PERSIST vector_faiss_keep_loaded=ON;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.persisted_variables
+  WHERE VARIABLE_NAME='vector_faiss_keep_loaded';
+
+RESET PERSIST IF EXISTS vector_faiss_keep_loaded;
+SET GLOBAL vector_faiss_keep_loaded=DEFAULT;
+SELECT @@global.vector_faiss_keep_loaded;
+
+--echo # End of tests.

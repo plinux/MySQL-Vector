@@ -1,0 +1,59 @@
+--echo #
+--echo # Variable family : vector search batch limits
+--echo # Scope           : Global dynamic
+--echo #
+
+--source include/have_vector_index.inc
+
+--echo # Global defaults.
+SELECT @@global.vector_search_batch_count,
+       @@global.vector_search_batch_result_count;
+
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME IN ('vector_search_batch_count',
+                          'vector_search_batch_result_count')
+  ORDER BY VARIABLE_NAME;
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_search_batch_count;
+
+--echo # Runtime changes are allowed.
+SET GLOBAL vector_search_batch_count=1;
+SET GLOBAL vector_search_batch_result_count=1;
+SELECT @@global.vector_search_batch_count,
+       @@global.vector_search_batch_result_count;
+
+SET GLOBAL vector_search_batch_count=65535;
+SET GLOBAL vector_search_batch_result_count=1048576;
+SELECT @@global.vector_search_batch_count,
+       @@global.vector_search_batch_result_count;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_search_batch_count=0;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_search_batch_count=65536;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_search_batch_result_count=0;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_search_batch_result_count=1048577;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_search_batch_count=-1;
+
+--echo # Persist and reset.
+SET PERSIST vector_search_batch_count=2048;
+SET PERSIST vector_search_batch_result_count=131072;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.persisted_variables
+  WHERE VARIABLE_NAME IN ('vector_search_batch_count',
+                          'vector_search_batch_result_count')
+  ORDER BY VARIABLE_NAME;
+
+RESET PERSIST IF EXISTS vector_search_batch_count;
+RESET PERSIST IF EXISTS vector_search_batch_result_count;
+SET GLOBAL vector_search_batch_count=DEFAULT;
+SET GLOBAL vector_search_batch_result_count=DEFAULT;
+SELECT @@global.vector_search_batch_count,
+       @@global.vector_search_batch_result_count;
+
+--echo # End of tests.

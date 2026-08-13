@@ -1,0 +1,39 @@
+SET @old_batch_search_threads = @@GLOBAL.vector_batch_search_threads;
+SET @old_provider_search_threads = @@GLOBAL.vector_diskann_search_threads;
+SET GLOBAL vector_diskann_search_threads = 1;
+#
+# WL#Vector: provider batch search thread limits
+#
+SELECT VEC_INDEX_CREATE('idx_search_threads_diskann', 2, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_search_threads_diskann', 2, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN')
+1
+SELECT VEC_INDEX_UPSERT('idx_search_threads_diskann', 1, '[1,0]');
+VEC_INDEX_UPSERT('idx_search_threads_diskann', 1, '[1,0]')
+1
+SELECT VEC_INDEX_UPSERT('idx_search_threads_diskann', 2, '[0,1]');
+VEC_INDEX_UPSERT('idx_search_threads_diskann', 2, '[0,1]')
+1
+SET GLOBAL vector_batch_search_threads = 1;
+SELECT VEC_INDEX_SEARCH_BATCH('idx_search_threads_diskann',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 2)
+AS threads_1;
+threads_1
+[[1,2],[2,1]]
+SET GLOBAL vector_batch_search_threads = 32;
+SELECT VEC_INDEX_SEARCH_BATCH('idx_search_threads_diskann',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 2)
+AS threads_32;
+threads_32
+[[1,2],[2,1]]
+SELECT VEC_INDEX_SEARCH_BATCH('idx_search_threads_diskann',
+CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 2)
+AS provider_override_1;
+provider_override_1
+[[1,2],[2,1]]
+SELECT VEC_INDEX_DROP('idx_search_threads_diskann');
+VEC_INDEX_DROP('idx_search_threads_diskann')
+1
+SET GLOBAL vector_batch_search_threads = @old_batch_search_threads;
+SET GLOBAL vector_diskann_search_threads = @old_provider_search_threads;

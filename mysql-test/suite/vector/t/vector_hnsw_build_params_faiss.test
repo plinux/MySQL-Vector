@@ -1,0 +1,6 @@
+--source include/have_vector_faiss.inc
+
+--let $vector_index_name=idx_hnsw_params_faiss
+--let $vector_mode=EXTERNAL
+--let $vector_provider=FAISS
+--source suite/vector/include/vector_provider_hnsw_build_params.inc

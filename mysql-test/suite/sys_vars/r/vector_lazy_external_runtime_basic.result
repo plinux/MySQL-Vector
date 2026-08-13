@@ -1,0 +1,31 @@
+#
+# Variable name : vector_lazy_external_runtime
+# Scope         : Global dynamic
+#
+SELECT @@global.vector_lazy_external_runtime;
+@@global.vector_lazy_external_runtime
+0
+SHOW GLOBAL VARIABLES LIKE 'vector_lazy_external_runtime';
+Variable_name	Value
+vector_lazy_external_runtime	OFF
+SHOW SESSION VARIABLES LIKE 'vector_lazy_external_runtime';
+Variable_name	Value
+vector_lazy_external_runtime	OFF
+SELECT @@session.vector_lazy_external_runtime;
+ERROR HY000: Variable 'vector_lazy_external_runtime' is a GLOBAL variable
+SET GLOBAL vector_lazy_external_runtime=ON;
+SELECT @@global.vector_lazy_external_runtime;
+@@global.vector_lazy_external_runtime
+1
+SET PERSIST vector_lazy_external_runtime=OFF;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME='vector_lazy_external_runtime';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_lazy_external_runtime	OFF
+RESET PERSIST IF EXISTS vector_lazy_external_runtime;
+SET GLOBAL vector_lazy_external_runtime=DEFAULT;
+SELECT @@global.vector_lazy_external_runtime;
+@@global.vector_lazy_external_runtime
+0
+# End of tests.

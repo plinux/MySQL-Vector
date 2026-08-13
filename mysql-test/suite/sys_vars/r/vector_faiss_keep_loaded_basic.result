@@ -1,0 +1,31 @@
+#
+# Variable name : vector_faiss_keep_loaded
+# Scope         : Global dynamic
+#
+SELECT @@global.vector_faiss_keep_loaded;
+@@global.vector_faiss_keep_loaded
+1
+SHOW GLOBAL VARIABLES LIKE 'vector_faiss_keep_loaded';
+Variable_name	Value
+vector_faiss_keep_loaded	ON
+SHOW SESSION VARIABLES LIKE 'vector_faiss_keep_loaded';
+Variable_name	Value
+vector_faiss_keep_loaded	ON
+SELECT @@session.vector_faiss_keep_loaded;
+ERROR HY000: Variable 'vector_faiss_keep_loaded' is a GLOBAL variable
+SET GLOBAL vector_faiss_keep_loaded=OFF;
+SELECT @@global.vector_faiss_keep_loaded;
+@@global.vector_faiss_keep_loaded
+0
+SET PERSIST vector_faiss_keep_loaded=ON;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME='vector_faiss_keep_loaded';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_faiss_keep_loaded	ON
+RESET PERSIST IF EXISTS vector_faiss_keep_loaded;
+SET GLOBAL vector_faiss_keep_loaded=DEFAULT;
+SELECT @@global.vector_faiss_keep_loaded;
+@@global.vector_faiss_keep_loaded
+1
+# End of tests.

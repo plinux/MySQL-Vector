@@ -1,0 +1,2 @@
+--remove_file $MYSQLD_DATADIR/mysqld-auto.cnf
+--source include/restart_mysqld.inc

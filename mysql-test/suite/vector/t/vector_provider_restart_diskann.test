@@ -1,0 +1,7 @@
+--source include/have_vector_index.inc
+--source include/have_vector_diskann.inc
+
+--let $vector_restart_index= idx_restart_diskann
+--let $vector_restart_mode= EXTERNAL
+--let $vector_restart_provider= DISKANN
+--source suite/vector/include/vector_provider_restart_smoke.inc

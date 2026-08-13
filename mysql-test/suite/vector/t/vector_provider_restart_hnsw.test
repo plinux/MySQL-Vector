@@ -1,0 +1,7 @@
+--source include/have_vector_index.inc
+--source include/have_vector_hnsw.inc
+
+--let $vector_restart_index= idx_restart_hnsw
+--let $vector_restart_mode= MEMORY
+--let $vector_restart_provider= HNSWLIB
+--source suite/vector/include/vector_provider_restart_smoke.inc

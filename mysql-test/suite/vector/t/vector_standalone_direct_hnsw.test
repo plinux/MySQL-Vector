@@ -1,0 +1,7 @@
+--source include/have_vector_hnsw.inc
+
+--let $vector_index_name=idx_direct_hnsw
+--let $vector_mode=MEMORY
+--let $vector_provider=HNSWLIB
+--let $vector_csv_name=vector_standalone_direct_hnsw.csv
+--source suite/vector/include/vector_provider_standalone_direct.inc

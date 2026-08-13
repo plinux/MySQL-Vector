@@ -1,0 +1,7 @@
+--source include/have_vector_faiss.inc
+
+--let $vector_index_name=idx_search_ef_faiss
+--let $vector_mode=EXTERNAL
+--let $vector_provider=FAISS
+--let $vector_search_ef=128
+--source suite/vector/include/vector_provider_search_ef.inc

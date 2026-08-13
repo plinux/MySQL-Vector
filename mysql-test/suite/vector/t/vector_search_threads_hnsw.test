@@ -1,0 +1,13 @@
+--source include/have_vector_hnsw.inc
+
+SET @old_batch_search_threads = @@GLOBAL.vector_batch_search_threads;
+SET @old_provider_search_threads = @@GLOBAL.vector_hnsw_search_threads;
+SET GLOBAL vector_hnsw_search_threads = 1;
+
+--let $vector_index_name=idx_search_threads_hnsw
+--let $vector_mode=MEMORY
+--let $vector_provider=HNSWLIB
+--source suite/vector/include/vector_provider_search_threads.inc
+
+SET GLOBAL vector_batch_search_threads = @old_batch_search_threads;
+SET GLOBAL vector_hnsw_search_threads = @old_provider_search_threads;

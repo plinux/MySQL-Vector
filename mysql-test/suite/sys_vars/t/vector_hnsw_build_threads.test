@@ -56,6 +56,15 @@ CREATE TABLE t_hnsw_thread_bad(id INT PRIMARY KEY, v VECTOR(2));
 CREATE VECTOR INDEX ON t_hnsw_thread_bad(v)
   WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB', 65536);
 
+--disable_warnings
+DROP TABLE IF EXISTS t_hnsw_thread_wrapped;
+--enable_warnings
+CREATE TABLE t_hnsw_thread_wrapped(id INT PRIMARY KEY, v VECTOR(2));
+--Error ER_WRONG_ARGUMENTS
+CREATE VECTOR INDEX ON t_hnsw_thread_wrapped(v)
+  WITH (2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB', 4294967296);
+
+DROP TABLE t_hnsw_thread_wrapped;
 DROP TABLE t_hnsw_thread_bad;
 DROP TABLE t_hnsw_thread_ddl;
 SELECT VEC_INDEX_DROP('idx_hnsw_thread_stmt');

@@ -1,0 +1,33 @@
+#
+# WL#Vector: provider search ef persistence
+#
+SELECT VEC_INDEX_CREATE('idx_search_ef_faiss', 2, 'COSINE',
+'EXTERNAL', 'FAISS');
+VEC_INDEX_CREATE('idx_search_ef_faiss', 2, 'COSINE',
+'EXTERNAL', 'FAISS')
+1
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_search_ef_faiss', 128);
+VEC_INDEX_SET_SEARCH_EF('idx_search_ef_faiss', 128)
+1
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_search_ef_faiss'), '$.search_ef')
+AS search_ef;
+search_ef
+128
+SHOW VECTOR STATUS FOR INDEX idx_search_ef_faiss
+WHERE Section = 'INDEX_STATE'
+       AND Variable_name = 'idx_search_ef_faiss.search_ef';
+Section	Variable_name	Value
+INDEX_STATE	idx_search_ef_faiss.search_ef	128
+# restart
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_search_ef_faiss'), '$.search_ef')
+AS search_ef;
+search_ef
+128
+SHOW VECTOR STATUS FOR INDEX idx_search_ef_faiss
+WHERE Section = 'INDEX_STATE'
+       AND Variable_name = 'idx_search_ef_faiss.search_ef';
+Section	Variable_name	Value
+INDEX_STATE	idx_search_ef_faiss.search_ef	128
+SELECT VEC_INDEX_DROP('idx_search_ef_faiss');
+VEC_INDEX_DROP('idx_search_ef_faiss')
+1

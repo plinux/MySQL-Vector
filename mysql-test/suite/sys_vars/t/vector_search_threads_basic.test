@@ -1,0 +1,81 @@
+--echo #
+--echo # Variable name : vector_*_search_threads
+--echo # Scope         : Global dynamic
+--echo #
+
+--source include/have_vector_index.inc
+
+--echo # Global defaults.
+SELECT @@global.vector_batch_search_threads,
+       @@global.vector_hnsw_search_threads,
+       @@global.vector_faiss_search_threads,
+       @@global.vector_diskann_search_threads;
+
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME IN ('vector_batch_search_threads',
+                          'vector_hnsw_search_threads',
+                          'vector_faiss_search_threads',
+                          'vector_diskann_search_threads')
+  ORDER BY VARIABLE_NAME;
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_batch_search_threads;
+
+--echo # Runtime changes are allowed.
+SET GLOBAL vector_batch_search_threads=1;
+SET GLOBAL vector_hnsw_search_threads=2;
+SET GLOBAL vector_faiss_search_threads=3;
+SET GLOBAL vector_diskann_search_threads=4;
+SELECT @@global.vector_batch_search_threads,
+       @@global.vector_hnsw_search_threads,
+       @@global.vector_faiss_search_threads,
+       @@global.vector_diskann_search_threads;
+
+SET GLOBAL vector_batch_search_threads=65535;
+SET GLOBAL vector_hnsw_search_threads=65535;
+SET GLOBAL vector_faiss_search_threads=65535;
+SET GLOBAL vector_diskann_search_threads=65535;
+SELECT @@global.vector_batch_search_threads,
+       @@global.vector_hnsw_search_threads,
+       @@global.vector_faiss_search_threads,
+       @@global.vector_diskann_search_threads;
+
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_batch_search_threads=65536;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_hnsw_search_threads=65536;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_faiss_search_threads=65536;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_search_threads=65536;
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_batch_search_threads=-1;
+
+--echo # Persist and reset.
+SET PERSIST vector_batch_search_threads=16;
+SET PERSIST vector_hnsw_search_threads=2;
+SET PERSIST vector_faiss_search_threads=3;
+SET PERSIST vector_diskann_search_threads=4;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.persisted_variables
+  WHERE VARIABLE_NAME IN ('vector_batch_search_threads',
+                          'vector_hnsw_search_threads',
+                          'vector_faiss_search_threads',
+                          'vector_diskann_search_threads')
+  ORDER BY VARIABLE_NAME;
+
+RESET PERSIST IF EXISTS vector_batch_search_threads;
+RESET PERSIST IF EXISTS vector_hnsw_search_threads;
+RESET PERSIST IF EXISTS vector_faiss_search_threads;
+RESET PERSIST IF EXISTS vector_diskann_search_threads;
+SET GLOBAL vector_batch_search_threads=DEFAULT;
+SET GLOBAL vector_hnsw_search_threads=DEFAULT;
+SET GLOBAL vector_faiss_search_threads=DEFAULT;
+SET GLOBAL vector_diskann_search_threads=DEFAULT;
+SELECT @@global.vector_batch_search_threads,
+       @@global.vector_hnsw_search_threads,
+       @@global.vector_faiss_search_threads,
+       @@global.vector_diskann_search_threads;
+
+--echo # End of tests.

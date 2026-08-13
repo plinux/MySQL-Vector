@@ -1,0 +1,7 @@
+--source include/have_vector_hnsw.inc
+
+--let $vector_index_name=idx_search_ef_hnsw
+--let $vector_mode=MEMORY
+--let $vector_provider=HNSWLIB
+--let $vector_search_ef=96
+--source suite/vector/include/vector_provider_search_ef.inc

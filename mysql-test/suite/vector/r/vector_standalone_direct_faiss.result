@@ -1,0 +1,28 @@
+#
+# WL#Vector: standalone provider through native runtime
+#
+SELECT VEC_INDEX_CREATE('idx_direct_faiss', 2, 'EUCLIDEAN',
+'EXTERNAL', 'FAISS', 0,
+'standalone');
+VEC_INDEX_CREATE('idx_direct_faiss', 2, 'EUCLIDEAN',
+'EXTERNAL', 'FAISS', 0,
+'standalone')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_direct_faiss', VEC_FROMTEXT('[1,0]'), 1),
+CAST(401 AS JSON)) AS first_doc_visible;
+first_doc_visible
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_direct_faiss', VEC_FROMTEXT('[0,1]'), 1),
+CAST(402 AS JSON)) AS second_doc_visible;
+second_doc_visible
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_direct_faiss'),
+'$.backend_variant'))
+AS backend_variant;
+backend_variant
+<backend_variant>
+SELECT VEC_INDEX_DROP('idx_direct_faiss');
+VEC_INDEX_DROP('idx_direct_faiss')
+1
