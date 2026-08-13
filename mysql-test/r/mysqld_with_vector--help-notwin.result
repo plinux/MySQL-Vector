@@ -1661,6 +1661,9 @@ The following options may be given as the first argument:
  --vector-build-pipeline-progress-interval=# 
  Minimum interval in seconds between vector build pipeline
  progress updates.
+ --vector-build-resource-wait-timeout=# 
+ Timeout in seconds while waiting for vector build
+ resources. Use 0 for an interruptible infinite wait.
  --vector-build-segment-max-rows=# 
  Maximum row count for one vector build raw segment.
  --vector-build-segment-target-size=# 
@@ -2276,6 +2279,7 @@ vector-build-pipeline-min-rows 1048576
 vector-build-pipeline-min-size 4294967296
 vector-build-pipeline-mode auto
 vector-build-pipeline-progress-interval 10
+vector-build-resource-wait-timeout 0
 vector-build-segment-max-rows 18446744073709551615
 vector-build-segment-target-size 2147483648
 vector-default-library ####
