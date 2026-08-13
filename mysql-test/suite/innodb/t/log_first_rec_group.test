@@ -1,4 +1,5 @@
 # Test adjusted to 16k pages.
+--source include/have_no_vector_index.inc
 --source include/have_innodb_16k.inc
 
 # We use DBUG_EXECUTE_IF.

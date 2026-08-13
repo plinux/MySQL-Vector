@@ -19,7 +19,9 @@
 --source include/have_vector_index.inc
 --source include/have_debug.inc
 --source include/not_valgrind.inc
---source include/big_test.inc
+# The upgrade fixtures and restarted server need bounded Linux-only workspace.
+--let $vector_big_test_estimated_peak_kib=2097152
+--source suite/vector/include/vector_big_test_memory.inc
 --source include/mysql_upgrade_preparation.inc
 
 --echo ########################################################################

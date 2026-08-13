@@ -79,6 +79,7 @@ time_zone_transition	mysql
 time_zone_transition_type	mysql
 triggers	mysql
 user	mysql
+vector_index_publication_intents	mysql
 vector_index_truth_changelog	mysql
 vector_index_truth_committed	mysql
 vector_index_truth_manifest	mysql
@@ -157,6 +158,7 @@ time_zone_transition
 time_zone_transition_type
 triggers
 user
+vector_index_publication_intents
 vector_index_truth_changelog
 vector_index_truth_committed
 vector_index_truth_manifest
