@@ -42,21 +42,7 @@ namespace vector_index_metadata_store_unittest {
 
 namespace {
 
-class DataHomeGuard {
- public:
-  DataHomeGuard() : m_original(mysql_real_data_home) {}
-
-  ~DataHomeGuard() {
-    std::snprintf(mysql_real_data_home, FN_REFLEN, "%s", m_original.c_str());
-  }
-
-  void Set(const std::string &value) {
-    std::snprintf(mysql_real_data_home, FN_REFLEN, "%s", value.c_str());
-  }
-
- private:
-  std::string m_original;
-};
+using vector_gunit::DataHomeGuard;
 
 std::string encode_hex_for_test(const std::string &input) {
   static const char kHex[] = "0123456789abcdef";
@@ -1489,7 +1475,7 @@ TEST_F(MetadataStoreTest, LoadRejectsCurrentMetadataWrongFieldCount) {
 
 TEST_F(MetadataStoreTest, MetadataRejectsEmptyOwnerSchema) {
   std::vector<std::string> fields = current_metadata_fields_for_test();
-  fields.back().clear();
+  fields[42].clear();
 
   std::vector<vector_index_metadata_store::metadata_row> loaded;
   EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
@@ -1502,8 +1488,7 @@ TEST_F(MetadataStoreTest, MetadataRejectsEmptyOwnerSchema) {
       vector_index_metadata_store::serialize_metadata_rows({row}, &payload));
 }
 
-TEST_F(MetadataStoreTest,
-       MetadataOwnerSchemaRoundTripsIndependentlyOfBinding) {
+TEST_F(MetadataStoreTest, MetadataOwnerSchemaRoundTripsIndependentlyOfBinding) {
   vector_index_metadata_store::metadata_row row;
   row.index_name = "idx_owner";
   row.dimension = 2;

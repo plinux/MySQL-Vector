@@ -37,6 +37,7 @@
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_statement_publication.h"
+#include "sql/vector/vector_truth_recovery.h"
 #include "sql/vector/vector_trx_participant.h"
 #include "unittest/gunit/base_mock_field.h"
 #include "unittest/gunit/fake_table.h"
@@ -52,8 +53,8 @@ using my_testing::Server_initializer;
 
 class TestBlobField : public Field_blob {
  public:
-  explicit TestBlobField(const char *field_name, bool nullable)
-      : Field_blob(MAX_BLOB_WIDTH, nullable, field_name, &my_charset_bin, true) {}
+  explicit TestBlobField(const char *name, bool nullable)
+      : Field_blob(MAX_BLOB_WIDTH, nullable, name, &my_charset_bin, true) {}
 };
 
 class in_memory_truth_store final : public vector_index_truth_store::truth_store {
@@ -177,6 +178,7 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
   }
   bool load_change_log(
       std::vector<vector_index_metadata_store::change_log_row> *rows) override {
+    if (fail_load_change_log) return false;
     if (rows == nullptr) return false;
     *rows = change_log_rows;
     return true;
@@ -223,6 +225,7 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
       publication_intents;
   vector_index_metadata_store::manifest_row manifest_row;
   bool fail_apply_attached_committed{false};
+  bool fail_load_change_log{false};
   bool fail_load_publication_intents{false};
   bool fail_delete_publication_intent{false};
   uint64_t apply_attached_committed_calls{0};
@@ -349,6 +352,103 @@ class VectorDmlSyncFixture : public ::testing::Test {
 
 TEST(VectorDmlSyncTest, HasVectorColumnsRejectsNullTable) {
   EXPECT_FALSE(vector_dml_sync::has_vector_columns(nullptr));
+}
+
+TEST_F(VectorDmlSyncFixture,
+       TruthRecoveryRejectsInvalidInputsAndOrdersEveryBindingField) {
+  using vector_truth_recovery::index_scan_spec;
+  const index_scan_spec base{"idx", "db", "table", "vector", "doc_id"};
+  const auto publish = [](const auto &) { return true; };
+
+  EXPECT_FALSE(vector_truth_recovery::scan_and_publish(nullptr, {base}, publish));
+  EXPECT_FALSE(vector_truth_recovery::scan_and_publish(initializer_.thd(), {},
+                                                       publish));
+  EXPECT_FALSE(vector_truth_recovery::scan_and_publish(initializer_.thd(),
+                                                       {base}, {}));
+
+  const auto expect_ordered_before = [&](const auto &mutate) {
+    auto before = base;
+    mutate(&before);
+    EXPECT_TRUE(
+        vector_truth_recovery::index_scan_spec_less_for_testing(before, base));
+    EXPECT_FALSE(
+        vector_truth_recovery::index_scan_spec_less_for_testing(base, before));
+  };
+  expect_ordered_before([](auto *spec) { spec->schema_name = "aa"; });
+  expect_ordered_before([](auto *spec) { spec->table_name = "aa"; });
+  expect_ordered_before([](auto *spec) { spec->column_name = "aa"; });
+  expect_ordered_before([](auto *spec) { spec->doc_id_column_name = "aa"; });
+  expect_ordered_before([](auto *spec) { spec->index_name = "aa"; });
+  EXPECT_FALSE(
+      vector_truth_recovery::index_scan_spec_less_for_testing(base, base));
+}
+
+TEST_F(VectorDmlSyncFixture,
+       TruthRecoveryRejectsEveryAuthoritativeTableBindingDrift) {
+  using vector_truth_recovery::index_scan_spec;
+  const index_scan_spec spec{"idx", "db", "table", "vector", "id"};
+  auto table = MakeVectorTable("db", "table");
+  table->file->ht->db_type = DB_TYPE_INNODB;
+
+  EXPECT_TRUE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), spec));
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      nullptr, spec));
+
+  handler *file = table->file;
+  table->file = nullptr;
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), spec));
+  table->file = file;
+
+  handlerton *hton = table->file->ht;
+  table->file->ht = nullptr;
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), spec));
+  table->file->ht = hton;
+
+  table->file->ht->db_type = DB_TYPE_UNKNOWN;
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), spec));
+  table->file->ht->db_type = DB_TYPE_INNODB;
+
+  TABLE_SHARE *share = table->s;
+  table->s = nullptr;
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), spec));
+  table->s = share;
+
+  const uint primary_key = table->s->primary_key;
+  table->s->primary_key = MAX_KEY;
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), spec));
+  table->s->primary_key = primary_key;
+
+  KEY &key = table->key_info[primary_key];
+  const uint key_parts = key.user_defined_key_parts;
+  key.user_defined_key_parts = 2;
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), spec));
+  key.user_defined_key_parts = key_parts;
+
+  Field *key_field = key.key_part[0].field;
+  key.key_part[0].field = nullptr;
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), spec));
+  key.key_part[0].field = vector_field(table.get());
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), spec));
+  key.key_part[0].field = key_field;
+
+  auto nullable_doc_id = MakeVectorTable("db", "nullable", true);
+  nullable_doc_id->file->ht->db_type = DB_TYPE_INNODB;
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      nullable_doc_id.get(), spec));
+
+  auto wrong_name = spec;
+  wrong_name.doc_id_column_name = "other_id";
+  EXPECT_FALSE(vector_truth_recovery::table_matches_binding_for_testing(
+      table.get(), wrong_name));
 }
 
 TEST_F(VectorDmlSyncFixture, GetDocIdFieldCoversPrimaryKeyShapes) {
@@ -863,6 +963,62 @@ TEST_F(VectorDmlSyncFixture, StageUpdateRowCoversSuccessPath) {
                                             {8.0F, 9.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(41U, result[0].doc_id);
+}
+
+TEST_F(VectorDmlSyncFixture,
+       DetachedPrepareReplaysDurableRowsInSequenceAfterCommit) {
+  auto table = MakeVectorTable("db_detached", "t_detached");
+  CreateMappedIndexForTable(table.get());
+
+  vector_dml_sync::prepared_changes changes;
+  changes.push_back(
+      {mapped_index_name(table.get()), 51, false, {5.0F, 1.0F}});
+  changes.push_back(
+      {mapped_index_name(table.get()), 52, false, {1.0F, 5.0F}});
+  thd()->set_query_id(301);
+  ASSERT_FALSE(vector_dml_sync::stage_prepared_changes(thd(), changes));
+  const uint64_t thd_id = static_cast<uint64_t>(thd()->thread_id());
+  ASSERT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(
+      thd_id, static_cast<uint64_t>(thd()->query_id)));
+  EXPECT_GT(vector_index_registry::total_pending_vector_memory_bytes(), 0U);
+
+  PrepareAttachedPublication();
+
+  ASSERT_TRUE(vector_index_registry::detach_thd_txn_for_prepare(thd_id));
+  EXPECT_EQ(0U, vector_index_registry::total_pending_vector_memory_bytes());
+  EXPECT_TRUE(vector_index_registry::detach_thd_txn_for_prepare(thd_id));
+
+  store_.commit_attached_dml();
+  publication_guard_ = vector_statement_publication::publication_guard();
+  ASSERT_EQ(2U, store_.change_log_rows.size());
+  std::reverse(store_.change_log_rows.begin(), store_.change_log_rows.end());
+
+  std::string failure_stage = "stale";
+  EXPECT_TRUE(vector_index_registry::publish_thd_txn(
+      thd_id, false, &failure_stage));
+  EXPECT_TRUE(failure_stage.empty());
+  ASSERT_TRUE(vector_index_registry::publish_thd_txn(
+      thd_id, true, &failure_stage))
+      << failure_stage;
+  EXPECT_TRUE(failure_stage.empty());
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(vector_index_registry::search(
+      mapped_index_name(table.get()), {5.0F, 1.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(51U, result[0].doc_id);
+  ASSERT_TRUE(vector_index_registry::search(
+      mapped_index_name(table.get()), {1.0F, 5.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(52U, result[0].doc_id);
+}
+
+TEST_F(VectorDmlSyncFixture, DetachedXaReplayReportsDurableLoadFailureStage) {
+  store_.fail_load_publication_intents = true;
+  std::string failure_stage;
+  EXPECT_FALSE(vector_index_registry::publish_thd_txn(
+      999, true, &failure_stage));
+  EXPECT_EQ("load_publication_intents", failure_stage);
 }
 
 TEST(VectorDmlSyncTest, StagePreparedChangesHandlesNullThd) {

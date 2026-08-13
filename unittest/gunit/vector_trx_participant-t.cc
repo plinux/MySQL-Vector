@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include "mysql/plugin.h"
+#include "mysqld_error.h"
 #include "sql/handler.h"
 #include "sql/query_options.h"
 #include "sql/replication.h"
@@ -31,6 +32,7 @@
 #include "sql/sql_lex.h"
 #include "sql/vector/vector_trx_participant.h"
 #include "unittest/gunit/test_utils.h"
+#include "unittest/gunit/vector_test_utils.h"
 
 namespace vector_trx_participant_unittest {
 
@@ -280,6 +282,85 @@ TEST(VectorTrxParticipantTest, ContextTokensPreserveEverySupportedRoleSet) {
                 kParticipant | kExplicitOwner));
   EXPECT_EQ(0U, vector_trx_participant::round_trip_context_roles_for_testing(
                     1U << 2));
+}
+
+TEST(VectorTrxParticipantTest,
+     DeferredBinlogRegistrationCoversRetryCleanupAndFailureBoundaries) {
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  THD *thd = initializer.thd();
+  constexpr char k_query[] = "SELECT VEC_INDEX_LIST()";
+
+  EXPECT_FALSE(
+      vector_trx_participant::stage_statement_binlog(nullptr, nullptr));
+  EXPECT_FALSE(vector_trx_participant::finish_statement_binlog(nullptr, true));
+  EXPECT_TRUE(vector_trx_participant::finish_statement_binlog(thd, true));
+  EXPECT_FALSE(vector_trx_participant::has_statement_publication(nullptr));
+  EXPECT_FALSE(vector_trx_participant::has_statement_publication(thd));
+
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_item_force_binlog_registration");
+    EXPECT_FALSE(vector_trx_participant::stage_statement_binlog(thd, nullptr));
+    thd->set_query(k_query, sizeof(k_query) - 1);
+    ASSERT_TRUE(
+        vector_trx_participant::stage_statement_binlog(thd, "vec_index_list"));
+    EXPECT_TRUE(
+        vector_trx_participant::stage_statement_binlog(thd, "vec_index_list"));
+    EXPECT_TRUE(vector_trx_participant::finish_statement_binlog(thd, false));
+
+    ASSERT_TRUE(
+        vector_trx_participant::stage_statement_binlog(thd, "vec_index_list"));
+    ++thd->query_id;
+    my_testing::Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
+    EXPECT_FALSE(vector_trx_participant::finish_statement_binlog(thd, true));
+    thd->clear_error();
+    my_testing::Server_initializer::set_expected_error(0);
+
+    ASSERT_TRUE(
+        vector_trx_participant::stage_statement_binlog(thd, "vec_index_list"));
+    {
+      VECTOR_SCOPED_DEBUG_FLAG(debug_fail, "+d,vector_item_fail_binlog_write");
+      my_testing::Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
+      EXPECT_FALSE(vector_trx_participant::finish_statement_binlog(thd, true));
+      thd->clear_error();
+      my_testing::Server_initializer::set_expected_error(0);
+    }
+  }
+  initializer.TearDown();
+}
+
+TEST(VectorTrxParticipantTest,
+     StatementPublicationRejectsInvalidIntentSetsBeforeRegistration) {
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+  THD *thd = initializer.thd();
+
+  EXPECT_FALSE(
+      vector_trx_participant::stage_statement_publication(nullptr, {}, false));
+  EXPECT_FALSE(
+      vector_trx_participant::stage_statement_publication(thd, {}, false));
+
+  vector_index_truth_store::publication_intent valid;
+  valid.index_name = "idx_participant_intent";
+  valid.publication_id = 1;
+  auto empty_name = valid;
+  empty_name.index_name.clear();
+  EXPECT_FALSE(vector_trx_participant::stage_statement_publication(
+      thd, {empty_name}, false));
+  auto zero_id = valid;
+  zero_id.publication_id = 0;
+  EXPECT_FALSE(vector_trx_participant::stage_statement_publication(
+      thd, {zero_id}, false));
+  EXPECT_FALSE(vector_trx_participant::stage_statement_publication(
+      thd, {valid, valid}, false));
+
+  const ulonglong original_option_bits = thd->variables.option_bits;
+  thd->variables.option_bits |= OPTION_BEGIN;
+  EXPECT_FALSE(
+      vector_trx_participant::stage_statement_publication(thd, {valid}, false));
+  thd->variables.option_bits = original_option_bits;
+
+  initializer.TearDown();
 }
 
 }  // namespace vector_trx_participant_unittest

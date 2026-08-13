@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
@@ -42,29 +43,7 @@ namespace vector_index_truth_store_unittest {
 
 namespace {
 
-class EnvVarGuard {
- public:
-  explicit EnvVarGuard(const char *name) : m_name(name) {
-    const char *value = std::getenv(name);
-    if (value != nullptr) {
-      m_had_value = true;
-      m_value = value;
-    }
-  }
-
-  ~EnvVarGuard() {
-    if (m_had_value) {
-      setenv(m_name.c_str(), m_value.c_str(), 1);
-    } else {
-      unsetenv(m_name.c_str());
-    }
-  }
-
- private:
-  std::string m_name;
-  bool m_had_value{false};
-  std::string m_value;
-};
+using vector_gunit::EnvVarGuard;
 
 std::string fp32_payload(size_t dimension) {
   return std::string(dimension * sizeof(float), '\0');
@@ -151,6 +130,7 @@ TEST(VectorIndexTruthStoreTest, TruthStoreDefaultsCoverNoopAndDeltaFallbacks) {
   EXPECT_FALSE(store.supports_delta_persist());
   EXPECT_FALSE(store.supports_attached_dml());
   EXPECT_FALSE(store.supports_publication_intents());
+  EXPECT_FALSE(store.ensure_attached_transaction(nullptr));
   EXPECT_FALSE(store.apply_attached_committed(nullptr, {}));
   EXPECT_FALSE(store.append_attached_change_log(nullptr, {}));
   EXPECT_FALSE(store.insert_attached_publication_intent(nullptr, {}));
@@ -166,10 +146,167 @@ TEST(VectorIndexTruthStoreTest, TruthStoreDefaultsCoverNoopAndDeltaFallbacks) {
   EXPECT_FALSE(
       store.erase_committed_index_batch("idx", 1, &erased_rows, &done));
   EXPECT_FALSE(store.append_change_log_delta({}));
+  EXPECT_FALSE(store.erase_change_log_sequences({}));
   std::string identity;
   EXPECT_FALSE(store.stage_quarantine("metadata", "load_failed", 1, &identity));
   EXPECT_FALSE(store.update_quarantine_state(
       identity, vector_index_truth_store::quarantine_state::kComplete));
+}
+
+TEST(VectorIndexTruthStoreTest,
+     ProductionStoreRejectsInvalidAttachedAndCompactionInputs) {
+  auto *store = vector_index_truth_store::get();
+  ASSERT_NE(nullptr, store);
+  EXPECT_TRUE(store->supports_attached_dml());
+  EXPECT_FALSE(store->ensure_attached_transaction(nullptr));
+  EXPECT_FALSE(store->append_attached_change_log(nullptr, {}));
+  EXPECT_FALSE(store->erase_change_log_sequences({0}));
+}
+
+TEST(VectorIndexTruthStoreTest,
+     ProductionStoreRejectsMalformedPublicationIntentMatrix) {
+  auto *store = vector_index_truth_store::get();
+  ASSERT_NE(nullptr, store);
+  vector_index_truth_store::publication_token valid_token;
+  valid_token.exists = true;
+  valid_token.index_identity = 1;
+  valid_token.config_generation = 1;
+  valid_token.lifecycle_version = 1;
+
+  vector_index_truth_store::publication_intent base_intent;
+  base_intent.index_name = "idx_publication_validation";
+  base_intent.publication_id = 1;
+  base_intent.operation =
+      vector_index_truth_store::publication_operation::kTransactionalDml;
+  base_intent.expected = valid_token;
+  base_intent.target = valid_token;
+  base_intent.state =
+      vector_index_truth_store::publication_intent_state::kTargetToBeObserved;
+
+  const auto expect_invalid = [&](const auto &mutate) {
+    auto intent = base_intent;
+    mutate(&intent);
+    EXPECT_FALSE(store->save_publication_intent(intent));
+  };
+  expect_invalid([](auto *intent) { intent->index_name.clear(); });
+  expect_invalid([](auto *intent) { intent->publication_id = 0; });
+  expect_invalid([](auto *intent) {
+    intent->publication_id = std::numeric_limits<uint64_t>::max();
+  });
+  expect_invalid([](auto *intent) {
+    intent->operation =
+        static_cast<vector_index_truth_store::publication_operation>(255);
+  });
+  expect_invalid([](auto *intent) {
+    intent->state =
+        static_cast<vector_index_truth_store::publication_intent_state>(255);
+  });
+
+  using token_mutator =
+      std::function<void(vector_index_truth_store::publication_token *)>;
+  const std::vector<token_mutator> invalid_existing_tokens = {
+      [](auto *token) { token->index_identity = 0; },
+      [](auto *token) {
+        token->index_identity = std::numeric_limits<uint64_t>::max();
+      },
+      [](auto *token) {
+        token->truth_generation = std::numeric_limits<uint64_t>::max();
+      },
+      [](auto *token) { token->config_generation = 0; },
+      [](auto *token) {
+        token->config_generation = std::numeric_limits<uint64_t>::max();
+      },
+      [](auto *token) {
+        token->artifact_generation = std::numeric_limits<uint64_t>::max();
+      },
+      [](auto *token) {
+        token->runtime_generation = std::numeric_limits<uint64_t>::max();
+      },
+      [](auto *token) { token->lifecycle_version = 0; },
+      [](auto *token) {
+        token->lifecycle_version = std::numeric_limits<uint64_t>::max();
+      },
+      [](auto *token) {
+        token->source_generation = std::numeric_limits<uint64_t>::max();
+      },
+  };
+  for (const auto &mutate : invalid_existing_tokens) {
+    expect_invalid([&](auto *intent) { mutate(&intent->expected); });
+    expect_invalid([&](auto *intent) { mutate(&intent->target); });
+  }
+
+  const std::vector<token_mutator> invalid_absent_tokens = {
+      [](auto *token) { token->index_identity = 1; },
+      [](auto *token) { token->truth_generation = 1; },
+      [](auto *token) { token->config_generation = 1; },
+      [](auto *token) { token->artifact_generation = 1; },
+      [](auto *token) { token->runtime_generation = 1; },
+      [](auto *token) { token->lifecycle_version = 1; },
+      [](auto *token) { token->source_generation = 1; },
+  };
+  for (const auto &mutate : invalid_absent_tokens) {
+    expect_invalid([&](auto *intent) {
+      intent->expected = {};
+      mutate(&intent->expected);
+    });
+  }
+
+  expect_invalid([](auto *intent) {
+    intent->state =
+        vector_index_truth_store::publication_intent_state::kReadyToPublish;
+    intent->expected = {};
+    intent->target = {};
+  });
+  expect_invalid([](auto *intent) { ++intent->target.index_identity; });
+}
+
+TEST(VectorIndexTruthStoreTest,
+     ProductionStoreRejectsNullOutputsAndMalformedChangeLogRows) {
+  auto *store = vector_index_truth_store::get();
+  ASSERT_NE(nullptr, store);
+  EXPECT_FALSE(store->load_metadata(nullptr));
+  EXPECT_FALSE(store->load_committed(nullptr));
+  EXPECT_FALSE(store->load_manifest(nullptr));
+  EXPECT_FALSE(store->load_change_log(nullptr));
+  EXPECT_TRUE(store->load_prepared(nullptr));
+  EXPECT_FALSE(store->load_segment_tasks(nullptr));
+  EXPECT_FALSE(store->load_publication_intents(nullptr));
+  EXPECT_FALSE(store->delete_publication_intent("", 1));
+  EXPECT_FALSE(store->delete_publication_intent("idx", 0));
+  EXPECT_FALSE(store->delete_committed_publication_intent("", 1));
+  EXPECT_FALSE(store->delete_committed_publication_intent("idx", 0));
+
+  vector_index_metadata_store::change_log_row base_row;
+  base_row.sequence = 1;
+  base_row.txn_id = 1;
+  base_row.index_identity = 1;
+  base_row.publication_id = 1;
+  base_row.truth_generation = 1;
+  base_row.index_name = "idx_changelog_validation";
+  base_row.doc_id = 1;
+  base_row.vector = {1.0F, 2.0F};
+  const auto expect_invalid = [&](const auto &mutate) {
+    auto row = base_row;
+    mutate(&row);
+    EXPECT_FALSE(store->save_change_log({row}));
+    EXPECT_FALSE(store->append_change_log_delta({row}));
+  };
+  expect_invalid([](auto *row) { row->sequence = 0; });
+  expect_invalid(
+      [](auto *row) { row->sequence = std::numeric_limits<uint64_t>::max(); });
+  expect_invalid([](auto *row) { row->index_identity = 0; });
+  expect_invalid([](auto *row) {
+    row->index_identity = std::numeric_limits<uint64_t>::max();
+  });
+  expect_invalid([](auto *row) { row->publication_id = 0; });
+  expect_invalid([](auto *row) {
+    row->publication_id = std::numeric_limits<uint64_t>::max();
+  });
+  expect_invalid([](auto *row) { row->truth_generation = 0; });
+  expect_invalid([](auto *row) {
+    row->truth_generation = std::numeric_limits<uint64_t>::max();
+  });
+  expect_invalid([](auto *row) { row->index_name.clear(); });
 }
 
 class CommittedRowsTruthStore final : public dummy_truth_store {
@@ -1373,12 +1510,6 @@ TEST(VectorIndexTruthStoreTest, InnodbFacadeRejectsInvalidArguments) {
   EXPECT_FALSE(
       innodb_vector_truth_store::load_prepared_rows(&prepared_rows, nullptr));
   EXPECT_FALSE(innodb_vector_truth_store::save_prepared_rows(prepared_rows));
-}
-
-TEST(VectorIndexTruthStoreTest, InternalFlagsDefaultToFalseWithoutSystemThd) {
-  EXPECT_FALSE(vector_index_truth_store::internal_sql_active());
-  EXPECT_FALSE(
-      vector_index_truth_store::internal_truth_store_access_allowed(nullptr));
 }
 
 TEST(VectorIndexTruthStoreTest,

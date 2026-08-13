@@ -18,6 +18,8 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <limits>
+#include <stdexcept>
 #include <thread>
 
 #include "sql/vector/vector_statement_publication.h"
@@ -243,6 +245,66 @@ TEST(VectorStatementPublicationTest, InputsAreNormalizedBeforeLocking) {
 }
 
 TEST(VectorStatementPublicationTest,
+     GuardBoundaryAndCancellationFailuresDoNotLeakReservations) {
+  const auto cancelled = [] { return true; };
+  const auto throws = []() -> bool { throw std::runtime_error("cancel"); };
+
+  vector_statement_publication::publication_guard writer;
+  EXPECT_FALSE(writer.lock_indexes({}));
+  EXPECT_FALSE(writer.try_lock_indexes({}));
+  EXPECT_FALSE(writer.lock_indexes({"db.cancelled"}, cancelled));
+  EXPECT_FALSE(writer.try_lock_indexes({"db.throw"}, throws));
+  EXPECT_FALSE(writer.lock_catalog(throws));
+  EXPECT_FALSE(writer.owns_lock());
+
+  vector_statement_publication::read_guard reader;
+  EXPECT_FALSE(reader.lock_index(""));
+  EXPECT_FALSE(reader.lock_index("db.cancelled", cancelled));
+  EXPECT_FALSE(reader.lock_catalog(throws));
+  EXPECT_FALSE(reader.owns_lock());
+
+  EXPECT_TRUE(writer.lock_indexes({"db.recovered"}));
+  EXPECT_FALSE(writer.lock_indexes({"db.other"}));
+  EXPECT_FALSE(writer.try_lock_indexes({"db.other"}));
+  EXPECT_FALSE(writer.lock_catalog());
+  EXPECT_TRUE(writer.owns_lock());
+}
+
+TEST(VectorStatementPublicationTest,
+     MultipleReadersBlockWriterUntilEveryLeaseIsReleased) {
+  vector_statement_publication::publication_guard writer;
+  {
+    vector_statement_publication::read_guard first;
+    vector_statement_publication::read_guard second;
+    ASSERT_TRUE(first.lock_index("db.shared_read"));
+    ASSERT_TRUE(second.lock_index("db.shared_read"));
+    EXPECT_FALSE(writer.try_lock_indexes({"db.shared_read"}));
+    EXPECT_FALSE(first.lock_index("db.other"));
+  }
+  EXPECT_TRUE(writer.try_lock_indexes({"db.shared_read"}));
+}
+
+TEST(VectorStatementPublicationTest,
+     CatalogReaderBlocksCatalogWriterAndReleasesCleanly) {
+  std::future<bool> acquired;
+  std::promise<void> started;
+  {
+    vector_statement_publication::read_guard catalog_reader;
+    ASSERT_TRUE(catalog_reader.lock_catalog());
+    EXPECT_FALSE(catalog_reader.lock_catalog());
+    acquired = std::async(std::launch::async, [&] {
+      vector_statement_publication::publication_guard catalog_writer;
+      started.set_value();
+      return catalog_writer.lock_catalog();
+    });
+    started.get_future().wait();
+    EXPECT_EQ(std::future_status::timeout, acquired.wait_for(50ms));
+  }
+  ASSERT_EQ(std::future_status::ready, acquired.wait_for(2s));
+  EXPECT_TRUE(acquired.get());
+}
+
+TEST(VectorStatementPublicationTest,
      AllocationFailureDoesNotLeakReservationState) {
   {
     VECTOR_SCOPED_DEBUG_FLAG(
@@ -295,6 +357,64 @@ TEST(VectorStatementPublicationTest, OperationPayloadRejectsCorruption) {
   encoded.pop_back();
   EXPECT_FALSE(vector_statement_publication::decode_operation_payload(encoded,
                                                                       &decoded));
+}
+
+TEST(VectorStatementPublicationTest,
+     OperationPayloadRejectsEveryTruncationAndInvalidBoundary) {
+  vector_statement_publication::operation_payload payload;
+  payload.config = vector_statement_publication::config_change::kSearchEf;
+  payload.unsigned_values = {7};
+  payload.string_values = {"index"};
+  payload.binary_value = "payload";
+
+  std::string encoded;
+  EXPECT_FALSE(
+      vector_statement_publication::encode_operation_payload(payload, nullptr));
+  auto invalid_payload = payload;
+  invalid_payload.config =
+      static_cast<vector_statement_publication::config_change>(255);
+  EXPECT_FALSE(vector_statement_publication::encode_operation_payload(
+      invalid_payload, &encoded));
+  ASSERT_TRUE(vector_statement_publication::encode_operation_payload(payload,
+                                                                     &encoded));
+
+  EXPECT_FALSE(
+      vector_statement_publication::decode_operation_payload(encoded, nullptr));
+  vector_statement_publication::operation_payload decoded;
+  for (size_t length = 0; length < encoded.size(); ++length) {
+    EXPECT_FALSE(vector_statement_publication::decode_operation_payload(
+        encoded.substr(0, length), &decoded))
+        << "accepted truncated length " << length;
+  }
+
+  auto invalid_version = encoded;
+  invalid_version[0] = 2;
+  EXPECT_FALSE(vector_statement_publication::decode_operation_payload(
+      invalid_version, &decoded));
+  auto invalid_config = encoded;
+  invalid_config[1] = static_cast<char>(255);
+  EXPECT_FALSE(vector_statement_publication::decode_operation_payload(
+      invalid_config, &decoded));
+  auto trailing_data = encoded;
+  trailing_data.push_back('\0');
+  EXPECT_FALSE(vector_statement_publication::decode_operation_payload(
+      trailing_data, &decoded));
+
+  const auto overwrite_uint64 = [](std::string *target, size_t offset,
+                                   uint64_t value) {
+    ASSERT_NE(nullptr, target);
+    ASSERT_LE(offset + sizeof(uint64_t), target->size());
+    for (size_t byte = 0; byte < sizeof(uint64_t); ++byte) {
+      (*target)[offset + byte] =
+          static_cast<char>((value >> (byte * 8)) & 0xffU);
+    }
+  };
+  constexpr size_t k_first_string_length_offset = 2 + 3 * sizeof(uint64_t);
+  auto oversized_string = encoded;
+  overwrite_uint64(&oversized_string, k_first_string_length_offset,
+                   std::numeric_limits<uint64_t>::max());
+  EXPECT_FALSE(vector_statement_publication::decode_operation_payload(
+      oversized_string, &decoded));
 }
 
 TEST(VectorStatementPublicationTest,
