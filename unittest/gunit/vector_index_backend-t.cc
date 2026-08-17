@@ -57,6 +57,8 @@ namespace vector_index_backend_unittest {
 
 namespace {
 
+using vector_gunit::ScopedTempDirectory;
+
 bool has_prefix(const std::string &text, const std::string &prefix) {
   return text.size() >= prefix.size() &&
          text.compare(0, prefix.size(), prefix) == 0;
@@ -159,6 +161,35 @@ bool has_suffix(const std::string &text, const std::string &suffix) {
   std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(file.good());
   file << payload;
+  file.close();
+  ASSERT_TRUE(file);
+}
+
+template <typename T>
+void write_binary_value(std::ofstream *file, T value) {
+  file->write(reinterpret_cast<const char *>(&value), sizeof(value));
+}
+
+void write_raw_fbin_file(const std::string &path, uint32_t rows,
+                         uint32_t dimension,
+                         const std::vector<float> &values) {
+  std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(file.good());
+  write_binary_value(&file, rows);
+  write_binary_value(&file, dimension);
+  file.write(reinterpret_cast<const char *>(values.data()),
+             static_cast<std::streamsize>(values.size() * sizeof(float)));
+  file.close();
+  ASSERT_TRUE(file);
+}
+
+void write_raw_docid_file(const std::string &path,
+                          const std::vector<uint64_t> &doc_ids) {
+  std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(file.good());
+  write_binary_value<uint64_t>(&file, doc_ids.size());
+  file.write(reinterpret_cast<const char *>(doc_ids.data()),
+             static_cast<std::streamsize>(doc_ids.size() * sizeof(uint64_t)));
   file.close();
   ASSERT_TRUE(file);
 }
@@ -2733,7 +2764,7 @@ TEST(VectorIndexBackendTest, HnswlibMemoryBuildParamsCanBeConfigured) {
   EXPECT_FALSE(backend.set_hnsw_build_params(24, 0));
 }
 
-TEST(VectorIndexBackendTest, HnswlibMemoryBuildParamRebuildKeepsEntries) {
+TEST(VectorIndexBackendTest, HnswlibMemoryBuildParamRejectsNonEmptyIndex) {
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
   }
@@ -2743,9 +2774,9 @@ TEST(VectorIndexBackendTest, HnswlibMemoryBuildParamRebuildKeepsEntries) {
 
   ASSERT_TRUE(backend.upsert(10, {1.0F, 1.0F}));
   ASSERT_TRUE(backend.set_search_ef(32));
-  ASSERT_TRUE(backend.set_hnsw_build_params(12, 96));
-  EXPECT_EQ(12U, backend.hnsw_m());
-  EXPECT_EQ(96U, backend.hnsw_ef_construction());
+  EXPECT_FALSE(backend.set_hnsw_build_params(12, 96));
+  EXPECT_EQ(16U, backend.hnsw_m());
+  EXPECT_EQ(200U, backend.hnsw_ef_construction());
   EXPECT_EQ(32U, backend.search_ef());
   ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());
@@ -2764,6 +2795,28 @@ TEST(VectorIndexBackendTest, HnswlibMemoryRejectsIndexMemoryLimit) {
   EXPECT_EQ(0U, backend.entry_count());
   EXPECT_FALSE(backend.rebuild_from_committed_entries(
       {{1, vector_index::vector_data{1.0F, 0.0F}}}));
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibMemoryEmptySnapshotRebuildClearsServingState) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native rebuild requires HAVE_HNSWLIB";
+  }
+  UlonglongGuard guard(&opt_vector_hnsw_index_memory_size, 1024 * 1024);
+  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+
+  ASSERT_TRUE(backend.rebuild_from_committed_entries({}));
+  EXPECT_EQ(0U, backend.entry_count());
+
+  const auto diagnostics = backend.build_diagnostics();
+  EXPECT_EQ("entries", diagnostics.input_source);
+  EXPECT_EQ(0U, diagnostics.row_count);
+
+  std::vector<vector_index::search_result> results{{1, 0.0}};
+  ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &results));
+  EXPECT_TRUE(results.empty());
 }
 
 TEST(VectorIndexBackendTest,
@@ -2834,11 +2887,49 @@ TEST(VectorIndexBackendTest,
      HnswlibExternalRejectsThreadAndCommittedStateMutation) {
   vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
                                        vector_index::backend_mode::kExternal);
+  const vector_index::committed_entry_reader committed_reader =
+      [](const vector_index::committed_entry_visitor &visitor) {
+        return visitor(1, {1.0F, 0.0F});
+      };
+  const vector_index::raw_vector_segment_reader raw_reader =
+      [](const vector_index::raw_vector_segment_visitor &) { return true; };
 
   EXPECT_FALSE(backend.set_hnsw_build_threads(1));
   EXPECT_EQ(0U, backend.hnsw_build_threads());
   EXPECT_TRUE(backend.rebuild_from_committed_entries({}));
   EXPECT_FALSE(backend.rebuild_from_committed_entries({{1, {1.0F, 0.0F}}}));
+  EXPECT_FALSE(
+      backend.rebuild_from_committed_entries_from_reader(committed_reader));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(raw_reader));
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibFailedLiveUpsertDoesNotPublishBookkeepingLabel) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native upsert requires HAVE_HNSWLIB";
+  }
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_hnswlib_upsert_after_label_insert");
+    EXPECT_FALSE(backend.upsert(2, {2.0F, 0.0F}));
+  }
+
+  EXPECT_EQ(1U, backend.entry_count());
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search({2.0F, 0.0F}, 2, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(1U, results.front().doc_id);
+
+  ASSERT_TRUE(backend.upsert(2, {2.0F, 0.0F}));
+  EXPECT_EQ(2U, backend.entry_count());
+  ASSERT_TRUE(backend.search({2.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(2U, results.front().doc_id);
 }
 
 TEST(VectorIndexBackendTest,
@@ -2851,6 +2942,283 @@ TEST(VectorIndexBackendTest,
       {{2, vector_index::vector_data{1.0F, 0.0F, 3.0F}}}));
   EXPECT_EQ(1U, backend.entry_count());
 
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibMemoryReaderRebuildStreamsCommittedEntries) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native reader rebuild requires HAVE_HNSWLIB";
+  }
+  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kMemory);
+  size_t visits = 0;
+  const vector_index::committed_entry_reader reader =
+      [&visits](const vector_index::committed_entry_visitor &visitor) {
+        ++visits;
+        return visitor(2, {2.0F, 0.0F}) && visitor(1, {1.0F, 0.0F});
+      };
+
+  ASSERT_TRUE(backend.rebuild_from_committed_entries_from_reader(reader));
+  EXPECT_EQ(1U, visits);
+  EXPECT_EQ(2U, backend.entry_count());
+  const auto diagnostics = backend.build_diagnostics();
+  EXPECT_EQ("hnsw_scheduler", diagnostics.runtime);
+  EXPECT_EQ("reader", diagnostics.input_source);
+  EXPECT_EQ(2U, diagnostics.row_count);
+  EXPECT_EQ(1U, diagnostics.segment_count);
+  EXPECT_EQ(1U, diagnostics.build_invocations);
+  EXPECT_EQ(1U, diagnostics.concurrent_build_tasks);
+  EXPECT_GE(diagnostics.effective_build_threads, 1U);
+  EXPECT_EQ(1U, diagnostics.effective_blas_threads);
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibMemoryRawBlockRebuildUsesAllSegmentsAndKeepsOldStateOnFailure) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native raw rebuild requires HAVE_HNSWLIB";
+  }
+
+  const ScopedTempDirectory root("vector_hnsw_raw_blocks");
+  ASSERT_TRUE(root.valid()) << root.error();
+  const std::string vector_path_1 = (root.path() / "vectors-1.fbin").string();
+  const std::string docid_path_1 = (root.path() / "docids-1.u64").string();
+  const std::string vector_path_2 = (root.path() / "vectors-2.fbin").string();
+  const std::string docid_path_2 = (root.path() / "docids-2.u64").string();
+  write_raw_fbin_file(vector_path_1, 3, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F});
+  write_raw_docid_file(docid_path_1, {10, 20, 30});
+  write_raw_fbin_file(vector_path_2, 2, 2, {4.0F, 0.0F, 5.0F, 0.0F});
+  write_raw_docid_file(docid_path_2, {40, 50});
+
+  const vector_index::raw_vector_segment segment_1{
+      vector_path_1, docid_path_1, 3, 2, 0, 1};
+  const vector_index::raw_vector_segment segment_2{
+      vector_path_2, docid_path_2, 2, 2, 0, 2};
+  const vector_index::raw_vector_segment_reader reader =
+      [&segment_1,
+       &segment_2](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment_1) && visitor(segment_2);
+      };
+
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.set_hnsw_build_threads(2));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(nullptr));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [](const vector_index::raw_vector_segment_visitor &) { return false; }));
+  vector_index::raw_vector_segment wrong_dimension = segment_1;
+  wrong_dimension.dimension = 3;
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&wrong_dimension](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(wrong_dimension);
+      }));
+  ASSERT_TRUE(backend.rebuild_from_raw_segments(reader));
+  EXPECT_EQ(5U, backend.entry_count());
+
+  auto diagnostics = backend.build_diagnostics();
+  EXPECT_EQ("hnsw_scheduler", diagnostics.runtime);
+  EXPECT_EQ("raw_blocks", diagnostics.input_source);
+  EXPECT_EQ(5U, diagnostics.row_count);
+  EXPECT_EQ(2U, diagnostics.segment_count);
+  EXPECT_EQ(1U, diagnostics.reader_passes);
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search({5.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(50U, results[0].doc_id);
+
+  vector_index::raw_vector_segment bad_segment = segment_2;
+  bad_segment.row_count = 3;
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&bad_segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(bad_segment);
+      }));
+  EXPECT_EQ(5U, backend.entry_count());
+  ASSERT_TRUE(backend.search({5.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(50U, results[0].doc_id);
+
+  const std::string duplicate_vector_path =
+      (root.path() / "vectors-duplicate.fbin").string();
+  const std::string duplicate_docid_path =
+      (root.path() / "docids-duplicate.u64").string();
+  write_raw_fbin_file(duplicate_vector_path, 2, 2,
+                      {6.0F, 0.0F, 7.0F, 0.0F});
+  write_raw_docid_file(duplicate_docid_path, {60, 60});
+  const vector_index::raw_vector_segment duplicate_segment{
+      duplicate_vector_path, duplicate_docid_path, 2, 2, 0, 3};
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&duplicate_segment](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(duplicate_segment);
+      }));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&segment_1](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment_1) && visitor(segment_1);
+      }));
+  {
+    UlonglongGuard memory_guard(&opt_vector_hnsw_index_memory_size, 1);
+    EXPECT_FALSE(backend.rebuild_from_raw_segments(reader));
+  }
+  EXPECT_EQ(5U, backend.entry_count());
+  ASSERT_TRUE(backend.search({5.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(50U, results[0].doc_id);
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibMemoryRawBlockRebuildNormalizesCosineWithTinyCache) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native raw rebuild requires HAVE_HNSWLIB";
+  }
+
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 1);
+  const ScopedTempDirectory root("vector_hnsw_raw_cosine");
+  ASSERT_TRUE(root.valid()) << root.error();
+  const std::string vector_path = (root.path() / "vectors.fbin").string();
+  const std::string docid_path = (root.path() / "docids.u64").string();
+  write_raw_fbin_file(vector_path, 2, 2, {3.0F, 4.0F, 0.0F, 0.0F});
+  write_raw_docid_file(docid_path, {70, 80});
+  const vector_index::raw_vector_segment segment{vector_path, docid_path, 2,
+                                                  2,           0,          1};
+
+  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kCosine,
+                                        vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.set_hnsw_build_threads(2));
+  ASSERT_TRUE(backend.rebuild_from_raw_segments(
+      [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment);
+      }));
+  EXPECT_EQ(2U, backend.entry_count());
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search({6.0F, 8.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(70U, results[0].doc_id);
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibMemoryRawBlockPreparationAndWorkerFailuresKeepServingState) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native raw rebuild requires HAVE_HNSWLIB";
+  }
+
+  const ScopedTempDirectory root("vector_hnsw_raw_worker_failure");
+  ASSERT_TRUE(root.valid()) << root.error();
+  const std::string vector_path = (root.path() / "vectors.fbin").string();
+  const std::string docid_path = (root.path() / "docids.u64").string();
+  write_raw_fbin_file(vector_path, 2, 2, {2.0F, 0.0F, 3.0F, 0.0F});
+  write_raw_docid_file(docid_path, {2, 3});
+  const vector_index::raw_vector_segment segment{vector_path, docid_path, 2,
+                                                  2,           0,          1};
+
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.set_hnsw_build_threads(2));
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+  const auto rebuild = [&]() {
+    return backend.rebuild_from_raw_segments(
+        [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+          return visitor(segment);
+        });
+  };
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_hnswlib_label_preparation");
+    EXPECT_FALSE(rebuild());
+  }
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_hnswlib_parallel_rebuild_worker");
+    EXPECT_FALSE(rebuild());
+  }
+
+  EXPECT_EQ(1U, backend.entry_count());
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(1U, results[0].doc_id);
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibNativeReaderRebuildDoesNotKeepExactFallbackEntries) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native reader rebuild requires HAVE_HNSWLIB";
+  }
+  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kMemory);
+  const vector_index::committed_entry_reader reader =
+      [](const vector_index::committed_entry_visitor &visitor) {
+        return visitor(1, {1.0F, 0.0F}) && visitor(2, {0.0F, 1.0F});
+      };
+
+  ASSERT_TRUE(backend.rebuild_from_committed_entries_from_reader(reader));
+  EXPECT_TRUE(backend.hnsw_native_available_for_testing());
+  EXPECT_FALSE(backend.hnsw_exact_fallback_active_for_testing());
+  EXPECT_EQ(0U, backend.hnsw_exact_fallback_entry_count_for_testing());
+  EXPECT_EQ(2U, backend.entry_count());
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibMemoryReaderRebuildFailureKeepsExistingServingState) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native reader rebuild requires HAVE_HNSWLIB";
+  }
+  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+  const vector_index::committed_entry_reader bad_reader =
+      [](const vector_index::committed_entry_visitor &visitor) {
+        return visitor(2, {2.0F, 0.0F, 1.0F});
+      };
+
+  EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(bad_reader));
+  EXPECT_EQ(1U, backend.entry_count());
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibMemoryReaderRebuildRejectsNullAndMemoryBudgetOverflow) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib native reader rebuild requires HAVE_HNSWLIB";
+  }
+  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+
+  EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(nullptr));
+
+  const vector_index::committed_entry_reader reader =
+      [](const vector_index::committed_entry_visitor &visitor) {
+        return visitor(2, {2.0F, 0.0F});
+      };
+  {
+    UlonglongGuard guard(&opt_vector_hnsw_index_memory_size, 1);
+    EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(reader));
+  }
+
+  EXPECT_EQ(1U, backend.entry_count());
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());

@@ -43,6 +43,7 @@ extern ulong opt_vector_diskann_build_mode;
 extern ulong opt_vector_search_batch_count;
 extern ulong opt_vector_search_batch_result_count;
 extern ulong opt_vector_batch_search_threads;
+extern ulong opt_vector_hnsw_search_threads;
 extern ulong opt_vector_default_library;
 extern ulong opt_vector_index_consistency_mode;
 extern ulonglong opt_vector_entry_cache_size;
@@ -71,6 +72,13 @@ diskann_build_mode global_diskann_build_mode();
 
 /** Return the global default vector index consistency mode. */
 index_consistency_mode global_index_consistency_mode();
+
+/** Return the effective build worker count for one backend build. */
+size_t effective_build_scheduler_threads(size_t entry_count,
+                                         ulong backend_override_threads);
+
+/** Return the effective hnswlib batch search worker count. */
+size_t effective_hnsw_search_threads(size_t query_count);
 
 }  // namespace vector_index
 

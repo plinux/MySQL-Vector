@@ -528,24 +528,6 @@ bool backend::search_batch(
 memory_backend::memory_backend(size_t dimension, metric_type metric)
     : m_dimension(dimension), m_metric(metric) {}
 
-memory_backend::memory_backend(memory_backend &&other) noexcept
-    : m_dimension(other.m_dimension),
-      m_metric(other.m_metric),
-      m_entries(std::move(other.m_entries)) {
-  other.m_dimension = 0;
-  other.m_metric = metric_type::kEuclidean;
-}
-
-memory_backend &memory_backend::operator=(memory_backend &&other) noexcept {
-  if (this == &other) return *this;
-  m_dimension = other.m_dimension;
-  m_metric = other.m_metric;
-  m_entries = std::move(other.m_entries);
-  other.m_dimension = 0;
-  other.m_metric = metric_type::kEuclidean;
-  return *this;
-}
-
 bool memory_backend::upsert(uint64_t doc_id, const vector_data &vector) {
   if (!check_dimension(vector, m_dimension)) return false;
   m_entries[doc_id] = vector;
@@ -646,7 +628,6 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
                                        const std::string &index_name) {
   if (!backend_provider_supported(provider)) return nullptr;
 
-  (void)index_name;
   (void)consistency_mode;
   switch (provider) {
     case backend_provider::kNative:

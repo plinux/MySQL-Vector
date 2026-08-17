@@ -24,6 +24,7 @@
 #include "sql/vector/vector_index_build_options.h"
 
 #include "sql/vector/vector_index_limits.h"
+#include "sql/vector/vector_index_runtime_thread_pool.h"
 
 ulong opt_vector_hnsw_build_threads = 0;
 ulong opt_vector_faiss_build_threads = 0;
@@ -36,6 +37,7 @@ ulong opt_vector_search_batch_result_count =
     vector_index::k_default_search_batch_result_count;
 ulong opt_vector_batch_search_threads =
     vector_index::k_default_batch_search_threads;
+ulong opt_vector_hnsw_search_threads = 0;
 ulong opt_vector_default_library =
     static_cast<ulong>(vector_index::vector_default_library::kNone);
 ulong opt_vector_index_consistency_mode =
@@ -87,6 +89,21 @@ index_consistency_mode global_index_consistency_mode() {
       return index_consistency_mode::kStandalone;
   }
   return index_consistency_mode::kTransactional;
+}
+
+size_t effective_build_scheduler_threads(size_t entry_count,
+                                         ulong backend_override_threads) {
+  return effective_runtime_worker_count(entry_count,
+                                        backend_override_threads);
+}
+
+size_t effective_hnsw_search_threads(size_t query_count) {
+  if (query_count == 0) return 0;
+
+  const ulong configured = opt_vector_hnsw_search_threads == 0
+                               ? opt_vector_batch_search_threads
+                               : opt_vector_hnsw_search_threads;
+  return effective_runtime_worker_count(query_count, configured);
 }
 
 }  // namespace vector_index

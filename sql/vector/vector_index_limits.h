@@ -54,6 +54,13 @@ inline size_t saturated_add_size(size_t left, size_t right) {
   return left + right;
 }
 
+inline size_t saturated_mul_size(size_t left, size_t right) {
+  if (left == 0 || right == 0) return 0;
+  const size_t max_value = std::numeric_limits<size_t>::max();
+  if (left > max_value / right) return max_value;
+  return left * right;
+}
+
 }  // namespace vector_index
 
 #endif  // SQL_VECTOR_INDEX_LIMITS_INCLUDED

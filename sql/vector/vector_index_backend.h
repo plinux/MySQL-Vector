@@ -86,6 +86,24 @@ struct search_result {
   double distance{0.0};
 };
 
+/** Last backend build/rebuild phase timings exposed for observability. */
+struct backend_build_diagnostics {
+  std::string runtime;
+  std::string input_source;
+  uint64_t row_count{0};
+  uint64_t segment_count{0};
+  uint64_t build_invocations{0};
+  uint32_t concurrent_build_tasks{0};
+  uint32_t scheduler_cpu_budget{0};
+  uint32_t effective_build_threads{0};
+  uint32_t effective_blas_threads{0};
+  uint64_t manifest_ms{0};
+  uint64_t offline_build_ms{0};
+  uint64_t load_ms{0};
+  uint64_t reader_passes{0};
+  std::string fallback_reason;
+};
+
 /**
   Abstract backend for ANN/exact vector search implementations.
 */
@@ -238,6 +256,7 @@ class backend {
   virtual backend_mode mode() const = 0;
   virtual backend_provider provider() const = 0;
   virtual std::string backend_variant() const { return ""; }
+  virtual backend_build_diagnostics build_diagnostics() const { return {}; }
   virtual bool set_search_ef(uint32_t search_ef [[maybe_unused]]) { return false; }
   virtual uint32_t search_ef() const { return 0; }
   virtual bool set_hnsw_build_params(uint32_t hnsw_m [[maybe_unused]],
@@ -341,10 +360,6 @@ class backend {
 class memory_backend final : public backend {
  public:
   memory_backend(size_t dimension, metric_type metric);
-  memory_backend(memory_backend &&other) noexcept;
-  memory_backend &operator=(memory_backend &&other) noexcept;
-  memory_backend(const memory_backend &) = delete;
-  memory_backend &operator=(const memory_backend &) = delete;
 
   bool upsert(uint64_t doc_id, const vector_data &vector) override;
   bool erase(uint64_t doc_id) override;
@@ -612,8 +627,8 @@ class diskann_backend final : public backend {
 /**
   hnswlib backend integration point.
 
-  v1 keeps hnswlib as an in-process MEMORY-mode adapter boundary and reuses
-  the exact-memory fallback until ANN graph integration is added.
+  MEMORY mode keeps hnswlib as the resident serving index. The exact-memory
+  fallback is allocated only when native hnswlib is unavailable.
 */
 class hnswlib_backend final : public backend {
  public:
@@ -644,28 +659,52 @@ class hnswlib_backend final : public backend {
   uint32_t hnsw_build_threads() const override;
   bool rebuild_from_committed_entries(
       const std::unordered_map<uint64_t, vector_data> &entries) override;
+  bool rebuild_from_committed_entries_from_reader(
+      const committed_entry_reader &reader) override;
+  bool rebuild_from_raw_segments(
+      const raw_vector_segment_reader &reader) override;
+  backend_build_diagnostics build_diagnostics() const override;
   bool supports_mutations() const override {
     return m_mode == backend_mode::kMemory;
   }
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  bool hnsw_native_available_for_testing() const;
+  bool hnsw_exact_fallback_active_for_testing() const;
+  size_t hnsw_exact_fallback_entry_count_for_testing() const;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
  private:
+  bool native_available() const;
+  memory_backend *ensure_exact_fallback();
   bool rebuild_native_from_entries(
       const std::unordered_map<uint64_t, vector_data> &entries);
   bool build_memory_fallback_from_entries(
       const std::unordered_map<uint64_t, vector_data> &entries,
       memory_backend *fallback) const;
+  bool build_state_from_reader(const committed_entry_reader &reader,
+                               std::unique_ptr<memory_backend> *fallback,
+                               std::unique_ptr<hnswlib_native_state> *native,
+                               size_t *entry_count) const;
+  bool build_state_from_raw_segments(
+      const std::vector<raw_vector_segment> &segments, size_t total_rows,
+      std::unique_ptr<hnswlib_native_state> *native, size_t *entry_count) const;
   bool rebuild_memory_fallback_from_entries(
       const std::unordered_map<uint64_t, vector_data> &entries);
+  void record_build_diagnostics(const char *input_source, size_t row_count,
+                                size_t effective_threads,
+                                size_t segment_count = 1,
+                                size_t reader_passes = 0);
+  void clear_build_diagnostics();
 
   size_t m_dimension{0};
   metric_type m_metric{metric_type::kEuclidean};
   backend_mode m_mode{backend_mode::kMemory};
-  std::unordered_map<uint64_t, vector_data> m_entries;
   std::unique_ptr<hnswlib_native_state> m_native_state;
-  memory_backend m_memory_fallback;
+  std::unique_ptr<memory_backend> m_exact_fallback;
   uint32_t m_hnsw_m{16};
   uint32_t m_hnsw_ef_construction{200};
   uint32_t m_hnsw_build_threads{0};
+  backend_build_diagnostics m_last_build_diagnostics;
 };
 
 /**

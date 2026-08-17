@@ -26,6 +26,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -37,6 +41,42 @@
 #include "sql/xa.h"
 
 namespace vector_gunit {
+
+class ScopedTempDirectory {
+ public:
+  explicit ScopedTempDirectory(const char *prefix) {
+    static std::atomic<uint64_t> sequence{0};
+    const auto timestamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const uint64_t id = sequence.fetch_add(1, std::memory_order_relaxed);
+    m_path = std::filesystem::path(testing::TempDir()) /
+             (std::string(prefix) + "-" + std::to_string(timestamp) + "-" +
+              std::to_string(id));
+
+    std::error_code error;
+    if (!std::filesystem::create_directories(m_path, error) || error) {
+      m_error = error ? error.message() : "temporary directory already exists";
+      m_path.clear();
+    }
+  }
+
+  ~ScopedTempDirectory() {
+    if (m_path.empty()) return;
+    std::error_code error;
+    std::filesystem::remove_all(m_path, error);
+  }
+
+  ScopedTempDirectory(const ScopedTempDirectory &) = delete;
+  ScopedTempDirectory &operator=(const ScopedTempDirectory &) = delete;
+
+  bool valid() const { return !m_path.empty(); }
+  const std::filesystem::path &path() const { return m_path; }
+  const std::string &error() const { return m_error; }
+
+ private:
+  std::filesystem::path m_path;
+  std::string m_error;
+};
 
 class ScopedDebugFlag {
  public:

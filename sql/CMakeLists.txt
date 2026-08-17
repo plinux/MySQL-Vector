@@ -687,6 +687,7 @@ IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
     vector/vector_dml_sync.cc
     vector/vector_index_backend.cc
     vector/vector_index_backend_diskann.cc
+    vector/vector_index_backend_hnswlib.cc
     vector/vector_index_diagnostics.cc
     vector/vector_index_metadata_store.cc
     vector/vector_index_registry.cc

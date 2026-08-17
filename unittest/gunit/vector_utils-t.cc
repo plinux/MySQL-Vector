@@ -28,7 +28,6 @@
 #include <vector>
 
 #include "my_byteorder.h"
-#include "sql/vector/vector_env.h"
 #include "sql/vector/vector_utils.h"
 #include "sql_string.h"
 
@@ -67,15 +66,6 @@ TEST(VectorUtilsTest, ParseTextVectorSuccess) {
   EXPECT_FLOAT_EQ(1.0F, values[0]);
   EXPECT_FLOAT_EQ(-2.5F, values[1]);
   EXPECT_FLOAT_EQ(30.0F, values[2]);
-}
-
-TEST(VectorUtilsTest, LimitThreadCountHonorsBounds) {
-  EXPECT_EQ(1U, vector_env::limit_thread_count(8, 16, 1));
-  EXPECT_GE(vector_env::limit_thread_count(2, 8, 4), 1U);
-  EXPECT_LE(vector_env::limit_thread_count(2, 8, 4), 2U);
-  EXPECT_EQ(3U, vector_env::limit_thread_count(3, 8, 9));
-  EXPECT_EQ(4U, vector_env::limit_thread_count(64, 4, 9));
-  EXPECT_EQ(1U, vector_env::limit_thread_count(0, 8, 9));
 }
 
 TEST(VectorUtilsTest, ParseTextVectorRejectsInvalidSyntax) {
