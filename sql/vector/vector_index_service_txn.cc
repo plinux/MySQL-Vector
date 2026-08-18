@@ -23,11 +23,11 @@
 
 #include "sql/vector/vector_index_service.h"
 
+#include <fcntl.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <ctime>
-#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -45,6 +45,7 @@
 #include "my_dbug.h"
 #include "my_sys.h"
 #include "sql/mysqld.h"
+#include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_mapped_search.h"
@@ -62,11 +63,12 @@ namespace vector_index {
 
 namespace {
 
-using detail::build_backend_from_config;
 using detail::all_true;
+using detail::build_backend_from_config;
 using detail::index_configs_equal;
 
 constexpr const char *LIFECYCLE_BULK_LOADING = "bulk_loading";
+constexpr const char *k_pending_spill_directory = "pending_spill";
 constexpr uint32_t ERROR_BACKEND_APPLY_FAILED = 1006;
 constexpr uint32_t ERROR_MUTATION_NOT_SUPPORTED = 1005;
 
@@ -74,17 +76,24 @@ uint64_t now_unix_epoch_seconds() {
   return static_cast<uint64_t>(std::time(nullptr));
 }
 
-void mark_lifecycle_state(vector_index::index_service::lifecycle_info *lifecycle,
-                          const char *state) {
+void mark_lifecycle_state(
+    vector_index::index_service::lifecycle_info *lifecycle, const char *state) {
   lifecycle->state = state;
   ++lifecycle->version;
 }
 
-void mark_lifecycle_failure(vector_index::index_service::lifecycle_info *lifecycle,
-                            uint32_t error_code) {
+void mark_lifecycle_failure(
+    vector_index::index_service::lifecycle_info *lifecycle,
+    uint32_t error_code) {
   mark_lifecycle_state(lifecycle, "failed");
   lifecycle->last_error_code = error_code;
   lifecycle->last_error_ts = now_unix_epoch_seconds();
+}
+
+std::filesystem::path pending_spill_directory_path() {
+  const std::string root = detail::vector_index_root_path();
+  if (root.empty()) return {};
+  return std::filesystem::path(root) / k_pending_spill_directory;
 }
 
 bool should_batch_rebuild_on_commit(const backend *index_backend) {
@@ -116,8 +125,9 @@ bool pending_change_snapshots_equal(
     const std::vector<index_service::pending_change_snapshot> &rhs) {
   if (lhs.size() != rhs.size()) return false;
   for (size_t i = 0; i < lhs.size(); ++i) {
-    if (lhs[i].index_name != rhs[i].index_name || lhs[i].erase != rhs[i].erase ||
-        lhs[i].doc_id != rhs[i].doc_id || lhs[i].vector != rhs[i].vector) {
+    if (lhs[i].index_name != rhs[i].index_name ||
+        lhs[i].erase != rhs[i].erase || lhs[i].doc_id != rhs[i].doc_id ||
+        lhs[i].vector != rhs[i].vector) {
       return false;
     }
   }
@@ -149,14 +159,12 @@ bool rerank_candidates_with_vectors(
     if (!seen_doc_ids.insert(candidate.doc_id).second) continue;
     const auto vector_it = candidate_vectors.find(candidate.doc_id);
     if (vector_it == candidate_vectors.end()) return true;
-    visible_rows.push_back(
-        vector_mapped_search::visible_candidate{candidate.doc_id,
-                                                vector_it->second});
+    visible_rows.push_back(vector_mapped_search::visible_candidate{
+        candidate.doc_id, vector_it->second});
   }
 
-  if (!vector_mapped_search::rank_visible_candidates(query, metric,
-                                                     visible_rows, top_k,
-                                                     results)) {
+  if (!vector_mapped_search::rank_visible_candidates(
+          query, metric, visible_rows, top_k, results)) {
     return false;
   }
   *reranked = true;
@@ -196,8 +204,7 @@ committed_entry_reader make_commit_rebuild_reader(
 
     for (const uint64_t doc_id : doc_ids) {
       const auto entry_it = candidate_entries.find(doc_id);
-      if (entry_it == candidate_entries.end() ||
-          !visitor(entry_it->first, entry_it->second)) {
+      if (!visitor(entry_it->first, entry_it->second)) {
         return false;
       }
     }
@@ -205,8 +212,9 @@ committed_entry_reader make_commit_rebuild_reader(
   };
 }
 
-bool apply_entry_store_change(vector_entry_store *entry_store,
-                              const index_service::pending_change_snapshot &change) {
+bool apply_entry_store_change(
+    vector_entry_store *entry_store,
+    const index_service::pending_change_snapshot &change) {
   if (entry_store == nullptr) return false;
   DBUG_EXECUTE_IF("vector_service_fail_commit_entry_store_apply",
                   return false;);
@@ -218,9 +226,43 @@ bool apply_entry_store_change(vector_entry_store *entry_store,
 
 }  // namespace
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool pending_change_snapshots_equal_for_testing(
+    const std::vector<index_service::pending_change_snapshot> &lhs,
+    const std::vector<index_service::pending_change_snapshot> &rhs) {
+  return pending_change_snapshots_equal(lhs, rhs);
+}
+
+bool pending_budget_allows_for_testing(size_t current_bytes,
+                                       size_t additional_bytes) {
+  return pending_budget_allows(current_bytes, additional_bytes);
+}
+
+bool rerank_candidates_with_vectors_for_testing(
+    const vector_data &query, metric_type metric,
+    const std::vector<search_result> &candidates,
+    const committed_entries &candidate_vectors, size_t top_k,
+    std::vector<search_result> *results, bool *reranked) {
+  return rerank_candidates_with_vectors(
+      query, metric, candidates, candidate_vectors, top_k, results, reranked);
+}
+
+committed_entry_reader make_commit_rebuild_reader_for_testing(
+    const committed_entries &candidate_entries) {
+  return make_commit_rebuild_reader(candidate_entries);
+}
+
+bool apply_entry_store_change_for_testing(
+    vector_entry_store *entry_store,
+    const index_service::pending_change_snapshot &change) {
+  return apply_entry_store_change(entry_store, change);
+}
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+
 size_t index_service::pending_change_memory_bytes(
     const pending_change &change) {
-  if (change.type != change_type::kUpsert || !change.vector_spill_path.empty()) {
+  if (change.type != change_type::kUpsert ||
+      !change.vector_spill_path.empty()) {
     return 0;
   }
   return change.vector.size() * sizeof(float);
@@ -245,9 +287,8 @@ bool index_service::read_pending_change_vector(const pending_change &change,
                   sizeof(element_count))) {
     return false;
   }
-  if (element_count >
-      static_cast<uint64_t>(std::numeric_limits<size_t>::max() /
-                            sizeof(float))) {
+  if (element_count > static_cast<uint64_t>(std::numeric_limits<size_t>::max() /
+                                            sizeof(float))) {
     return false;
   }
 
@@ -261,18 +302,17 @@ bool index_service::read_pending_change_vector(const pending_change &change,
       input.read(reinterpret_cast<char *>(vector->data()), payload_bytes));
 }
 
-bool index_service::write_pending_change_spill(
-    uint64_t txn_id, const std::string &index_name, uint64_t doc_id,
-    const vector_data &vector, std::string *path) {
+bool index_service::write_pending_change_spill(uint64_t txn_id,
+                                               const std::string &index_name,
+                                               uint64_t doc_id,
+                                               const vector_data &vector,
+                                               std::string *path) {
   if (path == nullptr) return false;
   static std::atomic<uint64_t> spill_sequence{0};
 
   std::error_code error;
-  std::filesystem::path directory =
-      mysql_tmpdir != nullptr ? std::filesystem::path(mysql_tmpdir)
-                              : std::filesystem::temp_directory_path(error);
-  if (error) return false;
-  directory /= "mysql-vector-pending-spill";
+  const std::filesystem::path directory = pending_spill_directory_path();
+  if (directory.empty()) return false;
   std::filesystem::create_directories(directory, error);
   if (error) return false;
 
@@ -285,7 +325,8 @@ bool index_service::write_pending_change_spill(
   for (uint32_t attempt = 0; attempt < 32; ++attempt) {
     const uint64_t sequence =
         spill_sequence.fetch_add(1, std::memory_order_relaxed);
-    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto now =
+        std::chrono::steady_clock::now().time_since_epoch().count();
     const size_t index_hash = std::hash<std::string>{}(index_name);
     std::ostringstream file_name;
     file_name << "mysql-vector-pending-spill-" << now << "-" << sequence << "-"
@@ -317,6 +358,30 @@ bool index_service::write_pending_change_spill(
   return false;
 }
 
+bool index_service::cleanup_orphaned_pending_spills() {
+  const std::filesystem::path directory = pending_spill_directory_path();
+  if (directory.empty()) return true;
+
+  std::error_code error;
+  if (!std::filesystem::exists(directory, error)) return !error;
+  if (error) return false;
+  const std::filesystem::file_status status =
+      std::filesystem::symlink_status(directory, error);
+  if (error || status.type() != std::filesystem::file_type::directory) {
+    return false;
+  }
+  std::filesystem::remove_all(directory, error);
+  return !error;
+}
+
+void index_service::discard_all_pending_changes() {
+  for (const auto &txn_changes : m_pending_changes) {
+    remove_pending_change_spills(txn_changes.second, 0);
+  }
+  m_pending_changes.clear();
+  m_savepoints.clear();
+}
+
 void index_service::remove_pending_change_spill(const pending_change &change) {
   if (change.vector_spill_path.empty()) return;
   std::error_code ignored;
@@ -332,8 +397,17 @@ void index_service::remove_pending_change_spills(
   }
 }
 
+void index_service::clear_pending_state(uint64_t txn_id) {
+  auto pending_it = m_pending_changes.find(txn_id);
+  if (pending_it != m_pending_changes.end()) {
+    remove_pending_change_spills(pending_it->second, 0);
+    m_pending_changes.erase(pending_it);
+  }
+  m_savepoints.erase(txn_id);
+}
+
 bool index_service::stage_upsert(uint64_t txn_id, const std::string &index_name,
-                               uint64_t doc_id, const vector_data &vector) {
+                                 uint64_t doc_id, const vector_data &vector) {
   auto index_it = m_indexes.find(index_name);
   if (index_it == m_indexes.end()) return false;
   if (index_it->second->dimension() != vector.size()) return false;
@@ -361,7 +435,7 @@ bool index_service::stage_upsert(uint64_t txn_id, const std::string &index_name,
 }
 
 bool index_service::stage_erase(uint64_t txn_id, const std::string &index_name,
-                              uint64_t doc_id) {
+                                uint64_t doc_id) {
   if (m_indexes.find(index_name) == m_indexes.end()) return false;
 
   m_pending_changes[txn_id].push_back(
@@ -372,8 +446,7 @@ bool index_service::stage_erase(uint64_t txn_id, const std::string &index_name,
 bool index_service::commit(uint64_t txn_id) {
   commit_build_plan plan;
   return snapshot_commit_build_plan(txn_id, &plan) &&
-         build_commit_backends(&plan) &&
-         apply_commit_build_plan(txn_id, &plan);
+         build_commit_backends(&plan) && apply_commit_build_plan(txn_id, &plan);
 }
 
 bool index_service::snapshot_commit_build_plan(uint64_t txn_id,
@@ -408,9 +481,8 @@ bool index_service::snapshot_commit_build_plan(uint64_t txn_id,
         return false;
       }
     }
-    const bool bulk_loading =
-        lifecycle_it != m_lifecycle_infos.end() &&
-        lifecycle_is_bulk_loading(lifecycle_it->second);
+    const bool bulk_loading = lifecycle_it != m_lifecycle_infos.end() &&
+                              lifecycle_is_bulk_loading(lifecycle_it->second);
     if (!bulk_loading) {
       const bool defer_diskann_runtime_load =
           is_external_diskann(index_it->second.get());
@@ -464,9 +536,9 @@ bool index_service::snapshot_commit_build_plan(uint64_t txn_id,
       if (!captured_doc_ids.insert(change->doc_id).second) continue;
       commit_entry_before_image before_image;
       before_image.doc_id = change->doc_id;
-      if (!m_entry_store.find_committed_entry(
-              entry.first, change->doc_id, &before_image.vector,
-              &before_image.found)) {
+      if (!m_entry_store.find_committed_entry(entry.first, change->doc_id,
+                                              &before_image.vector,
+                                              &before_image.found)) {
         return false;
       }
       index_plan.before_images.push_back(std::move(before_image));
@@ -630,8 +702,7 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
     const auto plan_it = index_plans.find(rebuild_plan.index_name);
     auto index_it = m_indexes.find(rebuild_plan.index_name);
     if (rebuild_plan.rebuilt_backend == nullptr ||
-        plan_it == index_plans.end() ||
-        index_it == m_indexes.end() ||
+        plan_it == index_plans.end() || index_it == m_indexes.end() ||
         !index_configs_equal(rebuild_plan.config, plan_it->second->config)) {
       return fail("rebuilt_backend_invalid");
     }
@@ -650,12 +721,12 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
     for (const commit_index_plan &index_plan : plan->indexes) {
       for (const commit_entry_before_image &before_image :
            index_plan.before_images) {
-        const bool ok = before_image.found
-                            ? m_entry_store.upsert(index_plan.index_name,
-                                                   before_image.doc_id,
-                                                   before_image.vector)
-                            : m_entry_store.erase(index_plan.index_name,
-                                                  before_image.doc_id);
+        const bool ok =
+            before_image.found
+                ? m_entry_store.upsert(index_plan.index_name,
+                                       before_image.doc_id, before_image.vector)
+                : m_entry_store.erase(index_plan.index_name,
+                                      before_image.doc_id);
         restored = ok && restored;
       }
     }
@@ -719,8 +790,9 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
     {
       std::unique_lock<std::shared_mutex> runtime_guard(
           index_it->second->runtime_mutex());
-      ok = !change.erase ? index_it->second->upsert(change.doc_id, change.vector)
-                         : index_it->second->erase(change.doc_id);
+      ok = !change.erase
+               ? index_it->second->upsert(change.doc_id, change.vector)
+               : index_it->second->erase(change.doc_id);
     }
     if (!ok) {
       return fail_and_restore(change.index_name, "backend_mutation");
@@ -755,23 +827,11 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
     }
   }
 
-  auto pending_it = m_pending_changes.find(txn_id);
-  if (pending_it != m_pending_changes.end()) {
-    remove_pending_change_spills(pending_it->second, 0);
-    m_pending_changes.erase(pending_it);
-  }
-  m_savepoints.erase(txn_id);
+  clear_pending_state(txn_id);
   return true;
 }
 
-void index_service::rollback(uint64_t txn_id) {
-  auto pending_it = m_pending_changes.find(txn_id);
-  if (pending_it != m_pending_changes.end()) {
-    remove_pending_change_spills(pending_it->second, 0);
-    m_pending_changes.erase(pending_it);
-  }
-  m_savepoints.erase(txn_id);
-}
+void index_service::rollback(uint64_t txn_id) { clear_pending_state(txn_id); }
 
 bool index_service::savepoint(uint64_t txn_id, const std::string &name) {
   if (name.empty()) return false;
@@ -788,7 +848,8 @@ bool index_service::savepoint(uint64_t txn_id, const std::string &name) {
   return true;
 }
 
-bool index_service::rollback_to_savepoint(uint64_t txn_id, const std::string &name) {
+bool index_service::rollback_to_savepoint(uint64_t txn_id,
+                                          const std::string &name) {
   auto savepoint_it = m_savepoints.find(txn_id);
   if (savepoint_it == m_savepoints.end() || name.empty()) return false;
 
@@ -809,7 +870,8 @@ bool index_service::rollback_to_savepoint(uint64_t txn_id, const std::string &na
   return true;
 }
 
-bool index_service::release_savepoint(uint64_t txn_id, const std::string &name) {
+bool index_service::release_savepoint(uint64_t txn_id,
+                                      const std::string &name) {
   auto savepoint_it = m_savepoints.find(txn_id);
   if (savepoint_it == m_savepoints.end() || name.empty()) return false;
 
@@ -891,8 +953,8 @@ bool index_service::exact_rerank_search_results(
   }
   if (!complete) return true;
   return rerank_candidates_with_vectors(query, config.metric, candidates,
-                                       candidate_vectors, top_k, results,
-                                       reranked);
+                                        candidate_vectors, top_k, results,
+                                        reranked);
 }
 
 bool index_service::load_exact_rerank_vectors(
@@ -915,7 +977,7 @@ bool index_service::load_exact_rerank_vectors(
       vector_data vector;
       bool found = false;
       if (!m_entry_store.find_committed_entry(index_name, doc_id, &vector,
-                                             &found)) {
+                                              &found)) {
         return false;
       }
       if (found) (*vectors)[doc_id] = std::move(vector);
@@ -949,9 +1011,8 @@ bool index_service::finish_search_with_exact_rerank(
     std::vector<search_result> *results) const {
   if (results == nullptr) return false;
 
-  const bool can_exact_rerank =
-      config.provider == backend_provider::kDiskAnn &&
-      config.mode == backend_mode::kExternal;
+  const bool can_exact_rerank = config.provider == backend_provider::kDiskAnn &&
+                                config.mode == backend_mode::kExternal;
   if (can_exact_rerank) {
     bool reranked = false;
     if (!exact_rerank_search_results(index_name, config, query, candidates,
@@ -992,9 +1053,8 @@ bool index_service::finish_search_batch_with_exact_rerank(
     return false;
   }
 
-  const bool can_exact_rerank =
-      config.provider == backend_provider::kDiskAnn &&
-      config.mode == backend_mode::kExternal;
+  const bool can_exact_rerank = config.provider == backend_provider::kDiskAnn &&
+                                config.mode == backend_mode::kExternal;
   if (can_exact_rerank) {
     std::unordered_set<uint64_t> candidate_doc_ids;
     for (size_t i = 0; i < candidates.query_count(); ++i) {
@@ -1039,8 +1099,8 @@ bool index_service::finish_search_batch_with_exact_rerank(
   return std::move(candidates).materialize(results);
 }
 
-bool index_service::search(const std::string &index_name, const vector_data &query,
-                           size_t top_k,
+bool index_service::search(const std::string &index_name,
+                           const vector_data &query, size_t top_k,
                            std::vector<search_result> *results) const {
   if (!const_cast<index_service *>(this)->ensure_runtime_loaded_for_search(
           index_name))
@@ -1095,8 +1155,7 @@ bool index_service::snapshot_search_backend_loaded(
     return false;
   }
   auto index_it = m_indexes.find(index_name);
-  if (index_it == m_indexes.end() || index_it->second == nullptr)
-    return false;
+  if (index_it == m_indexes.end() || index_it->second == nullptr) return false;
   *runtime = index_it->second;
   if (config != nullptr) *config = config_it->second;
   return true;
@@ -1112,10 +1171,10 @@ bool index_service::snapshot_search_runtime_loaded(
   const auto config_it = m_index_configs.find(index_name);
   const auto publication_it = m_publication_states.find(index_name);
   const auto index_it = m_indexes.find(index_name);
-  if (!all_true(lifecycle_it != m_lifecycle_infos.end(),
-                config_it != m_index_configs.end(),
-                publication_it != m_publication_states.end(),
-                index_it != m_indexes.end(), index_it->second != nullptr) ||
+  if (lifecycle_it == m_lifecycle_infos.end() ||
+      config_it == m_index_configs.end() ||
+      publication_it == m_publication_states.end() ||
+      index_it == m_indexes.end() || index_it->second == nullptr ||
       lifecycle_is_bulk_loading(lifecycle_it->second) ||
       query_dimension != config_it->second.dimension ||
       publication_it->second.runtime_generation !=
@@ -1138,11 +1197,11 @@ bool index_service::search_runtime_snapshot_matches(
   const auto config_it = m_index_configs.find(index_name);
   const auto publication_it = m_publication_states.find(index_name);
   const auto index_it = m_indexes.find(index_name);
-  if (!all_true(lifecycle_it != m_lifecycle_infos.end(),
-                config_it != m_index_configs.end(),
-                publication_it != m_publication_states.end(),
-                index_it != m_indexes.end(), index_it->second != nullptr,
-                snapshot.runtime != nullptr) ||
+  if (lifecycle_it == m_lifecycle_infos.end() ||
+      config_it == m_index_configs.end() ||
+      publication_it == m_publication_states.end() ||
+      index_it == m_indexes.end() || index_it->second == nullptr ||
+      snapshot.runtime == nullptr ||
       lifecycle_is_bulk_loading(lifecycle_it->second) ||
       index_it->second != snapshot.runtime ||
       !index_configs_equal(config_it->second, snapshot.config)) {
@@ -1189,7 +1248,7 @@ bool index_service::search_batch_loaded(
     if (query.size() != config_it->second.dimension) return false;
   }
   auto index_it = m_indexes.find(index_name);
-  if (index_it == m_indexes.end()) return false;
+  if (index_it == m_indexes.end() || index_it->second == nullptr) return false;
   backend_ptr runtime = index_it->second;
   {
     std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
@@ -1205,19 +1264,16 @@ bool index_service::search_batch_loaded(
   index_service *self = const_cast<index_service *>(this);
   if (!self->rebuild_runtime_from_store_for_search(index_name)) return false;
   index_it = m_indexes.find(index_name);
-  if (index_it == m_indexes.end() || index_it->second == nullptr)
-    return false;
+  if (index_it == m_indexes.end() || index_it->second == nullptr) return false;
   runtime = index_it->second;
   std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-  return search_batch_runtime_with_exact_rerank(index_name, config_it->second,
-                                                runtime.get(), queries, top_k,
-                                                results);
+  return search_batch_runtime_with_exact_rerank(
+      index_name, config_it->second, runtime.get(), queries, top_k, results);
 }
 
-bool index_service::search_with_pending(uint64_t txn_id,
-                                     const std::string &index_name,
-                                     const vector_data &query, size_t top_k,
-                                     std::vector<search_result> *results) const {
+bool index_service::search_with_pending(
+    uint64_t txn_id, const std::string &index_name, const vector_data &query,
+    size_t top_k, std::vector<search_result> *results) const {
   if (!const_cast<index_service *>(this)->ensure_runtime_loaded_for_search(
           index_name))
     return false;
@@ -1342,7 +1398,7 @@ bool index_service::snapshot_pending_change_delta(
       vector_data committed_vector;
       bool found = false;
       if (!m_entry_store.find_committed_entry(change.index_name, change.doc_id,
-                                             &committed_vector, &found)) {
+                                              &committed_vector, &found)) {
         return false;
       }
       committed_it =
@@ -1357,8 +1413,8 @@ bool index_service::snapshot_pending_change_delta(
       if (existed_before && committed_it->second.second == vector) {
         deltas.erase(key);
       } else {
-        deltas[key] = pending_change_snapshot{
-            change.index_name, false, change.doc_id, std::move(vector)};
+        deltas[key] = pending_change_snapshot{change.index_name, false,
+                                              change.doc_id, std::move(vector)};
       }
       continue;
     }
@@ -1381,12 +1437,7 @@ bool index_service::snapshot_pending_change_delta(
 bool index_service::restore_pending_changes(
     uint64_t txn_id, const std::vector<pending_change_snapshot> &changes) {
   if (changes.empty()) {
-    auto pending_it = m_pending_changes.find(txn_id);
-    if (pending_it != m_pending_changes.end()) {
-      remove_pending_change_spills(pending_it->second, 0);
-      m_pending_changes.erase(pending_it);
-    }
-    m_savepoints.erase(txn_id);
+    clear_pending_state(txn_id);
     return true;
   }
 
@@ -1399,14 +1450,17 @@ bool index_service::restore_pending_changes(
       remove_pending_change_spills(restored, 0);
       return false;
     }
-    if (!change.erase && index_it->second->dimension() != change.vector.size()) {
+    if (!change.erase &&
+        index_it->second->dimension() != change.vector.size()) {
       remove_pending_change_spills(restored, 0);
       return false;
     }
-    pending_change restored_change{change.index_name,
-                                   change.erase ? change_type::kErase
-                                                : change_type::kUpsert,
-                                   change.doc_id, change.vector, {}};
+    pending_change restored_change{
+        change.index_name,
+        change.erase ? change_type::kErase : change_type::kUpsert,
+        change.doc_id,
+        change.vector,
+        {}};
     if (!change.erase) {
       const size_t vector_bytes = change.vector.size() * sizeof(float);
       if (pending_budget_allows(restored_memory_bytes, vector_bytes)) {
@@ -1436,8 +1490,8 @@ bool index_service::restore_pending_changes(
   return true;
 }
 
-bool index_service::snapshot_pending_state(uint64_t txn_id,
-                                           pending_state_snapshot *state) const {
+bool index_service::snapshot_pending_state(
+    uint64_t txn_id, pending_state_snapshot *state) const {
   if (state == nullptr) return false;
   state->changes.clear();
   state->savepoints.clear();
@@ -1465,7 +1519,8 @@ bool index_service::restore_pending_state(uint64_t txn_id,
   restored_savepoints.reserve(state.savepoints.size());
   const size_t pending_count = pending_change_count(txn_id);
   for (const pending_savepoint_snapshot &marker : state.savepoints) {
-    if (marker.name.empty() || marker.change_count > pending_count) return false;
+    if (marker.name.empty() || marker.change_count > pending_count)
+      return false;
     restored_savepoints.push_back(
         savepoint_marker{marker.name, marker.change_count});
   }

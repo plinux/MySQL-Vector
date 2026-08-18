@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "my_base.h"
 #include "my_byteorder.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
@@ -156,11 +157,11 @@ bool collect_erase_for_field(TABLE *table, Field *field, uint64_t doc_id,
   return false;
 }
 
-bool for_each_vector_field(TABLE *table, bool (*callback)(Field *, void *),
-                           void *arg) {
+template <typename Callback>
+bool for_each_vector_field(TABLE *table, Callback &&callback) {
   for (Field **field = table->field; *field != nullptr; ++field) {
     if (!(*field)->is_flag_set(FIELD_IS_VECTOR)) continue;
-    if (callback(*field, arg)) return true;
+    if (callback(*field)) return true;
   }
   return false;
 }
@@ -177,11 +178,6 @@ bool has_vector_columns(const TABLE *table) {
   return false;
 }
 
-bool supports_vector_doc_id(TABLE *table) {
-  Field *pk_field = nullptr;
-  return get_doc_id_field(table, &pk_field);
-}
-
 bool prepare_insert_row(TABLE *table, const uchar *record,
                       prepared_changes *changes) {
   if (table == nullptr || record == nullptr || changes == nullptr) return true;
@@ -194,23 +190,12 @@ bool prepare_insert_row(TABLE *table, const uchar *record,
   uint64_t doc_id = 0;
   if (!get_doc_id_for_record(pk_field, record, &doc_id)) return false;
 
-  struct callback_arg {
-    TABLE *table;
-    uint64_t doc_id;
-    const uchar *record;
-    prepared_changes *changes;
-  } arg{table, doc_id, record, changes};
-
-  auto callback = [](Field *field, void *raw_arg) -> bool {
-    callback_arg *cb = static_cast<callback_arg *>(raw_arg);
-    if (field->is_null_in_record(cb->record)) {
-      return collect_erase_for_field(cb->table, field, cb->doc_id, cb->changes);
+  return for_each_vector_field(table, [&](Field *field) {
+    if (field->is_null_in_record(record)) {
+      return collect_erase_for_field(table, field, doc_id, changes);
     }
-    return collect_upsert_for_field(cb->table, field, cb->doc_id, cb->record,
-                                    cb->changes);
-  };
-
-  return for_each_vector_field(table, callback, &arg);
+    return collect_upsert_for_field(table, field, doc_id, record, changes);
+  });
 }
 
 bool prepare_insert_row_for_index(TABLE *table, const std::string &index_name,
@@ -264,18 +249,9 @@ bool prepare_delete_row(TABLE *table, const uchar *record,
   uint64_t doc_id = 0;
   if (!get_doc_id_for_record(pk_field, record, &doc_id)) return false;
 
-  struct callback_arg {
-    TABLE *table;
-    uint64_t doc_id;
-    prepared_changes *changes;
-  } arg{table, doc_id, changes};
-
-  auto callback = [](Field *field, void *raw_arg) -> bool {
-    callback_arg *cb = static_cast<callback_arg *>(raw_arg);
-    return collect_erase_for_field(cb->table, field, cb->doc_id, cb->changes);
-  };
-
-  return for_each_vector_field(table, callback, &arg);
+  return for_each_vector_field(table, [&](Field *field) {
+    return collect_erase_for_field(table, field, doc_id, changes);
+  });
 }
 
 bool prepare_update_row(TABLE *table, const uchar *old_record,
@@ -297,33 +273,19 @@ bool prepare_update_row(TABLE *table, const uchar *old_record,
     return false;
   }
 
-  struct callback_arg {
-    TABLE *table;
-    uint64_t old_doc_id;
-    uint64_t new_doc_id;
-    const uchar *old_record;
-    const uchar *new_record;
-    prepared_changes *changes;
-  } arg{table, old_doc_id, new_doc_id, old_record, new_record, changes};
-
-  auto callback = [](Field *field, void *raw_arg) -> bool {
-    callback_arg *cb = static_cast<callback_arg *>(raw_arg);
-    if (cb->old_doc_id != cb->new_doc_id) {
-      if (collect_erase_for_field(cb->table, field, cb->old_doc_id,
-                                  cb->changes)) {
+  return for_each_vector_field(table, [&](Field *field) {
+    if (old_doc_id != new_doc_id) {
+      if (collect_erase_for_field(table, field, old_doc_id, changes)) {
         return true;
       }
     }
 
-    if (field->is_null_in_record(cb->new_record)) {
-      return collect_erase_for_field(cb->table, field, cb->new_doc_id,
-                                     cb->changes);
+    if (field->is_null_in_record(new_record)) {
+      return collect_erase_for_field(table, field, new_doc_id, changes);
     }
-    return collect_upsert_for_field(cb->table, field, cb->new_doc_id,
-                                    cb->new_record, cb->changes);
-  };
-
-  return for_each_vector_field(table, callback, &arg);
+    return collect_upsert_for_field(table, field, new_doc_id, new_record,
+                                    changes);
+  });
 }
 
 bool stage_prepared_changes(THD *thd, const prepared_changes &changes) {
@@ -376,12 +338,14 @@ int update_row_and_stage_changes(THD *thd, TABLE *table) {
   prepared_changes changes;
   if (prepare_update_row(table, table->record[1], table->record[0],
                          &changes)) {
-    return 1;
+    return HA_ERR_INTERNAL_ERROR;
   }
 
   const int error = table->file->ha_update_row(table->record[1],
                                                table->record[0]);
-  if (error == 0 && stage_prepared_changes(thd, changes)) return 1;
+  if (error == 0 && stage_prepared_changes(thd, changes)) {
+    return HA_ERR_INTERNAL_ERROR;
+  }
   return error;
 }
 

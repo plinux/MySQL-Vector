@@ -1770,6 +1770,10 @@ TEST(VectorEntryStoreTest, CoversGuardNoopAndMissingTruthStoreReadThrough) {
 
 TEST(VectorIndexServiceTest, StageUpsertSpillsPendingPayloadOverBudget) {
   UlonglongGuard guard(&opt_vector_pending_cache_size, 2U * sizeof(float));
+  const std::filesystem::path root =
+      std::filesystem::path(testing::TempDir()) / "vector_pending_spill_budget";
+  std::filesystem::remove_all(root);
+  faiss_snapshot_root_guard root_guard(root.string());
   vector_index::index_service service;
   std::vector<vector_index::search_result> result;
 
@@ -8542,6 +8546,63 @@ TEST(VectorIndexServiceTest, RestorePendingChangesClearsTxnAndSavepoints) {
   ASSERT_TRUE(service.restore_pending_changes(55, {}));
   EXPECT_EQ(0U, service.pending_change_count(55));
   EXPECT_FALSE(service.rollback_to_savepoint(55, "sp1"));
+}
+
+TEST(VectorIndexServiceTest, PendingStateCleanupRemovesSpillsAndSavepoints) {
+  UlonglongGuard cache_size(&opt_vector_pending_cache_size, 1);
+  const std::filesystem::path root =
+      std::filesystem::path(testing::TempDir()) / "vector_pending_spill_state";
+  std::filesystem::remove_all(root);
+  faiss_snapshot_root_guard root_guard(root.string());
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index(
+      "idx_pending_cleanup", std::make_unique<vector_index::memory_backend>(
+                                 2, vector_index::metric_type::kEuclidean)));
+  ASSERT_TRUE(service.stage_upsert(204, "idx_pending_cleanup", 204,
+                                   {1.0F, 1.0F}));
+  ASSERT_TRUE(service.savepoint(204, "sp"));
+
+  const std::filesystem::path spill_directory = root / "pending_spill";
+  ASSERT_TRUE(std::filesystem::exists(spill_directory));
+  const auto spill_it = std::filesystem::directory_iterator(spill_directory);
+  ASSERT_NE(spill_it, std::filesystem::directory_iterator());
+  const std::filesystem::path spill_path = spill_it->path();
+  ASSERT_TRUE(std::filesystem::exists(spill_path));
+
+  service.discard_all_pending_changes();
+  EXPECT_FALSE(std::filesystem::exists(spill_path));
+  EXPECT_EQ(0U, service.pending_change_count(204));
+  EXPECT_FALSE(service.rollback_to_savepoint(204, "sp"));
+}
+
+TEST(VectorIndexServiceTest, PendingSpillCleanupIsScopedToCurrentDatadir) {
+  const std::filesystem::path base = std::filesystem::path(testing::TempDir()) /
+                                     "vector_pending_spill_cleanup";
+  const std::filesystem::path first_root = base / "first";
+  const std::filesystem::path second_root = base / "second";
+  const std::filesystem::path first_spill = first_root / "pending_spill";
+  const std::filesystem::path second_spill = second_root / "pending_spill";
+  std::filesystem::remove_all(base);
+  std::filesystem::create_directories(first_spill);
+  std::filesystem::create_directories(second_spill);
+  std::ofstream(first_spill / "first.bin") << "first";
+  std::ofstream(second_spill / "second.bin") << "second";
+
+  vector_index::index_service service;
+  {
+    faiss_snapshot_root_guard root_guard(second_root.string());
+    ASSERT_TRUE(service.cleanup_orphaned_pending_spills());
+  }
+  EXPECT_TRUE(std::filesystem::exists(first_spill / "first.bin"));
+  EXPECT_FALSE(std::filesystem::exists(second_spill));
+
+  {
+    faiss_snapshot_root_guard root_guard(first_root.string());
+    ASSERT_TRUE(service.cleanup_orphaned_pending_spills());
+  }
+  EXPECT_FALSE(std::filesystem::exists(first_spill));
+  std::filesystem::remove_all(base);
 }
 
 TEST(VectorIndexServiceTest, RestoreCommittedStateUsesEmptyStateForMissingIndex) {

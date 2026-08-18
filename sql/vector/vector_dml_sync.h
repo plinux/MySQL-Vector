@@ -45,7 +45,6 @@ struct prepared_change {
 using prepared_changes = std::vector<prepared_change>;
 
 bool has_vector_columns(const TABLE *table);
-bool supports_vector_doc_id(TABLE *table);
 bool prepare_insert_row(TABLE *table, const uchar *record,
                         prepared_changes *changes);
 bool prepare_delete_row(TABLE *table, const uchar *record,

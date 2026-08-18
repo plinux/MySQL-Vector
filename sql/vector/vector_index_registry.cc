@@ -58,6 +58,7 @@ namespace vector_index_registry::detail {
 std::shared_mutex g_registry_mutex;
 vector_index::index_service g_index_service;
 bool g_metadata_loaded = false;
+bool g_pending_spill_startup_cleanup_complete = false;
 registry_health_state g_registry_health = registry_health_state::kReady;
 std::string g_registry_failure_reason;
 truth_recovery_state g_truth_recovery_state;
@@ -1253,6 +1254,7 @@ bool snapshot_prepared_rows_for_txn_locked(
 
 bool apply_metadata_rows_locked(
     const std::vector<vector_index_metadata_store::metadata_row> &rows) {
+  g_index_service.discard_all_pending_changes();
   g_index_service = vector_index::index_service();
   g_index_bindings.clear();
   g_index_owner_schemas.clear();
@@ -1622,6 +1624,15 @@ bool ensure_metadata_available_locked() {
   (void)vector_trx_participant::ensure_observer_registered();
   if (g_registry_health == registry_health_state::kFailed) return false;
   if (g_metadata_loaded) return true;
+
+  if (!g_pending_spill_startup_cleanup_complete) {
+    if (!g_index_service.cleanup_orphaned_pending_spills()) {
+      g_registry_health = registry_health_state::kFailed;
+      g_registry_failure_reason = "pending_spill_cleanup_failed";
+      return false;
+    }
+    g_pending_spill_startup_cleanup_complete = true;
+  }
 
   g_truth_recovery_state = truth_recovery_state{};
 
@@ -2562,8 +2573,10 @@ void set_change_log_compact_threshold_for_testing(size_t threshold) {
 
 void reset_for_testing() {
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  g_index_service.discard_all_pending_changes();
   g_index_service = vector_index::index_service();
   g_metadata_loaded = false;
+  g_pending_spill_startup_cleanup_complete = false;
   g_registry_health = registry_health_state::kReady;
   g_registry_failure_reason.clear();
   g_truth_recovery_state = truth_recovery_state{};

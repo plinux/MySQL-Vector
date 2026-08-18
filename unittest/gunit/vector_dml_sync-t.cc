@@ -269,16 +269,21 @@ TEST(VectorDmlSyncTest, HasVectorColumnsRejectsNullTable) {
   EXPECT_FALSE(vector_dml_sync::has_vector_columns(nullptr));
 }
 
-TEST_F(VectorDmlSyncFixture, SupportsVectorDocIdCoversPrimaryKeyShapes) {
+TEST_F(VectorDmlSyncFixture, GetDocIdFieldCoversPrimaryKeyShapes) {
+  Field *pk_field = nullptr;
   auto table = MakeVectorTable();
-  EXPECT_TRUE(vector_dml_sync::supports_vector_doc_id(table.get()));
+  EXPECT_TRUE(
+      vector_dml_sync::get_doc_id_field_for_testing(table.get(), &pk_field));
+  EXPECT_EQ(doc_id_field(table.get()), pk_field);
 
   auto no_primary_key = MakeVectorTable();
   no_primary_key->get_share()->primary_key = MAX_KEY;
-  EXPECT_FALSE(vector_dml_sync::supports_vector_doc_id(no_primary_key.get()));
+  EXPECT_FALSE(vector_dml_sync::get_doc_id_field_for_testing(
+      no_primary_key.get(), &pk_field));
 
   auto nullable_doc_id = MakeVectorTable("db_sync", "t_null_pk", true);
-  EXPECT_FALSE(vector_dml_sync::supports_vector_doc_id(nullable_doc_id.get()));
+  EXPECT_FALSE(vector_dml_sync::get_doc_id_field_for_testing(
+      nullable_doc_id.get(), &pk_field));
 
   auto two_part_pk = MakeVectorTable("db_sync", "t_two_pk");
   auto *extra = new (*THR_MALLOC) Mock_field_long("other_col", false, false);
@@ -291,7 +296,8 @@ TEST_F(VectorDmlSyncFixture, SupportsVectorDocIdCoversPrimaryKeyShapes) {
   const int key_id =
       composite->create_index(doc_id_field(composite.get()), extra, true);
   composite->get_share()->primary_key = static_cast<uint>(key_id);
-  EXPECT_FALSE(vector_dml_sync::supports_vector_doc_id(composite.get()));
+  EXPECT_FALSE(vector_dml_sync::get_doc_id_field_for_testing(composite.get(),
+                                                             &pk_field));
 }
 
 TEST(VectorDmlSyncTest, PrepareHelpersRejectNullInputs) {

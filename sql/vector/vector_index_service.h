@@ -543,6 +543,10 @@ class index_service {
   bool savepoint(uint64_t txn_id, const std::string &name);
   bool rollback_to_savepoint(uint64_t txn_id, const std::string &name);
   bool release_savepoint(uint64_t txn_id, const std::string &name);
+  /** Remove spill files left by a previous mysqld process for this datadir. */
+  bool cleanup_orphaned_pending_spills();
+  /** Discard all in-memory pending state and its owned spill files. */
+  void discard_all_pending_changes();
 
   bool search(const std::string &index_name, const vector_data &query,
               size_t top_k, std::vector<search_result> *results) const;
@@ -745,6 +749,7 @@ class index_service {
   static void remove_pending_change_spill(const pending_change &change);
   static void remove_pending_change_spills(
       const std::vector<pending_change> &changes, size_t first_change);
+  void clear_pending_state(uint64_t txn_id);
 
   bool register_index_impl(const std::string &index_name, index_config config,
                            std::unique_ptr<backend> backend);
