@@ -645,6 +645,13 @@ TEST_F(VectorDmlSyncFixture, StagePreparedChangesCoversSuccessAndFailure) {
   store_.commit_attached_dml();
   EXPECT_TRUE(vector_index_registry::publish_thd_txn(
       static_cast<uint64_t>(thd()->thread_id())));
+  // A non-XA after-commit callback may observe an already-consumed context.
+  // It must not replay unrelated durable changelog rows.
+  store_.change_log_rows.push_back(
+      {999, 999, vector_index_metadata_store::change_op::kUpsert,
+       "missing.index", 999, {9.0F, 9.0F}});
+  EXPECT_TRUE(vector_index_registry::publish_thd_txn(
+      static_cast<uint64_t>(thd()->thread_id())));
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(

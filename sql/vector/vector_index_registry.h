@@ -340,8 +340,19 @@ bool stage_changes_for_thd_txn(
 
 bool commit_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id);
 bool rollback_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id);
-/** Publish a committed THD transaction into the derived ANN runtime. */
-bool publish_thd_txn(uint64_t thd_id);
+/**
+  Publish a committed THD transaction into the derived ANN runtime.
+
+  @param thd_id committed server thread identifier
+  @param recover_detached_xa replay durable rows when XA prepare already
+    discarded the volatile THD context
+  @param failure_stage optional diagnostic label identifying the publication
+    stage that failed
+
+  @return true when the transaction is published or has no work to publish
+*/
+bool publish_thd_txn(uint64_t thd_id, bool recover_detached_xa = false,
+                     std::string *failure_stage = nullptr);
 /** Drop volatile pending state after InnoDB has accepted XA prepare. */
 bool detach_thd_txn_for_prepare(uint64_t thd_id);
 bool commit_thd_txn(uint64_t thd_id);

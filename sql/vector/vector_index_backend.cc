@@ -626,6 +626,58 @@ bool backend::recover_committed_entries_from_source(
   return recover_committed_entries_from_reader(source.reader);
 }
 
+void batch_search_candidates::clear() {
+  m_query_count = 0;
+  m_shared_candidates.clear();
+  m_per_query_candidates.clear();
+}
+
+void batch_search_candidates::set_shared(
+    size_t query_count, std::vector<search_result> candidates) {
+  clear();
+  m_query_count = query_count;
+  m_shared_candidates = std::move(candidates);
+}
+
+void batch_search_candidates::set_per_query(
+    std::vector<std::vector<search_result>> candidates) {
+  clear();
+  m_query_count = candidates.size();
+  m_per_query_candidates = std::move(candidates);
+}
+
+void batch_search_candidates::prepare_per_query(size_t query_count) {
+  clear();
+  m_query_count = query_count;
+  m_per_query_candidates.resize(query_count);
+}
+
+const std::vector<search_result> *batch_search_candidates::for_query(
+    size_t query_index) const {
+  if (query_index >= m_query_count) return nullptr;
+  if (m_per_query_candidates.empty()) return &m_shared_candidates;
+  return &m_per_query_candidates[query_index];
+}
+
+std::vector<search_result> *batch_search_candidates::mutable_for_query(
+    size_t query_index) {
+  if (query_index >= m_query_count || m_per_query_candidates.empty()) {
+    return nullptr;
+  }
+  return &m_per_query_candidates[query_index];
+}
+
+bool batch_search_candidates::materialize(
+    std::vector<std::vector<search_result>> *results) && {
+  if (results == nullptr) return false;
+  if (m_per_query_candidates.empty()) {
+    results->assign(m_query_count, m_shared_candidates);
+  } else {
+    *results = std::move(m_per_query_candidates);
+  }
+  return true;
+}
+
 bool backend::search_batch(
     const std::vector<vector_data> &queries, size_t top_k,
     std::vector<std::vector<search_result>> *results) const {
@@ -667,8 +719,7 @@ bool backend::search_for_rerank(
 
 bool backend::search_batch_for_rerank(
     const std::vector<vector_data> &queries, size_t top_k,
-    size_t candidate_top_k,
-    std::vector<std::vector<search_result>> *results) const {
+    size_t candidate_top_k, batch_search_candidates *results) const {
   if (results == nullptr) return false;
   results->clear();
   if (queries.empty()) return true;
@@ -678,10 +729,16 @@ bool backend::search_batch_for_rerank(
   if (candidate_top_k > top_k &&
       collect_full_rerank_candidates(*this, requested_candidate_count,
                                      &candidates)) {
-    results->assign(queries.size(), candidates);
+    results->set_shared(queries.size(), std::move(candidates));
     return true;
   }
-  return search_batch(queries, requested_candidate_count, results);
+  std::vector<std::vector<search_result>> per_query_candidates;
+  if (!search_batch(queries, requested_candidate_count,
+                    &per_query_candidates)) {
+    return false;
+  }
+  results->set_per_query(std::move(per_query_candidates));
+  return true;
 }
 
 bool backend::collect_doc_ids(std::vector<uint64_t> *doc_ids

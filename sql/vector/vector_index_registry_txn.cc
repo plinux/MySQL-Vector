@@ -114,42 +114,81 @@ bool bind_commit_truth_generations(
   return target_generations.empty();
 }
 
+void set_publication_failure(std::string *failure_stage,
+                             const std::string &stage) {
+  if (failure_stage != nullptr) *failure_stage = stage;
+}
+
 bool publish_pending_runtime(
     uint64_t txn_id,
     const std::vector<vector_index_metadata_store::change_log_row>
         &durable_rows,
-    bool update_pending_status) {
+    bool update_pending_status, std::string *failure_stage = nullptr) {
   vector_index::index_service::commit_build_plan build_plan;
   size_t pending_change_count = 0;
   {
     std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-    if (!ensure_metadata_loaded_locked()) return false;
+    if (!ensure_metadata_loaded_locked()) {
+      set_publication_failure(failure_stage, "metadata_load_before_snapshot");
+      return false;
+    }
     pending_change_count = g_index_service.pending_change_count(txn_id);
     if (pending_change_count == 0) return durable_rows.empty();
-    if (pending_change_count != durable_rows.size() ||
-        !g_index_service.snapshot_commit_build_plan(txn_id, &build_plan) ||
-        !bind_commit_truth_generations(durable_rows, &build_plan)) {
+    if (pending_change_count != durable_rows.size()) {
+      set_publication_failure(failure_stage, "pending_change_count_mismatch");
+      return false;
+    }
+    if (!g_index_service.snapshot_commit_build_plan(txn_id, &build_plan)) {
+      set_publication_failure(failure_stage, "snapshot_commit_build_plan");
+      return false;
+    }
+    if (!bind_commit_truth_generations(durable_rows, &build_plan)) {
+      set_publication_failure(failure_stage, "bind_commit_truth_generations");
       return false;
     }
   }
 
   const auto commit_started = std::chrono::steady_clock::now();
-  if (!g_index_service.build_commit_backends(&build_plan)) return false;
+  if (!g_index_service.build_commit_backends(&build_plan)) {
+    set_publication_failure(failure_stage, "build_commit_backends");
+    return false;
+  }
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked() ||
-      g_index_service.pending_change_count(txn_id) != pending_change_count) {
+  if (!ensure_metadata_loaded_locked()) {
+    set_publication_failure(failure_stage, "metadata_load_before_apply");
+    return false;
+  }
+  if (g_index_service.pending_change_count(txn_id) != pending_change_count) {
+    set_publication_failure(failure_stage, "pending_change_count_changed");
     return false;
   }
 
   commit_runtime_snapshot before_state;
   vector_index::index_service::pending_state_snapshot before_pending_state;
-  if (!capture_runtime_commit_state_locked(&before_state) ||
-      !g_index_service.snapshot_pending_state(txn_id, &before_pending_state)) {
+  if (!capture_runtime_commit_state_locked(&before_state)) {
+    set_publication_failure(failure_stage, "capture_runtime_commit_state");
     return false;
   }
-  if (!g_index_service.apply_commit_build_plan(txn_id, &build_plan) ||
-      !append_durable_change_log_rows_locked(durable_rows)) {
+  if (!g_index_service.snapshot_pending_state(txn_id, &before_pending_state)) {
+    set_publication_failure(failure_stage, "snapshot_pending_state");
+    return false;
+  }
+  if (!g_index_service.apply_commit_build_plan(txn_id, &build_plan)) {
+    set_publication_failure(
+        failure_stage,
+        build_plan.failure_stage.empty()
+            ? "apply_commit_build_plan"
+            : "apply_commit_build_plan:" + build_plan.failure_stage);
+    if (!rollback_runtime_commit_state_locked(before_state) ||
+        !g_index_service.restore_pending_state(txn_id, before_pending_state)) {
+      vector_status::record_runtime_state_rollback_failure();
+    }
+    vector_status::record_txn_commit_failure();
+    return false;
+  }
+  if (!append_durable_change_log_rows_locked(durable_rows)) {
+    set_publication_failure(failure_stage, "append_durable_change_log_rows");
     if (!rollback_runtime_commit_state_locked(before_state) ||
         !g_index_service.restore_pending_state(txn_id, before_pending_state)) {
       vector_status::record_runtime_state_rollback_failure();
@@ -166,6 +205,7 @@ bool publish_pending_runtime(
   refresh_committed_snapshot_rows_locked();
   refresh_manifest_status_locked();
   if (!evict_committed_cache_to_budget_locked()) {
+    set_publication_failure(failure_stage, "evict_committed_cache_to_budget");
     if (!rollback_runtime_commit_state_locked(before_state) ||
         !g_index_service.restore_pending_state(txn_id, before_pending_state)) {
       vector_status::record_runtime_state_rollback_failure();
@@ -294,9 +334,109 @@ bool ensure_runtime_loaded_for_search(const std::string &index_name) {
     }
   }
 
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    if (g_index_service.runtime_loaded_for_search(index_name)) return true;
+
+    vector_index::index_service::index_config config;
+    vector_index::index_service::index_publication_state publication;
+    size_t authoritative_entry_count = 0;
+    std::string lifecycle_state;
+    if (!g_index_service.describe_index(
+            index_name, &config, nullptr, nullptr, &authoritative_entry_count,
+            &lifecycle_state) ||
+        !g_index_service.describe_publication_state(index_name, &publication)) {
+      return false;
+    }
+    if (lifecycle_state == "bulk_loading") return false;
+    const bool recoverable_diskann_artifact =
+        config.provider == vector_index::backend_provider::kDiskAnn &&
+        config.mode == vector_index::backend_mode::kExternal &&
+        publication.artifact_generation != 0 &&
+        publication.artifact_generation == publication.truth_generation;
+    if (recoverable_diskann_artifact) {
+      vector_index::diskann_artifact_identity identity;
+      if (make_diskann_artifact_identity_locked(index_name, config, publication,
+                                                authoritative_entry_count,
+                                                &identity) &&
+          g_index_service.recover_artifact_publication(index_name, identity) &&
+          g_index_service.artifact_publication_matches(index_name, identity)) {
+        return true;
+      }
+    }
+  }
+
+  std::string rebuild_error;
+  if (!rebuild_index(index_name, &rebuild_error)) return false;
+  std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+  return g_registry_health == registry_health_state::kReady &&
+         g_index_service.runtime_loaded_for_search(index_name);
+}
+
+bool rebuild_runtime_after_search_failure(const std::string &index_name) {
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
-  return g_index_service.ensure_runtime_loaded_for_search(index_name);
+  return ensure_metadata_loaded_locked() &&
+         g_index_service.rebuild_runtime_from_store_for_search(index_name);
+}
+
+// Continuous configuration publication can invalidate every bounded optimistic
+// attempt. Hold the registry read lock only on that cold path so one request can
+// make progress without mixing runtime and configuration generations.
+bool search_committed_runtime_serialized(
+    const std::string &index_name, const vector_index::vector_data &query,
+    size_t top_k, std::vector<vector_index::search_result> *results) {
+  std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+  vector_index::index_service::search_runtime_snapshot snapshot;
+  if (g_registry_health != registry_health_state::kReady ||
+      !g_index_service.snapshot_search_runtime_loaded(
+          index_name, query.size(), top_k, 1, &snapshot)) {
+    return false;
+  }
+
+  std::vector<vector_index::search_result> candidates;
+  {
+    std::shared_lock<std::shared_mutex> runtime_guard(
+        snapshot.runtime->runtime_mutex());
+    if (!snapshot.runtime->search_for_rerank(
+            query, top_k, snapshot.candidate_top_k, &candidates)) {
+      return false;
+    }
+  }
+  return g_index_service.search_runtime_snapshot_matches(index_name, snapshot) &&
+         g_index_service.finish_search_with_exact_rerank(
+             index_name, snapshot.config, query, top_k, std::move(candidates),
+             results);
+}
+
+bool search_committed_runtime_batch_serialized(
+    const std::string &index_name,
+    const std::vector<vector_index::vector_data> &queries, size_t top_k,
+    std::vector<std::vector<vector_index::search_result>> *results) {
+  std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+  vector_index::index_service::search_runtime_snapshot snapshot;
+  if (g_registry_health != registry_health_state::kReady ||
+      !g_index_service.snapshot_search_runtime_loaded(
+          index_name, queries[0].size(), top_k, queries.size(), &snapshot)) {
+    return false;
+  }
+  for (const vector_index::vector_data &query : queries) {
+    if (query.size() != snapshot.config.dimension) return false;
+  }
+
+  vector_index::batch_search_candidates candidates;
+  {
+    std::shared_lock<std::shared_mutex> runtime_guard(
+        snapshot.runtime->runtime_mutex());
+    if (!snapshot.runtime->search_batch_for_rerank(
+            queries, top_k, snapshot.candidate_top_k, &candidates)) {
+      return false;
+    }
+  }
+  return g_index_service.search_runtime_snapshot_matches(index_name, snapshot) &&
+         g_index_service.finish_search_batch_with_exact_rerank(
+             index_name, snapshot.config, queries, top_k,
+             std::move(candidates), results);
 }
 
 bool search_committed_runtime_loaded(
@@ -304,38 +444,62 @@ bool search_committed_runtime_loaded(
     size_t top_k, std::vector<vector_index::search_result> *results) {
   if (results == nullptr) return false;
 
-  vector_index::index_service::backend_ptr runtime;
-  vector_index::index_service::index_config config;
-  {
-    std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
-    if (!g_index_service.snapshot_search_backend_loaded(index_name, query,
-                                                        &runtime, &config)) {
-      return false;
-    }
-    std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-    if (g_index_service.search_runtime_with_exact_rerank(
-            index_name, config, runtime.get(), query, top_k, results)) {
-      return true;
-    }
-  }
-  if (!vector_index::detail::can_rebuild_after_search_failure(config))
-    return false;
+  bool rebuilt_after_failure = false;
+  for (size_t attempt = 0; attempt < 3; ++attempt) {
+    if (!ensure_runtime_loaded_for_search(index_name)) return false;
 
-  {
-    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-    if (!g_index_service.rebuild_runtime_from_store_for_search(index_name)) {
-      return false;
+    vector_index::index_service::search_runtime_snapshot snapshot;
+    {
+      std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+      if (!g_index_service.snapshot_search_runtime_loaded(
+              index_name, query.size(), top_k, 1, &snapshot)) {
+        continue;
+      }
     }
-    if (!g_index_service.snapshot_search_backend_loaded(index_name, query,
-                                                        &runtime, &config)) {
-      return false;
-    }
-  }
 
-  std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
-  std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-  return g_index_service.search_runtime_with_exact_rerank(
-      index_name, config, runtime.get(), query, top_k, results);
+    std::vector<vector_index::search_result> candidates;
+    bool searched = false;
+    {
+      std::shared_lock<std::shared_mutex> runtime_guard(
+          snapshot.runtime->runtime_mutex());
+      searched = snapshot.runtime->search_for_rerank(
+          query, top_k, snapshot.candidate_top_k, &candidates);
+    }
+    if (!searched) {
+      if (rebuilt_after_failure ||
+          !vector_index::detail::can_rebuild_after_search_failure(
+              snapshot.config)) {
+        return false;
+      }
+      if (!rebuild_runtime_after_search_failure(index_name)) return false;
+      rebuilt_after_failure = true;
+      continue;
+    }
+
+    bool snapshot_current = false;
+    bool finished = false;
+    {
+      std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+      snapshot_current = g_index_service.search_runtime_snapshot_matches(
+          index_name, snapshot);
+      if (snapshot_current) {
+        finished = g_index_service.finish_search_with_exact_rerank(
+            index_name, snapshot.config, query, top_k, std::move(candidates),
+            results);
+      }
+    }
+    if (!snapshot_current) continue;
+    if (finished) return true;
+    if (rebuilt_after_failure ||
+        !vector_index::detail::can_rebuild_after_search_failure(
+            snapshot.config)) {
+      return false;
+    }
+    if (!rebuild_runtime_after_search_failure(index_name)) return false;
+    rebuilt_after_failure = true;
+  }
+  if (!ensure_runtime_loaded_for_search(index_name)) return false;
+  return search_committed_runtime_serialized(index_name, query, top_k, results);
 }
 
 bool search_committed_runtime_batch_loaded(
@@ -344,41 +508,67 @@ bool search_committed_runtime_batch_loaded(
     std::vector<std::vector<vector_index::search_result>> *results) {
   if (results == nullptr || queries.empty()) return false;
 
-  vector_index::index_service::backend_ptr runtime;
-  vector_index::index_service::index_config config;
-  {
-    std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
-    if (!g_index_service.snapshot_search_backend_loaded(index_name, queries[0],
-                                                        &runtime, &config)) {
-      return false;
-    }
-    for (const vector_index::vector_data &query : queries) {
-      if (query.size() != config.dimension) return false;
-    }
-    std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-    if (g_index_service.search_batch_runtime_with_exact_rerank(
-            index_name, config, runtime.get(), queries, top_k, results)) {
-      return true;
-    }
-  }
-  if (!vector_index::detail::can_rebuild_after_search_failure(config))
-    return false;
+  bool rebuilt_after_failure = false;
+  for (size_t attempt = 0; attempt < 3; ++attempt) {
+    if (!ensure_runtime_loaded_for_search(index_name)) return false;
 
-  {
-    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-    if (!g_index_service.rebuild_runtime_from_store_for_search(index_name)) {
-      return false;
+    vector_index::index_service::search_runtime_snapshot snapshot;
+    {
+      std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+      if (!g_index_service.snapshot_search_runtime_loaded(
+              index_name, queries[0].size(), top_k, queries.size(),
+              &snapshot)) {
+        continue;
+      }
+      for (const vector_index::vector_data &query : queries) {
+        if (query.size() != snapshot.config.dimension) return false;
+      }
     }
-    if (!g_index_service.snapshot_search_backend_loaded(index_name, queries[0],
-                                                        &runtime, &config)) {
-      return false;
-    }
-  }
 
-  std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
-  std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-  return g_index_service.search_batch_runtime_with_exact_rerank(
-      index_name, config, runtime.get(), queries, top_k, results);
+    vector_index::batch_search_candidates candidates;
+    bool searched = false;
+    {
+      std::shared_lock<std::shared_mutex> runtime_guard(
+          snapshot.runtime->runtime_mutex());
+      searched = snapshot.runtime->search_batch_for_rerank(
+          queries, top_k, snapshot.candidate_top_k, &candidates);
+    }
+    if (!searched) {
+      if (rebuilt_after_failure ||
+          !vector_index::detail::can_rebuild_after_search_failure(
+              snapshot.config)) {
+        return false;
+      }
+      if (!rebuild_runtime_after_search_failure(index_name)) return false;
+      rebuilt_after_failure = true;
+      continue;
+    }
+
+    bool snapshot_current = false;
+    bool finished = false;
+    {
+      std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+      snapshot_current = g_index_service.search_runtime_snapshot_matches(
+          index_name, snapshot);
+      if (snapshot_current) {
+        finished = g_index_service.finish_search_batch_with_exact_rerank(
+            index_name, snapshot.config, queries, top_k,
+            std::move(candidates), results);
+      }
+    }
+    if (!snapshot_current) continue;
+    if (finished) return true;
+    if (rebuilt_after_failure ||
+        !vector_index::detail::can_rebuild_after_search_failure(
+            snapshot.config)) {
+      return false;
+    }
+    if (!rebuild_runtime_after_search_failure(index_name)) return false;
+    rebuilt_after_failure = true;
+  }
+  if (!ensure_runtime_loaded_for_search(index_name)) return false;
+  return search_committed_runtime_batch_serialized(index_name, queries, top_k,
+                                                    results);
 }
 
 size_t pending_change_count_for_thd_locked(uint64_t thd_id) {
@@ -891,7 +1081,9 @@ bool rollback_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id) {
   return rollback_staged_statement_locked(&ctx);
 }
 
-bool publish_thd_txn(uint64_t thd_id) {
+bool publish_thd_txn(uint64_t thd_id, bool recover_detached_xa,
+                     std::string *failure_stage) {
+  if (failure_stage != nullptr) failure_stage->clear();
   if (vector_index_truth_store::internal_sql_active()) return true;
 
   uint64_t txn_id = 0;
@@ -901,13 +1093,17 @@ bool publish_thd_txn(uint64_t thd_id) {
     std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
     auto it = g_thd_txn_contexts.find(thd_id);
     if (it != g_thd_txn_contexts.end()) {
-      if (!ensure_metadata_loaded_locked()) return false;
+      if (!ensure_metadata_loaded_locked()) {
+        set_publication_failure(failure_stage, "metadata_load_thd_context");
+        return false;
+      }
 
       has_context = true;
       thd_txn_context &ctx = it->second;
       if (ctx.stmt_savepoint_active) {
         if (!g_index_service.release_savepoint(ctx.txn_id,
                                                ctx.stmt_savepoint_name)) {
+          set_publication_failure(failure_stage, "release_statement_savepoint");
           return false;
         }
         clear_stmt_savepoint_state(&ctx);
@@ -917,9 +1113,17 @@ bool publish_thd_txn(uint64_t thd_id) {
     }
   }
 
-  if (!has_context) return publish_unapplied_truth_rows();
+  if (!has_context) {
+    if (!recover_detached_xa) return true;
+    const bool published = publish_unapplied_truth_rows();
+    if (!published) {
+      set_publication_failure(failure_stage, "replay_detached_xa");
+    }
+    return published;
+  }
 
-  const bool published = publish_pending_runtime(txn_id, durable_rows, true);
+  const bool published =
+      publish_pending_runtime(txn_id, durable_rows, true, failure_stage);
   if (!published) return false;
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);

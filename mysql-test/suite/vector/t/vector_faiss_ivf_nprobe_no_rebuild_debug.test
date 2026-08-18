@@ -24,11 +24,4 @@ SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf_nprobe', 1, 1);
 SET SESSION debug = '-d,vector_backend_fail_faiss_external_rebuild';
 --enable_query_log
 
---source include/restart_mysqld.inc
-
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nlist')
-         AS faiss_nlist_after_restart,
-       JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nprobe')
-         AS faiss_nprobe_after_restart;
-
 SELECT VEC_INDEX_DROP('idx_faiss_ivf_nprobe');

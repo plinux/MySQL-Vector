@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <unordered_set>
 
 #include "mysql/components/services/log_builtins.h"
@@ -162,14 +163,19 @@ void vector_trx_after_commit(void *arg) {
     std::lock_guard<std::mutex> guard(publication_mutex);
     publish = publication_threads.erase(param->thread_id) != 0;
   }
-  if (!publish &&
-      !is_xa_commit_publication_fallback(current_thd, param->thread_id)) {
+  const bool recover_detached_xa =
+      is_xa_commit_publication_fallback(current_thd, param->thread_id);
+  if (!publish && !recover_detached_xa) {
     return;
   }
+  std::string failure_stage;
   if (!vector_index_registry::publish_thd_txn(
-          static_cast<uint64_t>(param->thread_id))) {
-    LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
-           "Vector runtime publication failed after transaction commit");
+          static_cast<uint64_t>(param->thread_id), recover_detached_xa,
+          &failure_stage)) {
+    const std::string message =
+        "Vector runtime publication failed after transaction commit at stage '" +
+        (failure_stage.empty() ? "unknown" : failure_stage) + "'";
+    LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG, message.c_str());
   }
 }
 

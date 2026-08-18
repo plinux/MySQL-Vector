@@ -57,6 +57,20 @@ SELECT JSON_CONTAINS(
   VEC_INDEX_SEARCH('idx_diskann_txn_offline', VEC_FROMTEXT('[1,0]'), 8),
   CAST(10 AS JSON)) AS has_doc_10;
 
+SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 90,
+                        VEC_FROMTEXT('[9,0]'));
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+                    '$.truth_generation') >
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+                    '$.runtime_generation') AS runtime_rebuild_deferred;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_txn_offline', VEC_FROMTEXT('[9,0]'), 9),
+  CAST(90 AS JSON)) AS has_doc_90;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+                    '$.truth_generation') =
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+                    '$.runtime_generation') AS runtime_rebuild_published;
+
 SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
 SET GLOBAL vector_build_pipeline_max_tasks = @old_vector_build_pipeline_max_tasks;
 SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;

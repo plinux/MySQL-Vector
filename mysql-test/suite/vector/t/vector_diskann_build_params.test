@@ -107,14 +107,29 @@ SET GLOBAL vector_diskann_use_bfs_cache=DEFAULT;
 
 --source include/restart_mysqld.inc
 
---replace_regex /"backend_variant":"diskann_[a-z_]+"/"backend_variant":"<diskann_variant>"/ /"external_manifest_present":[01]/"external_manifest_present":<bool>/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_error_ts":[0-9]+/"last_error_ts":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
---source suite/vector/include/vector_normalize_lifecycle.inc
-SELECT VEC_INDEX_INFO('idx_diskann_params');
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.pending_apply_count') AS pending_before_search,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.entry_count') AS entries_before_search,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.committed_entry_count') AS committed_before_search,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.runtime_generation') = 0 AS runtime_unpublished_before_search;
 SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
   '$.diskann_build_mode'));
 SELECT JSON_CONTAINS(
   VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
   CAST(1 AS JSON));
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.pending_apply_count') AS pending_after_search,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.entry_count') AS entries_after_search,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.committed_entry_count') AS committed_after_search,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.runtime_generation') =
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.truth_generation') AS runtime_matches_truth_after_search;
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name LIKE 'idx_diskann_params.diskann_%';
 

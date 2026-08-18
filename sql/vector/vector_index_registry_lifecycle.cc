@@ -349,8 +349,32 @@ void fail_stop_registry_locked(const char *reason) {
       reason == nullptr ? "registry_state_restore_failed" : reason;
 }
 
+bool rollback_pending_artifacts_locked() {
+  std::vector<std::string> index_names;
+  if (!g_index_service.list_indexes(&index_names)) return false;
+  bool ok = true;
+  for (const std::string &index_name : index_names) {
+    if (!g_index_service.rollback_artifact_publication(index_name)) ok = false;
+  }
+  return ok;
+}
+
+bool finalize_pending_artifacts_locked() {
+  std::vector<std::string> index_names;
+  if (!g_index_service.list_indexes(&index_names)) return false;
+  bool ok = true;
+  for (const std::string &index_name : index_names) {
+    if (!g_index_service.finalize_artifact_publication(index_name)) ok = false;
+  }
+  return ok;
+}
+
 bool rollback_runtime_state_and_fail_locked(
     const runtime_state_snapshot &snapshot) {
+  if (!rollback_pending_artifacts_locked()) {
+    fail_stop_registry_locked("artifact_generation_rollback_failed");
+    return false;
+  }
   if (!rollback_runtime_state_locked(snapshot)) {
     fail_stop_registry_locked("registry_state_restore_failed");
   }
@@ -384,7 +408,13 @@ bool persist_registry_state_or_rollback_locked(
     const runtime_state_snapshot &snapshot, bool record_truth_store_failure) {
   const manifest_state_snapshot manifest_before =
       capture_manifest_state_locked();
-  if (persist_registry_state_locked()) return true;
+  if (persist_registry_state_locked()) {
+    if (!finalize_pending_artifacts_locked()) {
+      fail_stop_registry_locked("artifact_generation_finalize_failed");
+      return false;
+    }
+    return true;
+  }
   restore_manifest_state_locked(manifest_before);
   if (record_truth_store_failure)
     vector_status::record_truth_store_persist_failure();
@@ -532,6 +562,10 @@ bool rollback_backfill_publish_locked(
     const runtime_state_snapshot &runtime_before,
     const manifest_state_snapshot &manifest_before, const char *reason) {
   restore_manifest_state_locked(manifest_before);
+  if (!rollback_pending_artifacts_locked()) {
+    fail_stop_registry_locked("artifact_generation_rollback_failed");
+    return false;
+  }
   if (rollback_runtime_state_locked(runtime_before)) return false;
   fail_stop_registry_locked(reason);
   return false;
@@ -731,7 +765,8 @@ std::unique_ptr<vector_index::backend> build_rebuilt_backend(
   if (uses_standalone_source(plan)) return nullptr;
   std::unique_ptr<vector_index::backend> rebuilt =
       build_backend_from_config(plan.index_name, plan.config);
-  if (!rebuild_backend_from_entry_snapshot(rebuilt.get(), plan.entries)) {
+  if (rebuilt == nullptr || !rebuilt->defer_artifact_publication() ||
+      !rebuild_backend_from_entry_snapshot(rebuilt.get(), plan.entries)) {
     return nullptr;
   }
   return rebuilt;
@@ -793,21 +828,38 @@ bool rebuild_standalone_plan(const lifecycle_backend_plan &plan,
                                           rebuild_plan.segment_tasks);
       (void)persist_segment_tasks_locked();
     }
-    g_index_service.discard_standalone_rebuild(&rebuild_plan);
+    if (!g_index_service.discard_standalone_rebuild(&rebuild_plan)) {
+      fail_stop_registry_locked("artifact_generation_discard_failed");
+    }
     return false;
   }
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked() || !validate_backend_plan_locked(plan)) {
     set_rebuild_error(error, "vector index changed during rebuild");
-    g_index_service.discard_standalone_rebuild(&rebuild_plan);
+    if (!g_index_service.discard_standalone_rebuild(&rebuild_plan)) {
+      fail_stop_registry_locked("artifact_generation_discard_failed");
+    }
     return false;
   }
 
   runtime_state_snapshot snapshot;
   if (!capture_runtime_state_locked(&snapshot)) {
     set_rebuild_error(error, "vector registry could not capture state");
-    g_index_service.discard_standalone_rebuild(&rebuild_plan);
+    if (!g_index_service.discard_standalone_rebuild(&rebuild_plan)) {
+      fail_stop_registry_locked("artifact_generation_discard_failed");
+    }
+    return false;
+  }
+  vector_index::diskann_artifact_identity artifact_identity;
+  if (!make_diskann_artifact_identity_locked(
+          plan.index_name, plan.config, rebuild_plan.target_publication,
+          rebuild_plan.source_entry_count, &artifact_identity) ||
+      !g_index_service.prepare_standalone_rebuild_artifact(
+          &rebuild_plan, artifact_identity, error)) {
+    if (!g_index_service.discard_standalone_rebuild(&rebuild_plan)) {
+      fail_stop_registry_locked("artifact_generation_discard_failed");
+    }
     return false;
   }
   if (!g_index_service.publish_standalone_rebuild(&rebuild_plan, error)) {
@@ -817,7 +869,9 @@ bool rebuild_standalone_plan(const lifecycle_backend_plan &plan,
                                           rebuild_plan.segment_tasks);
       (void)persist_segment_tasks_locked();
     }
-    g_index_service.discard_standalone_rebuild(&rebuild_plan);
+    if (!g_index_service.discard_standalone_rebuild(&rebuild_plan)) {
+      fail_stop_registry_locked("artifact_generation_discard_failed");
+    }
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
   if (!refresh_segment_tasks_from_service_locked(plan.index_name)) {
@@ -840,7 +894,10 @@ bool rebuild_standalone_plan(const lifecycle_backend_plan &plan,
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
 
-  g_index_service.finalize_standalone_rebuild(&rebuild_plan);
+  if (!g_index_service.finalize_standalone_rebuild(&rebuild_plan)) {
+    fail_stop_registry_locked("artifact_generation_finalize_failed");
+    return false;
+  }
   return evict_committed_cache_to_budget_locked();
 }
 
@@ -971,8 +1028,16 @@ bool publish_truth_recovery_locked(
   if (!capture_runtime_state_locked(&snapshot)) return false;
   for (auto &candidate : *prepared) {
     const std::string &index_name = candidate.plan.expected_backend.index_name;
+    vector_index::diskann_artifact_identity artifact_identity;
+    if (!make_diskann_artifact_identity_locked(
+            index_name, candidate.plan.expected_backend.config,
+            candidate.plan.expected_backend.publication,
+            candidate.entries.size(), &artifact_identity)) {
+      return rollback_runtime_state_and_fail_locked(snapshot);
+    }
     if (!g_index_service.install_rebuilt_index(index_name, candidate.entries,
-                                               std::move(candidate.backend)) ||
+                                               std::move(candidate.backend),
+                                               &artifact_identity) ||
         !refresh_segment_tasks_from_service_locked(index_name)) {
       return rollback_runtime_state_and_fail_locked(snapshot);
     }
@@ -986,6 +1051,10 @@ bool publish_truth_recovery_locked(
         vector_index_truth_store::quarantine_state::kSourceUpdateFailed);
     g_registry_failure_reason = "truth_projection_recovery_persist_failed";
     return rollback_runtime_state_and_fail_locked(snapshot);
+  }
+  if (!finalize_pending_artifacts_locked()) {
+    fail_stop_registry_locked("artifact_generation_finalize_failed");
+    return false;
   }
   if (!update_recovery_quarantine_state_locked(
           vector_index_truth_store::quarantine_state::kComplete)) {
@@ -1080,12 +1149,12 @@ bool apply_persisted_index_config_change_locked(const std::string &index_name,
   vector_index::index_service::index_publication_state publication_after =
       publication_before;
   ++publication_after.config_generation;
-  if (!persist_index_config_manifest_locked(index_name, candidate,
-                                            publication_after)) {
-    return false;
-  }
-  if (apply() && g_index_service.restore_publication_state(index_name,
-                                                           publication_after)) {
+  if (!apply()) return false;
+  const bool publication_updated =
+      g_index_service.restore_publication_state(index_name, publication_after);
+  const bool persist_attempted = publication_updated;
+  if (publication_updated && persist_index_config_manifest_locked(
+                                 index_name, candidate, publication_after)) {
     return true;
   }
 
@@ -1098,7 +1167,10 @@ bool apply_persisted_index_config_change_locked(const std::string &index_name,
     fail_stop_registry_locked("index_config_runtime_restore_failed");
     return false;
   }
-  if (!persist_index_config_manifest_locked(index_name, before,
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  if (persist_attempted && !truth_store->is_transactional() &&
+      !persist_index_config_manifest_locked(index_name, before,
                                             publication_before)) {
     vector_status::record_truth_store_persist_failure();
     fail_stop_registry_locked("index_config_metadata_restore_failed");
@@ -1787,8 +1859,14 @@ bool rebuild_index(const std::string &index_name, std::string *error) {
     set_rebuild_error(error, "vector registry could not capture state");
     return false;
   }
+  vector_index::diskann_artifact_identity artifact_identity;
+  if (!make_diskann_artifact_identity_locked(
+          plan.index_name, plan.config, plan.publication,
+          plan.entries.size(), &artifact_identity)) {
+    return false;
+  }
   const bool ok = g_index_service.install_rebuilt_index(
-      index_name, plan.entries, std::move(rebuilt));
+      index_name, plan.entries, std::move(rebuilt), &artifact_identity);
   if (!ok) {
     set_rebuild_error(error, "vector registry could not publish rebuilt index");
     return rollback_runtime_state_and_fail_locked(snapshot);
@@ -1942,7 +2020,9 @@ bool publish_backfill(
 
   std::unique_ptr<vector_index::backend> rebuilt = build_rebuilt_backend(plan);
   if (rebuilt == nullptr) return false;
-  const bool artifact_present = rebuilt->external_manifest_present();
+  const bool artifact_present =
+      rebuilt->has_pending_artifact_publication() ||
+      rebuilt->external_manifest_present();
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   vector_index::index_service::index_config current_config;
@@ -1977,8 +2057,18 @@ bool publish_backfill(
       artifact_present ? publication.truth_generation : 0;
   publication.runtime_generation = publication.truth_generation;
 
+  vector_index::diskann_artifact_identity artifact_identity;
+  if (!make_diskann_artifact_identity_locked(index_name, plan.config,
+                                              publication, entries.size(),
+                                              &artifact_identity)) {
+    return rollback_backfill_publish_locked(
+        runtime_before, manifest_before,
+        "backfill_artifact_identity_restore_failed");
+  }
+
   if (!g_index_service.install_rebuilt_index(index_name, entries,
-                                             std::move(rebuilt)) ||
+                                             std::move(rebuilt),
+                                             &artifact_identity) ||
       !g_index_service.restore_publication_state(index_name, publication)) {
     return rollback_backfill_publish_locked(
         runtime_before, manifest_before,
@@ -2000,6 +2090,10 @@ bool publish_backfill(
   if (!persist_backfill_generation_locked(change_log_rows)) {
     return rollback_backfill_publish_locked(runtime_before, manifest_before,
                                             "backfill_persist_restore_failed");
+  }
+  if (!finalize_pending_artifacts_locked()) {
+    fail_stop_registry_locked("artifact_generation_finalize_failed");
+    return false;
   }
   if (!evict_committed_cache_to_budget_locked()) {
     fail_stop_registry_locked("backfill_cache_evict_failed");
@@ -2421,9 +2515,16 @@ bool rebuild_all_indexes(size_t *rebuilt_count) {
   runtime_state_snapshot snapshot;
   if (!capture_runtime_state_locked(&snapshot)) return false;
   for (prepared_lifecycle_backend &prepared : prepared_backends) {
+    vector_index::diskann_artifact_identity artifact_identity;
+    if (!make_diskann_artifact_identity_locked(
+            prepared.plan.index_name, prepared.plan.config,
+            prepared.plan.publication, prepared.plan.entries.size(),
+            &artifact_identity)) {
+      return rollback_runtime_state_and_fail_locked(snapshot);
+    }
     if (!g_index_service.install_rebuilt_index(
             prepared.plan.index_name, prepared.plan.entries,
-            std::move(prepared.backend))) {
+            std::move(prepared.backend), &artifact_identity)) {
       return rollback_runtime_state_and_fail_locked(snapshot);
     }
   }

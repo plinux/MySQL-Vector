@@ -38,6 +38,7 @@
 #include <utility>
 
 #include "my_dbug.h"
+#include "sql/vector/vector_diskann_generation_store.h"
 #include "sql/vector/vector_diskann_scheduler.h"
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
@@ -3095,7 +3096,14 @@ class segmented_backend final : public backend {
                     backend_build_diagnostics diagnostics)
       : m_config(std::move(config)),
         m_segments(std::move(segments)),
-        m_diagnostics(std::move(diagnostics)) {}
+        m_diagnostics(std::move(diagnostics)) {
+    m_segment_entry_counts.reserve(m_segments.size());
+    for (const auto &segment : m_segments) {
+      m_segment_entry_counts.push_back(segment == nullptr
+                                           ? 0
+                                           : segment->entry_count());
+    }
+  }
 
   bool upsert(uint64_t doc_id [[maybe_unused]],
               const vector_data &vector [[maybe_unused]]) override {
@@ -3136,13 +3144,8 @@ class segmented_backend final : public backend {
     if (!compute_segment_search_budget(top_k, merge_top_k, 1, &budget)) {
       return false;
     }
-    std::unique_lock<std::mutex> diskann_config_lock(
-        m_segment_search_config_mutex, std::defer_lock);
-    if (!apply_diskann_effective_search_complexity(budget,
-                                                   &diskann_config_lock)) {
-      return false;
-    }
-    if (diskann_config_lock.owns_lock()) diskann_config_lock.unlock();
+    backend_search_options search_options;
+    if (!make_backend_search_options(budget, &search_options)) return false;
 
     std::vector<std::vector<search_result>> segment_results(m_segments.size());
     const auto search_segment = [&](size_t segment_index) {
@@ -3154,8 +3157,9 @@ class segmented_backend final : public backend {
               &segment_results[segment_index])) {
         return true;
       }
-      return segment->search(query, budget.segment_top_k[segment_index],
-                             &segment_results[segment_index]);
+      return segment->search_with_options(
+          query, budget.segment_top_k[segment_index], search_options,
+          &segment_results[segment_index]);
     };
 
     size_t worker_count =
@@ -3198,15 +3202,14 @@ class segmented_backend final : public backend {
 
   bool search_batch_for_rerank(
       const std::vector<vector_data> &queries, size_t top_k,
-      size_t candidate_top_k,
-      std::vector<std::vector<search_result>> *results) const override {
+      size_t candidate_top_k, batch_search_candidates *results) const override {
     if (results == nullptr) return false;
     results->clear();
     for (const auto &query : queries) {
       if (query.size() != m_config.dimension) return false;
     }
     if (top_k == 0) {
-      results->resize(queries.size());
+      results->prepare_per_query(queries.size());
       return true;
     }
 
@@ -3214,10 +3217,16 @@ class segmented_backend final : public backend {
     std::vector<search_result> candidates;
     if (collect_all_candidates_for_rerank(merge_top_k, top_k, queries.size(),
                                           &candidates)) {
-      results->assign(queries.size(), candidates);
+      results->set_shared(queries.size(), std::move(candidates));
       return true;
     }
-    return search_batch_impl(queries, top_k, merge_top_k, true, results);
+    std::vector<std::vector<search_result>> per_query_candidates;
+    if (!search_batch_impl(queries, top_k, merge_top_k, true,
+                           &per_query_candidates)) {
+      return false;
+    }
+    results->set_per_query(std::move(per_query_candidates));
+    return true;
   }
 
   bool search_batch_impl(const std::vector<vector_data> &queries, size_t top_k,
@@ -3243,15 +3252,10 @@ class segmented_backend final : public backend {
                                        &budget)) {
       return false;
     }
-    std::unique_lock<std::mutex> diskann_config_lock(
-        m_segment_search_config_mutex, std::defer_lock);
-    if (!apply_diskann_effective_search_complexity(budget,
-                                                   &diskann_config_lock)) {
-      return false;
-    }
-    if (diskann_config_lock.owns_lock()) diskann_config_lock.unlock();
+    backend_search_options search_options;
+    if (!make_backend_search_options(budget, &search_options)) return false;
 
-    std::vector<std::vector<std::vector<search_result>>> segment_batch_results(
+    std::vector<batch_search_candidates> segment_batch_results(
         m_segments.size());
     size_t worker_count =
         segmented_search_threads(m_config, m_segments.size());
@@ -3265,8 +3269,8 @@ class segmented_backend final : public backend {
               std::numeric_limits<size_t>::max() / queries.size()) {
         return false;
       }
-      for (auto &segment_results : segment_batch_results) {
-        segment_results.resize(queries.size());
+      for (batch_search_candidates &segment_results : segment_batch_results) {
+        segment_results.prepare_per_query(queries.size());
       }
       const size_t work_items = m_segments.size() * queries.size();
       search_ok = parallel_for_shared_search_items(
@@ -3277,17 +3281,19 @@ class segmented_backend final : public backend {
             const size_t query_index = item_index % queries.size();
             const auto &segment = m_segments[segment_index];
             if (segment == nullptr) return false;
-            auto &query_results =
-                segment_batch_results[segment_index][query_index];
+            std::vector<search_result> *query_results =
+                segment_batch_results[segment_index].mutable_for_query(
+                    query_index);
+            if (query_results == nullptr) return false;
             if (exact_rerank_candidates &&
                 collect_full_segment_candidates_for_rerank(
                     *segment, budget.segment_top_k[segment_index],
-                    &query_results)) {
+                    query_results)) {
               return true;
             }
-            return segment->search(queries[query_index],
-                                   budget.segment_top_k[segment_index],
-                                   &query_results);
+            return segment->search_with_options(
+                queries[query_index], budget.segment_top_k[segment_index],
+                search_options, query_results);
           },
           &execution);
       worker_count = execution.effective_workers;
@@ -3298,16 +3304,23 @@ class segmented_backend final : public backend {
             for (size_t i = begin; i < end; ++i) {
               const auto &segment = m_segments[i];
               if (segment == nullptr) return false;
+              std::vector<search_result> segment_candidates;
               if (exact_rerank_candidates &&
-                  collect_full_segment_batch_candidates_for_rerank(
-                      *segment, budget.segment_top_k[i], queries.size(),
-                      &segment_batch_results[i])) {
+                  collect_full_segment_candidates_for_rerank(
+                      *segment, budget.segment_top_k[i],
+                      &segment_candidates)) {
+                segment_batch_results[i].set_shared(
+                    queries.size(), std::move(segment_candidates));
                 continue;
               }
-              if (!segment->search_batch(queries, budget.segment_top_k[i],
-                                         &segment_batch_results[i])) {
+              std::vector<std::vector<search_result>> per_query_candidates;
+              if (!segment->search_batch_with_options(
+                      queries, budget.segment_top_k[i], search_options,
+                      &per_query_candidates)) {
                 return false;
               }
+              segment_batch_results[i].set_per_query(
+                  std::move(per_query_candidates));
             }
             return true;
           });
@@ -3316,7 +3329,8 @@ class segmented_backend final : public backend {
         worker_count, top_k, queries.size(), budget,
         use_shared_search_pool ? &execution : nullptr);
     if (!search_ok) return false;
-    return merge_segment_batch_topk(segment_batch_results, merge_top_k, results);
+    return merge_segment_batch_candidates_topk(segment_batch_results,
+                                               merge_top_k, results);
   }
 
   static bool collect_full_segment_candidates_for_rerank(
@@ -3339,21 +3353,6 @@ class segmented_backend final : public backend {
     for (const uint64_t doc_id : doc_ids) {
       results->push_back(search_result{doc_id, 0.0});
     }
-    return true;
-  }
-
-  static bool collect_full_segment_batch_candidates_for_rerank(
-      const backend &segment, size_t requested_top_k, size_t query_count,
-      std::vector<std::vector<search_result>> *results) {
-    if (results == nullptr) return false;
-
-    std::vector<search_result> candidates;
-    if (!collect_full_segment_candidates_for_rerank(
-            segment, requested_top_k, &candidates)) {
-      return false;
-    }
-
-    results->assign(query_count, candidates);
     return true;
   }
 
@@ -3686,8 +3685,152 @@ class segmented_backend final : public backend {
     return m_config.diskann_use_bfs_cache;
   }
   bool supports_mutations() const override { return false; }
+  bool external_manifest_present() const override {
+    if (m_segments.empty()) return false;
+    for (const auto &segment : m_segments) {
+      if (segment == nullptr || !segment->external_manifest_present()) {
+        return false;
+      }
+    }
+    return true;
+  }
+  uint64_t external_manifest_generation() const override {
+    uint64_t generation = 0;
+    for (const auto &segment : m_segments) {
+      if (segment == nullptr) return 0;
+      const uint64_t segment_generation =
+          segment->external_manifest_generation();
+      if (segment_generation == 0 ||
+          (generation != 0 && segment_generation != generation)) {
+        return 0;
+      }
+      generation = segment_generation;
+    }
+    return generation;
+  }
+  bool defer_artifact_publication() override {
+    return apply_to_segments(
+        [](backend &segment) { return segment.defer_artifact_publication(); });
+  }
+  bool has_pending_artifact_publication() const override {
+    return std::any_of(
+        m_segments.begin(), m_segments.end(), [](const auto &segment) {
+          return segment != nullptr &&
+                 segment->has_pending_artifact_publication();
+        });
+  }
+  bool prepare_artifact_publication(
+      const diskann_artifact_identity &identity) override {
+    if (!artifact_identity_count_matches(identity)) return false;
+    std::vector<backend *> prepared;
+    prepared.reserve(m_segments.size());
+    for (size_t i = 0; i < m_segments.size(); ++i) {
+      const auto &segment = m_segments[i];
+      const diskann_artifact_identity segment_identity =
+          artifact_identity_for_segment(identity, i);
+      if (segment == nullptr ||
+          (segment->has_pending_artifact_publication() &&
+           !segment->prepare_artifact_publication(segment_identity))) {
+        for (auto it = prepared.rbegin(); it != prepared.rend(); ++it) {
+          (void)(*it)->rollback_artifact();
+        }
+        return false;
+      }
+      if (segment->has_pending_artifact_publication()) {
+        prepared.push_back(segment.get());
+      }
+    }
+    return true;
+  }
+  bool publish_artifact() override {
+    std::vector<backend *> pending;
+    pending.reserve(m_segments.size());
+    for (const auto &segment : m_segments) {
+      if (segment == nullptr) return false;
+      if (segment->has_pending_artifact_publication()) {
+        pending.push_back(segment.get());
+      }
+    }
+    for (backend *segment : pending) {
+      if (segment->publish_artifact()) continue;
+      for (auto it = pending.rbegin(); it != pending.rend(); ++it) {
+        (void)(*it)->rollback_artifact();
+      }
+      return false;
+    }
+    return true;
+  }
+  bool rollback_artifact() override {
+    bool ok = true;
+    for (auto it = m_segments.rbegin(); it != m_segments.rend(); ++it) {
+      if (*it != nullptr && (*it)->has_pending_artifact_publication() &&
+          !(*it)->rollback_artifact()) {
+        ok = false;
+      }
+    }
+    return ok;
+  }
+  bool finalize_artifact() override {
+    bool ok = true;
+    for (const auto &segment : m_segments) {
+      if (segment != nullptr &&
+          segment->has_pending_artifact_publication() &&
+          !segment->finalize_artifact()) {
+        ok = false;
+      }
+    }
+    return ok;
+  }
+  bool recover_artifact_publication(
+      const diskann_artifact_identity &identity) override {
+    if (!artifact_identity_count_matches(identity)) return false;
+    for (size_t i = 0; i < m_segments.size(); ++i) {
+      const auto &segment = m_segments[i];
+      if (segment == nullptr ||
+          !segment->recover_artifact_publication(
+              artifact_identity_for_segment(identity, i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+  bool artifact_publication_matches(
+      const diskann_artifact_identity &identity) const override {
+    if (m_segments.empty() || !artifact_identity_count_matches(identity)) {
+      return false;
+    }
+    for (size_t i = 0; i < m_segments.size(); ++i) {
+      const auto &segment = m_segments[i];
+      if (segment == nullptr ||
+          !segment->artifact_publication_matches(
+              artifact_identity_for_segment(identity, i))) {
+        return false;
+      }
+    }
+    return true;
+  }
 
  private:
+  bool artifact_identity_count_matches(
+      const diskann_artifact_identity &identity) const {
+    uint64_t total = 0;
+    for (const size_t segment_count : m_segment_entry_counts) {
+      if (segment_count > std::numeric_limits<uint64_t>::max() - total) {
+        return false;
+      }
+      total += static_cast<uint64_t>(segment_count);
+    }
+    return total == identity.doc_id_count;
+  }
+
+  diskann_artifact_identity artifact_identity_for_segment(
+      const diskann_artifact_identity &identity, size_t segment_index) const {
+    diskann_artifact_identity segment_identity = identity;
+    segment_identity.doc_id_count =
+        static_cast<uint64_t>(m_segment_entry_counts[segment_index]);
+    return segment_identity;
+  }
+
   struct search_budget_summary {
     std::vector<size_t> segment_top_k;
     size_t max_segment_top_k{0};
@@ -3819,31 +3962,26 @@ class segmented_backend final : public backend {
     return true;
   }
 
-  bool apply_diskann_effective_search_complexity(
+  bool make_backend_search_options(
       const search_budget_summary &budget,
-      std::unique_lock<std::mutex> *diskann_config_lock) const {
+      backend_search_options *options) const {
+    if (options == nullptr) return false;
+    *options = {};
     if (m_config.provider != backend_provider::kDiskAnn ||
-        m_config.mode != backend_mode::kExternal ||
-        budget.diskann_effective_complexity == 0) {
+        m_config.mode != backend_mode::kExternal) {
       return true;
     }
-    if (budget.diskann_effective_complexity >
-        std::numeric_limits<uint32_t>::max()) {
+    if (budget.diskann_effective_complexity == 0 ||
+        budget.diskann_effective_complexity >
+            std::numeric_limits<uint32_t>::max() ||
+        budget.diskann_beamwidth == 0 ||
+        budget.diskann_beamwidth > std::numeric_limits<uint32_t>::max()) {
       return false;
     }
-    if (diskann_config_lock == nullptr) return false;
-    diskann_config_lock->lock();
-    const uint32_t effective_complexity =
+    options->diskann_search_complexity =
         static_cast<uint32_t>(budget.diskann_effective_complexity);
-    for (const auto &segment : m_segments) {
-      if (segment == nullptr) return false;
-      if (segment->diskann_search_complexity() == effective_complexity) {
-        continue;
-      }
-      if (!segment->set_diskann_search_complexity(effective_complexity)) {
-        return false;
-      }
-    }
+    options->diskann_search_beamwidth =
+        static_cast<uint32_t>(budget.diskann_beamwidth);
     return true;
   }
 
@@ -3919,8 +4057,8 @@ class segmented_backend final : public backend {
 
   index_service::index_config m_config;
   std::vector<std::shared_ptr<backend>> m_segments;
+  std::vector<size_t> m_segment_entry_counts;
   backend_build_diagnostics m_diagnostics;
-  mutable std::mutex m_segment_search_config_mutex;
   mutable std::atomic<uint64_t> m_search_fanout_segments{0};
   mutable std::atomic<uint64_t> m_search_fanout_threads{0};
   mutable std::atomic<uint64_t> m_search_worker_budget{0};
@@ -4319,7 +4457,8 @@ bool build_one_segment_backend(
   std::unique_ptr<backend> segment_backend =
       build_backend_from_config(segment_backend_index_name(index_name, segment_id),
                                 config);
-  if (segment_backend == nullptr) {
+  if (segment_backend == nullptr ||
+      !segment_backend->defer_artifact_publication()) {
     task_row->state = vector_index_metadata_store::segment_task_state::kFailed;
     task_row->last_error_code = ERROR_BACKEND_CREATE_FAILED;
     task_row->updated_ts = now_unix_epoch_seconds();
@@ -4725,6 +4864,8 @@ bool index_service::synchronize_runtime_publication(
 
   publication_it->second.runtime_generation =
       publication_it->second.truth_generation;
+  // Backend-private file revisions are observed separately. The publication
+  // token records which durable truth generation the artifact serves.
   publication_it->second.artifact_generation =
       index_it->second->external_manifest_present()
           ? publication_it->second.truth_generation
@@ -5179,9 +5320,11 @@ bool index_service::prepare_standalone_rebuild(
   const auto config_it = m_index_configs.find(index_name);
   const auto index_it = m_indexes.find(index_name);
   const auto lifecycle_it = m_lifecycle_infos.find(index_name);
+  const auto publication_it = m_publication_states.find(index_name);
   if (!all_true(config_it != m_index_configs.end(),
                 index_it != m_indexes.end(),
                 lifecycle_it != m_lifecycle_infos.end(),
+                publication_it != m_publication_states.end(),
                 m_entry_store.has_index(index_name),
                 m_standalone_store.has_index(index_name))) {
     set_bulk_load_error(error, "vector index not found");
@@ -5210,10 +5353,14 @@ bool index_service::prepare_standalone_rebuild(
   plan->index_name = index_name;
   plan->source_config = config_it->second;
   plan->build_config = detail::with_dynamic_build_options(config_it->second);
+  plan->source_entry_count = m_standalone_store.entry_count(index_name);
   plan->source_lifecycle_version = lifecycle_it->second.version;
   plan->source_generation = m_standalone_store.generation(index_name);
   plan->previous_runtime = index_it->second;
   plan->previous_lifecycle = lifecycle_it->second;
+  plan->previous_publication = publication_it->second;
+  plan->target_publication = publication_it->second;
+  plan->target_publication.truth_generation = plan->source_generation;
 
   const auto pipeline_it = m_build_pipeline_snapshots.find(index_name);
   plan->had_previous_pipeline =
@@ -5285,7 +5432,8 @@ bool index_service::build_standalone_rebuild(standalone_rebuild_plan *plan,
   } else {
     plan->rebuilt_backend =
         build_backend_from_config(plan->index_name, plan->build_config);
-    if (plan->rebuilt_backend != nullptr) {
+    if (plan->rebuilt_backend != nullptr &&
+        plan->rebuilt_backend->defer_artifact_publication()) {
       const raw_vector_segment_reader reader =
           [plan](const raw_vector_segment_visitor &visitor) {
             if (!visitor) return false;
@@ -5313,6 +5461,8 @@ bool index_service::build_standalone_rebuild(standalone_rebuild_plan *plan,
             rebuild_error_from_diagnostics(plan->failed_build_diagnostics));
         plan->rebuilt_backend.reset();
       }
+    } else {
+      plan->rebuilt_backend.reset();
     }
   }
   if (plan->rebuilt_backend == nullptr) {
@@ -5323,6 +5473,26 @@ bool index_service::build_standalone_rebuild(standalone_rebuild_plan *plan,
     return false;
   }
   plan->built = true;
+  return true;
+}
+
+bool index_service::prepare_standalone_rebuild_artifact(
+    standalone_rebuild_plan *plan,
+    const diskann_artifact_identity &identity, std::string *error) {
+  if (error != nullptr) error->clear();
+  if (plan == nullptr || !plan->prepared || !plan->built || plan->published ||
+      plan->rebuilt_backend == nullptr || plan->artifact_prepared) {
+    set_bulk_load_error(error,
+                        "standalone rebuild artifact is not ready to prepare");
+    return false;
+  }
+  if (!plan->rebuilt_backend->prepare_artifact_publication(identity)) {
+    (void)plan->rebuilt_backend->rollback_artifact();
+    set_bulk_load_error(error,
+                        "standalone rebuild artifact preparation failed");
+    return false;
+  }
+  plan->artifact_prepared = true;
   return true;
 }
 
@@ -5338,15 +5508,23 @@ bool index_service::publish_standalone_rebuild(
   const auto config_it = m_index_configs.find(plan->index_name);
   const auto index_it = m_indexes.find(plan->index_name);
   const auto lifecycle_it = m_lifecycle_infos.find(plan->index_name);
+  const auto publication_it = m_publication_states.find(plan->index_name);
   if (!all_true(config_it != m_index_configs.end(),
                 index_it != m_indexes.end(),
                 lifecycle_it != m_lifecycle_infos.end(),
+                publication_it != m_publication_states.end(),
                 m_standalone_rebuilds.find(plan->index_name) !=
                     m_standalone_rebuilds.end(),
                 index_configs_equal(config_it->second, plan->source_config),
                 lifecycle_it->second.version ==
                     plan->source_lifecycle_version,
                 index_it->second == plan->previous_runtime,
+                publication_it->second.index_identity ==
+                    plan->previous_publication.index_identity,
+                publication_it->second.truth_generation ==
+                    plan->previous_publication.truth_generation,
+                publication_it->second.config_generation ==
+                    plan->previous_publication.config_generation,
                 m_standalone_store.generation(plan->index_name) ==
                     plan->source_generation,
                 !pending_changes_contain_index(m_pending_changes,
@@ -5358,8 +5536,14 @@ bool index_service::publish_standalone_rebuild(
   DBUG_EXECUTE_IF("vector_segment_task_before_publish", {
     set_bulk_load_error(error,
                         "LOAD VECTOR DATA could not publish rebuilt backend");
-    return false;
+      return false;
   });
+  if (plan->rebuilt_backend->has_pending_artifact_publication() &&
+      !plan->artifact_prepared) {
+    set_bulk_load_error(error,
+                        "standalone rebuild artifact is not prepared");
+    return false;
+  }
   if (plan->segmented &&
       !m_standalone_store.publish_levelled_compaction(plan->index_name,
                                                       &plan->compaction)) {
@@ -5367,11 +5551,34 @@ bool index_service::publish_standalone_rebuild(
                         "LOAD VECTOR DATA could not publish compacted input");
     return false;
   }
+  if (!plan->rebuilt_backend->publish_artifact()) {
+    (void)plan->rebuilt_backend->rollback_artifact();
+    if (plan->segmented) {
+      (void)m_standalone_store.rollback_levelled_compaction(
+          plan->index_name, &plan->compaction);
+    }
+    set_bulk_load_error(error,
+                        "standalone rebuild artifact publication failed");
+    return false;
+  }
+  plan->artifact_published =
+      plan->rebuilt_backend->has_pending_artifact_publication();
 
   m_build_pipeline_snapshots[plan->index_name] = plan->pipeline;
   m_segment_task_rows[plan->index_name] = plan->segment_tasks;
-  index_it->second = std::move(plan->rebuilt_backend);
+  index_it->second = plan->rebuilt_backend;
+  publication_it->second = plan->target_publication;
   if (!synchronize_runtime_publication(plan->index_name)) {
+    index_it->second = plan->previous_runtime;
+    publication_it->second = plan->previous_publication;
+    if (plan->artifact_published) {
+      (void)plan->rebuilt_backend->rollback_artifact();
+      plan->artifact_published = false;
+    }
+    if (plan->segmented) {
+      (void)m_standalone_store.rollback_levelled_compaction(
+          plan->index_name, &plan->compaction);
+    }
     set_bulk_load_error(error,
                         "standalone rebuild publication state is unavailable");
     return false;
@@ -5392,6 +5599,10 @@ void index_service::record_standalone_rebuild_tasks(
 bool index_service::rollback_standalone_rebuild(
     standalone_rebuild_plan *plan) {
   if (plan == nullptr || !plan->prepared || !plan->published) return false;
+  if (plan->artifact_published &&
+      !plan->rebuilt_backend->rollback_artifact()) {
+    return false;
+  }
   if (!m_standalone_store.rollback_levelled_compaction(plan->index_name,
                                                        &plan->compaction)) {
     return false;
@@ -5399,6 +5610,7 @@ bool index_service::rollback_standalone_rebuild(
 
   m_indexes[plan->index_name] = plan->previous_runtime;
   m_lifecycle_infos[plan->index_name] = plan->previous_lifecycle;
+  m_publication_states[plan->index_name] = plan->previous_publication;
   if (plan->had_previous_pipeline) {
     m_build_pipeline_snapshots[plan->index_name] = plan->previous_pipeline;
   } else {
@@ -5418,12 +5630,18 @@ bool index_service::rollback_standalone_rebuild(
   m_standalone_rebuilds.erase(plan->index_name);
   plan->published = false;
   plan->prepared = false;
+  plan->artifact_published = false;
   return true;
 }
 
-void index_service::discard_standalone_rebuild(
+bool index_service::discard_standalone_rebuild(
     standalone_rebuild_plan *plan) {
-  if (plan == nullptr || plan->published) return;
+  if (plan == nullptr || plan->published) return false;
+  if (plan->rebuilt_backend != nullptr &&
+      plan->rebuilt_backend->has_pending_artifact_publication() &&
+      !plan->rebuilt_backend->rollback_artifact()) {
+    return false;
+  }
   if (plan->has_failed_build_diagnostics && !plan->index_name.empty()) {
     m_last_failed_build_diagnostics[plan->index_name] =
         plan->failed_build_diagnostics;
@@ -5431,14 +5649,20 @@ void index_service::discard_standalone_rebuild(
   m_standalone_store.discard_levelled_compaction(&plan->compaction);
   m_standalone_rebuilds.erase(plan->index_name);
   *plan = standalone_rebuild_plan{};
+  return true;
 }
 
-void index_service::finalize_standalone_rebuild(
+bool index_service::finalize_standalone_rebuild(
     standalone_rebuild_plan *plan) {
-  if (plan == nullptr || !plan->published) return;
+  if (plan == nullptr || !plan->published) return false;
+  if (plan->artifact_published &&
+      !plan->rebuilt_backend->finalize_artifact()) {
+    return false;
+  }
   m_standalone_store.finalize_levelled_compaction(&plan->compaction);
   m_standalone_rebuilds.erase(plan->index_name);
   *plan = standalone_rebuild_plan{};
+  return true;
 }
 
 bool index_service::rebuild_index(const std::string &index_name,
@@ -5647,6 +5871,29 @@ bool index_service::set_faiss_ivf_params(const std::string &index_name,
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
 
+  if (config_it->second.faiss_nlist != faiss_nlist ||
+      config_it->second.faiss_pq_m != 0 ||
+      config_it->second.faiss_pq_bits != 0) {
+    index_config next_config = config_it->second;
+    next_config.faiss_nlist = faiss_nlist;
+    next_config.faiss_nprobe = faiss_nprobe;
+    next_config.faiss_pq_m = 0;
+    next_config.faiss_pq_bits = 0;
+    std::unique_ptr<backend> rebuilt =
+        detail::build_backend_from_config(index_name, next_config);
+    if (rebuilt == nullptr ||
+        !rebuild_backend_from_source(m_entry_store, m_standalone_store,
+                                     index_name, next_config, rebuilt.get())) {
+      return false;
+    }
+    index_it->second = std::move(rebuilt);
+    config_it->second = next_config;
+    sync_search_config_from_backend(*index_it->second, &config_it->second);
+    sync_hnsw_config_from_backend(*index_it->second, &config_it->second);
+    sync_faiss_config_from_backend(*index_it->second, &config_it->second);
+    return true;
+  }
+
   return apply_backend_config_exclusively(
       index_it->second, [&](backend *runtime) {
         if (!runtime->set_faiss_ivf_params(faiss_nlist, faiss_nprobe)) {
@@ -5672,6 +5919,30 @@ bool index_service::set_faiss_ivf_pq_params(const std::string &index_name,
   }
   if (pending_changes_contain_index(m_pending_changes, index_name))
     return false;
+
+  if (config_it->second.provider != backend_provider::kFaiss) return false;
+  if (config_it->second.faiss_nlist != faiss_nlist ||
+      config_it->second.faiss_pq_m != faiss_pq_m ||
+      config_it->second.faiss_pq_bits != faiss_pq_bits) {
+    index_config next_config = config_it->second;
+    next_config.faiss_nlist = faiss_nlist;
+    next_config.faiss_nprobe = faiss_nprobe;
+    next_config.faiss_pq_m = faiss_pq_m;
+    next_config.faiss_pq_bits = faiss_pq_bits;
+    std::unique_ptr<backend> rebuilt =
+        detail::build_backend_from_config(index_name, next_config);
+    if (rebuilt == nullptr ||
+        !rebuild_backend_from_source(m_entry_store, m_standalone_store,
+                                     index_name, next_config, rebuilt.get())) {
+      return false;
+    }
+    index_it->second = std::move(rebuilt);
+    config_it->second = next_config;
+    sync_search_config_from_backend(*index_it->second, &config_it->second);
+    sync_hnsw_config_from_backend(*index_it->second, &config_it->second);
+    sync_faiss_config_from_backend(*index_it->second, &config_it->second);
+    return true;
+  }
 
   return apply_backend_config_exclusively(
       index_it->second, [&](backend *runtime) {
@@ -6212,6 +6483,39 @@ bool index_service::restore_publication_states(
   return true;
 }
 
+bool index_service::rollback_artifact_publication(
+    const std::string &index_name) {
+  const auto index_it = m_indexes.find(index_name);
+  return index_it != m_indexes.end() && index_it->second != nullptr &&
+         index_it->second->rollback_artifact();
+}
+
+bool index_service::finalize_artifact_publication(
+    const std::string &index_name) {
+  const auto index_it = m_indexes.find(index_name);
+  return index_it != m_indexes.end() && index_it->second != nullptr &&
+         index_it->second->finalize_artifact();
+}
+
+bool index_service::recover_artifact_publication(
+    const std::string &index_name,
+    const diskann_artifact_identity &identity) {
+  const auto index_it = m_indexes.find(index_name);
+  if (index_it == m_indexes.end() || index_it->second == nullptr ||
+      !index_it->second->recover_artifact_publication(identity)) {
+    return false;
+  }
+  return synchronize_runtime_publication(index_name);
+}
+
+bool index_service::artifact_publication_matches(
+    const std::string &index_name,
+    const diskann_artifact_identity &identity) const {
+  const auto index_it = m_indexes.find(index_name);
+  return index_it != m_indexes.end() && index_it->second != nullptr &&
+         index_it->second->artifact_publication_matches(identity);
+}
+
 uint64_t index_service::next_index_identity() const {
   return m_next_index_identity;
 }
@@ -6409,7 +6713,8 @@ bool index_service::snapshot_segment_tasks(
   return true;
 }
 
-bool index_service::restore_committed_state(const committed_state &state) {
+bool index_service::restore_committed_state_impl(
+    const committed_state &state, bool defer_diskann_artifacts) {
   std::unordered_map<std::string, backend_ptr> restored_backends;
   restored_backends.reserve(m_index_configs.size());
   vector_entry_store restored_entry_store;
@@ -6435,7 +6740,14 @@ bool index_service::restore_committed_state(const committed_state &state) {
       for (const auto &doc_entry : state_it->second) {
         if (doc_entry.second.size() != backend->dimension()) return false;
       }
-      if (!backend->load_committed_entries(state_it->second)) return false;
+      const bool defer_artifact =
+          defer_diskann_artifacts &&
+          config.provider == backend_provider::kDiskAnn &&
+          config.mode == backend_mode::kExternal;
+      if (!defer_artifact &&
+          !backend->load_committed_entries(state_it->second)) {
+        return false;
+      }
       if (!restored_entry_store.register_index(index_name) ||
           !restored_entry_store.replace_index(index_name, state_it->second)) {
         return false;
@@ -6458,6 +6770,15 @@ bool index_service::restore_committed_state(const committed_state &state) {
     maybe_unload_runtime(entry.first);
   }
   return true;
+}
+
+bool index_service::restore_committed_state(const committed_state &state) {
+  return restore_committed_state_impl(state, false);
+}
+
+bool index_service::restore_committed_state_for_startup(
+    const committed_state &state) {
+  return restore_committed_state_impl(state, true);
 }
 
 bool index_service::restore_index_config(const std::string &index_name,
@@ -6954,7 +7275,8 @@ bool index_service::replace_committed_entries_impl(
 
 bool index_service::install_rebuilt_index(
     const std::string &index_name, const committed_entries &entries,
-    std::unique_ptr<backend> rebuilt_backend) {
+    std::unique_ptr<backend> rebuilt_backend,
+    const diskann_artifact_identity *artifact_identity) {
   auto index_it = m_indexes.find(index_name);
   auto lifecycle_it = m_lifecycle_infos.find(index_name);
   if (!all_true(index_it != m_indexes.end(),
@@ -6964,9 +7286,21 @@ bool index_service::install_rebuilt_index(
     return false;
   }
 
+  if (rebuilt_backend->has_pending_artifact_publication()) {
+    if (artifact_identity == nullptr ||
+        !rebuilt_backend->prepare_artifact_publication(*artifact_identity) ||
+        !rebuilt_backend->publish_artifact()) {
+      (void)rebuilt_backend->rollback_artifact();
+      return false;
+    }
+  }
+
   index_it->second = std::move(rebuilt_backend);
-  if (!m_entry_store.replace_index(index_name, entries)) return false;
-  if (!synchronize_runtime_publication(index_name)) return false;
+  if (!m_entry_store.replace_index(index_name, entries) ||
+      !synchronize_runtime_publication(index_name)) {
+    (void)index_it->second->rollback_artifact();
+    return false;
+  }
   mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;

@@ -452,9 +452,6 @@ class in_memory_truth_store final
       override {
     ++save_metadata_calls;
     if (fail_save_metadata) return false;
-    if (fail_save_metadata_at_call != 0 &&
-        save_metadata_calls == fail_save_metadata_at_call)
-      return false;
     metadata_rows = rows;
     return true;
   }
@@ -591,7 +588,6 @@ class in_memory_truth_store final
 
   bool fail_load_metadata{false};
   bool fail_save_metadata{false};
-  uint64_t fail_save_metadata_at_call{0};
   bool fail_quarantine_metadata{false};
   bool fail_load_committed{false};
   bool fail_save_committed{false};
@@ -807,6 +803,90 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
+       TransactionalDiskAnnRestartFallsBackFromFailedNativeRebuild) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    GTEST_SKIP() << "DiskANN provider is not compiled in";
+  }
+
+  const std::string root = std::string(testing::TempDir()) +
+                           "/registry_diskann_restart_fallback_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  external_snapshot_root_guard root_guard(root);
+
+  const std::string index_name = "idx_registry_diskann_restart_fallback";
+  ASSERT_TRUE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "external", "diskann"));
+  ASSERT_TRUE(
+      vector_index_registry::upsert(index_name, 1, {1.0F, 2.0F}));
+
+  vector_index_registry::reset_for_testing();
+
+  std::vector<vector_index::search_result> result;
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_diskann_native_rebuild");
+    ASSERT_TRUE(
+        vector_index_registry::search(index_name, {1.0F, 2.0F}, 1, &result));
+  }
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ(info.truth_generation, info.artifact_generation);
+  EXPECT_EQ(info.truth_generation, info.runtime_generation);
+  EXPECT_EQ("native_rebuild_failed_sidecar_fallback",
+            info.build_diagnostics.fallback_reason);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(VectorIndexRegistryTest,
+       FaissSidecarRevisionsKeepLogicalArtifactGeneration) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/registry_faiss_generation_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  external_snapshot_root_guard root_guard(root);
+
+  const std::string index_name = "idx_registry_faiss_generation";
+  ASSERT_TRUE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "external", "faiss"));
+  ASSERT_TRUE(
+      vector_index_registry::upsert(index_name, 1, {1.0F, 2.0F}));
+
+  vector_index_registry::index_info before;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &before));
+  ASSERT_GT(before.external_manifest_generation, 0U);
+  EXPECT_EQ(before.truth_generation, before.artifact_generation);
+
+  ASSERT_TRUE(vector_index_registry::rebuild_index(index_name));
+  ASSERT_TRUE(vector_index_registry::rebuild_index(index_name));
+
+  vector_index_registry::index_info after;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &after));
+  EXPECT_EQ(before.truth_generation, after.truth_generation);
+  EXPECT_EQ(after.truth_generation, after.artifact_generation);
+  EXPECT_GT(after.external_manifest_generation,
+            before.external_manifest_generation);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(VectorIndexRegistryTest,
        BackfillPublishesOneDurableGenerationTransaction) {
   const std::string index_name = "idx_registry_backfill_generation";
   vector_index_registry::create_index_options options;
@@ -861,6 +941,53 @@ TEST_F(VectorIndexRegistryTest,
   EXPECT_EQ(300U, result[0].doc_id);
 
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest, DiskAnnEmptyBackfillPublishesZeroGeneration) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    GTEST_SKIP() << "DiskANN provider is not compiled in";
+  }
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/registry_diskann_empty_backfill_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  external_snapshot_root_guard root_guard(root);
+
+  const std::string index_name = "idx_registry_diskann_empty_backfill";
+  vector_index_registry::create_index_options options;
+  options.initial_lifecycle_state = "creating";
+  ASSERT_TRUE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "external", "diskann", options));
+
+  vector_index_registry::index_backfill_token token;
+  ASSERT_TRUE(vector_index_registry::begin_backfill(index_name, &token));
+  store_.ResetPersistCountersForTesting();
+  const bool published =
+      vector_index_registry::publish_backfill(index_name, {}, token);
+  ASSERT_TRUE(published) << "metadata=" << store_.save_metadata_calls
+                         << " manifest=" << store_.save_manifest_calls
+                         << " changelog="
+                         << store_.append_change_log_delta_calls;
+  EXPECT_EQ(1U, store_.save_metadata_calls);
+  EXPECT_EQ(1U, store_.save_manifest_calls);
+  EXPECT_EQ(0U, store_.append_change_log_delta_calls);
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ("ready", info.lifecycle_state);
+  EXPECT_EQ(0U, info.truth_generation);
+  EXPECT_EQ(0U, info.artifact_generation);
+  EXPECT_EQ(0U, info.runtime_generation);
+  EXPECT_EQ(0U, info.entry_count);
+  EXPECT_EQ(0U, info.committed_entry_count);
+  EXPECT_TRUE(info.external_manifest_present);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  std::filesystem::remove_all(root, ec);
 }
 
 TEST_F(VectorIndexRegistryTest,
@@ -3624,9 +3751,20 @@ TEST_F(VectorIndexRegistryTest,
   std::thread searcher([&]() {
     for (int i = 0; i < 200 && !failed.load(); ++i) {
       std::vector<vector_index::search_result> result;
+      std::vector<std::vector<vector_index::search_result>> batch_result;
       if (!vector_index_registry::search(index_name, {1.0F, 1.0F}, 1,
                                          &result) ||
           result.size() != 1 || result[0].doc_id != 1) {
+        failed.store(true);
+        continue;
+      }
+      if (!vector_index_registry::search_batch_for_thd_txn(
+              nullptr, 0, index_name, {{1.0F, 1.0F}, {1.0F, 1.0F}}, 1,
+              &batch_result) ||
+          batch_result.size() != 2 || batch_result[0].size() != 1 ||
+          batch_result[1].size() != 1 ||
+          batch_result[0][0].doc_id != 1 ||
+          batch_result[1][0].doc_id != 1) {
         failed.store(true);
       }
     }
@@ -3721,7 +3859,7 @@ TEST_F(VectorIndexRegistryTest,
   store_.ResetPersistCountersForTesting();
   EXPECT_FALSE(vector_index_registry::set_search_ef(index_name, 0));
 
-  EXPECT_EQ(2U, store_.save_metadata_calls);
+  EXPECT_EQ(0U, store_.save_metadata_calls);
   vector_index_registry::index_info after;
   ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &after));
   EXPECT_EQ(before.search_ef, after.search_ef);
@@ -3885,27 +4023,18 @@ TEST_F(VectorIndexRegistryTest,
     GTEST_SKIP() << "hnswlib provider is not compiled in";
   }
 
-  auto fail_second_metadata_persist = [this]() {
-    store_.ResetPersistCountersForTesting();
-    store_.fail_save_metadata_at_call = 2;
-  };
-  auto clear_metadata_failure = [this]() {
-    store_.fail_save_metadata_at_call = 0;
-  };
-  auto expect_second_metadata_persist_failed = [this]() {
-    EXPECT_EQ(2U, store_.save_metadata_calls);
-  };
-
   const std::string hnsw_name =
       "idx_registry_hnsw_runtime_rollback_persist_fail";
   ASSERT_TRUE(vector_index_registry::create_index(hnsw_name, 2, "cosine",
                                                   "memory", "hnswlib"));
   vector_index_registry::index_info after;
 
-  fail_second_metadata_persist();
-  EXPECT_FALSE(vector_index_registry::set_search_ef(hnsw_name, 0));
-  clear_metadata_failure();
-  expect_second_metadata_persist_failed();
+  store_.transactional = false;
+  store_.ResetPersistCountersForTesting();
+  store_.fail_save_manifest = true;
+  EXPECT_FALSE(vector_index_registry::set_search_ef(hnsw_name, 123));
+  store_.fail_save_manifest = false;
+  EXPECT_EQ(2U, store_.save_metadata_calls);
   EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
             vector_index_registry::registry_health());
   EXPECT_EQ("index_config_metadata_restore_failed",
@@ -3925,11 +4054,13 @@ TEST_F(VectorIndexRegistryTest,
   ASSERT_TRUE(vector_index_registry::create_index(hnsw_name, 2, "cosine",
                                                   "memory", "hnswlib"));
 
+  store_.fail_save_metadata = true;
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug,
                              "+d,vector_service_fail_restore_index_config");
-    EXPECT_FALSE(vector_index_registry::set_search_ef(hnsw_name, 0));
+    EXPECT_FALSE(vector_index_registry::set_search_ef(hnsw_name, 123));
   }
+  store_.fail_save_metadata = false;
   EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
             vector_index_registry::registry_health());
   EXPECT_EQ("index_config_runtime_restore_failed",

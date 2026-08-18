@@ -38,6 +38,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sql/vector/vector_diskann_generation_store.h"
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_runtime_thread_pool.h"
@@ -897,6 +898,43 @@ class NonApplyingBackend final : public vector_index::backend {
   bool supports_mutations() const override { return true; }
 };
 
+class DeferredMutationBackend final : public vector_index::backend {
+ public:
+  bool upsert(uint64_t doc_id,
+              const vector_index::vector_data &vector) override {
+    ++upsert_calls;
+    return m_storage.upsert(doc_id, vector);
+  }
+  bool erase(uint64_t doc_id) override {
+    ++erase_calls;
+    return m_storage.erase(doc_id);
+  }
+  bool search(const vector_index::vector_data &query, size_t top_k,
+              std::vector<vector_index::search_result> *results) const override {
+    return m_storage.search(query, top_k, results);
+  }
+  size_t entry_count() const override { return m_storage.entry_count(); }
+  size_t dimension() const override { return 2; }
+  vector_index::metric_type metric() const override {
+    return vector_index::metric_type::kEuclidean;
+  }
+  vector_index::backend_mode mode() const override {
+    return vector_index::backend_mode::kExternal;
+  }
+  vector_index::backend_provider provider() const override {
+    return vector_index::backend_provider::kDiskAnn;
+  }
+  bool supports_mutations() const override { return true; }
+  bool supports_in_place_mutations() const override { return false; }
+
+  size_t upsert_calls{0};
+  size_t erase_calls{0};
+
+ private:
+  vector_index::memory_backend m_storage{
+      2, vector_index::metric_type::kEuclidean};
+};
+
 class NonWritableBackend final : public vector_index::backend {
  public:
   bool upsert(uint64_t doc_id [[maybe_unused]],
@@ -921,6 +959,75 @@ class NonWritableBackend final : public vector_index::backend {
     return vector_index::backend_provider::kDiskAnn;
   }
   bool supports_mutations() const override { return false; }
+};
+
+class ArtifactLifecycleProbeBackend final : public vector_index::backend {
+ public:
+  explicit ArtifactLifecycleProbeBackend(bool fail_publish = false,
+                                         size_t entry_count = 0)
+      : m_entry_count(entry_count), m_fail_publish(fail_publish) {}
+
+  bool upsert(uint64_t doc_id [[maybe_unused]],
+              const vector_index::vector_data &vector [[maybe_unused]]) override {
+    return false;
+  }
+  bool erase(uint64_t doc_id [[maybe_unused]]) override { return false; }
+  bool search(const vector_index::vector_data &query [[maybe_unused]],
+              size_t top_k [[maybe_unused]],
+              std::vector<vector_index::search_result> *results) const override {
+    results->clear();
+    return true;
+  }
+  size_t dimension() const override { return 2; }
+  vector_index::metric_type metric() const override {
+    return vector_index::metric_type::kEuclidean;
+  }
+  vector_index::backend_mode mode() const override {
+    return vector_index::backend_mode::kExternal;
+  }
+  vector_index::backend_provider provider() const override {
+    return vector_index::backend_provider::kDiskAnn;
+  }
+  bool supports_mutations() const override { return false; }
+  size_t entry_count() const override { return m_entry_count; }
+
+  bool defer_artifact_publication() override {
+    ++defer_calls;
+    return true;
+  }
+  bool has_pending_artifact_publication() const override { return m_pending; }
+  bool prepare_artifact_publication(
+      const vector_index::diskann_artifact_identity &identity) override {
+    ++prepare_calls;
+    prepared_identity = identity;
+    return true;
+  }
+  bool publish_artifact() override {
+    ++publish_calls;
+    return !m_fail_publish;
+  }
+  bool rollback_artifact() override {
+    ++rollback_calls;
+    m_pending = false;
+    return true;
+  }
+  bool finalize_artifact() override {
+    ++finalize_calls;
+    m_pending = false;
+    return true;
+  }
+
+  size_t defer_calls{0};
+  size_t prepare_calls{0};
+  size_t publish_calls{0};
+  size_t rollback_calls{0};
+  size_t finalize_calls{0};
+  vector_index::diskann_artifact_identity prepared_identity;
+
+ private:
+  size_t m_entry_count{0};
+  bool m_fail_publish{false};
+  bool m_pending{true};
 };
 
 class FailAfterMutationBackend final : public vector_index::backend {
@@ -1028,11 +1135,16 @@ class RerankProbeDiskAnnBackend final : public vector_index::backend {
   bool search_batch_for_rerank(
       const std::vector<vector_index::vector_data> &queries, size_t top_k,
       size_t candidate_top_k,
-      std::vector<std::vector<vector_index::search_result>> *results)
-      const override {
+      vector_index::batch_search_candidates *results) const override {
+    if (results == nullptr) return false;
     rerank_top_k_values.push_back(top_k);
     rerank_candidate_top_k_values.push_back(candidate_top_k);
-    return search_batch(queries, candidate_top_k, results);
+    std::vector<std::vector<vector_index::search_result>> per_query_results;
+    if (!search_batch(queries, candidate_top_k, &per_query_results)) {
+      return false;
+    }
+    results->set_per_query(std::move(per_query_results));
+    return true;
   }
 
   size_t entry_count() const override { return m_entries.size(); }
@@ -1058,6 +1170,133 @@ class RerankProbeDiskAnnBackend final : public vector_index::backend {
  private:
   uint32_t m_search_complexity{4};
   std::unordered_map<uint64_t, vector_index::vector_data> m_entries;
+};
+
+class SearchOptionsProbeDiskAnnBackend final : public vector_index::backend {
+ public:
+  bool upsert(uint64_t doc_id [[maybe_unused]],
+              const vector_index::vector_data &vector
+              [[maybe_unused]]) override {
+    return false;
+  }
+
+  bool erase(uint64_t doc_id [[maybe_unused]]) override { return false; }
+
+  bool search(
+      const vector_index::vector_data &query [[maybe_unused]],
+      size_t top_k [[maybe_unused]],
+      std::vector<vector_index::search_result> *results) const override {
+    return record_search(nullptr, results);
+  }
+
+  bool search_with_options(
+      const vector_index::vector_data &query [[maybe_unused]],
+      size_t top_k [[maybe_unused]],
+      const vector_index::backend_search_options &options,
+      std::vector<vector_index::search_result> *results) const override {
+    return record_search(&options, results);
+  }
+
+  bool search_batch(
+      const std::vector<vector_index::vector_data> &queries,
+      size_t top_k [[maybe_unused]],
+      std::vector<std::vector<vector_index::search_result>> *results)
+      const override {
+    return record_batch_search(queries.size(), nullptr, results);
+  }
+
+  bool search_batch_with_options(
+      const std::vector<vector_index::vector_data> &queries,
+      size_t top_k [[maybe_unused]],
+      const vector_index::backend_search_options &options,
+      std::vector<std::vector<vector_index::search_result>> *results)
+      const override {
+    return record_batch_search(queries.size(), &options, results);
+  }
+
+  size_t entry_count() const override { return 256; }
+  size_t dimension() const override { return 2; }
+  vector_index::metric_type metric() const override {
+    return vector_index::metric_type::kEuclidean;
+  }
+  vector_index::backend_mode mode() const override {
+    return vector_index::backend_mode::kExternal;
+  }
+  vector_index::backend_provider provider() const override {
+    return vector_index::backend_provider::kDiskAnn;
+  }
+  bool supports_mutations() const override { return false; }
+
+  bool set_diskann_search_complexity(uint32_t search_complexity) override {
+    ++m_setter_calls;
+    m_search_complexity.store(search_complexity, std::memory_order_relaxed);
+    return true;
+  }
+
+  uint32_t diskann_search_complexity() const override {
+    return m_search_complexity.load(std::memory_order_relaxed);
+  }
+
+  void reset() {
+    std::lock_guard<std::mutex> guard(m_mutex);
+    m_arrivals = 0;
+    m_observed_options.clear();
+  }
+
+  size_t setter_calls() const {
+    return m_setter_calls.load(std::memory_order_relaxed);
+  }
+
+  std::vector<vector_index::backend_search_options> observed_options() const {
+    std::lock_guard<std::mutex> guard(m_mutex);
+    return m_observed_options;
+  }
+
+ private:
+  bool wait_and_record(
+      const vector_index::backend_search_options *options) const {
+    std::unique_lock<std::mutex> guard(m_mutex);
+    ++m_arrivals;
+    m_cv.notify_all();
+    if (!m_cv.wait_for(guard, std::chrono::seconds(5),
+                       [&]() { return m_arrivals >= 2; })) {
+      return false;
+    }
+
+    vector_index::backend_search_options observed;
+    if (options == nullptr) {
+      observed.diskann_search_complexity =
+          m_search_complexity.load(std::memory_order_relaxed);
+      observed.diskann_search_beamwidth = 16;
+    } else {
+      observed = *options;
+    }
+    m_observed_options.push_back(observed);
+    return true;
+  }
+
+  bool record_search(
+      const vector_index::backend_search_options *options,
+      std::vector<vector_index::search_result> *results) const {
+    if (results == nullptr || !wait_and_record(options)) return false;
+    results->assign({{1, 0.0}});
+    return true;
+  }
+
+  bool record_batch_search(
+      size_t query_count, const vector_index::backend_search_options *options,
+      std::vector<std::vector<vector_index::search_result>> *results) const {
+    if (results == nullptr || !wait_and_record(options)) return false;
+    results->assign(query_count, {{1, 0.0}});
+    return true;
+  }
+
+  mutable std::mutex m_mutex;
+  mutable std::condition_variable m_cv;
+  mutable size_t m_arrivals{0};
+  mutable std::vector<vector_index::backend_search_options> m_observed_options;
+  std::atomic<uint32_t> m_search_complexity{4};
+  std::atomic<size_t> m_setter_calls{0};
 };
 
 class IncompatibleBackend final : public vector_index::backend {
@@ -1887,6 +2126,46 @@ TEST(VectorIndexServiceTest,
   EXPECT_EQ(1U, diagnostics.search_active_requests);
   EXPECT_EQ(6U, diagnostics.search_work_items);
   EXPECT_EQ(4U, diagnostics.search_fanout_threads);
+}
+
+TEST(VectorIndexServiceTest,
+     SegmentedArtifactPublicationRollsBackEveryPendingSegment) {
+  auto first_segment =
+      std::make_shared<ArtifactLifecycleProbeBackend>(false, 2);
+  auto failing_segment =
+      std::make_shared<ArtifactLifecycleProbeBackend>(true, 3);
+
+  vector_index::index_service::index_config config;
+  config.dimension = 2;
+  config.metric = vector_index::metric_type::kEuclidean;
+  config.mode = vector_index::backend_mode::kExternal;
+  config.provider = vector_index::backend_provider::kDiskAnn;
+  auto segmented = vector_index::make_segmented_backend_for_testing(
+      config, {first_segment, failing_segment});
+
+  vector_index::diskann_artifact_identity identity;
+  identity.index_identity = 1;
+  identity.truth_generation = 2;
+  identity.config_generation = 3;
+  identity.doc_id_count = 5;
+  identity.dimension = 2;
+  identity.provider = "diskann";
+
+  ASSERT_TRUE(segmented->defer_artifact_publication());
+  ASSERT_TRUE(segmented->prepare_artifact_publication(identity));
+  EXPECT_FALSE(segmented->publish_artifact());
+  EXPECT_FALSE(segmented->has_pending_artifact_publication());
+
+  EXPECT_EQ(1U, first_segment->defer_calls);
+  EXPECT_EQ(1U, failing_segment->defer_calls);
+  EXPECT_EQ(1U, first_segment->prepare_calls);
+  EXPECT_EQ(1U, failing_segment->prepare_calls);
+  EXPECT_EQ(2U, first_segment->prepared_identity.doc_id_count);
+  EXPECT_EQ(3U, failing_segment->prepared_identity.doc_id_count);
+  EXPECT_EQ(1U, first_segment->publish_calls);
+  EXPECT_EQ(1U, failing_segment->publish_calls);
+  EXPECT_EQ(1U, first_segment->rollback_calls);
+  EXPECT_EQ(1U, failing_segment->rollback_calls);
 }
 
 TEST(VectorIndexServiceTest,
@@ -6645,6 +6924,71 @@ TEST(VectorIndexServiceTest,
 }
 
 TEST(VectorIndexServiceTest,
+     SegmentedDiskAnnKeepsConcurrentSearchOptionsRequestLocal) {
+  vector_index::index_service::index_config config;
+  config.dimension = 2;
+  config.metric = vector_index::metric_type::kEuclidean;
+  config.mode = vector_index::backend_mode::kExternal;
+  config.provider = vector_index::backend_provider::kDiskAnn;
+  config.diskann_search_complexity = 4;
+  config.diskann_search_beamwidth = 16;
+
+  auto segment = std::make_shared<SearchOptionsProbeDiskAnnBackend>();
+  SearchOptionsProbeDiskAnnBackend *probe = segment.get();
+  std::vector<std::shared_ptr<vector_index::backend>> segments;
+  segments.push_back(std::move(segment));
+  auto segmented = vector_index::make_segmented_backend_for_testing(
+      config, std::move(segments));
+
+  const auto run_search = [&](size_t top_k) {
+    std::vector<vector_index::search_result> results;
+    return segmented->search({0.0F, 0.0F}, top_k, &results);
+  };
+  auto small_search = std::async(std::launch::async, run_search, 10);
+  auto large_search = std::async(std::launch::async, run_search, 100);
+  EXPECT_TRUE(small_search.get());
+  EXPECT_TRUE(large_search.get());
+
+  auto observed = probe->observed_options();
+  ASSERT_EQ(2U, observed.size());
+  size_t small_option_count = 0;
+  size_t large_option_count = 0;
+  for (const auto &options : observed) {
+    EXPECT_EQ(16U, options.diskann_search_beamwidth);
+    if (options.diskann_search_complexity == 11) ++small_option_count;
+    if (options.diskann_search_complexity == 101) ++large_option_count;
+  }
+  EXPECT_EQ(1U, small_option_count);
+  EXPECT_EQ(1U, large_option_count);
+  EXPECT_EQ(0U, probe->setter_calls());
+
+  probe->reset();
+  const std::vector<vector_index::vector_data> queries{
+      {0.0F, 0.0F}, {1.0F, 1.0F}};
+  const auto run_batch_search = [&](size_t top_k) {
+    std::vector<std::vector<vector_index::search_result>> results;
+    return segmented->search_batch(queries, top_k, &results);
+  };
+  auto small_batch = std::async(std::launch::async, run_batch_search, 20);
+  auto large_batch = std::async(std::launch::async, run_batch_search, 120);
+  EXPECT_TRUE(small_batch.get());
+  EXPECT_TRUE(large_batch.get());
+
+  observed = probe->observed_options();
+  ASSERT_EQ(2U, observed.size());
+  small_option_count = 0;
+  large_option_count = 0;
+  for (const auto &options : observed) {
+    EXPECT_EQ(16U, options.diskann_search_beamwidth);
+    if (options.diskann_search_complexity == 21) ++small_option_count;
+    if (options.diskann_search_complexity == 121) ++large_option_count;
+  }
+  EXPECT_EQ(1U, small_option_count);
+  EXPECT_EQ(1U, large_option_count);
+  EXPECT_EQ(0U, probe->setter_calls());
+}
+
+TEST(VectorIndexServiceTest,
      SegmentedDiskAnnRerankOverfetchesBeforeGlobalCandidateMerge) {
   constexpr size_t k_top_k = 10;
   constexpr size_t k_segment_count = 5;
@@ -6704,10 +7048,10 @@ TEST(VectorIndexServiceTest,
   for (auto *probe : probes) probe->requested_top_k_values.clear();
   std::vector<vector_index::vector_data> queries(
       k_query_count, vector_index::vector_data{0.0F, 0.0F});
-  std::vector<std::vector<vector_index::search_result>> batch_results;
+  vector_index::batch_search_candidates batch_results;
   ASSERT_TRUE(segmented->search_batch_for_rerank(
       queries, k_top_k, global_candidate_top_k, &batch_results));
-  ASSERT_EQ(k_query_count, batch_results.size());
+  ASSERT_EQ(k_query_count, batch_results.query_count());
   for (const auto *probe : probes) {
     ASSERT_FALSE(probe->requested_top_k_values.empty());
     EXPECT_EQ(158U, probe->requested_top_k_values.back());
@@ -8497,6 +8841,127 @@ TEST(VectorIndexServiceTest, StagedCommitPlanCoversGuardAndFailureBranches) {
 }
 
 TEST(VectorIndexServiceTest,
+     SearchRuntimeSnapshotRejectsConfigurationGenerationChanges) {
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings(
+      "idx_search_snapshot", 2, "euclidean", "memory", "native"));
+  ASSERT_TRUE(
+      service.stage_upsert(1, "idx_search_snapshot", 11, {1.0F, 1.0F}));
+  ASSERT_TRUE(service.commit(1));
+
+  vector_index::index_service::search_runtime_snapshot snapshot;
+  ASSERT_TRUE(service.snapshot_search_runtime_loaded(
+      "idx_search_snapshot", 2, 1, 1, &snapshot));
+  ASSERT_NE(nullptr, snapshot.runtime);
+  EXPECT_EQ(1U, snapshot.candidate_top_k);
+  EXPECT_TRUE(
+      service.search_runtime_snapshot_matches("idx_search_snapshot", snapshot));
+
+  std::vector<vector_index::search_result> candidates;
+  {
+    std::shared_lock<std::shared_mutex> guard(
+        snapshot.runtime->runtime_mutex());
+    ASSERT_TRUE(snapshot.runtime->search_for_rerank(
+        {1.0F, 1.0F}, 1, snapshot.candidate_top_k, &candidates));
+  }
+
+  vector_index::index_service::index_publication_state changed =
+      snapshot.publication;
+  ++changed.config_generation;
+  ASSERT_TRUE(
+      service.restore_publication_state("idx_search_snapshot", changed));
+  EXPECT_FALSE(
+      service.search_runtime_snapshot_matches("idx_search_snapshot", snapshot));
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(service.finish_search_with_exact_rerank(
+      "idx_search_snapshot", snapshot.config, {1.0F, 1.0F}, 1,
+      std::move(candidates), &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(11U, results[0].doc_id);
+}
+
+TEST(VectorIndexServiceTest,
+     StagedCommitPlanRestoresBackendAfterPartialMutationFailure) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kNative)) {
+    GTEST_SKIP() << "native rollback backend unavailable in current build";
+  }
+
+  vector_index::index_service service;
+  auto backend = std::make_unique<FailAfterMutationBackend>();
+  FailAfterMutationBackend *backend_ptr = backend.get();
+  ASSERT_TRUE(service.register_index("idx_partial_apply", std::move(backend)));
+  ASSERT_TRUE(service.stage_upsert(750, "idx_partial_apply", 1,
+                                   {1.0F, 1.0F}));
+  ASSERT_TRUE(service.commit(750));
+
+  backend_ptr->fail_after_successful_mutations(1);
+  ASSERT_TRUE(service.stage_upsert(75, "idx_partial_apply", 2,
+                                   {2.0F, 2.0F}));
+  ASSERT_TRUE(service.stage_upsert(75, "idx_partial_apply", 3,
+                                   {3.0F, 3.0F}));
+  EXPECT_FALSE(service.commit(75));
+  EXPECT_EQ(2U, service.pending_change_count(75));
+
+  vector_index::committed_state state;
+  ASSERT_TRUE(service.snapshot_committed_state(&state));
+  ASSERT_EQ(1U, state["idx_partial_apply"].size());
+  EXPECT_EQ(vector_index::vector_data({1.0F, 1.0F}),
+            state["idx_partial_apply"][1]);
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(service.search("idx_partial_apply", {1.0F, 1.0F}, 10,
+                             &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(1U, results[0].doc_id);
+}
+
+TEST(VectorIndexServiceTest,
+     StagedCommitPlanRestoresBackendWhenEntryStoreApplyFails) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kNative)) {
+    GTEST_SKIP() << "native rollback backend unavailable in current build";
+  }
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings(
+      "idx_entry_store_apply", 2, "euclidean", "memory", "native"));
+  ASSERT_TRUE(service.stage_upsert(760, "idx_entry_store_apply", 1,
+                                   {1.0F, 1.0F}));
+  ASSERT_TRUE(service.commit(760));
+  ASSERT_TRUE(service.stage_upsert(76, "idx_entry_store_apply", 1,
+                                   {9.0F, 9.0F}));
+  ASSERT_TRUE(service.stage_upsert(76, "idx_entry_store_apply", 2,
+                                   {2.0F, 2.0F}));
+
+  vector_index::index_service::commit_build_plan plan;
+  ASSERT_TRUE(service.snapshot_commit_build_plan(76, &plan));
+  ASSERT_TRUE(service.build_commit_backends(&plan));
+  {
+    ScopedDebugFlag fail_entry_store(
+        "+d,vector_service_fail_commit_entry_store_apply");
+    EXPECT_FALSE(service.apply_commit_build_plan(76, &plan));
+  }
+  EXPECT_EQ(2U, service.pending_change_count(76));
+
+  vector_index::committed_state state;
+  ASSERT_TRUE(service.snapshot_committed_state(&state));
+  ASSERT_EQ(1U, state["idx_entry_store_apply"].size());
+  EXPECT_EQ(vector_index::vector_data({1.0F, 1.0F}),
+            state["idx_entry_store_apply"][1]);
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(service.search("idx_entry_store_apply", {1.0F, 1.0F}, 10,
+                             &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(1U, results[0].doc_id);
+}
+
+TEST(VectorIndexServiceTest,
      StagedCommitPlanRejectsStalePendingAndNonWritableBackend) {
   vector_index::index_service service;
   vector_index::index_service::commit_build_plan plan;
@@ -8577,6 +9042,51 @@ TEST(VectorIndexServiceTest,
   EXPECT_FALSE(supports_mutations);
   EXPECT_EQ("failed", lifecycle_state);
   EXPECT_EQ(1005U, last_error_code);
+}
+
+TEST(VectorIndexServiceTest,
+     StagedCommitDefersRuntimeWithoutInPlaceMutationSupport) {
+  vector_index::index_service service;
+  auto backend = std::make_unique<DeferredMutationBackend>();
+  DeferredMutationBackend *runtime = backend.get();
+  ASSERT_TRUE(service.register_index("idx_deferred_runtime", std::move(backend)));
+  ASSERT_TRUE(service.stage_upsert(79, "idx_deferred_runtime", 7,
+                                   {7.0F, 7.0F}));
+
+  vector_index::index_service::commit_build_plan plan;
+  ASSERT_TRUE(service.snapshot_commit_build_plan(79, &plan));
+  ASSERT_EQ(1U, plan.indexes.size());
+  EXPECT_TRUE(plan.indexes[0].defer_runtime_rebuild);
+  EXPECT_TRUE(plan.rebuilds.empty());
+  ASSERT_TRUE(service.build_commit_backends(&plan));
+  ASSERT_TRUE(service.apply_commit_build_plan(79, &plan));
+  EXPECT_EQ(0U, runtime->upsert_calls);
+  EXPECT_EQ(0U, runtime->erase_calls);
+
+  vector_index::index_service::index_publication_state publication;
+  ASSERT_TRUE(service.describe_publication_state("idx_deferred_runtime",
+                                                 &publication));
+  EXPECT_EQ(1U, publication.truth_generation);
+  EXPECT_EQ(0U, publication.runtime_generation);
+
+  ASSERT_TRUE(service.stage_upsert(80, "idx_deferred_runtime", 8,
+                                   {8.0F, 8.0F}));
+  ASSERT_TRUE(service.snapshot_commit_build_plan(80, &plan));
+  ASSERT_EQ(1U, plan.indexes.size());
+  EXPECT_TRUE(plan.indexes[0].defer_runtime_rebuild);
+  ASSERT_TRUE(service.build_commit_backends(&plan));
+  ASSERT_TRUE(service.apply_commit_build_plan(80, &plan));
+  EXPECT_EQ(0U, runtime->upsert_calls);
+  EXPECT_EQ(0U, runtime->erase_calls);
+  ASSERT_TRUE(service.describe_publication_state("idx_deferred_runtime",
+                                                 &publication));
+  EXPECT_EQ(2U, publication.truth_generation);
+  EXPECT_EQ(0U, publication.runtime_generation);
+
+  vector_index::index_service::committed_state committed;
+  ASSERT_TRUE(service.snapshot_committed_state(&committed));
+  ASSERT_EQ(1U, committed["idx_deferred_runtime"].count(7));
+  ASSERT_EQ(1U, committed["idx_deferred_runtime"].count(8));
 }
 
 TEST(VectorIndexServiceTest,

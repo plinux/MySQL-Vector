@@ -53,6 +53,7 @@
 
 #include "my_dbug.h"
 #include "sql/vector/vector_diskann_garnet_abi.h"
+#include "sql/vector/vector_diskann_generation_store.h"
 #include "sql/vector/vector_diskann_graph_cache_bridge.h"
 #include "sql/vector/vector_diskann_pq_runtime.h"
 #include "sql/vector/vector_diskann_scheduler.h"
@@ -113,6 +114,8 @@ constexpr const char *kDiskAnnRuntimeSerial = "serial";
 constexpr const char *kDiskAnnRuntimeSerialFallback = "serial_fallback";
 constexpr const char *kDiskAnnRuntimeVendored = "vendored_runtime";
 constexpr const char *kDiskAnnFallbackOfflineMinRows = "offline_min_rows";
+constexpr const char *kDiskAnnArtifactRuntimeFilename =
+    "mysql-vector-runtime.variant";
 
 struct diskann_batch_search_scratch {
   std::vector<float> query_data;
@@ -128,6 +131,7 @@ enum class diskann_runtime_variant {
   kVendoredOffline,
   kOfflineSegmented,
   kVendoredSegmented,
+  kEmpty,
 };
 
 uint32_t diskann_effective_offline_max_degree(size_t row_count,
@@ -162,6 +166,8 @@ const char *diskann_runtime_variant_name(diskann_runtime_variant variant) {
       return "diskann_offline_segmented";
     case diskann_runtime_variant::kVendoredSegmented:
       return "diskann_vendored_segmented";
+    case diskann_runtime_variant::kEmpty:
+      return "diskann_empty";
     case diskann_runtime_variant::kNone:
       break;
   }
@@ -906,12 +912,141 @@ class diskann_native_state {
   ~diskann_native_state() {
     std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
     close_locked();
+    discard_unpublished_staging_locked();
   }
 
   bool supported() const {
     DBUG_EXECUTE_IF("vector_backend_diskann_native_unavailable",
                     return false;);
     return m_api != nullptr && m_api->available();
+  }
+
+  void defer_artifact_publication() {
+    std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    m_defer_artifact_publication = true;
+  }
+
+  bool has_pending_artifact_publication() const {
+    std::shared_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    return !m_build_staging_directory.empty() ||
+           !m_generation_swap.journal_path.empty();
+  }
+
+  bool prepare_artifact_publication(
+      const diskann_artifact_identity &identity) {
+    std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    if (!m_defer_artifact_publication || m_build_staging_directory.empty() ||
+        !m_generation_swap.journal_path.empty() ||
+        identity.doc_id_count != m_artifact_entry_count) {
+      return false;
+    }
+
+    std::string error;
+    if (!prepare_diskann_generation_swap(
+            m_store_directory, m_build_staging_directory, identity,
+            &m_generation_swap, &error)) {
+      return false;
+    }
+    m_build_staging_directory = m_generation_swap.staging_directory;
+    return true;
+  }
+
+  bool publish_artifact() {
+    std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    if (m_generation_swap.journal_path.empty()) return false;
+
+    const diskann_runtime_variant runtime_variant = m_runtime_variant;
+    close_locked();
+    std::string error;
+    if (!publish_diskann_generation_swap(&m_generation_swap, &error) ||
+        !load_published_artifact_locked(runtime_variant) ||
+        !verify_diskann_generation_swap(&m_generation_swap, &error)) {
+      return false;
+    }
+    m_artifact_identity = m_generation_swap.target;
+    m_artifact_manifest_present = true;
+    m_build_staging_directory.clear();
+    return true;
+  }
+
+  bool rollback_artifact() {
+    std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    close_locked();
+    if (m_generation_swap.journal_path.empty()) {
+      discard_unpublished_staging_locked();
+      m_artifact_identity = {};
+      m_artifact_manifest_present = false;
+      return true;
+    }
+    std::string error;
+    const bool rolled_back =
+        rollback_diskann_generation_swap(&m_generation_swap, &error);
+    if (rolled_back) {
+      m_build_staging_directory.clear();
+      m_artifact_identity = {};
+      m_artifact_manifest_present = false;
+    }
+    return rolled_back;
+  }
+
+  bool finalize_artifact() {
+    std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    std::string error;
+    return finalize_diskann_generation_swap(&m_generation_swap, &error);
+  }
+
+  bool recover_artifact_publication(
+      const diskann_artifact_identity &identity) {
+    std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    close_locked();
+    std::string error;
+    bool journal_found = false;
+    if (!recover_diskann_generation_swap(m_store_directory, identity,
+                                         &journal_found, &error)) {
+      return false;
+    }
+
+    diskann_artifact_identity actual;
+    if (!validate_diskann_generation_store(m_store_directory, identity, &actual,
+                                           &error) ||
+        !load_recovered_artifact_locked(actual.doc_id_count)) {
+      return false;
+    }
+    m_artifact_identity = std::move(actual);
+    m_artifact_entry_count =
+        static_cast<size_t>(m_artifact_identity.doc_id_count);
+    m_artifact_manifest_present = true;
+    m_build_staging_directory.clear();
+    m_generation_swap = {};
+    return true;
+  }
+
+  bool artifact_publication_matches(
+      const diskann_artifact_identity &identity) const {
+    std::shared_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    return m_artifact_manifest_present &&
+           diskann_artifact_publication_matches(identity, m_artifact_identity);
+  }
+
+  bool artifact_manifest_present() const {
+    std::shared_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    return m_artifact_manifest_present;
+  }
+
+  uint64_t artifact_manifest_generation() const {
+    std::shared_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    return m_artifact_manifest_present ? m_artifact_identity.truth_generation
+                                       : 0;
+  }
+
+  size_t artifact_entry_count() const {
+    std::shared_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    return m_artifact_entry_count;
+  }
+
+  bool stage_empty_artifact() {
+    std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
+    return m_defer_artifact_publication && stage_empty_artifact_locked();
   }
 
   std::string backend_variant() const {
@@ -1086,8 +1221,17 @@ class diskann_native_state {
 
     bool rebuild_ok = rebuild_ordered_entries_locked(ordered, build_mode);
     set_build_input_stats_locked(ordered.size(), 0);
-    if (rebuild_ok) rebuild_ok = flush_build_memory_store_locked();
+    if (rebuild_ok && m_defer_artifact_publication) {
+      rebuild_ok = stage_entry_doc_ids_locked(ordered) &&
+                   stage_build_memory_store_locked(ordered.size(), true);
+    } else if (rebuild_ok) {
+      rebuild_ok = flush_build_memory_store_locked();
+    }
     if (!rebuild_ok) close_locked();
+    if (!rebuild_ok && m_defer_artifact_publication) {
+      discard_doc_ids_file_locked(nullptr);
+      discard_unpublished_staging_locked();
+    }
     discard_build_memory_store_locked();
     if (rebuild_ok) {
       m_last_build_diagnostics.build_invocations = ordered.empty() ? 0 : 1;
@@ -2272,6 +2416,23 @@ class diskann_native_state {
     return file->good();
   }
 
+  bool stage_entry_doc_ids_locked(const ordered_entries &entries) const {
+    std::ofstream doc_ids_file;
+    if (!begin_doc_ids_file_locked(&doc_ids_file)) return false;
+    for (const auto &entry : entries) {
+      if (!write_binary_value(doc_ids_file, entry.first)) {
+        discard_doc_ids_file_locked(&doc_ids_file);
+        return false;
+      }
+    }
+    if (!finish_doc_ids_file_locked(
+            &doc_ids_file, static_cast<uint64_t>(entries.size()))) {
+      discard_doc_ids_file_locked(&doc_ids_file);
+      return false;
+    }
+    return true;
+  }
+
   bool move_doc_ids_file_to_store_locked(
       const std::filesystem::path &store_directory) const {
     DBUG_EXECUTE_IF("vector_backend_fail_diskann_doc_ids_stage", return false;);
@@ -2310,10 +2471,15 @@ class diskann_native_state {
           &doc_ids_file, static_cast<uint64_t>(*entry_count));
     }
     if (rebuild_ok) {
-      rebuild_ok = flush_build_memory_store_locked(true);
+      rebuild_ok = m_defer_artifact_publication
+                       ? stage_build_memory_store_locked(*entry_count, true)
+                       : flush_build_memory_store_locked(true);
     }
     if (!rebuild_ok) close_locked();
     if (!rebuild_ok) discard_doc_ids_file_locked(&doc_ids_file);
+    if (!rebuild_ok && m_defer_artifact_publication) {
+      discard_unpublished_staging_locked();
+    }
     discard_build_memory_store_locked();
     if (rebuild_ok) {
       m_last_build_diagnostics.build_invocations = *entry_count == 0 ? 0 : 1;
@@ -2899,6 +3065,15 @@ class diskann_native_state {
       std::filesystem::remove_all(staging, ec);
       return false;
     }
+    if (m_defer_artifact_publication) {
+      if (!retain_offline_staging_locked(staging, staging_handle,
+                                         entries.size())) {
+        drop_offline_handle_locked(staging_handle);
+        std::filesystem::remove_all(staging, ec);
+        return false;
+      }
+      return true;
+    }
     drop_offline_handle_locked(staging_handle);
 
     offline_loaded_handle handle;
@@ -2941,6 +3116,7 @@ class diskann_native_state {
     if (*entry_count == 0) {
       std::filesystem::remove_all(staging, ec);
       if (ec) return false;
+      if (m_defer_artifact_publication) return stage_empty_artifact_locked();
       std::filesystem::remove_all(m_store_directory, ec);
       if (ec) return false;
       close_locked();
@@ -2955,6 +3131,15 @@ class diskann_native_state {
     if (staging_handle.handle == nullptr) {
       std::filesystem::remove_all(staging, ec);
       return false;
+    }
+    if (m_defer_artifact_publication) {
+      if (!retain_offline_staging_locked(staging, staging_handle,
+                                         *entry_count)) {
+        drop_offline_handle_locked(staging_handle);
+        std::filesystem::remove_all(staging, ec);
+        return false;
+      }
+      return true;
     }
     drop_offline_handle_locked(staging_handle);
 
@@ -3007,6 +3192,7 @@ class diskann_native_state {
     if (*entry_count == 0) {
       std::filesystem::remove_all(staging, ec);
       if (ec) return false;
+      if (m_defer_artifact_publication) return stage_empty_artifact_locked();
       std::filesystem::remove_all(m_store_directory, ec);
       if (ec) return false;
       close_locked();
@@ -3022,6 +3208,16 @@ class diskann_native_state {
       set_build_fallback_reason_locked("staging_load_failed");
       std::filesystem::remove_all(staging, ec);
       return false;
+    }
+    if (m_defer_artifact_publication) {
+      if (!retain_offline_staging_locked(staging, staging_handle,
+                                         *entry_count)) {
+        drop_offline_handle_locked(staging_handle);
+        set_build_fallback_reason_locked("retain_offline_staging_failed");
+        std::filesystem::remove_all(staging, ec);
+        return false;
+      }
+      return true;
     }
     drop_offline_handle_locked(staging_handle);
 
@@ -3478,6 +3674,76 @@ class diskann_native_state {
     m_runtime_variant = diskann_runtime_variant::kNone;
   }
 
+  void discard_unpublished_staging_locked() {
+    if (m_build_staging_directory.empty() ||
+        !m_generation_swap.journal_path.empty()) {
+      return;
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(m_build_staging_directory, ec);
+    m_build_staging_directory.clear();
+  }
+
+  bool load_published_artifact_locked(
+      diskann_runtime_variant runtime_variant) {
+    if (runtime_variant == diskann_runtime_variant::kEmpty) {
+      if (supported() && reopen_locked(false)) {
+        m_runtime_variant = diskann_runtime_variant::kSerial;
+      } else {
+        m_runtime_variant = diskann_runtime_variant::kEmpty;
+      }
+      return true;
+    }
+    if (runtime_variant == diskann_runtime_variant::kSerial ||
+        runtime_variant == diskann_runtime_variant::kNone) {
+      if (!reopen_locked(false)) return false;
+      m_runtime_variant = diskann_runtime_variant::kSerial;
+      return true;
+    }
+
+    const offline_loaded_handle handle =
+        load_offline_index_locked(offline_index_prefix(),
+                                  m_artifact_entry_count);
+    if (handle.handle == nullptr) return false;
+    m_offline_handle = handle.handle;
+    m_offline_handle_variant = handle.variant;
+    m_runtime_variant = handle.variant;
+    return true;
+  }
+
+  bool load_recovered_artifact_locked(uint64_t entry_count) {
+    std::ifstream runtime_file(std::filesystem::path(m_store_directory) /
+                               kDiskAnnArtifactRuntimeFilename);
+    std::string runtime;
+    if (!runtime_file.is_open() || !std::getline(runtime_file, runtime) ||
+        runtime_file.bad()) {
+      return false;
+    }
+    if (runtime == "empty") {
+      if (entry_count != 0) return false;
+      if (supported() && reopen_locked(false)) {
+        m_runtime_variant = diskann_runtime_variant::kSerial;
+      } else {
+        m_runtime_variant = diskann_runtime_variant::kEmpty;
+      }
+      return true;
+    }
+    if (runtime == "serial") {
+      if (!reopen_locked(false)) return false;
+      m_runtime_variant = diskann_runtime_variant::kSerial;
+      return true;
+    }
+    if (runtime != "offline") return false;
+
+    const offline_loaded_handle handle = load_offline_index_locked(
+        offline_index_prefix(), static_cast<size_t>(entry_count));
+    if (handle.handle == nullptr) return false;
+    m_offline_handle = handle.handle;
+    m_offline_handle_variant = handle.variant;
+    m_runtime_variant = handle.variant;
+    return true;
+  }
+
   std::string offline_index_prefix() const {
     return (std::filesystem::path(m_store_directory) / "offline" / "diskann")
         .string();
@@ -3640,6 +3906,29 @@ class diskann_native_state {
         diskann_offline_load_use_bfs_cache(cache_nodes, m_use_bfs_cache));
     if (handle != nullptr) m_loaded_cache_nodes = cache_nodes;
     return {handle, diskann_runtime_variant::kOffline};
+  }
+
+  bool retain_offline_staging_locked(
+      const std::filesystem::path &staging,
+      const offline_loaded_handle &staging_handle, size_t row_count) {
+    if (staging_handle.handle == nullptr || staging.empty() ||
+        !save_persistent_value(
+            (staging / kDiskAnnArtifactRuntimeFilename).string(),
+            "offline\n")) {
+      return false;
+    }
+    if (m_build_staging_directory == staging.string()) {
+      m_build_staging_directory.clear();
+    } else {
+      discard_unpublished_staging_locked();
+    }
+    close_locked();
+    m_build_staging_directory = staging.string();
+    m_artifact_entry_count = row_count;
+    m_offline_handle = staging_handle.handle;
+    m_offline_handle_variant = staging_handle.variant;
+    m_runtime_variant = staging_handle.variant;
+    return true;
   }
 
   bool promote_offline_store_locked(const std::filesystem::path &staging,
@@ -3969,6 +4258,91 @@ class diskann_native_state {
     return true;
   }
 
+  bool stage_build_memory_store_locked(size_t entry_count,
+                                       bool include_doc_ids_file) {
+    if (!m_build_memory_store_active.load(std::memory_order_acquire) ||
+        m_store_directory.empty()) {
+      return false;
+    }
+
+    discard_unpublished_staging_locked();
+    const std::string suffix =
+        ".generation-tmp-" +
+        std::to_string(reinterpret_cast<std::uintptr_t>(this));
+    const std::filesystem::path staging(m_store_directory + suffix);
+    std::error_code ec;
+    std::filesystem::remove_all(staging, ec);
+    if (ec) return false;
+    std::filesystem::create_directories(staging, ec);
+    if (ec) return false;
+
+    for (const native_store_shard &shard : m_build_memory_store) {
+      std::lock_guard<std::mutex> guard(shard.mutex);
+      for (const auto &entry : shard.entries) {
+        const std::string path =
+            key_path_from_store_key(staging.string(), entry.first);
+        if (!save_persistent_value(path, entry.second)) {
+          std::filesystem::remove_all(staging, ec);
+          return false;
+        }
+      }
+    }
+    if (include_doc_ids_file && !move_doc_ids_file_to_store_locked(staging)) {
+      std::filesystem::remove_all(staging, ec);
+      return false;
+    }
+    if (!save_persistent_value(
+            (staging / kDiskAnnArtifactRuntimeFilename).string(), "serial\n")) {
+      std::filesystem::remove_all(staging, ec);
+      return false;
+    }
+
+    m_build_staging_directory = staging.string();
+    m_artifact_entry_count = entry_count;
+    move_build_store_to_resident_locked();
+    return true;
+  }
+
+  bool stage_empty_artifact_locked() {
+    if (m_store_directory.empty()) return false;
+    discard_unpublished_staging_locked();
+    const std::filesystem::path staging(
+        m_store_directory + ".generation-empty-tmp-" +
+        std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+    std::error_code ec;
+    std::filesystem::remove_all(staging, ec);
+    if (ec) return false;
+    std::filesystem::create_directories(staging, ec);
+    if (ec) return false;
+
+    const std::filesystem::path doc_ids_path =
+        doc_ids_file_path_for_store_locked(staging.string());
+    if (!ensure_parent_directory(doc_ids_path.string())) {
+      std::filesystem::remove_all(staging, ec);
+      return false;
+    }
+    std::ofstream doc_ids_file(doc_ids_path,
+                               std::ios::out | std::ios::binary |
+                                   std::ios::trunc);
+    if (!doc_ids_file.is_open() ||
+        !write_binary_value(doc_ids_file, uint64_t{0})) {
+      std::filesystem::remove_all(staging, ec);
+      return false;
+    }
+    doc_ids_file.close();
+    if (!doc_ids_file.good() ||
+        !save_persistent_value(
+            (staging / kDiskAnnArtifactRuntimeFilename).string(), "empty\n")) {
+      std::filesystem::remove_all(staging, ec);
+      return false;
+    }
+
+    m_build_staging_directory = staging.string();
+    m_artifact_entry_count = 0;
+    m_runtime_variant = diskann_runtime_variant::kEmpty;
+    return true;
+  }
+
   bool load_value(uint64_t ctx, const uint8_t *key, size_t key_length,
                  std::string *value) const {
     if (value == nullptr) return false;
@@ -4245,6 +4619,12 @@ class diskann_native_state {
   double m_search_cache_ratio{0.0};
   mutable uint32_t m_loaded_cache_nodes{0};
   diskann_runtime_variant m_runtime_variant{diskann_runtime_variant::kNone};
+  bool m_defer_artifact_publication{false};
+  std::string m_build_staging_directory;
+  size_t m_artifact_entry_count{0};
+  diskann_generation_swap m_generation_swap;
+  diskann_artifact_identity m_artifact_identity;
+  bool m_artifact_manifest_present{false};
   backend_build_diagnostics m_last_build_diagnostics;
   mutable std::shared_mutex m_lifecycle_mutex;
   std::atomic_bool m_build_memory_store_active{false};
@@ -4301,7 +4681,7 @@ void diskann_backend::clear_build_diagnostics() {
 
 std::unique_ptr<diskann_native_state> diskann_backend::create_native_state()
     const {
-  return std::make_unique<diskann_native_state>(
+  auto state = std::make_unique<diskann_native_state>(
       m_dimension, m_metric, m_index_name, m_diskann_build_complexity,
       m_diskann_max_degree, m_diskann_build_threads,
       m_diskann_build_blas_threads, m_diskann_offline_search_threads,
@@ -4311,6 +4691,8 @@ std::unique_ptr<diskann_native_state> diskann_backend::create_native_state()
       m_diskann_search_cache_ratio, m_diskann_disk_pq_dims,
       m_diskann_accelerate_build, m_diskann_shuffle_build,
       m_diskann_use_bfs_cache);
+  if (m_defer_artifact_publication) state->defer_artifact_publication();
+  return state;
 }
 
 bool diskann_backend::configure_native_state_for_serving(
@@ -4658,6 +5040,12 @@ bool diskann_backend::load_committed_entries(
   return true;
 }
 
+bool diskann_backend::supports_in_place_mutations() const {
+  if (m_defer_artifact_publication) return false;
+  return !m_native_runtime_enabled || m_native_state == nullptr ||
+         m_native_state->supports_mutations();
+}
+
 bool diskann_backend::rebuild_from_committed_entries_from_reader(
     const committed_entry_reader &reader) {
   if (m_mode != backend_mode::kExternal) return false;
@@ -4679,6 +5067,13 @@ bool diskann_backend::rebuild_from_committed_entries_from_reader(
   }
 
   if (rebuilt_entry_count == 0) {
+    if (m_defer_artifact_publication &&
+        rebuilt->has_pending_artifact_publication()) {
+      if (!configure_native_state_for_serving(rebuilt.get())) return false;
+      m_entries.clear();
+      install_native_state(std::move(rebuilt), 0, false);
+      return true;
+    }
     rebuilt.reset();
     return activate_empty_mutable_sidecar();
   }
@@ -4710,6 +5105,13 @@ bool diskann_backend::rebuild_from_raw_segments(
   }
 
   if (rebuilt_entry_count == 0) {
+    if (m_defer_artifact_publication &&
+        rebuilt->has_pending_artifact_publication()) {
+      if (!configure_native_state_for_serving(rebuilt.get())) return false;
+      m_entries.clear();
+      install_native_state(std::move(rebuilt), 0, false);
+      return true;
+    }
     rebuilt.reset();
     return activate_empty_mutable_sidecar();
   }
@@ -4723,20 +5125,31 @@ bool diskann_backend::rebuild_from_raw_segments(
 bool diskann_backend::rebuild_from_committed_entries(
     const std::unordered_map<uint64_t, vector_data> &entries) {
   if (m_mode != backend_mode::kExternal) return false;
-  if (entries.empty()) return activate_empty_mutable_sidecar();
+  if (entries.empty()) {
+    if (!m_defer_artifact_publication) return activate_empty_mutable_sidecar();
+    auto rebuilt = create_native_state();
+    if (!rebuilt->stage_empty_artifact() ||
+        !configure_native_state_for_serving(rebuilt.get())) {
+      return false;
+    }
+    m_entries.clear();
+    install_native_state(std::move(rebuilt), 0, false);
+    return true;
+  }
   auto rebuilt = create_native_state();
   bool rebuild_ok = rebuilt->rebuild_from_entries(entries, m_diskann_build_mode);
+  bool rebuild_failure_injected = false;
   DBUG_EXECUTE_IF("vector_backend_fail_diskann_native_rebuild",
-                  rebuild_ok = false;);
+                  rebuild_ok = false; rebuild_failure_injected = true;);
   if (!rebuild_ok) {
     if (m_diskann_build_mode != diskann_build_mode::kAuto) {
       m_last_build_diagnostics = rebuilt->build_diagnostics();
       return false;
     }
-    if (rebuilt->supported()) {
-      m_last_build_diagnostics = rebuilt->build_diagnostics();
-      return false;
-    }
+    const bool report_native_rebuild_failure =
+        rebuild_failure_injected ||
+        (rebuilt->supported() &&
+         rebuilt->build_diagnostics().fallback_reason.empty());
     const bool sidecar_compatible = diskann_sidecar_supports_entries(entries);
     if (sidecar_compatible) {
       if (!m_external_adapter.load_committed_entries(entries)) return false;
@@ -4751,6 +5164,10 @@ bool diskann_backend::rebuild_from_committed_entries(
     m_external_adapter_active = sidecar_compatible;
     m_native_state = std::move(rebuilt);
     capture_native_build_diagnostics();
+    if (report_native_rebuild_failure) {
+      m_last_build_diagnostics.fallback_reason =
+          "native_rebuild_failed_sidecar_fallback";
+    }
     m_native_runtime_enabled = false;
     return true;
   }
@@ -4821,14 +5238,75 @@ bool diskann_backend::collect_doc_ids(std::vector<uint64_t> *doc_ids) const {
 }
 
 bool diskann_backend::external_manifest_present() const {
+  if (m_native_runtime_enabled && m_native_state != nullptr) {
+    return m_native_state->artifact_manifest_present();
+  }
   return m_external_adapter_active &&
          m_external_adapter.external_manifest_present();
 }
 
 uint64_t diskann_backend::external_manifest_generation() const {
+  if (m_native_runtime_enabled && m_native_state != nullptr) {
+    return m_native_state->artifact_manifest_generation();
+  }
   return m_external_adapter_active
              ? m_external_adapter.external_manifest_generation()
              : 0;
+}
+
+bool diskann_backend::defer_artifact_publication() {
+  if (m_mode != backend_mode::kExternal) return true;
+  m_defer_artifact_publication = true;
+  if (m_native_state != nullptr) m_native_state->defer_artifact_publication();
+  return true;
+}
+
+bool diskann_backend::has_pending_artifact_publication() const {
+  return m_native_state != nullptr &&
+         m_native_state->has_pending_artifact_publication();
+}
+
+bool diskann_backend::prepare_artifact_publication(
+    const diskann_artifact_identity &identity) {
+  return !has_pending_artifact_publication() ||
+         m_native_state->prepare_artifact_publication(identity);
+}
+
+bool diskann_backend::publish_artifact() {
+  return !has_pending_artifact_publication() ||
+         m_native_state->publish_artifact();
+}
+
+bool diskann_backend::rollback_artifact() {
+  return m_native_state == nullptr ||
+         !m_native_state->has_pending_artifact_publication() ||
+         m_native_state->rollback_artifact();
+}
+
+bool diskann_backend::finalize_artifact() {
+  return m_native_state == nullptr ||
+         !m_native_state->has_pending_artifact_publication() ||
+         m_native_state->finalize_artifact();
+}
+
+bool diskann_backend::recover_artifact_publication(
+    const diskann_artifact_identity &identity) {
+  if (m_mode != backend_mode::kExternal) return false;
+  auto recovered = create_native_state();
+  if (!recovered->recover_artifact_publication(identity) ||
+      !configure_native_state_for_serving(recovered.get())) {
+    return false;
+  }
+  const size_t entry_count = recovered->artifact_entry_count();
+  m_entries.clear();
+  install_native_state(std::move(recovered), entry_count, false);
+  return true;
+}
+
+bool diskann_backend::artifact_publication_matches(
+    const diskann_artifact_identity &identity) const {
+  return m_native_runtime_enabled && m_native_state != nullptr &&
+         m_native_state->artifact_publication_matches(identity);
 }
 
 std::string diskann_backend::backend_variant() const {
@@ -4934,10 +5412,10 @@ bool diskann_backend::set_diskann_search_complexity(
   }
   bool native_search_complexity_ok = true;
   if (m_native_runtime_enabled && m_native_state != nullptr) {
+    DBUG_EXECUTE_IF("vector_backend_fail_diskann_native_live_search_complexity",
+                    return false;);
     native_search_complexity_ok =
         m_native_state->set_search_complexity(diskann_search_complexity);
-    DBUG_EXECUTE_IF("vector_backend_fail_diskann_native_live_search_complexity",
-                    native_search_complexity_ok = false;);
   }
   if (m_native_runtime_enabled && m_native_state != nullptr &&
       !native_search_complexity_ok) {
@@ -4959,10 +5437,10 @@ bool diskann_backend::set_diskann_search_beamwidth(
   }
   bool native_search_beamwidth_ok = true;
   if (m_native_runtime_enabled && m_native_state != nullptr) {
+    DBUG_EXECUTE_IF("vector_backend_fail_diskann_native_live_search_beamwidth",
+                    return false;);
     native_search_beamwidth_ok =
         m_native_state->set_search_beamwidth(diskann_search_beamwidth);
-    DBUG_EXECUTE_IF("vector_backend_fail_diskann_native_live_search_beamwidth",
-                    native_search_beamwidth_ok = false;);
   }
   if (m_native_runtime_enabled && m_native_state != nullptr &&
       !native_search_beamwidth_ok) {
@@ -5556,6 +6034,8 @@ const char *diskann_runtime_variant_name_for_testing(int variant) {
     case 5:
       return diskann_runtime_variant_name(
           diskann_runtime_variant::kVendoredSegmented);
+    case 6:
+      return diskann_runtime_variant_name(diskann_runtime_variant::kEmpty);
     default:
       return diskann_runtime_variant_name(
           static_cast<diskann_runtime_variant>(variant));

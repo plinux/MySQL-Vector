@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "sql/vector/vector_index_registry.h"
+#include "sql/vector/vector_diskann_generation_store.h"
 #include "sql/vector/vector_index_limits.h"
 
 namespace vector_index_truth_store {
@@ -269,6 +270,12 @@ bool parse_mapped_index_name(const std::string &index_name,
 index_binding binding_from_name(const std::string &index_name);
 index_binding binding_for_index_locked(const std::string &index_name);
 std::string owner_schema_for_index_locked(const std::string &index_name);
+bool make_diskann_artifact_identity_locked(
+    const std::string &index_name,
+    const vector_index::index_service::index_config &config,
+    const vector_index::index_service::index_publication_state &publication,
+    size_t doc_id_count,
+    vector_index::diskann_artifact_identity *identity);
 void set_index_binding_locked(const std::string &index_name,
                               const std::string &schema_name,
                               const std::string &table_name,

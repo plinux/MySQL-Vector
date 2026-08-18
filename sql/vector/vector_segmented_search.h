@@ -79,6 +79,11 @@ bool merge_segment_batch_topk(
         &segment_batch_results,
     size_t top_k, std::vector<std::vector<search_result>> *results);
 
+/** Merge batch candidates without materializing shared per-query lists. */
+bool merge_segment_batch_candidates_topk(
+    const std::vector<batch_search_candidates> &segment_batch_results,
+    size_t top_k, std::vector<std::vector<search_result>> *results);
+
 }  // namespace vector_index
 
 #endif  // SQL_VECTOR_SEGMENTED_SEARCH_INCLUDED

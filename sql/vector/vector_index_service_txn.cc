@@ -93,6 +93,17 @@ bool should_batch_rebuild_on_commit(const backend *index_backend) {
   return index_backend->provider() == backend_provider::kFaiss;
 }
 
+bool should_defer_runtime_rebuild_on_commit(const backend *index_backend) {
+  return index_backend != nullptr && index_backend->supports_mutations() &&
+         !index_backend->supports_in_place_mutations();
+}
+
+bool is_external_diskann(const backend *index_backend) {
+  return index_backend != nullptr &&
+         index_backend->provider() == backend_provider::kDiskAnn &&
+         index_backend->mode() == backend_mode::kExternal;
+}
+
 bool savepoint_names_equal(const std::string &lhs, const std::string &rhs) {
   return my_strnncoll(system_charset_info,
                       reinterpret_cast<const uchar *>(lhs.data()), lhs.size(),
@@ -401,7 +412,10 @@ bool index_service::snapshot_commit_build_plan(uint64_t txn_id,
         lifecycle_it != m_lifecycle_infos.end() &&
         lifecycle_is_bulk_loading(lifecycle_it->second);
     if (!bulk_loading) {
-      if (!ensure_runtime_loaded(change.index_name)) {
+      const bool defer_diskann_runtime_load =
+          is_external_diskann(index_it->second.get());
+      if (!defer_diskann_runtime_load &&
+          !ensure_runtime_loaded(change.index_name)) {
         mark_failure_for_index(change.index_name, ERROR_BACKEND_APPLY_FAILED);
         return false;
       }
@@ -464,6 +478,13 @@ bool index_service::snapshot_commit_build_plan(uint64_t txn_id,
       plan->indexes.push_back(std::move(index_plan));
       continue;
     }
+    if (is_external_diskann(index_it->second.get()) &&
+        (!runtime_loaded_for_search(entry.first) ||
+         should_defer_runtime_rebuild_on_commit(index_it->second.get()))) {
+      index_plan.defer_runtime_rebuild = true;
+      plan->indexes.push_back(std::move(index_plan));
+      continue;
+    }
     if (!should_batch_rebuild_on_commit(index_it->second.get())) {
       plan->indexes.push_back(std::move(index_plan));
       continue;
@@ -510,11 +531,16 @@ bool index_service::build_commit_backends(commit_build_plan *plan) const {
 bool index_service::apply_commit_build_plan(uint64_t txn_id,
                                             commit_build_plan *plan) {
   if (plan == nullptr) return false;
+  plan->failure_stage.clear();
+  auto fail = [&](const char *stage) {
+    plan->failure_stage = stage;
+    return false;
+  };
 
   std::vector<pending_change_snapshot> current_changes;
   if (!snapshot_pending_changes(txn_id, &current_changes) ||
       !pending_change_snapshots_equal(plan->changes, current_changes)) {
-    return false;
+    return fail("pending_changes_changed");
   }
 
   auto mark_failure_for_index = [&](const std::string &index_name,
@@ -528,14 +554,24 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
   std::unordered_set<std::string> rebuild_indexes;
   rebuild_indexes.reserve(plan->rebuilds.size());
   for (const commit_rebuild_plan &rebuild_plan : plan->rebuilds) {
-    if (!rebuild_indexes.insert(rebuild_plan.index_name).second) return false;
+    if (!rebuild_indexes.insert(rebuild_plan.index_name).second) {
+      return fail("duplicate_rebuild_index");
+    }
+  }
+
+  std::unordered_set<std::string> deferred_runtime_indexes;
+  deferred_runtime_indexes.reserve(plan->indexes.size());
+  for (const commit_index_plan &index_plan : plan->indexes) {
+    if (index_plan.defer_runtime_rebuild) {
+      deferred_runtime_indexes.insert(index_plan.index_name);
+    }
   }
 
   std::unordered_map<std::string, const commit_index_plan *> index_plans;
   index_plans.reserve(plan->indexes.size());
   for (const commit_index_plan &index_plan : plan->indexes) {
     if (!index_plans.emplace(index_plan.index_name, &index_plan).second) {
-      return false;
+      return fail("duplicate_index_plan");
     }
     auto index_it = m_indexes.find(index_plan.index_name);
     auto config_it = m_index_configs.find(index_plan.index_name);
@@ -543,31 +579,49 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
     if (index_it == m_indexes.end() || config_it == m_index_configs.end() ||
         publication_it == m_publication_states.end() ||
         !m_entry_store.has_index(index_plan.index_name)) {
-      return false;
+      return fail("index_state_missing");
     }
     const index_publication_state &current_publication = publication_it->second;
     if (m_entry_store.generation(index_plan.index_name) !=
-            index_plan.before_generation ||
-        !index_configs_equal(config_it->second, index_plan.config) ||
-        current_publication.index_identity !=
-            index_plan.publication_before.index_identity ||
-        current_publication.truth_generation !=
-            index_plan.publication_before.truth_generation ||
-        current_publication.config_generation !=
-            index_plan.publication_before.config_generation ||
-        current_publication.artifact_generation !=
-            index_plan.publication_before.artifact_generation ||
-        current_publication.runtime_generation !=
-            index_plan.publication_before.runtime_generation ||
-        index_plan.target_truth_generation == 0 ||
-        index_plan.target_truth_generation <
-            current_publication.truth_generation) {
-      return false;
+        index_plan.before_generation) {
+      return fail("entry_store_generation_changed");
+    }
+    if (!index_configs_equal(config_it->second, index_plan.config)) {
+      return fail("index_config_changed");
+    }
+    if (current_publication.index_identity !=
+        index_plan.publication_before.index_identity) {
+      return fail("index_identity_changed");
+    }
+    if (current_publication.truth_generation !=
+        index_plan.publication_before.truth_generation) {
+      return fail("truth_generation_changed");
+    }
+    if (current_publication.config_generation !=
+        index_plan.publication_before.config_generation) {
+      return fail("config_generation_changed");
+    }
+    if (current_publication.artifact_generation !=
+        index_plan.publication_before.artifact_generation) {
+      return fail("artifact_generation_changed");
+    }
+    if (current_publication.runtime_generation !=
+        index_plan.publication_before.runtime_generation) {
+      return fail("runtime_generation_changed");
+    }
+    if (index_plan.target_truth_generation == 0) {
+      return fail("target_truth_generation_zero");
+    }
+    if (index_plan.target_truth_generation <
+        current_publication.truth_generation) {
+      return fail("target_truth_generation_stale");
     }
   }
 
   for (const pending_change_snapshot &change : plan->changes) {
-    if (index_plans.find(change.index_name) == index_plans.end()) return false;
+    if (index_plans.find(change.index_name) == index_plans.end()) {
+      return fail("pending_change_without_index_plan");
+    }
   }
 
   std::vector<std::pair<backend_ptr *, commit_rebuild_plan *>> rebuild_targets;
@@ -579,14 +633,14 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
         plan_it == index_plans.end() ||
         index_it == m_indexes.end() ||
         !index_configs_equal(rebuild_plan.config, plan_it->second->config)) {
-      return false;
+      return fail("rebuilt_backend_invalid");
     }
     rebuild_targets.emplace_back(&index_it->second, &rebuild_plan);
   }
 
   for (const commit_index_plan &index_plan : plan->indexes) {
     if (!m_entry_store.prepare_index_for_mutation(index_plan.index_name)) {
-      return false;
+      return fail("prepare_entry_store_mutation");
     }
   }
 
@@ -633,7 +687,9 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
     }
     return restored;
   };
-  auto fail_and_restore = [&](const std::string &index_name) {
+  auto fail_and_restore = [&](const std::string &index_name,
+                              const char *stage) {
+    plan->failure_stage = stage;
     mark_failure_for_index(index_name, ERROR_BACKEND_APPLY_FAILED);
     const bool entry_store_restored = restore_entry_store();
     const bool backends_restored = restore_touched_backends();
@@ -644,13 +700,17 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
 
   for (const pending_change_snapshot &change : plan->changes) {
     auto index_it = m_indexes.find(change.index_name);
-    if (index_it == m_indexes.end()) return false;
+    if (index_it == m_indexes.end()) return fail("mutation_index_missing");
     auto lifecycle_it = m_lifecycle_infos.find(change.index_name);
     if (lifecycle_it != m_lifecycle_infos.end() &&
         lifecycle_is_bulk_loading(lifecycle_it->second)) {
       continue;
     }
     if (rebuild_indexes.find(change.index_name) != rebuild_indexes.end()) {
+      continue;
+    }
+    if (deferred_runtime_indexes.find(change.index_name) !=
+        deferred_runtime_indexes.end()) {
       continue;
     }
 
@@ -663,13 +723,13 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
                          : index_it->second->erase(change.doc_id);
     }
     if (!ok) {
-      return fail_and_restore(change.index_name);
+      return fail_and_restore(change.index_name, "backend_mutation");
     }
   }
 
   for (const pending_change_snapshot &change : plan->changes) {
     if (!apply_entry_store_change(&m_entry_store, change)) {
-      return fail_and_restore(change.index_name);
+      return fail_and_restore(change.index_name, "entry_store_mutation");
     }
   }
 
@@ -680,13 +740,18 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
 
   for (const commit_index_plan &index_plan : plan->indexes) {
     auto publication_it = m_publication_states.find(index_plan.index_name);
-    if (publication_it == m_publication_states.end()) return false;
+    if (publication_it == m_publication_states.end()) {
+      return fail("publication_state_missing_after_apply");
+    }
     publication_it->second.truth_generation =
         index_plan.target_truth_generation;
     auto lifecycle_it = m_lifecycle_infos.find(index_plan.index_name);
     if (lifecycle_it == m_lifecycle_infos.end() ||
         !lifecycle_is_bulk_loading(lifecycle_it->second)) {
-      if (!synchronize_runtime_publication(index_plan.index_name)) return false;
+      if (index_plan.defer_runtime_rebuild) continue;
+      if (!synchronize_runtime_publication(index_plan.index_name)) {
+        return fail("synchronize_runtime_publication");
+      }
     }
   }
 
@@ -867,15 +932,26 @@ bool index_service::search_runtime_with_exact_rerank(
     std::vector<search_result> *results) const {
   if (runtime == nullptr || results == nullptr) return false;
 
-  const bool can_exact_rerank =
-      config.provider == backend_provider::kDiskAnn &&
-      config.mode == backend_mode::kExternal;
   const size_t candidate_top_k =
       diskann_exact_rerank_candidate_top_k(index_name, config, top_k, 1);
   std::vector<search_result> candidates;
   if (!runtime->search_for_rerank(query, top_k, candidate_top_k, &candidates))
     return false;
 
+  return finish_search_with_exact_rerank(index_name, config, query, top_k,
+                                         std::move(candidates), results);
+}
+
+bool index_service::finish_search_with_exact_rerank(
+    const std::string &index_name, const index_config &config,
+    const vector_data &query, size_t top_k,
+    std::vector<search_result> candidates,
+    std::vector<search_result> *results) const {
+  if (results == nullptr) return false;
+
+  const bool can_exact_rerank =
+      config.provider == backend_provider::kDiskAnn &&
+      config.mode == backend_mode::kExternal;
   if (can_exact_rerank) {
     bool reranked = false;
     if (!exact_rerank_search_results(index_name, config, query, candidates,
@@ -896,20 +972,36 @@ bool index_service::search_batch_runtime_with_exact_rerank(
     size_t top_k, std::vector<std::vector<search_result>> *results) const {
   if (runtime == nullptr || results == nullptr) return false;
 
-  const bool can_exact_rerank =
-      config.provider == backend_provider::kDiskAnn &&
-      config.mode == backend_mode::kExternal;
   const size_t candidate_top_k = diskann_exact_rerank_candidate_top_k(
       index_name, config, top_k, queries.size());
-  std::vector<std::vector<search_result>> candidates;
+  batch_search_candidates candidates;
   if (!runtime->search_batch_for_rerank(queries, top_k, candidate_top_k,
                                         &candidates))
     return false;
 
+  return finish_search_batch_with_exact_rerank(
+      index_name, config, queries, top_k, std::move(candidates), results);
+}
+
+bool index_service::finish_search_batch_with_exact_rerank(
+    const std::string &index_name, const index_config &config,
+    const std::vector<vector_data> &queries, size_t top_k,
+    batch_search_candidates candidates,
+    std::vector<std::vector<search_result>> *results) const {
+  if (results == nullptr || candidates.query_count() != queries.size()) {
+    return false;
+  }
+
+  const bool can_exact_rerank =
+      config.provider == backend_provider::kDiskAnn &&
+      config.mode == backend_mode::kExternal;
   if (can_exact_rerank) {
     std::unordered_set<uint64_t> candidate_doc_ids;
-    for (const std::vector<search_result> &query_candidates : candidates) {
-      for (const search_result &candidate : query_candidates) {
+    for (size_t i = 0; i < candidates.query_count(); ++i) {
+      const std::vector<search_result> *query_candidates =
+          candidates.for_query(i);
+      if (query_candidates == nullptr) return false;
+      for (const search_result &candidate : *query_candidates) {
         candidate_doc_ids.insert(candidate.doc_id);
       }
     }
@@ -921,26 +1013,30 @@ bool index_service::search_batch_runtime_with_exact_rerank(
     }
 
     results->clear();
-    results->resize(candidates.size());
-    for (size_t i = 0; i < candidates.size(); ++i) {
+    results->resize(candidates.query_count());
+    for (size_t i = 0; i < candidates.query_count(); ++i) {
+      const std::vector<search_result> *query_candidates =
+          candidates.for_query(i);
+      if (query_candidates == nullptr) return false;
       bool reranked = false;
       if (complete) {
         if (!rerank_candidates_with_vectors(queries[i], config.metric,
-                                           candidates[i], candidate_vectors,
-                                           top_k, &(*results)[i], &reranked)) {
+                                            *query_candidates,
+                                            candidate_vectors, top_k,
+                                            &(*results)[i], &reranked)) {
           return false;
         }
       }
       if (!reranked) {
-        if (candidates[i].size() > top_k) candidates[i].resize(top_k);
-        (*results)[i] = std::move(candidates[i]);
+        const size_t result_count = std::min(top_k, query_candidates->size());
+        (*results)[i].assign(query_candidates->begin(),
+                             query_candidates->begin() + result_count);
       }
     }
     return true;
   }
 
-  *results = std::move(candidates);
-  return true;
+  return std::move(candidates).materialize(results);
 }
 
 bool index_service::search(const std::string &index_name, const vector_data &query,
@@ -1004,6 +1100,63 @@ bool index_service::snapshot_search_backend_loaded(
   *runtime = index_it->second;
   if (config != nullptr) *config = config_it->second;
   return true;
+}
+
+bool index_service::snapshot_search_runtime_loaded(
+    const std::string &index_name, size_t query_dimension, size_t top_k,
+    size_t query_count, search_runtime_snapshot *snapshot) const {
+  if (snapshot == nullptr || query_count == 0) return false;
+  *snapshot = search_runtime_snapshot{};
+
+  const auto lifecycle_it = m_lifecycle_infos.find(index_name);
+  const auto config_it = m_index_configs.find(index_name);
+  const auto publication_it = m_publication_states.find(index_name);
+  const auto index_it = m_indexes.find(index_name);
+  if (!all_true(lifecycle_it != m_lifecycle_infos.end(),
+                config_it != m_index_configs.end(),
+                publication_it != m_publication_states.end(),
+                index_it != m_indexes.end(), index_it->second != nullptr) ||
+      lifecycle_is_bulk_loading(lifecycle_it->second) ||
+      query_dimension != config_it->second.dimension ||
+      publication_it->second.runtime_generation !=
+          publication_it->second.truth_generation) {
+    return false;
+  }
+
+  snapshot->runtime = index_it->second;
+  snapshot->config = config_it->second;
+  snapshot->publication = publication_it->second;
+  snapshot->candidate_top_k = diskann_exact_rerank_candidate_top_k(
+      index_name, snapshot->config, top_k, query_count);
+  return true;
+}
+
+bool index_service::search_runtime_snapshot_matches(
+    const std::string &index_name,
+    const search_runtime_snapshot &snapshot) const {
+  const auto lifecycle_it = m_lifecycle_infos.find(index_name);
+  const auto config_it = m_index_configs.find(index_name);
+  const auto publication_it = m_publication_states.find(index_name);
+  const auto index_it = m_indexes.find(index_name);
+  if (!all_true(lifecycle_it != m_lifecycle_infos.end(),
+                config_it != m_index_configs.end(),
+                publication_it != m_publication_states.end(),
+                index_it != m_indexes.end(), index_it->second != nullptr,
+                snapshot.runtime != nullptr) ||
+      lifecycle_is_bulk_loading(lifecycle_it->second) ||
+      index_it->second != snapshot.runtime ||
+      !index_configs_equal(config_it->second, snapshot.config)) {
+    return false;
+  }
+
+  const index_publication_state &current = publication_it->second;
+  const index_publication_state &expected = snapshot.publication;
+  return current.index_identity == expected.index_identity &&
+         current.truth_generation == expected.truth_generation &&
+         current.config_generation == expected.config_generation &&
+         current.artifact_generation == expected.artifact_generation &&
+         current.runtime_generation == expected.runtime_generation &&
+         current.runtime_generation == current.truth_generation;
 }
 
 bool index_service::search_batch(

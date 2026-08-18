@@ -38,6 +38,58 @@ bool search_result_less(const search_result &lhs, const search_result &rhs) {
   return lhs.doc_id < rhs.doc_id;
 }
 
+template <typename CandidateAccessor>
+bool merge_segment_topk_ranges(size_t segment_count,
+                               const CandidateAccessor &candidate_accessor,
+                               size_t top_k,
+                               std::vector<search_result> *results) {
+  if (results == nullptr) return false;
+  results->clear();
+  if (top_k == 0) return true;
+
+  std::unordered_map<uint64_t, search_result> best_by_doc_id;
+  for (size_t segment_index = 0; segment_index < segment_count;
+       ++segment_index) {
+    const std::vector<search_result> *segment_result =
+        candidate_accessor(segment_index);
+    if (segment_result == nullptr) return false;
+    for (const search_result &candidate : *segment_result) {
+      const auto [it, inserted] =
+          best_by_doc_id.emplace(candidate.doc_id, candidate);
+      if (!inserted && search_result_less(candidate, it->second)) {
+        it->second = candidate;
+      }
+    }
+  }
+
+  if (best_by_doc_id.size() <= top_k) {
+    results->reserve(best_by_doc_id.size());
+    for (const auto &entry : best_by_doc_id) {
+      results->push_back(entry.second);
+    }
+    std::sort(results->begin(), results->end(), search_result_less);
+    return true;
+  }
+
+  results->reserve(top_k);
+  for (const auto &entry : best_by_doc_id) {
+    const search_result &candidate = entry.second;
+    if (results->size() < top_k) {
+      results->push_back(candidate);
+      std::push_heap(results->begin(), results->end(), search_result_less);
+      continue;
+    }
+
+    if (!search_result_less(candidate, results->front())) continue;
+
+    std::pop_heap(results->begin(), results->end(), search_result_less);
+    results->back() = candidate;
+    std::push_heap(results->begin(), results->end(), search_result_less);
+  }
+  std::sort_heap(results->begin(), results->end(), search_result_less);
+  return true;
+}
+
 }  // namespace
 
 size_t segmented_search_candidate_top_k(size_t top_k, size_t segment_count,
@@ -85,47 +137,10 @@ size_t diskann_search_list_slack_top_k(size_t top_k, size_t search_complexity,
 bool merge_segment_topk(
     const std::vector<std::vector<search_result>> &segment_results,
     size_t top_k, std::vector<search_result> *results) {
-  if (results == nullptr) return false;
-  results->clear();
-  if (top_k == 0) return true;
-
-  std::unordered_map<uint64_t, search_result> best_by_doc_id;
-  for (const auto &segment_result : segment_results) {
-    for (const search_result &candidate : segment_result) {
-      const auto [it, inserted] =
-          best_by_doc_id.emplace(candidate.doc_id, candidate);
-      if (!inserted && search_result_less(candidate, it->second)) {
-        it->second = candidate;
-      }
-    }
-  }
-
-  if (best_by_doc_id.size() <= top_k) {
-    results->reserve(best_by_doc_id.size());
-    for (const auto &entry : best_by_doc_id) {
-      results->push_back(entry.second);
-    }
-    std::sort(results->begin(), results->end(), search_result_less);
-    return true;
-  }
-
-  results->reserve(top_k);
-  for (const auto &entry : best_by_doc_id) {
-    const search_result &candidate = entry.second;
-    if (results->size() < top_k) {
-      results->push_back(candidate);
-      std::push_heap(results->begin(), results->end(), search_result_less);
-      continue;
-    }
-
-    if (!search_result_less(candidate, results->front())) continue;
-
-    std::pop_heap(results->begin(), results->end(), search_result_less);
-    results->back() = candidate;
-    std::push_heap(results->begin(), results->end(), search_result_less);
-  }
-  std::sort_heap(results->begin(), results->end(), search_result_less);
-  return true;
+  return merge_segment_topk_ranges(
+      segment_results.size(),
+      [&](size_t segment_index) { return &segment_results[segment_index]; },
+      top_k, results);
 }
 
 bool merge_segment_batch_topk(
@@ -146,14 +161,47 @@ bool merge_segment_batch_topk(
   results->resize(query_count);
   if (top_k == 0) return true;
 
-  std::vector<std::vector<search_result>> per_query_segments;
-  per_query_segments.reserve(segment_batch_results.size());
   for (size_t query_index = 0; query_index < query_count; ++query_index) {
-    per_query_segments.clear();
-    for (const auto &segment_results : segment_batch_results) {
-      per_query_segments.push_back(segment_results[query_index]);
+    if (!merge_segment_topk_ranges(
+            segment_batch_results.size(),
+            [&](size_t segment_index) {
+              return &segment_batch_results[segment_index][query_index];
+            },
+            top_k, &(*results)[query_index])) {
+      return false;
     }
-    merge_segment_topk(per_query_segments, top_k, &(*results)[query_index]);
+  }
+  return true;
+}
+
+bool merge_segment_batch_candidates_topk(
+    const std::vector<batch_search_candidates> &segment_batch_results,
+    size_t top_k, std::vector<std::vector<search_result>> *results) {
+  if (results == nullptr) return false;
+  results->clear();
+
+  size_t query_count = 0;
+  if (!segment_batch_results.empty()) {
+    query_count = segment_batch_results.front().query_count();
+  }
+  for (const batch_search_candidates &segment_results :
+       segment_batch_results) {
+    if (segment_results.query_count() != query_count) return false;
+  }
+
+  results->resize(query_count);
+  if (top_k == 0) return true;
+
+  for (size_t query_index = 0; query_index < query_count; ++query_index) {
+    if (!merge_segment_topk_ranges(
+            segment_batch_results.size(),
+            [&](size_t segment_index) {
+              return segment_batch_results[segment_index].for_query(
+                  query_index);
+            },
+            top_k, &(*results)[query_index])) {
+      return false;
+    }
   }
   return true;
 }

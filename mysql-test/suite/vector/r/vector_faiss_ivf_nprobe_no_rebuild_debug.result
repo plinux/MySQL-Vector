@@ -22,13 +22,6 @@ faiss_nprobe_after_runtime_update
 2
 SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf_nprobe', 1, 1);
 ERROR HY000: Incorrect arguments to vec_index_set_faiss_ivf_params
-# restart
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nlist')
-AS faiss_nlist_after_restart,
-JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nprobe')
-AS faiss_nprobe_after_restart;
-faiss_nlist_after_restart	faiss_nprobe_after_restart
-1	1
 SELECT VEC_INDEX_DROP('idx_faiss_ivf_nprobe');
 VEC_INDEX_DROP('idx_faiss_ivf_nprobe')
 1

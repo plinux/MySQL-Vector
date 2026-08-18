@@ -48,6 +48,7 @@ namespace vector_index {
 
 class diskann_native_state;
 class hnswlib_native_state;
+struct diskann_artifact_identity;
 
 using vector_data = std::vector<float>;
 using committed_entry_visitor =
@@ -94,6 +95,31 @@ struct vector_library_status {
 struct search_result {
   uint64_t doc_id{0};
   double distance{0.0};
+};
+
+/** Batch rerank candidates stored per query or as one shared immutable list. */
+class batch_search_candidates {
+ public:
+  void clear();
+  void set_shared(size_t query_count,
+                  std::vector<search_result> candidates);
+  void set_per_query(
+      std::vector<std::vector<search_result>> candidates);
+  void prepare_per_query(size_t query_count);
+
+  size_t query_count() const { return m_query_count; }
+  bool uses_shared_candidates() const {
+    return m_query_count != 0 && m_per_query_candidates.empty();
+  }
+  const std::vector<search_result> *for_query(size_t query_index) const;
+  std::vector<search_result> *mutable_for_query(size_t query_index);
+  bool materialize(
+      std::vector<std::vector<search_result>> *results) &&;
+
+ private:
+  size_t m_query_count{0};
+  std::vector<search_result> m_shared_candidates;
+  std::vector<std::vector<search_result>> m_per_query_candidates;
 };
 
 /** Immutable backend search options owned by one request. */
@@ -296,7 +322,7 @@ class backend {
   virtual bool search_batch_for_rerank(
       const std::vector<vector_data> &queries, size_t top_k,
       size_t candidate_top_k,
-      std::vector<std::vector<search_result>> *results) const;
+      batch_search_candidates *results) const;
 
   /**
     Collect all document ids currently addressable by this backend.
@@ -568,6 +594,17 @@ class backend {
   virtual bool supports_mutations() const = 0;
 
   /**
+    Whether the current serving handle can apply point mutations in place.
+
+    This is narrower than supports_mutations(): an index may support
+    transactional DML while an immutable serving generation requires the
+    service to advance truth and rebuild the runtime before the next search.
+  */
+  virtual bool supports_in_place_mutations() const {
+    return supports_mutations();
+  }
+
+  /**
     EXTERNAL-sidecar manifest presence for backend observability.
 
     Non-sidecar backends return false by default.
@@ -580,6 +617,39 @@ class backend {
     Non-sidecar backends return 0 by default.
   */
   virtual uint64_t external_manifest_generation() const { return 0; }
+
+  /** Keep the next rebuild artifact private until registry publication. */
+  virtual bool defer_artifact_publication() { return true; }
+
+  /** Whether this backend owns a rebuilt artifact awaiting publication. */
+  virtual bool has_pending_artifact_publication() const { return false; }
+
+  /** Bind a rebuilt artifact to the durable registry publication tuple. */
+  virtual bool prepare_artifact_publication(
+      const diskann_artifact_identity &identity [[maybe_unused]]) {
+    return true;
+  }
+
+  /** Install a prepared artifact while retaining rollback state. */
+  virtual bool publish_artifact() { return true; }
+
+  /** Restore the generation that preceded the current publication attempt. */
+  virtual bool rollback_artifact() { return true; }
+
+  /** Discard rollback state after registry metadata becomes durable. */
+  virtual bool finalize_artifact() { return true; }
+
+  /** Recover and validate the artifact selected by durable registry metadata. */
+  virtual bool recover_artifact_publication(
+      const diskann_artifact_identity &identity [[maybe_unused]]) {
+    return true;
+  }
+
+  /** Verify that the serving artifact matches one publication tuple. */
+  virtual bool artifact_publication_matches(
+      const diskann_artifact_identity &identity [[maybe_unused]]) const {
+    return true;
+  }
 
  private:
   mutable std::shared_mutex m_runtime_mutex;
@@ -887,8 +957,20 @@ class diskann_backend final : public backend {
   uint32_t diskann_search_io_limit() const override;
   uint32_t diskann_cache_nodes() const override;
   bool supports_mutations() const override { return true; }
+  bool supports_in_place_mutations() const override;
   bool external_manifest_present() const override;
   uint64_t external_manifest_generation() const override;
+  bool defer_artifact_publication() override;
+  bool has_pending_artifact_publication() const override;
+  bool prepare_artifact_publication(
+      const diskann_artifact_identity &identity) override;
+  bool publish_artifact() override;
+  bool rollback_artifact() override;
+  bool finalize_artifact() override;
+  bool recover_artifact_publication(
+      const diskann_artifact_identity &identity) override;
+  bool artifact_publication_matches(
+      const diskann_artifact_identity &identity) const override;
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
   void clear_committed_snapshot_for_testing();
@@ -930,6 +1012,7 @@ class diskann_backend final : public backend {
   double m_diskann_search_cache_ratio{0.0};
   bool m_native_runtime_enabled{false};
   bool m_external_adapter_active{true};
+  bool m_defer_artifact_publication{false};
   size_t m_entry_count{0};
   bool m_entries_complete{true};
   bool m_streaming_doc_ids_loaded{false};

@@ -682,6 +682,38 @@ std::string owner_schema_for_index_locked(const std::string &index_name) {
   return it == g_index_owner_schemas.end() ? std::string() : it->second;
 }
 
+bool make_diskann_artifact_identity_locked(
+    const std::string &index_name,
+    const vector_index::index_service::index_config &config,
+    const vector_index::index_service::index_publication_state &publication,
+    size_t doc_id_count,
+    vector_index::diskann_artifact_identity *identity) {
+  if (identity == nullptr || index_name.empty() ||
+      publication.index_identity == 0 || publication.config_generation == 0 ||
+      config.dimension == 0 ||
+      config.dimension > std::numeric_limits<uint32_t>::max()) {
+    return false;
+  }
+
+  const index_binding binding = binding_for_index_locked(index_name);
+  *identity = {};
+  identity->index_identity = publication.index_identity;
+  identity->truth_generation = publication.truth_generation;
+  identity->config_generation = publication.config_generation;
+  identity->doc_id_count = static_cast<uint64_t>(doc_id_count);
+  identity->dimension = static_cast<uint32_t>(config.dimension);
+  identity->metric = vector_index::metric_to_string(config.metric);
+  identity->mode = vector_index::backend_mode_to_string(config.mode);
+  identity->provider = vector_index::backend_provider_to_string(config.provider);
+  identity->consistency_mode =
+      vector_index::index_consistency_mode_to_string(config.consistency_mode);
+  identity->schema_name = binding.schema_name;
+  identity->table_name = binding.table_name;
+  identity->column_name = binding.column_name;
+  identity->doc_id_column_name = binding.doc_id_column_name;
+  return true;
+}
+
 void set_index_binding_locked(const std::string &index_name,
                               const std::string &schema_name,
                               const std::string &table_name,
@@ -1266,7 +1298,7 @@ bool apply_committed_rows_locked(
   for (const auto &row : rows) {
     state[row.index_name][row.doc_id] = row.vector;
   }
-  if (!g_index_service.restore_committed_state(state)) return false;
+  if (!g_index_service.restore_committed_state_for_startup(state)) return false;
 
   std::vector<std::string> index_names;
   if (!g_index_service.list_indexes(&index_names)) return false;
@@ -1280,11 +1312,18 @@ bool apply_committed_rows_locked(
             nullptr, nullptr, nullptr, nullptr, nullptr, &manifest_present)) {
       return false;
     }
-    publication.runtime_generation = publication.truth_generation;
-    publication.artifact_generation =
-        config.mode == vector_index::backend_mode::kExternal && manifest_present
-            ? publication.truth_generation
-            : 0;
+    const bool deferred_diskann_artifact =
+        config.provider == vector_index::backend_provider::kDiskAnn &&
+        config.mode == vector_index::backend_mode::kExternal;
+    publication.runtime_generation =
+        deferred_diskann_artifact ? 0 : publication.truth_generation;
+    if (!deferred_diskann_artifact) {
+      publication.artifact_generation =
+          config.mode == vector_index::backend_mode::kExternal &&
+                  manifest_present
+              ? publication.truth_generation
+              : 0;
+    }
     if (!g_index_service.restore_publication_state(index_name, publication)) {
       return false;
     }
@@ -1321,7 +1360,7 @@ bool apply_change_log_rows_locked(
       return false;
     }
   }
-  if (!g_index_service.restore_committed_state(state)) return false;
+  if (!g_index_service.restore_committed_state_for_startup(state)) return false;
 
   std::unordered_map<std::string, uint64_t> truth_generations;
   for (const auto &row : ordered_rows) {
@@ -1341,11 +1380,18 @@ bool apply_change_log_rows_locked(
     }
     publication.truth_generation =
         std::max(publication.truth_generation, entry.second);
-    publication.runtime_generation = publication.truth_generation;
-    publication.artifact_generation =
-        config.mode == vector_index::backend_mode::kExternal && manifest_present
-            ? publication.truth_generation
-            : 0;
+    const bool deferred_diskann_artifact =
+        config.provider == vector_index::backend_provider::kDiskAnn &&
+        config.mode == vector_index::backend_mode::kExternal;
+    publication.runtime_generation =
+        deferred_diskann_artifact ? 0 : publication.truth_generation;
+    if (!deferred_diskann_artifact) {
+      publication.artifact_generation =
+          config.mode == vector_index::backend_mode::kExternal &&
+                  manifest_present
+              ? publication.truth_generation
+              : 0;
+    }
     if (!g_index_service.restore_publication_state(entry.first, publication)) {
       return false;
     }

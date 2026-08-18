@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "sql/vector/vector_diskann_scheduler.h"
@@ -330,6 +331,68 @@ TEST(VectorSegmentedSearchTest, BatchMergeDeduplicatesEachQueryIndependently) {
   EXPECT_EQ(10U, merged[1][0].doc_id);
   EXPECT_EQ(20U, merged[1][1].doc_id);
   EXPECT_EQ(30U, merged[1][2].doc_id);
+}
+
+TEST(VectorSegmentedSearchTest,
+     BatchCandidatesShareFullCoverageAndMaterializeOnDemand) {
+  batch_search_candidates candidates;
+  EXPECT_EQ(0U, candidates.query_count());
+  EXPECT_EQ(nullptr, candidates.for_query(0));
+  EXPECT_EQ(nullptr, candidates.mutable_for_query(0));
+  EXPECT_FALSE(std::move(candidates).materialize(nullptr));
+
+  candidates.set_shared(2, {{3, 0.3F}, {1, 0.1F}});
+  EXPECT_TRUE(candidates.uses_shared_candidates());
+  ASSERT_NE(nullptr, candidates.for_query(0));
+  EXPECT_EQ(candidates.for_query(0), candidates.for_query(1));
+  EXPECT_EQ(nullptr, candidates.for_query(2));
+  EXPECT_EQ(nullptr, candidates.mutable_for_query(0));
+
+  std::vector<std::vector<search_result>> materialized;
+  ASSERT_TRUE(std::move(candidates).materialize(&materialized));
+  ASSERT_EQ(2U, materialized.size());
+  EXPECT_EQ(2U, materialized[0].size());
+  EXPECT_EQ(2U, materialized[1].size());
+
+  candidates.prepare_per_query(2);
+  EXPECT_FALSE(candidates.uses_shared_candidates());
+  ASSERT_NE(nullptr, candidates.mutable_for_query(0));
+  candidates.mutable_for_query(0)->push_back({7, 0.7F});
+  candidates.mutable_for_query(1)->push_back({8, 0.8F});
+  ASSERT_TRUE(std::move(candidates).materialize(&materialized));
+  EXPECT_EQ(7U, materialized[0][0].doc_id);
+  EXPECT_EQ(8U, materialized[1][0].doc_id);
+}
+
+TEST(VectorSegmentedSearchTest, BatchMergeConsumesSharedCandidateRanges) {
+  batch_search_candidates first_segment;
+  first_segment.set_shared(2, {{7, 0.5F}, {8, 0.2F}});
+  batch_search_candidates second_segment;
+  second_segment.set_per_query(
+      {{{7, 0.1F}, {9, 0.3F}}, {{10, 0.1F}, {20, 0.1F}}});
+
+  std::vector<batch_search_candidates> segments;
+  segments.push_back(std::move(first_segment));
+  segments.push_back(std::move(second_segment));
+  std::vector<std::vector<search_result>> merged;
+  ASSERT_TRUE(merge_segment_batch_candidates_topk(segments, 3, &merged));
+
+  ASSERT_EQ(2U, merged.size());
+  ASSERT_EQ(3U, merged[0].size());
+  EXPECT_EQ(7U, merged[0][0].doc_id);
+  EXPECT_EQ(8U, merged[0][1].doc_id);
+  EXPECT_EQ(9U, merged[0][2].doc_id);
+  ASSERT_EQ(3U, merged[1].size());
+  EXPECT_EQ(10U, merged[1][0].doc_id);
+  EXPECT_EQ(20U, merged[1][1].doc_id);
+  EXPECT_EQ(8U, merged[1][2].doc_id);
+
+  batch_search_candidates mismatched;
+  mismatched.set_shared(1, {{1, 0.1F}});
+  segments.push_back(std::move(mismatched));
+  EXPECT_FALSE(merge_segment_batch_candidates_topk(segments, 3, &merged));
+  EXPECT_FALSE(merge_segment_batch_candidates_topk(
+      std::vector<batch_search_candidates>{}, 3, nullptr));
 }
 
 }  // namespace

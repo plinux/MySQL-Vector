@@ -328,6 +328,14 @@ class index_service {
         index_consistency_mode::kTransactional};
   };
 
+  /** Immutable backend, configuration, and generation tuple for one search. */
+  struct search_runtime_snapshot {
+    backend_ptr runtime;
+    index_config config;
+    index_publication_state publication;
+    size_t candidate_top_k{0};
+  };
+
   struct pending_change_snapshot {
     std::string index_name;
     bool erase{false};
@@ -358,6 +366,7 @@ class index_service {
     uint64_t before_generation{0};
     index_publication_state publication_before;
     uint64_t target_truth_generation{0};
+    bool defer_runtime_rebuild{false};
     std::vector<commit_entry_before_image> before_images;
   };
 
@@ -374,6 +383,7 @@ class index_service {
     std::vector<pending_change_snapshot> changes;
     std::vector<commit_index_plan> indexes;
     std::vector<commit_rebuild_plan> rebuilds;
+    std::string failure_stage;
   };
 
   using bulk_load_visitor =
@@ -414,10 +424,13 @@ class index_service {
     std::string index_name;
     index_config source_config;
     index_config build_config;
+    size_t source_entry_count{0};
     uint64_t source_lifecycle_version{0};
     uint64_t source_generation{0};
     backend_ptr previous_runtime;
     lifecycle_info previous_lifecycle;
+    index_publication_state previous_publication;
+    index_publication_state target_publication;
     build_pipeline_snapshot previous_pipeline;
     build_pipeline_snapshot pipeline;
     std::vector<vector_index_metadata_store::segment_task_row>
@@ -427,7 +440,9 @@ class index_service {
     backend_build_diagnostics failed_build_diagnostics;
     standalone_entry_store::raw_segment_compaction compaction;
     std::vector<raw_vector_segment> raw_segments;
-    std::unique_ptr<backend> rebuilt_backend;
+    backend_ptr rebuilt_backend;
+    bool artifact_prepared{false};
+    bool artifact_published{false};
   };
 
   struct index_observability_state {
@@ -461,11 +476,15 @@ class index_service {
                                   std::string *error = nullptr);
   bool build_standalone_rebuild(standalone_rebuild_plan *plan,
                                 std::string *error = nullptr);
+  bool prepare_standalone_rebuild_artifact(
+      standalone_rebuild_plan *plan,
+      const diskann_artifact_identity &identity,
+      std::string *error = nullptr);
   bool publish_standalone_rebuild(standalone_rebuild_plan *plan,
                                   std::string *error = nullptr);
   bool rollback_standalone_rebuild(standalone_rebuild_plan *plan);
-  void discard_standalone_rebuild(standalone_rebuild_plan *plan);
-  void finalize_standalone_rebuild(standalone_rebuild_plan *plan);
+  bool discard_standalone_rebuild(standalone_rebuild_plan *plan);
+  bool finalize_standalone_rebuild(standalone_rebuild_plan *plan);
   void record_standalone_rebuild_tasks(
       const standalone_rebuild_plan &plan);
   bool recover_index(const std::string &index_name);
@@ -537,6 +556,23 @@ class index_service {
                                       const vector_data &query,
                                       backend_ptr *runtime,
                                       index_config *config = nullptr) const;
+  bool snapshot_search_runtime_loaded(const std::string &index_name,
+                                      size_t query_dimension, size_t top_k,
+                                      size_t query_count,
+                                      search_runtime_snapshot *snapshot) const;
+  bool search_runtime_snapshot_matches(
+      const std::string &index_name,
+      const search_runtime_snapshot &snapshot) const;
+  bool finish_search_with_exact_rerank(
+      const std::string &index_name, const index_config &config,
+      const vector_data &query, size_t top_k,
+      std::vector<search_result> candidates,
+      std::vector<search_result> *results) const;
+  bool finish_search_batch_with_exact_rerank(
+      const std::string &index_name, const index_config &config,
+      const std::vector<vector_data> &queries, size_t top_k,
+      batch_search_candidates candidates,
+      std::vector<std::vector<search_result>> *results) const;
   bool search_batch_loaded(
       const std::string &index_name, const std::vector<vector_data> &queries,
       size_t top_k, std::vector<std::vector<search_result>> *results) const;
@@ -580,6 +616,14 @@ class index_service {
       std::unordered_map<std::string, index_publication_state> *states) const;
   bool restore_publication_states(
       const std::unordered_map<std::string, index_publication_state> &states);
+  bool rollback_artifact_publication(const std::string &index_name);
+  bool finalize_artifact_publication(const std::string &index_name);
+  bool recover_artifact_publication(
+      const std::string &index_name,
+      const diskann_artifact_identity &identity);
+  bool artifact_publication_matches(
+      const std::string &index_name,
+      const diskann_artifact_identity &identity) const;
   uint64_t next_index_identity() const;
   bool restore_next_index_identity(uint64_t next_index_identity);
   bool describe_build_pipeline(const std::string &index_name,
@@ -614,6 +658,7 @@ class index_service {
   size_t standalone_raw_segment_bytes(const std::string &index_name) const;
   std::string standalone_build_source(const std::string &index_name) const;
   bool restore_committed_state(const committed_state &state);
+  bool restore_committed_state_for_startup(const committed_state &state);
   bool direct_upsert(const std::string &index_name, uint64_t doc_id,
                      const vector_data &vector);
   bool bulk_upsert_from_reader(const std::string &index_name,
@@ -632,7 +677,9 @@ class index_service {
       const std::string &index_name, const committed_entries &entries);
   bool install_rebuilt_index(const std::string &index_name,
                              const committed_entries &entries,
-                             std::unique_ptr<backend> rebuilt_backend);
+                             std::unique_ptr<backend> rebuilt_backend,
+                             const diskann_artifact_identity *artifact_identity =
+                                 nullptr);
   bool install_recovered_index(const std::string &index_name,
                                const committed_entries &entries,
                                std::unique_ptr<backend> recovered_backend,
@@ -710,6 +757,8 @@ class index_service {
   bool build_runtime_from_current_policy(
       const std::string &index_name, const index_config &persisted_config,
       std::unique_ptr<backend> *runtime);
+  bool restore_committed_state_impl(const committed_state &state,
+                                    bool defer_diskann_artifacts);
   bool ensure_runtime_loaded(const std::string &index_name);
   void maybe_unload_runtime(const std::string &index_name);
   size_t diskann_exact_rerank_segment_count(

@@ -23,13 +23,19 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -51,6 +57,7 @@
 #endif
 
 #include "my_io.h"
+#include "sql/vector/vector_diskann_generation_store.h"
 #include "sql/vector/vector_diskann_pq_runtime.h"
 #include "sql/mysqld.h"
 #include "sql/vector/vector_diskann_scheduler.h"
@@ -685,16 +692,20 @@ TEST(VectorIndexBackendTest, RerankFullCoverageUsesAuthoritativeDocIds) {
   EXPECT_EQ(9U, results[2].doc_id);
   EXPECT_DOUBLE_EQ(0.0, results[0].distance);
 
-  std::vector<std::vector<vector_index::search_result>> batch_results;
-  ASSERT_TRUE(backend.search_batch_for_rerank(
-      {{1.0F, 1.0F}, {2.0F, 2.0F}}, 2, 3, &batch_results));
+  vector_index::batch_search_candidates batch_results;
+  ASSERT_TRUE(backend.search_batch_for_rerank({{1.0F, 1.0F}, {2.0F, 2.0F}}, 2,
+                                              3, &batch_results));
   EXPECT_EQ(0U, backend.search_calls);
-  ASSERT_EQ(2U, batch_results.size());
-  for (const auto &batch_result : batch_results) {
-    ASSERT_EQ(results.size(), batch_result.size());
+  ASSERT_EQ(2U, batch_results.query_count());
+  EXPECT_TRUE(batch_results.uses_shared_candidates());
+  for (size_t query_index = 0; query_index < batch_results.query_count();
+       ++query_index) {
+    const auto *batch_result = batch_results.for_query(query_index);
+    ASSERT_NE(nullptr, batch_result);
+    ASSERT_EQ(results.size(), batch_result->size());
     for (size_t i = 0; i < results.size(); ++i) {
-      EXPECT_EQ(results[i].doc_id, batch_result[i].doc_id);
-      EXPECT_DOUBLE_EQ(results[i].distance, batch_result[i].distance);
+      EXPECT_EQ(results[i].doc_id, (*batch_result)[i].doc_id);
+      EXPECT_DOUBLE_EQ(results[i].distance, (*batch_result)[i].distance);
     }
   }
 
@@ -715,7 +726,7 @@ TEST(VectorIndexBackendTest, RerankFullCoverageUsesAuthoritativeDocIds) {
   EXPECT_FALSE(backend.search_batch_for_rerank({{1.0F, 1.0F}}, 2, 3,
                                                nullptr));
   ASSERT_TRUE(backend.search_batch_for_rerank({}, 2, 3, &batch_results));
-  EXPECT_TRUE(batch_results.empty());
+  EXPECT_EQ(0U, batch_results.query_count());
 }
 
 TEST(VectorIndexBackendTest,
@@ -2114,6 +2125,8 @@ TEST(VectorIndexBackendTest,
                vector_index::diskann_runtime_variant_name_for_testing(4));
   EXPECT_STREQ("diskann_vendored_segmented",
                vector_index::diskann_runtime_variant_name_for_testing(5));
+  EXPECT_STREQ("diskann_empty",
+               vector_index::diskann_runtime_variant_name_for_testing(6));
   EXPECT_STREQ("diskann_unloaded",
                vector_index::diskann_runtime_variant_name_for_testing(999));
 
@@ -2887,6 +2900,57 @@ TEST(VectorIndexRuntimeThreadPoolTest, ParallelForQueriesReusesWorkerPool) {
   EXPECT_EQ(0U, vector_index::runtime_worker_pool_size_for_testing());
 }
 
+TEST(VectorIndexRuntimeThreadPoolTest, WorkerInitiatedRuntimeResetFailsFast) {
+  vector_index::reset_runtime_worker_pool_for_testing();
+  EXPECT_DEATH_IF_SUPPORTED(
+      {
+        (void)vector_index::parallel_for_ranges(
+            2, 2, [](size_t, size_t, size_t) {
+              vector_index::reset_runtime_worker_pool_for_testing();
+              return true;
+            });
+      },
+      "");
+}
+
+#ifndef NDEBUG
+TEST(VectorIndexRuntimeThreadPoolTest,
+     QueueAllocationFailureLeavesWorkerPoolReusable) {
+  vector_index::reset_runtime_worker_pool_for_testing();
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_runtime_worker_pool_fail_state_allocation");
+    EXPECT_FALSE(vector_index::parallel_for_ranges(
+        8, 3, [](size_t, size_t, size_t) { return true; }));
+    EXPECT_FALSE(vector_index::parallel_for_ranges_scoped(
+        8, 3, [](size_t, size_t, size_t) { return true; }));
+  }
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_runtime_worker_pool_fail_task_staging");
+    EXPECT_FALSE(vector_index::parallel_for_ranges(
+        8, 3, [](size_t, size_t, size_t) { return true; }));
+  }
+
+  std::vector<int> seen(8, 0);
+  EXPECT_TRUE(vector_index::parallel_for_ranges(
+      seen.size(), 3, [&](size_t begin, size_t end, size_t) {
+        for (size_t item = begin; item < end; ++item) ++seen[item];
+        return true;
+      }));
+  for (int value : seen) EXPECT_EQ(1, value);
+
+  std::fill(seen.begin(), seen.end(), 0);
+  EXPECT_TRUE(vector_index::parallel_for_ranges_scoped(
+      seen.size(), 3, [&](size_t begin, size_t end, size_t) {
+        for (size_t item = begin; item < end; ++item) ++seen[item];
+        return true;
+      }));
+  for (int value : seen) EXPECT_EQ(1, value);
+  vector_index::reset_runtime_worker_pool_for_testing();
+}
+#endif
+
 TEST(VectorIndexRuntimeThreadPoolTest,
      ParallelForRangesSupportsNonQueryWorkItems) {
   std::vector<int> seen(5, 0);
@@ -2989,6 +3053,130 @@ TEST(VectorIndexRuntimeThreadPoolTest,
   vector_index::reset_shared_search_worker_pool_for_testing();
   EXPECT_EQ(0U, vector_index::shared_search_worker_pool_size_for_testing());
 }
+
+TEST(VectorIndexRuntimeThreadPoolTest,
+     SharedSearchItemsKeepEachConcurrentJobWithinItsBudget) {
+  vector_index::reset_shared_search_worker_pool_for_testing();
+
+  constexpr size_t k_item_count = 8;
+  std::array<std::atomic<int>, k_item_count> small_seen{};
+  std::array<std::atomic<int>, k_item_count> large_seen{};
+  std::atomic<size_t> small_active{0};
+  std::atomic<size_t> small_peak{0};
+  std::atomic<size_t> large_active{0};
+  std::atomic<size_t> large_peak{0};
+  std::mutex gate_mutex;
+  std::condition_variable gate_cv;
+  size_t small_started = 0;
+  size_t large_started = 0;
+  bool release = false;
+
+  const auto wait_for_release = [&](size_t item_index, auto *seen,
+                                    std::atomic<size_t> *active,
+                                    std::atomic<size_t> *peak,
+                                    size_t *started) {
+    ++(*seen)[item_index];
+    const size_t current = active->fetch_add(1) + 1;
+    size_t observed_peak = peak->load();
+    while (observed_peak < current &&
+           !peak->compare_exchange_weak(observed_peak, current)) {
+    }
+    {
+      std::unique_lock<std::mutex> guard(gate_mutex);
+      ++*started;
+      gate_cv.notify_all();
+      gate_cv.wait(guard, [&]() { return release; });
+    }
+    active->fetch_sub(1);
+    return true;
+  };
+
+  auto small = std::async(std::launch::async, [&]() {
+    return vector_index::parallel_for_shared_search_items(
+        k_item_count, 2, [&](size_t item_index, size_t) {
+          return wait_for_release(item_index, &small_seen, &small_active,
+                                  &small_peak, &small_started);
+        });
+  });
+
+  bool small_budget_filled = false;
+  {
+    std::unique_lock<std::mutex> guard(gate_mutex);
+    small_budget_filled = gate_cv.wait_for(
+        guard, std::chrono::seconds(5), [&]() { return small_started == 2; });
+  }
+
+  auto large = std::async(std::launch::async, [&]() {
+    return vector_index::parallel_for_shared_search_items(
+        k_item_count, 6, [&](size_t item_index, size_t) {
+          return wait_for_release(item_index, &large_seen, &large_active,
+                                  &large_peak, &large_started);
+        });
+  });
+
+  bool jobs_overlap = false;
+  {
+    std::unique_lock<std::mutex> guard(gate_mutex);
+    jobs_overlap = gate_cv.wait_for(guard, std::chrono::seconds(5), [&]() {
+      return small_started + large_started == 6;
+    });
+    release = true;
+  }
+  gate_cv.notify_all();
+
+  EXPECT_TRUE(small_budget_filled);
+  EXPECT_TRUE(jobs_overlap);
+  EXPECT_TRUE(small.get());
+  EXPECT_TRUE(large.get());
+  EXPECT_LE(small_peak.load(), 2U);
+  EXPECT_GE(large_peak.load(), 4U);
+  EXPECT_LE(large_peak.load(), 6U);
+  for (const auto &seen : small_seen) EXPECT_EQ(1, seen.load());
+  for (const auto &seen : large_seen) EXPECT_EQ(1, seen.load());
+
+  vector_index::reset_shared_search_worker_pool_for_testing();
+}
+
+TEST(VectorIndexRuntimeThreadPoolTest,
+     WorkerInitiatedSharedSearchResetFailsFast) {
+  vector_index::reset_shared_search_worker_pool_for_testing();
+  EXPECT_DEATH_IF_SUPPORTED(
+      {
+        (void)vector_index::parallel_for_shared_search_items(
+            2, 2, [](size_t, size_t) {
+              vector_index::reset_shared_search_worker_pool_for_testing();
+              return true;
+            });
+      },
+      "");
+}
+
+#ifndef NDEBUG
+TEST(VectorIndexRuntimeThreadPoolTest,
+     SharedSearchAllocationFailuresLeavePoolReusable) {
+  vector_index::reset_shared_search_worker_pool_for_testing();
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_shared_search_fail_job_allocation");
+    EXPECT_FALSE(vector_index::parallel_for_shared_search_items(
+        4, 2, [](size_t, size_t) { return true; }));
+  }
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_shared_search_fail_job_enqueue");
+    EXPECT_FALSE(vector_index::parallel_for_shared_search_items(
+        4, 2, [](size_t, size_t) { return true; }));
+  }
+
+  std::vector<int> seen(4, 0);
+  EXPECT_TRUE(vector_index::parallel_for_shared_search_items(
+      seen.size(), 2, [&](size_t item, size_t) {
+        ++seen[item];
+        return true;
+      }));
+  for (int value : seen) EXPECT_EQ(1, value);
+  vector_index::reset_shared_search_worker_pool_for_testing();
+}
+#endif
 
 TEST(VectorIndexRuntimeConfigTest,
      ValidatesCommonProviderModeAndThreadSemantics) {
@@ -7489,6 +7677,229 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeUsesOfflineAdapter) {
   std::filesystem::remove_all(root, ec);
 }
 
+TEST(VectorIndexBackendTest,
+     DiskAnnManagedArtifactPublicationCanFinalizeRollbackAndRecover) {
+  install_diskann_offline_test_adapter();
+  if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
+    GTEST_SKIP()
+        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+  }
+
+  const std::string root = std::string(testing::TempDir()) +
+                           "/vector_diskann_managed_generation_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  const std::string index_name = "idx_diskann_managed_generation";
+  const auto make_identity = [](uint64_t truth_generation) {
+    vector_index::diskann_artifact_identity identity;
+    identity.index_identity = 41;
+    identity.truth_generation = truth_generation;
+    identity.config_generation = 7;
+    identity.doc_id_count = 4;
+    identity.dimension = 2;
+    identity.metric = "euclidean";
+    identity.mode = "external";
+    identity.provider = "diskann";
+    identity.consistency_mode = "standalone";
+    return identity;
+  };
+  const std::unordered_map<uint64_t, vector_index::vector_data> first_entries{
+      {10, {0.0F, 0.0F}},
+      {20, {1.0F, 1.0F}},
+      {30, {5.0F, 5.0F}},
+      {40, {9.0F, 9.0F}}};
+
+  vector_index::diskann_backend first_generation(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, index_name);
+  ASSERT_TRUE(first_generation.defer_artifact_publication());
+  ASSERT_TRUE(first_generation.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(first_generation.set_diskann_build_params(4, 16, 2));
+  ASSERT_TRUE(first_generation.rebuild_from_committed_entries(first_entries));
+  EXPECT_TRUE(first_generation.has_pending_artifact_publication());
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(first_generation.search({1.0F, 1.0F}, 1, &result));
+  ASSERT_FALSE(result.empty());
+  EXPECT_EQ(20U, result[0].doc_id);
+
+  const vector_index::diskann_artifact_identity first_identity =
+      make_identity(3);
+  auto stale_count_identity = first_identity;
+  --stale_count_identity.doc_id_count;
+  EXPECT_FALSE(
+      first_generation.prepare_artifact_publication(stale_count_identity));
+  ASSERT_TRUE(first_generation.prepare_artifact_publication(first_identity));
+  ASSERT_TRUE(first_generation.publish_artifact());
+  EXPECT_TRUE(first_generation.external_manifest_present());
+  EXPECT_EQ(3U, first_generation.external_manifest_generation());
+  EXPECT_TRUE(first_generation.artifact_publication_matches(first_identity));
+  ASSERT_TRUE(first_generation.finalize_artifact());
+  EXPECT_FALSE(first_generation.has_pending_artifact_publication());
+
+  const std::unordered_map<uint64_t, vector_index::vector_data> second_entries{
+      {100, {100.0F, 100.0F}},
+      {200, {200.0F, 200.0F}},
+      {300, {300.0F, 300.0F}},
+      {400, {400.0F, 400.0F}}};
+  {
+    vector_index::diskann_backend second_generation(
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, index_name);
+    ASSERT_TRUE(second_generation.defer_artifact_publication());
+    ASSERT_TRUE(second_generation.set_diskann_build_mode(
+        vector_index::diskann_build_mode::kOffline));
+    ASSERT_TRUE(second_generation.set_diskann_build_params(4, 16, 2));
+    ASSERT_TRUE(
+        second_generation.rebuild_from_committed_entries(second_entries));
+    ASSERT_TRUE(second_generation.prepare_artifact_publication(
+        make_identity(4)));
+    ASSERT_TRUE(second_generation.publish_artifact());
+    ASSERT_TRUE(second_generation.rollback_artifact());
+  }
+
+  vector_index::diskann_backend recovered(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, index_name);
+  ASSERT_TRUE(recovered.recover_artifact_publication(first_identity));
+  EXPECT_TRUE(recovered.artifact_publication_matches(first_identity));
+  EXPECT_EQ(first_entries.size(), recovered.entry_count());
+  result.clear();
+  ASSERT_TRUE(recovered.search({1.0F, 1.0F}, 1, &result));
+  ASSERT_FALSE(result.empty());
+  EXPECT_EQ(20U, result[0].doc_id);
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexBackendTest,
+     DiskAnnManagedEmptyArtifactRemainsMutableAfterPublication) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    GTEST_SKIP() << "DiskANN provider is not compiled in";
+  }
+  if (!vector_index::diskann_api_load_for_testing()) {
+    GTEST_SKIP() << "DiskANN serial API unavailable in current build/runtime";
+  }
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_diskann_empty_generation_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  vector_index::diskann_artifact_identity identity;
+  identity.index_identity = 42;
+  identity.config_generation = 1;
+  identity.dimension = 2;
+  identity.metric = "euclidean";
+  identity.mode = "external";
+  identity.provider = "diskann";
+  identity.consistency_mode = "transactional";
+  {
+    vector_index::diskann_backend backend(
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, "idx_diskann_empty_generation");
+    ASSERT_TRUE(backend.defer_artifact_publication());
+    EXPECT_FALSE(backend.supports_in_place_mutations());
+    ASSERT_TRUE(backend.rebuild_from_committed_entries({}));
+    ASSERT_TRUE(backend.has_pending_artifact_publication());
+    ASSERT_TRUE(backend.prepare_artifact_publication(identity));
+    ASSERT_TRUE(backend.publish_artifact());
+    EXPECT_TRUE(backend.external_manifest_present());
+    EXPECT_EQ(0U, backend.entry_count());
+
+    std::vector<vector_index::search_result> result;
+    ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &result));
+    EXPECT_TRUE(result.empty());
+    ASSERT_TRUE(backend.finalize_artifact());
+  }
+
+  vector_index::diskann_backend recovered(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_empty_generation");
+  ASSERT_TRUE(recovered.recover_artifact_publication(identity));
+  EXPECT_TRUE(recovered.artifact_publication_matches(identity));
+  EXPECT_EQ(0U, recovered.entry_count());
+  EXPECT_TRUE(recovered.supports_in_place_mutations());
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(recovered.search({1.0F, 1.0F}, 1, &result));
+  EXPECT_TRUE(result.empty());
+  ASSERT_TRUE(recovered.upsert(7, {7.0F, 7.0F}));
+  ASSERT_TRUE(recovered.search({7.0F, 7.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(7U, result[0].doc_id);
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexBackendTest,
+     DiskAnnManagedEmptyArtifactRecoversWithoutSerialApi) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Requires DBUG fault injection to disable the serial ABI";
+#else
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    GTEST_SKIP() << "DiskANN provider is not compiled in";
+  }
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_diskann_empty_no_serial_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  vector_index::diskann_artifact_identity identity;
+  identity.index_identity = 43;
+  identity.config_generation = 1;
+  identity.dimension = 2;
+  identity.metric = "euclidean";
+  identity.mode = "external";
+  identity.provider = "diskann";
+  identity.consistency_mode = "transactional";
+
+  vector_gunit::ScopedDebugFlag unavailable(
+      "+d,vector_backend_diskann_native_unavailable");
+  {
+    vector_index::diskann_backend backend(
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, "idx_diskann_empty_no_serial");
+    ASSERT_TRUE(backend.defer_artifact_publication());
+    ASSERT_TRUE(backend.rebuild_from_committed_entries({}));
+    ASSERT_TRUE(backend.prepare_artifact_publication(identity));
+    ASSERT_TRUE(backend.publish_artifact());
+    EXPECT_EQ("diskann_empty", backend.backend_variant());
+    ASSERT_TRUE(backend.finalize_artifact());
+  }
+
+  vector_index::diskann_backend recovered(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_empty_no_serial");
+  ASSERT_TRUE(recovered.recover_artifact_publication(identity));
+  EXPECT_TRUE(recovered.artifact_publication_matches(identity));
+  EXPECT_EQ("diskann_empty", recovered.backend_variant());
+  EXPECT_FALSE(recovered.supports_in_place_mutations());
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(recovered.search({1.0F, 1.0F}, 1, &result));
+  EXPECT_TRUE(result.empty());
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+#endif
+}
+
 TEST(VectorIndexBackendTest, DiskAnnNativePqBridgeBuildsOfflineIndex) {
   install_diskann_offline_test_adapter();
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
@@ -9399,6 +9810,13 @@ TEST(VectorIndexBackendTest,
     EXPECT_FALSE(backend.set_diskann_search_complexity(80));
   }
   EXPECT_EQ(64U, backend.diskann_search_complexity());
+
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_diskann_native_live_search_beamwidth");
+    EXPECT_FALSE(backend.set_diskann_search_beamwidth(32));
+  }
+  EXPECT_EQ(16U, backend.diskann_search_beamwidth());
 }
 
 TEST(VectorIndexBackendTest,
