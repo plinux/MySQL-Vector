@@ -78,6 +78,57 @@ void append_bool(field_values *fields, const char *name, bool value) {
   fields->push_back(std::move(field));
 }
 
+bool has_native_pq_diagnostics(
+    const vector_index::backend_build_diagnostics &diagnostics) {
+  return !diagnostics.native_pq_runtime_selected_path.empty() ||
+         diagnostics.native_pq_runtime_elapsed_ms != 0 ||
+         diagnostics.native_pq_runtime_raw_reader_ms != 0 ||
+         diagnostics.native_pq_runtime_train_ms != 0 ||
+         diagnostics.native_pq_runtime_encode_ms != 0 ||
+         diagnostics.native_pq_runtime_artifact_validation_ms != 0 ||
+         !diagnostics.native_pq_runtime_centroid_scan_kernel.empty() ||
+         diagnostics.native_pq_runtime_distance_calls != 0 ||
+         diagnostics.native_pq_runtime_train_rows != 0 ||
+         diagnostics.native_pq_runtime_compressed_rows != 0 ||
+         diagnostics.native_pq_runtime_encode_block_rows != 0 ||
+         diagnostics.native_pq_runtime_memory_estimate != 0 ||
+         diagnostics.native_pq_runtime_memory_budget != 0 ||
+         diagnostics.native_pq_runtime_effective_threads != 0 ||
+         !diagnostics.native_pq_runtime_memory_adjustment.empty() ||
+         diagnostics.native_pq_runtime_artifacts_written ||
+         diagnostics.native_pq_runtime_artifacts_consumed ||
+         diagnostics.native_pq_runtime_official_pq_used ||
+         !diagnostics.native_pq_runtime_bridge.empty() ||
+         diagnostics.native_pq_runtime_bridge_ms != 0 ||
+         diagnostics.native_pq_runtime_graph_ms != 0 ||
+         diagnostics.native_pq_runtime_cache_ms != 0 ||
+         !diagnostics.native_pq_runtime_artifact_validation.empty() ||
+         diagnostics.native_pq_runtime_validation_failed;
+}
+
+bool has_search_diagnostics(
+    const vector_index::backend_build_diagnostics &diagnostics) {
+  return diagnostics.search_fanout_segments != 0 ||
+         diagnostics.search_fanout_threads != 0 ||
+         diagnostics.search_worker_budget != 0 ||
+         diagnostics.search_active_requests != 0 ||
+         diagnostics.search_work_items != 0 ||
+         diagnostics.search_global_top_k != 0 ||
+         diagnostics.search_per_segment_top_k != 0 ||
+         diagnostics.search_result_budget != 0 ||
+         diagnostics.search_candidate_count != 0 ||
+         diagnostics.search_query_count != 0 ||
+         diagnostics.search_segment_min_entries != 0 ||
+         diagnostics.search_segment_max_entries != 0 ||
+         diagnostics.search_segment_total_entries != 0 ||
+         diagnostics.search_diskann_search_list != 0 ||
+         diagnostics.search_diskann_beamwidth != 0 ||
+         diagnostics.search_effective_complexity != 0 ||
+         diagnostics.search_total_candidate_rows != 0 ||
+         !diagnostics.search_profile.empty() ||
+         !diagnostics.search_profile_reason.empty();
+}
+
 bool has_build_diagnostics(
     const vector_index::backend_build_diagnostics &diagnostics) {
   bool present = false;
@@ -89,8 +140,18 @@ bool has_build_diagnostics(
   present |= diagnostics.concurrent_build_tasks != 0;
   present |= diagnostics.scheduler_cpu_budget != 0;
   present |= !diagnostics.resource_probe_source.empty();
+  present |= diagnostics.resource_configured_memory_budget != 0;
+  present |= diagnostics.resource_memory_reserve != 0;
+  present |= diagnostics.resource_memory_limit != 0;
+  present |= diagnostics.resource_memory_current != 0;
+  present |= diagnostics.resource_process_rss != 0;
+  present |= diagnostics.resource_memory_headroom != 0;
+  present |= diagnostics.resource_reserved_memory != 0;
   present |= diagnostics.resource_effective_memory != 0;
   present |= diagnostics.resource_effective_cpu_slots != 0;
+  present |= diagnostics.resource_reserved_cpu_slots != 0;
+  present |= diagnostics.resource_active_builds != 0;
+  present |= diagnostics.resource_waiting_builds != 0;
   present |= diagnostics.effective_build_threads != 0;
   present |= diagnostics.effective_blas_threads != 0;
   present |= diagnostics.raw_reader_threads != 0;
@@ -101,25 +162,7 @@ bool has_build_diagnostics(
   present |= diagnostics.segment_memory_estimate != 0;
   present |= diagnostics.segment_memory_budget != 0;
   present |= !diagnostics.segment_parallel_reason.empty();
-  present |= diagnostics.search_fanout_segments != 0;
-  present |= diagnostics.search_fanout_threads != 0;
-  present |= diagnostics.search_worker_budget != 0;
-  present |= diagnostics.search_active_requests != 0;
-  present |= diagnostics.search_work_items != 0;
-  present |= diagnostics.search_global_top_k != 0;
-  present |= diagnostics.search_per_segment_top_k != 0;
-  present |= diagnostics.search_result_budget != 0;
-  present |= diagnostics.search_candidate_count != 0;
-  present |= diagnostics.search_query_count != 0;
-  present |= diagnostics.search_segment_min_entries != 0;
-  present |= diagnostics.search_segment_max_entries != 0;
-  present |= diagnostics.search_segment_total_entries != 0;
-  present |= diagnostics.search_diskann_search_list != 0;
-  present |= diagnostics.search_diskann_beamwidth != 0;
-  present |= diagnostics.search_effective_complexity != 0;
-  present |= diagnostics.search_total_candidate_rows != 0;
-  present |= !diagnostics.search_profile.empty();
-  present |= !diagnostics.search_profile_reason.empty();
+  present |= has_search_diagnostics(diagnostics);
   present |= diagnostics.single_index_build;
   present |= diagnostics.pq_chunks != 0;
   present |= diagnostics.cache_nodes != 0;
@@ -136,30 +179,8 @@ bool has_build_diagnostics(
   present |= diagnostics.persist_ms != 0;
   present |= diagnostics.training_rows != 0;
   present |= diagnostics.reader_passes != 0;
-  present |= !diagnostics.native_pq_runtime_selected_path.empty();
-  present |= diagnostics.native_pq_runtime_elapsed_ms != 0;
-  present |= diagnostics.native_pq_runtime_raw_reader_ms != 0;
-  present |= diagnostics.native_pq_runtime_train_ms != 0;
-  present |= diagnostics.native_pq_runtime_encode_ms != 0;
-  present |= diagnostics.native_pq_runtime_artifact_validation_ms != 0;
-  present |= !diagnostics.native_pq_runtime_centroid_scan_kernel.empty();
-  present |= diagnostics.native_pq_runtime_distance_calls != 0;
-  present |= diagnostics.native_pq_runtime_train_rows != 0;
-  present |= diagnostics.native_pq_runtime_compressed_rows != 0;
-  present |= diagnostics.native_pq_runtime_encode_block_rows != 0;
-  present |= diagnostics.native_pq_runtime_memory_estimate != 0;
-  present |= diagnostics.native_pq_runtime_memory_budget != 0;
-  present |= diagnostics.native_pq_runtime_effective_threads != 0;
-  present |= !diagnostics.native_pq_runtime_memory_adjustment.empty();
-  present |= diagnostics.native_pq_runtime_artifacts_written;
-  present |= diagnostics.native_pq_runtime_artifacts_consumed;
-  present |= diagnostics.native_pq_runtime_official_pq_used;
-  present |= !diagnostics.native_pq_runtime_bridge.empty();
-  present |= diagnostics.native_pq_runtime_bridge_ms != 0;
-  present |= diagnostics.native_pq_runtime_graph_ms != 0;
-  present |= diagnostics.native_pq_runtime_cache_ms != 0;
-  present |= !diagnostics.native_pq_runtime_artifact_validation.empty();
-  present |= diagnostics.native_pq_runtime_validation_failed;
+  present |= !diagnostics.diskann_pq_runtime.empty();
+  present |= has_native_pq_diagnostics(diagnostics);
   present |= !diagnostics.fallback_reason.empty();
   return present;
 }
@@ -242,32 +263,7 @@ void append_build_diagnostics(
     append_nullable_string(fields, "diskann_pq_runtime",
                            diagnostics.diskann_pq_runtime);
   }
-  const bool has_native_pq_diagnostics =
-      !diagnostics.native_pq_runtime_selected_path.empty() ||
-      diagnostics.native_pq_runtime_elapsed_ms != 0 ||
-      diagnostics.native_pq_runtime_raw_reader_ms != 0 ||
-      diagnostics.native_pq_runtime_train_ms != 0 ||
-      diagnostics.native_pq_runtime_encode_ms != 0 ||
-      diagnostics.native_pq_runtime_artifact_validation_ms != 0 ||
-      !diagnostics.native_pq_runtime_centroid_scan_kernel.empty() ||
-      diagnostics.native_pq_runtime_distance_calls != 0 ||
-      diagnostics.native_pq_runtime_train_rows != 0 ||
-      diagnostics.native_pq_runtime_compressed_rows != 0 ||
-      diagnostics.native_pq_runtime_encode_block_rows != 0 ||
-      diagnostics.native_pq_runtime_memory_estimate != 0 ||
-      diagnostics.native_pq_runtime_memory_budget != 0 ||
-      diagnostics.native_pq_runtime_effective_threads != 0 ||
-      !diagnostics.native_pq_runtime_memory_adjustment.empty() ||
-      diagnostics.native_pq_runtime_artifacts_written ||
-      diagnostics.native_pq_runtime_artifacts_consumed ||
-      diagnostics.native_pq_runtime_official_pq_used ||
-      !diagnostics.native_pq_runtime_bridge.empty() ||
-      diagnostics.native_pq_runtime_bridge_ms != 0 ||
-      diagnostics.native_pq_runtime_graph_ms != 0 ||
-      diagnostics.native_pq_runtime_cache_ms != 0 ||
-      !diagnostics.native_pq_runtime_artifact_validation.empty() ||
-      diagnostics.native_pq_runtime_validation_failed;
-  if (diskann_provider && has_native_pq_diagnostics) {
+  if (diskann_provider && has_native_pq_diagnostics(diagnostics)) {
     append_nullable_string(fields, "native_pq_runtime_selected_path",
                            diagnostics.native_pq_runtime_selected_path);
     append_uint(fields, "native_pq_runtime_elapsed_ms",
@@ -372,27 +368,7 @@ void append_build_diagnostics(
               diagnostics.segment_memory_budget);
   append_nullable_string(fields, "scheduler_segment_parallel_reason",
                          diagnostics.segment_parallel_reason);
-  const bool has_search_diagnostics =
-      diagnostics.search_fanout_segments != 0 ||
-      diagnostics.search_fanout_threads != 0 ||
-      diagnostics.search_worker_budget != 0 ||
-      diagnostics.search_active_requests != 0 ||
-      diagnostics.search_work_items != 0 ||
-      diagnostics.search_global_top_k != 0 ||
-      diagnostics.search_per_segment_top_k != 0 ||
-      diagnostics.search_result_budget != 0 ||
-      diagnostics.search_candidate_count != 0 ||
-      diagnostics.search_query_count != 0 ||
-      diagnostics.search_segment_min_entries != 0 ||
-      diagnostics.search_segment_max_entries != 0 ||
-      diagnostics.search_segment_total_entries != 0 ||
-      diagnostics.search_diskann_search_list != 0 ||
-      diagnostics.search_diskann_beamwidth != 0 ||
-      diagnostics.search_effective_complexity != 0 ||
-      diagnostics.search_total_candidate_rows != 0 ||
-      !diagnostics.search_profile.empty() ||
-      !diagnostics.search_profile_reason.empty();
-  if (has_search_diagnostics) {
+  if (has_search_diagnostics(diagnostics)) {
     if (!diagnostics.search_profile.empty()) {
       append_string(fields, "scheduler_search_profile",
                     diagnostics.search_profile);
@@ -549,26 +525,6 @@ void append_index_tuning_fields(field_values *fields,
 
 }  // namespace
 
-uint64_t pending_apply_count(const vector_index_registry::index_info &info) {
-  return vector_index_observability::pending_apply_count(info);
-}
-
-uint64_t rebuild_progress(const vector_index_registry::index_info &info) {
-  return vector_index_observability::rebuild_progress(info);
-}
-
-uint64_t recover_progress(const vector_index_registry::index_info &info) {
-  return vector_index_observability::recover_progress(info);
-}
-
-bool is_loaded(const vector_index_registry::index_info &info) {
-  return vector_index_observability::is_loaded(info);
-}
-
-bool is_writable(const vector_index_registry::index_info &info) {
-  return vector_index_observability::is_writable(info);
-}
-
 std::string status_value(const field_value &field) {
   switch (field.kind) {
     case field_kind::k_string:
@@ -611,9 +567,12 @@ void collect_info_fields(const vector_index_registry::index_info &info,
   append_uint(fields, "config_generation", info.config_generation);
   append_uint(fields, "artifact_generation", info.artifact_generation);
   append_uint(fields, "runtime_generation", info.runtime_generation);
-  append_uint(fields, "pending_apply_count", pending_apply_count(info));
-  append_uint(fields, "rebuild_progress", rebuild_progress(info));
-  append_uint(fields, "recover_progress", recover_progress(info));
+  append_uint(fields, "pending_apply_count",
+              vector_index_observability::pending_apply_count(info));
+  append_uint(fields, "rebuild_progress",
+              vector_index_observability::rebuild_progress(info));
+  append_uint(fields, "recover_progress",
+              vector_index_observability::recover_progress(info));
   append_uint(fields, "entry_count", info.entry_count);
   append_uint(fields, "committed_entry_count", info.committed_entry_count);
 }
@@ -653,8 +612,9 @@ void collect_backend_health_fields(
   append_string(fields, "consistency_mode", info.consistency_mode);
   append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
   append_string(fields, "build_source", info.build_source);
-  append_bool(fields, "loaded", is_loaded(info));
-  append_bool(fields, "writable", is_writable(info));
+  append_bool(fields, "loaded", vector_index_observability::is_loaded(info));
+  append_bool(fields, "writable",
+              vector_index_observability::is_writable(info));
   append_uint(fields, "last_error_code", info.last_error_code);
   append_uint(fields, "last_error_ts", info.last_error_ts);
   append_uint(fields, "recover_fallback_count", info.recover_fallback_count);
@@ -677,10 +637,13 @@ void collect_sync_pipeline_fields(const vector_index_registry::index_info &info,
   fields->clear();
   fields->reserve(4);
 
-  append_uint(fields, "pending_apply_count", pending_apply_count(info));
+  append_uint(fields, "pending_apply_count",
+              vector_index_observability::pending_apply_count(info));
   append_uint(fields, "apply_latency_ms", info.last_apply_latency_ms);
-  append_uint(fields, "rebuild_progress", rebuild_progress(info));
-  append_uint(fields, "recover_progress", recover_progress(info));
+  append_uint(fields, "rebuild_progress",
+              vector_index_observability::rebuild_progress(info));
+  append_uint(fields, "recover_progress",
+              vector_index_observability::recover_progress(info));
 }
 
 }  // namespace vector_index_status_fields

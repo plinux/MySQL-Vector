@@ -1239,16 +1239,20 @@ TEST_F(ItemVectorFuncFixture, TxnItemHelpersTreatUnknownTxnAsNoopOrEmpty) {
 TEST_F(ItemVectorFuncFixture, RebuildAllAndRecoverAllItemsCoverErrorAndSuccess) {
   controlled_truth_store store;
   TruthStoreOverrideGuard truth_store_override(&store);
+  const uint64_t rebuild_all_before = vector_status::rebuild_all_requests();
+  const uint64_t recover_all_before = vector_status::recover_all_requests();
 
   auto *rebuild_all = new Item_func_vec_index_rebuild_all(POS());
   fix_item(thd(), rebuild_all);
   EXPECT_GE(rebuild_all->val_int(), 0);
   EXPECT_FALSE(rebuild_all->null_value);
+  EXPECT_EQ(rebuild_all_before + 1, vector_status::rebuild_all_requests());
 
   auto *recover_all = new Item_func_vec_index_recover_all(POS());
   fix_item(thd(), recover_all);
   EXPECT_GE(recover_all->val_int(), 0);
   EXPECT_FALSE(recover_all->null_value);
+  EXPECT_EQ(recover_all_before + 1, vector_status::recover_all_requests());
 
   const std::string index_name = "idx_item_all_" +
                                  std::to_string(reinterpret_cast<uintptr_t>(this));

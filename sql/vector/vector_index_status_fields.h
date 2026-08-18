@@ -51,21 +51,6 @@ struct field_value {
 
 using field_values = std::vector<field_value>;
 
-/** Return the non-negative difference between serving and committed rows. */
-uint64_t pending_apply_count(const vector_index_registry::index_info &info);
-
-/** Return the user-visible rebuild progress percentage. */
-uint64_t rebuild_progress(const vector_index_registry::index_info &info);
-
-/** Return the user-visible recovery progress percentage. */
-uint64_t recover_progress(const vector_index_registry::index_info &info);
-
-/** Return whether the backend is considered loaded for status reporting. */
-bool is_loaded(const vector_index_registry::index_info &info);
-
-/** Return whether the backend currently accepts online mutations. */
-bool is_writable(const vector_index_registry::index_info &info);
-
 /** Convert a typed field to the string value used by SHOW VECTOR STATUS. */
 std::string status_value(const field_value &field);
 

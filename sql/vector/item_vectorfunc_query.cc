@@ -110,6 +110,51 @@ bool parse_search_batch_bounds(ulonglong query_count_value,
   return true;
 }
 
+bool evaluate_single_search(
+    Item *name_arg, Item *query_arg, Item *top_k_arg,
+    const char *function_name,
+    std::vector<vector_index::search_result> *results) {
+  String name_buf;
+  const String *name = name_arg->val_str(&name_buf);
+  ulonglong top_k_value = 0;
+  size_t top_k = 0;
+  if (name == nullptr || name_arg->null_value ||
+      !eval_uint_arg(top_k_arg, top_k_value) ||
+      !parse_search_top_k(top_k_value, &top_k)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+    return false;
+  }
+
+  vector_index::vector_data query;
+  String query_buf;
+  if (!decode_vector_arg(query_arg, &query_buf, &query)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+    return false;
+  }
+
+  std::string index_name;
+  to_std_string(name, &index_name);
+  vector_index_registry::publication_read_guard publication_guard;
+  if (!publication_guard.lock_index(index_name)) {
+    record_rejected_searches(1);
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+    return false;
+  }
+  if (check_vector_existing_index_access(current_thd, index_name, SELECT_ACL,
+                                         function_name, false)) {
+    record_rejected_searches(1);
+    return false;
+  }
+
+  if (!vector_index_registry::search_for_thd_txn(
+          current_thd, static_cast<uint64_t>(current_thd->thread_id()),
+          index_name, query, top_k, results)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 bool Item_func_vec_index_info::resolve_type(THD *thd) {
@@ -212,43 +257,9 @@ String *Item_func_vec_index_search::val_str(String *str [[maybe_unused]]) {
   assert_fixed_arg_count(fixed, arg_count, 3);
   null_value = true;
 
-  String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
-  ulonglong top_k_value = 0;
-  size_t top_k = 0;
-  if (name == nullptr || args[0]->null_value ||
-      !eval_uint_arg(args[2], top_k_value) ||
-      !parse_search_top_k(top_k_value, &top_k)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_str();
-  }
-
-  vector_index::vector_data query;
-  String query_buf;
-  if (!decode_vector_arg(args[1], &query_buf, &query)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_str();
-  }
-
-  std::string index_name;
-  to_std_string(name, &index_name);
-  vector_index_registry::publication_read_guard publication_guard;
-  if (!publication_guard.lock_index(index_name)) {
-    record_rejected_searches(1);
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_str();
-  }
-  if (check_vector_existing_index_access(current_thd, index_name, SELECT_ACL,
-                                         func_name(), false)) {
-    record_rejected_searches(1);
-    return error_str();
-  }
-
   std::vector<vector_index::search_result> results;
-  if (!vector_index_registry::search_for_thd_txn(
-          current_thd, static_cast<uint64_t>(current_thd->thread_id()),
-          index_name, query, top_k, &results)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!evaluate_single_search(args[0], args[1], args[2], func_name(),
+                              &results)) {
     return error_str();
   }
 
@@ -340,43 +351,9 @@ String *Item_func_vec_index_search_with_distance::val_str(
   assert_fixed_arg_count(fixed, arg_count, 3);
   null_value = true;
 
-  String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
-  ulonglong top_k_value = 0;
-  size_t top_k = 0;
-  if (name == nullptr || args[0]->null_value ||
-      !eval_uint_arg(args[2], top_k_value) ||
-      !parse_search_top_k(top_k_value, &top_k)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_str();
-  }
-
-  vector_index::vector_data query;
-  String query_buf;
-  if (!decode_vector_arg(args[1], &query_buf, &query)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_str();
-  }
-
-  std::string index_name;
-  to_std_string(name, &index_name);
-  vector_index_registry::publication_read_guard publication_guard;
-  if (!publication_guard.lock_index(index_name)) {
-    record_rejected_searches(1);
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_str();
-  }
-  if (check_vector_existing_index_access(current_thd, index_name, SELECT_ACL,
-                                         func_name(), false)) {
-    record_rejected_searches(1);
-    return error_str();
-  }
-
   std::vector<vector_index::search_result> results;
-  if (!vector_index_registry::search_for_thd_txn(
-          current_thd, static_cast<uint64_t>(current_thd->thread_id()),
-          index_name, query, top_k, &results)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!evaluate_single_search(args[0], args[1], args[2], func_name(),
+                              &results)) {
     return error_str();
   }
 

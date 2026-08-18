@@ -9697,261 +9697,119 @@ static int show_vector_status_value(uint64_t value, SHOW_VAR *var, char *buf) {
   return 0;
 }
 
-static int show_vector_summary_value(
-    const vector_index_registry::global_status_summary &summary,
-    uint64_t value, SHOW_VAR *var, char *buf) {
-  (void)summary;
-  return show_vector_status_value(value, var, buf);
-}
-
-#define DEFINE_VECTOR_SUMMARY_STATUS_FUNC(func_name, field_name)            \
-  static int show_vector_##func_name(THD *, SHOW_VAR *var, char *buf) {     \
-    vector_index_registry::global_status_summary summary;                    \
-    if (!vector_index_registry::get_global_status_summary(&summary)) {       \
-      return show_vector_status_value(0, var, buf);                         \
-    }                                                                       \
-    return show_vector_summary_value(summary, summary.field_name, var, buf); \
+#define DEFINE_VECTOR_SUMMARY_STATUS_FUNC(func_name, field_name)        \
+  static int show_vector_##func_name(THD *, SHOW_VAR *var, char *buf) { \
+    vector_index_registry::global_status_summary summary;               \
+    if (!vector_index_registry::get_global_status_summary(&summary)) {  \
+      return show_vector_status_value(0, var, buf);                     \
+    }                                                                   \
+    return show_vector_status_value(summary.field_name, var, buf);      \
   }
 
-static int show_vector_index_create_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::index_create_requests(), var, buf);
-}
+#define DEFINE_VECTOR_STATUS_FUNC(func_name, expression)                 \
+  static int show_vector_##func_name(THD *, SHOW_VAR *var, char *buf) {  \
+    return show_vector_status_value(static_cast<uint64_t>(expression),   \
+                                    var, buf);                           \
+  }
 
-static int show_vector_index_drop_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::index_drop_requests(), var, buf);
-}
+DEFINE_VECTOR_STATUS_FUNC(index_create_requests,
+                          vector_status::index_create_requests())
+DEFINE_VECTOR_STATUS_FUNC(index_drop_requests,
+                          vector_status::index_drop_requests())
+DEFINE_VECTOR_STATUS_FUNC(metadata_load_failures,
+                          vector_status::metadata_load_failures())
+DEFINE_VECTOR_STATUS_FUNC(metadata_persist_failures,
+                          vector_status::metadata_persist_failures())
+DEFINE_VECTOR_STATUS_FUNC(committed_load_failures,
+                          vector_status::committed_load_failures())
+DEFINE_VECTOR_STATUS_FUNC(committed_persist_failures,
+                          vector_status::committed_persist_failures())
+DEFINE_VECTOR_STATUS_FUNC(manifest_load_failures,
+                          vector_status::manifest_load_failures())
+DEFINE_VECTOR_STATUS_FUNC(manifest_persist_failures,
+                          vector_status::manifest_persist_failures())
+DEFINE_VECTOR_STATUS_FUNC(change_log_load_failures,
+                          vector_status::change_log_load_failures())
+DEFINE_VECTOR_STATUS_FUNC(change_log_replay_failures,
+                          vector_status::change_log_replay_failures())
+DEFINE_VECTOR_STATUS_FUNC(change_log_persist_failures,
+                          vector_status::change_log_persist_failures())
+DEFINE_VECTOR_STATUS_FUNC(backend_recover_fallbacks,
+                          vector_status::backend_recover_fallbacks())
 
-static int show_vector_metadata_load_failures(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::metadata_load_failures(), var, buf);
-}
+DEFINE_VECTOR_STATUS_FUNC(registered_indexes,
+                          vector_status::registered_indexes())
+DEFINE_VECTOR_STATUS_FUNC(committed_snapshot_rows,
+                          vector_status::committed_snapshot_rows())
+DEFINE_VECTOR_STATUS_FUNC(manifest_version, vector_status::manifest_version())
+DEFINE_VECTOR_STATUS_FUNC(manifest_metadata_checkpoint,
+                          vector_status::manifest_metadata_checkpoint())
+DEFINE_VECTOR_STATUS_FUNC(manifest_committed_checkpoint,
+                          vector_status::manifest_committed_checkpoint())
+DEFINE_VECTOR_STATUS_FUNC(manifest_change_log_checkpoint,
+                          vector_status::manifest_change_log_checkpoint())
+DEFINE_VECTOR_STATUS_FUNC(rebuild_requests,
+                          vector_status::rebuild_requests())
+DEFINE_VECTOR_STATUS_FUNC(recover_requests,
+                          vector_status::recover_requests())
+DEFINE_VECTOR_STATUS_FUNC(rebuild_all_requests,
+                          vector_status::rebuild_all_requests())
+DEFINE_VECTOR_STATUS_FUNC(recover_all_requests,
+                          vector_status::recover_all_requests())
 
-static int show_vector_metadata_persist_failures(THD *, SHOW_VAR *var,
-                                                 char *buf) {
-  return show_vector_status_value(vector_status::metadata_persist_failures(), var,
-                                  buf);
-}
+DEFINE_VECTOR_STATUS_FUNC(search_requests, vector_status::search_requests())
+DEFINE_VECTOR_STATUS_FUNC(search_failures, vector_status::search_failures())
+DEFINE_VECTOR_STATUS_FUNC(search_results_returned,
+                          vector_status::search_results_returned())
+DEFINE_VECTOR_STATUS_FUNC(search_mvcc_candidate_rows,
+                          vector_status::search_mvcc_candidate_rows())
+DEFINE_VECTOR_STATUS_FUNC(search_mvcc_expansions,
+                          vector_status::search_mvcc_expansions())
+DEFINE_VECTOR_STATUS_FUNC(search_mvcc_limit_hits,
+                          vector_status::search_mvcc_limit_hits())
+DEFINE_VECTOR_STATUS_FUNC(stage_upsert_requests,
+                          vector_status::stage_upsert_requests())
+DEFINE_VECTOR_STATUS_FUNC(stage_erase_requests,
+                          vector_status::stage_erase_requests())
+DEFINE_VECTOR_STATUS_FUNC(txn_commit_requests,
+                          vector_status::txn_commit_requests())
+DEFINE_VECTOR_STATUS_FUNC(txn_commit_failures,
+                          vector_status::txn_commit_failures())
+DEFINE_VECTOR_STATUS_FUNC(txn_rollback_requests,
+                          vector_status::txn_rollback_requests())
+DEFINE_VECTOR_STATUS_FUNC(runtime_state_rollbacks,
+                          vector_status::runtime_state_rollbacks())
+DEFINE_VECTOR_STATUS_FUNC(runtime_state_rollback_failures,
+                          vector_status::runtime_state_rollback_failures())
+DEFINE_VECTOR_STATUS_FUNC(persist_artifact_rollbacks,
+                          vector_status::persist_artifact_rollbacks())
+DEFINE_VECTOR_STATUS_FUNC(
+    persist_artifact_rollback_failures,
+    vector_status::persist_artifact_rollback_failures())
 
-static int show_vector_committed_load_failures(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::committed_load_failures(), var,
-                                  buf);
-}
-
-static int show_vector_committed_persist_failures(THD *, SHOW_VAR *var,
-                                                  char *buf) {
-  return show_vector_status_value(vector_status::committed_persist_failures(), var,
-                                  buf);
-}
-
-static int show_vector_manifest_load_failures(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::manifest_load_failures(), var,
-                                  buf);
-}
-
-static int show_vector_manifest_persist_failures(THD *, SHOW_VAR *var,
-                                                 char *buf) {
-  return show_vector_status_value(vector_status::manifest_persist_failures(), var,
-                                  buf);
-}
-
-static int show_vector_change_log_load_failures(THD *, SHOW_VAR *var,
-                                                char *buf) {
-  return show_vector_status_value(vector_status::change_log_load_failures(), var,
-                                  buf);
-}
-
-static int show_vector_change_log_replay_failures(THD *, SHOW_VAR *var,
-                                                  char *buf) {
-  return show_vector_status_value(vector_status::change_log_replay_failures(), var,
-                                  buf);
-}
-
-static int show_vector_change_log_persist_failures(THD *, SHOW_VAR *var,
-                                                   char *buf) {
-  return show_vector_status_value(vector_status::change_log_persist_failures(), var,
-                                  buf);
-}
-
-static int show_vector_backend_recover_fallbacks(THD *, SHOW_VAR *var,
-                                                 char *buf) {
-  return show_vector_status_value(vector_status::backend_recover_fallbacks(), var,
-                                  buf);
-}
-
-static int show_vector_registered_indexes(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::registered_indexes(), var, buf);
-}
-
-static int show_vector_committed_snapshot_rows(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::committed_snapshot_rows(), var,
-                                  buf);
-}
-
-static int show_vector_manifest_version(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::manifest_version(), var, buf);
-}
-
-static int show_vector_manifest_metadata_checkpoint(THD *, SHOW_VAR *var,
-                                                    char *buf) {
-  return show_vector_status_value(vector_status::manifest_metadata_checkpoint(), var,
-                                  buf);
-}
-
-static int show_vector_manifest_committed_checkpoint(THD *, SHOW_VAR *var,
-                                                     char *buf) {
-  return show_vector_status_value(vector_status::manifest_committed_checkpoint(),
-                                  var, buf);
-}
-
-static int show_vector_manifest_change_log_checkpoint(THD *, SHOW_VAR *var,
-                                                      char *buf) {
-  return show_vector_status_value(vector_status::manifest_change_log_checkpoint(),
-                                  var, buf);
-}
-
-static int show_vector_rebuild_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::rebuild_requests(), var, buf);
-}
-
-static int show_vector_recover_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::recover_requests(), var, buf);
-}
-
-static int show_vector_rebuild_all_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::rebuild_all_requests(), var, buf);
-}
-
-static int show_vector_recover_all_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::recover_all_requests(), var, buf);
-}
-
-static int show_vector_search_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::search_requests(), var, buf);
-}
-
-static int show_vector_search_failures(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::search_failures(), var, buf);
-}
-
-static int show_vector_search_results_returned(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::search_results_returned(), var,
-                                  buf);
-}
-
-static int show_vector_search_mvcc_candidate_rows(THD *, SHOW_VAR *var,
-                                                  char *buf) {
-  return show_vector_status_value(vector_status::search_mvcc_candidate_rows(),
-                                  var, buf);
-}
-
-static int show_vector_search_mvcc_expansions(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::search_mvcc_expansions(), var,
-                                  buf);
-}
-
-static int show_vector_search_mvcc_limit_hits(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::search_mvcc_limit_hits(), var,
-                                  buf);
-}
-
-static int show_vector_stage_upsert_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::stage_upsert_requests(), var, buf);
-}
-
-static int show_vector_stage_erase_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::stage_erase_requests(), var, buf);
-}
-
-static int show_vector_txn_commit_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::txn_commit_requests(), var, buf);
-}
-
-static int show_vector_txn_commit_failures(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::txn_commit_failures(), var, buf);
-}
-
-static int show_vector_txn_rollback_requests(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::txn_rollback_requests(), var,
-                                  buf);
-}
-
-static int show_vector_runtime_state_rollbacks(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::runtime_state_rollbacks(), var,
-                                  buf);
-}
-
-static int show_vector_runtime_state_rollback_failures(THD *, SHOW_VAR *var,
-                                                       char *buf) {
-  return show_vector_status_value(vector_status::runtime_state_rollback_failures(),
-                                  var, buf);
-}
-
-static int show_vector_persist_artifact_rollbacks(THD *, SHOW_VAR *var,
-                                                  char *buf) {
-  return show_vector_status_value(vector_status::persist_artifact_rollbacks(), var,
-                                  buf);
-}
-
-static int show_vector_persist_artifact_rollback_failures(THD *, SHOW_VAR *var,
-                                                          char *buf) {
-  return show_vector_status_value(
-      vector_status::persist_artifact_rollback_failures(), var, buf);
-}
-
-static int show_vector_truth_store_persist_requests(THD *, SHOW_VAR *var,
-                                                    char *buf) {
-  return show_vector_status_value(vector_status::truth_store_persist_requests(), var,
-                                  buf);
-}
-
-static int show_vector_truth_store_persist_failures(THD *, SHOW_VAR *var,
-                                                    char *buf) {
-  return show_vector_status_value(vector_status::truth_store_persist_failures(),
-                                  var, buf);
-}
-
-static int show_vector_truth_store_delta_persist_requests(THD *, SHOW_VAR *var,
-                                                          char *buf) {
-  return show_vector_status_value(
-      vector_status::truth_store_delta_persist_requests(), var, buf);
-}
-
-static int show_vector_truth_store_delta_persist_failures(THD *, SHOW_VAR *var,
-                                                          char *buf) {
-  return show_vector_status_value(
-      vector_status::truth_store_delta_persist_failures(), var, buf);
-}
-
-static int show_vector_truth_store_compact_requests(THD *, SHOW_VAR *var,
-                                                    char *buf) {
-  return show_vector_status_value(vector_status::truth_store_compact_requests(),
-                                  var, buf);
-}
-
-static int show_vector_truth_store_compact_failures(THD *, SHOW_VAR *var,
-                                                    char *buf) {
-  return show_vector_status_value(vector_status::truth_store_compact_failures(),
-                                  var, buf);
-}
-
-static int show_vector_pending_txn_changes(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::pending_txn_changes(), var, buf);
-}
-
-static int show_vector_committed_vector_memory_bytes(THD *, SHOW_VAR *var,
-                                                     char *buf) {
-  return show_vector_status_value(
-      vector_index_registry::committed_vector_memory_bytes(), var, buf);
-}
-
-static int show_vector_pending_vector_memory_bytes(THD *, SHOW_VAR *var,
-                                                   char *buf) {
-  return show_vector_status_value(
-      vector_index_registry::total_pending_vector_memory_bytes(), var, buf);
-}
-
-static int show_vector_apply_latency_ms(THD *, SHOW_VAR *var, char *buf) {
-  return show_vector_status_value(vector_status::apply_latency_ms(), var, buf);
-}
+DEFINE_VECTOR_STATUS_FUNC(truth_store_persist_requests,
+                          vector_status::truth_store_persist_requests())
+DEFINE_VECTOR_STATUS_FUNC(truth_store_persist_failures,
+                          vector_status::truth_store_persist_failures())
+DEFINE_VECTOR_STATUS_FUNC(
+    truth_store_delta_persist_requests,
+    vector_status::truth_store_delta_persist_requests())
+DEFINE_VECTOR_STATUS_FUNC(
+    truth_store_delta_persist_failures,
+    vector_status::truth_store_delta_persist_failures())
+DEFINE_VECTOR_STATUS_FUNC(truth_store_compact_requests,
+                          vector_status::truth_store_compact_requests())
+DEFINE_VECTOR_STATUS_FUNC(truth_store_compact_failures,
+                          vector_status::truth_store_compact_failures())
+DEFINE_VECTOR_STATUS_FUNC(pending_txn_changes,
+                          vector_status::pending_txn_changes())
+DEFINE_VECTOR_STATUS_FUNC(
+    committed_vector_memory_bytes,
+    vector_index_registry::committed_vector_memory_bytes())
+DEFINE_VECTOR_STATUS_FUNC(
+    pending_vector_memory_bytes,
+    vector_index_registry::total_pending_vector_memory_bytes())
+DEFINE_VECTOR_STATUS_FUNC(apply_latency_ms, vector_status::apply_latency_ms())
 
 static int show_vector_truth_store_backend(THD *, SHOW_VAR *var, char *buf) {
   const char *name = vector_index_truth_store::active_backend_name();
@@ -9961,11 +9819,11 @@ static int show_vector_truth_store_backend(THD *, SHOW_VAR *var, char *buf) {
   return 0;
 }
 
-static int show_vector_truth_store_transactional(THD *, SHOW_VAR *var,
-                                                 char *buf) {
-  return show_vector_status_value(
-      vector_index_truth_store::active_backend_transactional() ? 1 : 0, var, buf);
-}
+DEFINE_VECTOR_STATUS_FUNC(
+    truth_store_transactional,
+    vector_index_truth_store::active_backend_transactional() ? 1 : 0)
+
+#undef DEFINE_VECTOR_STATUS_FUNC
 
 static int show_vector_build_resource_source(THD *, SHOW_VAR *var, char *buf) {
   const vector_index::build_resource_snapshot resources =

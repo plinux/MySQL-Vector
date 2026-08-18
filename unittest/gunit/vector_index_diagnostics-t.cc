@@ -117,6 +117,10 @@ TEST(VectorIndexDiagnosticsTest, RecordEventHonorsEnvironmentSwitch) {
   vector_index_diagnostics::record_event("disabled", {}, {{"value", 1}});
   EXPECT_FALSE(std::ifstream(path).good());
 
+  setenv(kDiagnosticsPathEnv, "", 1);
+  vector_index_diagnostics::record_event("empty_path", {}, {{"value", 1}});
+  EXPECT_FALSE(std::ifstream(path).good());
+
   setenv(kDiagnosticsPathEnv, path.c_str(), 1);
   vector_index_diagnostics::record_event("enabled", {{"mode", "env"}},
                                          {{"value", 2}});

@@ -41,6 +41,7 @@
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_statement_publication.h"
+#include "sql/vector/vector_status.h"
 #include "sql/vector/vector_trx_participant.h"
 #include "sql/vector/vector_utils.h"
 
@@ -900,6 +901,7 @@ longlong Item_func_vec_index_rebuild_all::val_int() {
   size_t rebuilt_count = 0;
   if (check_vector_all_indexes_access(current_thd, ALTER_ACL, func_name()))
     return error_int();
+  vector_status::record_rebuild_all_request();
   if (!stage_all_index_statements(
           vector_index_truth_store::publication_operation::kRebuildIndex,
           func_name(), &rebuilt_count))
@@ -935,11 +937,13 @@ longlong Item_func_vec_index_recover_all::val_int() {
       my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
       return error_int();
     }
-  } else if (!stage_all_index_statements(
-                 vector_index_truth_store::publication_operation::
-                     kRecoverIndex,
-                 func_name(), &recovered_count)) {
-    return error_int();
+  } else {
+    vector_status::record_recover_all_request();
+    if (!stage_all_index_statements(
+            vector_index_truth_store::publication_operation::kRecoverIndex,
+            func_name(), &recovered_count)) {
+      return error_int();
+    }
   }
 
   null_value = false;

@@ -23,6 +23,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <thread>
+#include <vector>
+
 #include "sql/vector/vector_status.h"
 
 namespace vector_status_unittest {
@@ -235,6 +239,37 @@ TEST(VectorStatusTest, CountersAndGaugesAreUpdated) {
 
 TEST(VectorStatusTest, ReadSnapshotIgnoresNullTarget) {
   vector_status::read_snapshot(nullptr);
+}
+
+TEST(VectorStatusTest, PendingCounterHandlesConcurrentSubtraction) {
+  vector_status::subtract_pending_txn_changes(
+      vector_status::pending_txn_changes());
+  constexpr size_t kThreadCount = 16;
+  constexpr size_t kIterations = 2000;
+  vector_status::add_pending_txn_changes(kThreadCount * kIterations);
+
+  std::atomic<size_t> ready{0};
+  std::atomic<bool> start{false};
+  std::vector<std::thread> workers;
+  workers.reserve(kThreadCount);
+  for (size_t thread = 0; thread < kThreadCount; ++thread) {
+    workers.emplace_back([&] {
+      ready.fetch_add(1, std::memory_order_release);
+      while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+      for (size_t i = 0; i < kIterations; ++i) {
+        vector_status::subtract_pending_txn_changes(1);
+      }
+    });
+  }
+  while (ready.load(std::memory_order_acquire) != kThreadCount) {
+    std::this_thread::yield();
+  }
+  start.store(true, std::memory_order_release);
+  for (std::thread &worker : workers) worker.join();
+  EXPECT_EQ(0U, vector_status::pending_txn_changes());
+
+  vector_status::subtract_pending_txn_changes(1);
+  EXPECT_EQ(0U, vector_status::pending_txn_changes());
 }
 
 }  // namespace vector_status_unittest
