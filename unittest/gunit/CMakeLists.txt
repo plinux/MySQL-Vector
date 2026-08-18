@@ -327,6 +327,7 @@ IF(HAVE_VECTOR_INDEX)
     vector_index_service
     vector_segment_runtime_scheduler
     vector_segmented_search
+    vector_statement_publication
     vector_load_file
     vector_dml_sync
     vector_mapped_search

@@ -671,6 +671,7 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_segment_task.cc
     vector/vector_segment_runtime_scheduler.cc
     vector/vector_segmented_search.cc
+    vector/vector_statement_publication.cc
     vector/vector_status.cc
     vector/vector_index_metadata_store.cc
     vector/vector_index_metadata_store_codec.cc
