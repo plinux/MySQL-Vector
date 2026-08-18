@@ -212,36 +212,6 @@ bool snapshot_index_config_locked(
                                         nullptr);
 }
 
-bool index_config_matches(
-    const vector_index::index_service::index_config &lhs,
-    const vector_index::index_service::index_config &rhs) {
-  return lhs.dimension == rhs.dimension && lhs.metric == rhs.metric &&
-         lhs.mode == rhs.mode && lhs.provider == rhs.provider &&
-         lhs.consistency_mode == rhs.consistency_mode &&
-         lhs.search_ef == rhs.search_ef && lhs.hnsw_m == rhs.hnsw_m &&
-         lhs.hnsw_ef_construction == rhs.hnsw_ef_construction &&
-         lhs.hnsw_build_threads == rhs.hnsw_build_threads &&
-         lhs.faiss_nlist == rhs.faiss_nlist &&
-         lhs.faiss_nprobe == rhs.faiss_nprobe &&
-         lhs.faiss_pq_m == rhs.faiss_pq_m &&
-         lhs.faiss_pq_bits == rhs.faiss_pq_bits &&
-         lhs.faiss_build_threads == rhs.faiss_build_threads &&
-         lhs.diskann_max_degree == rhs.diskann_max_degree &&
-         lhs.diskann_build_complexity == rhs.diskann_build_complexity &&
-         lhs.diskann_build_threads == rhs.diskann_build_threads &&
-         lhs.diskann_build_mode_value == rhs.diskann_build_mode_value &&
-         lhs.diskann_build_mode_specified ==
-             rhs.diskann_build_mode_specified &&
-         lhs.diskann_search_complexity == rhs.diskann_search_complexity &&
-         lhs.diskann_search_beamwidth == rhs.diskann_search_beamwidth &&
-         lhs.diskann_pq_code_budget_size ==
-             rhs.diskann_pq_code_budget_size &&
-         lhs.diskann_disk_pq_dims == rhs.diskann_disk_pq_dims &&
-         lhs.diskann_accelerate_build == rhs.diskann_accelerate_build &&
-         lhs.diskann_shuffle_build == rhs.diskann_shuffle_build &&
-         lhs.diskann_use_bfs_cache == rhs.diskann_use_bfs_cache;
-}
-
 vector_index_metadata_store::change_log_row make_backfill_delta_row(
     const std::string &index_name, uint64_t sequence, uint64_t doc_id,
     const vector_index::vector_data &vector) {
@@ -549,7 +519,7 @@ bool validate_backend_plan_against_state_locked(
           &current_lifecycle_version)) {
     return false;
   }
-  if (!index_config_matches(plan.config, current_config) ||
+  if (!vector_index::detail::index_configs_equal(plan.config, current_config) ||
       current_lifecycle_version != plan.lifecycle_version ||
       g_index_service.has_pending_changes_for_index(plan.index_name)) {
     return false;
@@ -1927,7 +1897,7 @@ bool set_diskann_use_bfs_cache(const std::string &index_name,
 bool detail::index_config_matches_for_testing(
     const vector_index::index_service::index_config &lhs,
     const vector_index::index_service::index_config &rhs) {
-  return index_config_matches(lhs, rhs);
+  return vector_index::detail::index_configs_equal(lhs, rhs);
 }
 
 void detail::set_standalone_rebuild_build_hook_for_testing(

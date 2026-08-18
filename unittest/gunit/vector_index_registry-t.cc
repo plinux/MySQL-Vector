@@ -694,6 +694,7 @@ class VectorIndexRegistryTest : public ::testing::Test {
     std::remove((m_prepared_path + ".prepared.corrupt").c_str());
   }
 
+  vector_gunit::NativeProviderGuard native_provider_guard_;
   in_memory_truth_store store_;
   std::string m_prepared_path;
 };
@@ -1367,7 +1368,93 @@ TEST_F(VectorIndexRegistryTest, MetadataLoadedTracksLazyLoad) {
 }
 
 TEST_F(VectorIndexRegistryTest,
-       LazyLoadRemovesIncompleteCreateLifecycleRows) {
+        LazyLoadAdvancesTransactionIdPastPreparedRows) {
+  vector_index_metadata_store::prepared_change_row row;
+  row.format_id = 1;
+  row.gtrid_length = 1;
+  row.xid_data = "g";
+  row.txn_id = 500;
+  row.op = vector_index_metadata_store::change_op::kErase;
+  row.index_name = "idx_prepared_high_water";
+  row.doc_id = 1;
+  store_.SetPreparedRowsForTesting({row});
+
+  EXPECT_EQ(501U, vector_index_registry::begin_txn());
+}
+
+TEST_F(VectorIndexRegistryTest,
+       LazyLoadExhaustsTransactionIdsAtPersistedMaximum) {
+  vector_index_metadata_store::prepared_change_row row;
+  row.format_id = 1;
+  row.gtrid_length = 1;
+  row.xid_data = "g";
+  row.txn_id = std::numeric_limits<uint64_t>::max();
+  row.op = vector_index_metadata_store::change_op::kErase;
+  row.index_name = "idx_prepared_exhausted";
+  row.doc_id = 1;
+  store_.SetPreparedRowsForTesting({row});
+
+  EXPECT_EQ(0U, vector_index_registry::begin_txn());
+}
+
+TEST_F(VectorIndexRegistryTest,
+       LazyLoadRejectsConflictingPreparedTransactionIdentities) {
+  const auto expect_rejected =
+      [&](const std::vector<vector_index_metadata_store::prepared_change_row>
+              &rows) {
+        store_.SetPreparedRowsForTesting(rows);
+        store_.fail_quarantine_prepared = true;
+        vector_index_registry::reset_for_testing();
+
+        std::vector<std::string> index_names;
+        EXPECT_FALSE(vector_index_registry::list_indexes(&index_names));
+
+        store_.fail_quarantine_prepared = false;
+        store_.SetPreparedRowsForTesting({});
+        vector_index_registry::reset_for_testing();
+      };
+
+  const vector_index_metadata_store::prepared_change_row base{
+      70,
+      3,
+      0,
+      "xid",
+      false,
+      700,
+      vector_index_metadata_store::change_op::kErase,
+      "idx_prepared",
+      1,
+      {}};
+
+  auto same_xid_different_txn = base;
+  same_xid_different_txn.txn_id = 701;
+  expect_rejected({base, same_xid_different_txn});
+
+  auto same_txn_different_xid = base;
+  same_txn_different_xid.xid_data = "alt";
+  expect_rejected({base, same_txn_different_xid});
+
+  auto same_xid_different_tc_state = base;
+  same_xid_different_tc_state.prepared_in_tc = true;
+  expect_rejected({base, same_xid_different_tc_state});
+}
+
+TEST_F(VectorIndexRegistryTest, TransactionIdAllocationDoesNotWrap) {
+  ASSERT_NE(0U, vector_index_registry::begin_txn());
+  vector_index_registry::detail::g_next_txn_id.store(
+      std::numeric_limits<uint64_t>::max(), std::memory_order_relaxed);
+
+  EXPECT_EQ(std::numeric_limits<uint64_t>::max(),
+            vector_index_registry::begin_txn());
+  EXPECT_EQ(0U, vector_index_registry::begin_txn());
+  EXPECT_FALSE(vector_index_registry::stage_upsert(
+      0, "idx_invalid_txn", 1, {1.0F, 1.0F}));
+  EXPECT_FALSE(vector_index_registry::commit_txn(0));
+  EXPECT_FALSE(vector_index_registry::rollback_txn(0));
+}
+
+TEST_F(VectorIndexRegistryTest,
+        LazyLoadRemovesIncompleteCreateLifecycleRows) {
   const std::string ready_index = "test.t_ready.v";
   const std::string creating_index = "test.t_creating.v";
   const std::string backfilling_index = "test.t_backfilling.v";
@@ -1760,6 +1847,51 @@ TEST_F(VectorIndexRegistryTest, CommitTxnFailsWhenChangeLogPersistFails) {
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
 }
 
+TEST_F(VectorIndexRegistryTest,
+       CommitTxnRejectsExhaustedChangeLogSequenceWithoutPublishing) {
+  const std::string index_name = "idx_registry_changelog_exhausted";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  const uint64_t txn_id = vector_index_registry::begin_txn();
+  ASSERT_TRUE(
+      vector_index_registry::stage_upsert(txn_id, index_name, 1, {1.0F, 1.0F}));
+  {
+    vector_gunit::ScopedValueGuard<uint64_t> sequence_guard(
+        &vector_index_registry::detail::g_next_change_log_sequence,
+        std::numeric_limits<uint64_t>::max());
+    EXPECT_FALSE(vector_index_registry::commit_txn(txn_id));
+  }
+  EXPECT_EQ(1U, vector_index_registry::pending_txn_changes(txn_id));
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {1.0F, 1.0F}, 1, &result));
+  EXPECT_TRUE(result.empty());
+
+  ASSERT_TRUE(vector_index_registry::rollback_txn(txn_id));
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       ManifestPersistenceRejectsExhaustedVersionWithoutDroppingIndex) {
+  const std::string index_name = "idx_registry_manifest_exhausted";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+  {
+    vector_gunit::ScopedValueGuard<uint64_t> version_guard(
+        &vector_index_registry::detail::g_manifest_version,
+        std::numeric_limits<uint64_t>::max() - 1);
+    EXPECT_FALSE(vector_index_registry::drop_index(index_name));
+  }
+
+  std::vector<std::string> index_names;
+  ASSERT_TRUE(vector_index_registry::list_indexes(&index_names));
+  EXPECT_NE(index_names.end(),
+            std::find(index_names.begin(), index_names.end(), index_name));
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
 TEST_F(VectorIndexRegistryTest, CommitTxnFailsWhenManifestPersistFails) {
   const std::string index_name = "idx_registry_commit_manifest_fail";
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
@@ -2003,6 +2135,41 @@ TEST_F(VectorIndexRegistryTest, ThdTxnUserSavepointRollbackFlow) {
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
 }
 
+TEST_F(VectorIndexRegistryTest,
+       ThdTxnSavepointNamesFollowMysqlCollationSemantics) {
+  const std::string index_name = "idx_registry_savepoint_collation";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+
+  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
+      203, 1, index_name, 1, {1.0F, 1.0F}));
+  ASSERT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(203, 1));
+  ASSERT_TRUE(vector_index_registry::savepoint_thd_txn(203, "VectorPoint"));
+
+  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
+      203, 2, index_name, 2, {2.0F, 2.0F}));
+  ASSERT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(203, 2));
+  ASSERT_TRUE(vector_index_registry::savepoint_thd_txn(203, "vectorpoint"));
+
+  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
+      203, 3, index_name, 3, {3.0F, 3.0F}));
+  ASSERT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(203, 3));
+  ASSERT_TRUE(
+      vector_index_registry::rollback_to_savepoint_thd_txn(203, "VECTORPOINT"));
+  ASSERT_TRUE(
+      vector_index_registry::release_savepoint_thd_txn(203, "VectorPoint"));
+  ASSERT_TRUE(vector_index_registry::commit_thd_txn(203));
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {0.0F, 0.0F}, 10, &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+  EXPECT_EQ(2U, result[1].doc_id);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
 TEST_F(VectorIndexRegistryTest, ThdTxnReleaseSavepointFlow) {
   const std::string index_name = "idx_registry_release_sp";
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
@@ -2138,6 +2305,37 @@ TEST_F(VectorIndexRegistryTest, PrepareAndCommitPreparedXidAppliesDurableRows) {
 
   ASSERT_TRUE(vector_index_truth_store::get()->load_prepared(&prepared_rows));
   EXPECT_TRUE(prepared_rows.empty());
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       CommitPreparedXidPreservesExhaustedChangeLogSequence) {
+  const std::string index_name = "idx_registry_prepared_sequence_exhausted";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+
+  XID xid = make_test_xid(704, "prepared-sequence-exhausted");
+  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
+      704, 1, index_name, 7, {7.0F, 7.0F}));
+  ASSERT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(704, 1));
+  ASSERT_TRUE(vector_index_registry::prepare_thd_txn(704, xid));
+
+  {
+    vector_gunit::ScopedValueGuard<uint64_t> sequence_guard(
+        &vector_index_registry::detail::g_next_change_log_sequence,
+        std::numeric_limits<uint64_t>::max());
+    EXPECT_EQ(XAER_RMERR, vector_index_registry::commit_prepared_xid(xid));
+    EXPECT_EQ(std::numeric_limits<uint64_t>::max(),
+              vector_index_registry::detail::g_next_change_log_sequence);
+  }
+
+  EXPECT_TRUE(vector_index_registry::has_prepared_xid(xid));
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {7.0F, 7.0F}, 1, &result));
+  EXPECT_TRUE(result.empty());
+
+  ASSERT_EQ(XA_OK, vector_index_registry::rollback_prepared_xid(xid));
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
 }
 
@@ -3337,6 +3535,10 @@ TEST_F(VectorIndexRegistryTest, SetHnswBuildParamsRollbackOnPersistFailure) {
 }
 
 TEST_F(VectorIndexRegistryTest, SetFaissIvfParamsRollbackOnPersistFailure) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   const std::string index_name = "idx_registry_faiss_ivf_fail";
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "cosine",
                                                   "external", "faiss"));
@@ -3356,6 +3558,10 @@ TEST_F(VectorIndexRegistryTest, SetFaissIvfParamsRollbackOnPersistFailure) {
 }
 
 TEST_F(VectorIndexRegistryTest, SetFaissIvfPqParamsRollbackOnPersistFailure) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   const std::string index_name = "idx_registry_faiss_ivfpq_fail";
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "cosine",
                                                   "external", "faiss"));
@@ -6421,6 +6627,10 @@ TEST(VectorIndexRegistryInternalTest,
   base.diskann_search_beamwidth = 16;
   base.diskann_pq_code_budget_size = 1048576;
   base.diskann_disk_pq_dims = 12;
+  base.backend_variant = "diskann-native";
+  base.diskann_build_blas_threads = 2;
+  base.diskann_cache_nodes = 128;
+  base.diskann_segmented_serving = true;
   base.diskann_accelerate_build = true;
   base.diskann_shuffle_build = true;
   base.diskann_use_bfs_cache = true;
@@ -6469,6 +6679,12 @@ TEST(VectorIndexRegistryInternalTest,
   expect_mismatch(
       [](auto *config) { config->diskann_pq_code_budget_size = 2097152; });
   expect_mismatch([](auto *config) { config->diskann_disk_pq_dims = 13; });
+  expect_mismatch(
+      [](auto *config) { config->backend_variant = "different"; });
+  expect_mismatch([](auto *config) { config->diskann_build_blas_threads = 3; });
+  expect_mismatch([](auto *config) { config->diskann_cache_nodes = 129; });
+  expect_mismatch(
+      [](auto *config) { config->diskann_segmented_serving = false; });
   expect_mismatch(
       [](auto *config) { config->diskann_accelerate_build = false; });
   expect_mismatch([](auto *config) { config->diskann_shuffle_build = false; });

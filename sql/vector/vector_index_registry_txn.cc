@@ -28,9 +28,11 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "my_dbug.h"
+#include "sql/sql_class.h"
 #include "sql/vector/vector_index_diagnostics.h"
 #include "sql/vector/vector_index_registry_internal.h"
 #include "sql/vector/vector_index_service_internal.h"
@@ -43,6 +45,180 @@ namespace vector_index_registry {
 using namespace detail;
 
 namespace {
+
+bool rollback_staged_statement_locked(thd_txn_context *ctx) {
+  if (ctx == nullptr || !ctx->stmt_savepoint_active) return false;
+
+  const size_t pending_before =
+      g_index_service.pending_change_count(ctx->txn_id);
+  if (!g_index_service.rollback_to_savepoint(ctx->txn_id,
+                                             ctx->stmt_savepoint_name)) {
+    return false;
+  }
+  const size_t pending_after =
+      g_index_service.pending_change_count(ctx->txn_id);
+  if (ctx->attached_dml) {
+    if (pending_after > ctx->durable_change_log_rows.size()) return false;
+    ctx->durable_change_log_rows.resize(pending_after);
+  }
+  if (pending_before > pending_after) {
+    vector_status::subtract_pending_txn_changes(pending_before - pending_after);
+  }
+  DBUG_EXECUTE_IF("vector_registry_fail_release_stmt_savepoint_after_rollback",
+                  return false;);
+  if (!g_index_service.release_savepoint(ctx->txn_id,
+                                         ctx->stmt_savepoint_name)) {
+    return false;
+  }
+  clear_stmt_savepoint_state(ctx);
+  return true;
+}
+
+bool append_durable_change_log_rows_locked(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows) {
+  try {
+    g_change_log_rows.insert(g_change_log_rows.end(), rows.begin(), rows.end());
+  } catch (...) {
+    return false;
+  }
+  for (const auto &row : rows) {
+    if (row.sequence >= g_next_change_log_sequence) {
+      g_next_change_log_sequence = row.sequence + 1;
+    }
+  }
+  g_manifest_change_log_checkpoint = g_change_log_rows.size();
+  return true;
+}
+
+bool publish_pending_runtime(
+    uint64_t txn_id,
+    const std::vector<vector_index_metadata_store::change_log_row>
+        &durable_rows,
+    bool update_pending_status) {
+  vector_index::index_service::commit_build_plan build_plan;
+  size_t pending_change_count = 0;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+    pending_change_count = g_index_service.pending_change_count(txn_id);
+    if (pending_change_count == 0) return durable_rows.empty();
+    if (pending_change_count != durable_rows.size() ||
+        !g_index_service.snapshot_commit_build_plan(txn_id, &build_plan)) {
+      return false;
+    }
+  }
+
+  const auto commit_started = std::chrono::steady_clock::now();
+  if (!g_index_service.build_commit_backends(&build_plan)) return false;
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked() ||
+      g_index_service.pending_change_count(txn_id) != pending_change_count) {
+    return false;
+  }
+
+  commit_runtime_snapshot before_state;
+  vector_index::index_service::pending_state_snapshot before_pending_state;
+  if (!capture_runtime_commit_state_locked(&before_state) ||
+      !g_index_service.snapshot_pending_state(txn_id, &before_pending_state)) {
+    return false;
+  }
+  if (!g_index_service.apply_commit_build_plan(txn_id, &build_plan) ||
+      !append_durable_change_log_rows_locked(durable_rows)) {
+    if (!rollback_runtime_commit_state_locked(before_state) ||
+        !g_index_service.restore_pending_state(txn_id, before_pending_state)) {
+      vector_status::record_runtime_state_rollback_failure();
+    }
+    vector_status::record_txn_commit_failure();
+    return false;
+  }
+
+  if (update_pending_status) {
+    vector_status::subtract_pending_txn_changes(pending_change_count);
+  }
+  g_manifest_committed_checkpoint =
+      g_index_service.committed_entry_count();
+  refresh_committed_snapshot_rows_locked();
+  refresh_manifest_status_locked();
+  if (!evict_committed_cache_to_budget_locked()) {
+    if (!rollback_runtime_commit_state_locked(before_state) ||
+        !g_index_service.restore_pending_state(txn_id, before_pending_state)) {
+      vector_status::record_runtime_state_rollback_failure();
+    }
+    if (update_pending_status) {
+      vector_status::add_pending_txn_changes(pending_change_count);
+    }
+    vector_status::record_runtime_state_rollback_failure();
+    vector_status::record_txn_commit_failure();
+    return false;
+  }
+
+  uint64_t apply_latency_ms = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - commit_started)
+          .count());
+  if (apply_latency_ms == 0) apply_latency_ms = 1;
+  vector_status::set_apply_latency_ms(apply_latency_ms);
+  for (const auto &index_plan : build_plan.indexes) {
+    (void)g_index_service.set_last_apply_latency_ms(index_plan.index_name,
+                                                    apply_latency_ms);
+  }
+  return true;
+}
+
+bool publish_unapplied_truth_rows() {
+  std::vector<vector_index_metadata_store::change_log_row> persisted_rows;
+  if (!vector_index_truth_store::get()->load_change_log(&persisted_rows)) {
+    vector_status::record_change_log_load_failure();
+    return false;
+  }
+
+  std::vector<vector_index_metadata_store::change_log_row> unapplied_rows;
+  uint64_t replay_txn_id = 0;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+
+    std::unordered_set<uint64_t> applied_sequences;
+    applied_sequences.reserve(g_change_log_rows.size());
+    for (const auto &row : g_change_log_rows) {
+      applied_sequences.insert(row.sequence);
+    }
+    for (const auto &row : persisted_rows) {
+      if (applied_sequences.find(row.sequence) == applied_sequences.end()) {
+        unapplied_rows.push_back(row);
+      }
+    }
+    if (unapplied_rows.empty()) return true;
+
+    std::sort(unapplied_rows.begin(), unapplied_rows.end(),
+              [](const auto &lhs, const auto &rhs) {
+                return lhs.sequence < rhs.sequence;
+              });
+    replay_txn_id = allocate_txn_id();
+    if (replay_txn_id == 0) return false;
+
+    std::vector<vector_index::index_service::pending_change_snapshot> changes;
+    changes.reserve(unapplied_rows.size());
+    for (const auto &row : unapplied_rows) {
+      changes.push_back({
+          row.index_name,
+          row.op == vector_index_metadata_store::change_op::kErase,
+          row.doc_id, row.vector});
+    }
+    if (!g_index_service.restore_pending_changes(replay_txn_id, changes)) {
+      g_index_service.rollback(replay_txn_id);
+      return false;
+    }
+  }
+
+  if (publish_pending_runtime(replay_txn_id, unapplied_rows, false)) {
+    return true;
+  }
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  g_index_service.rollback(replay_txn_id);
+  return false;
+}
 
 bool init_empty_mod_tables(XA_recover_txn *txn, MEM_ROOT *mem_root) {
   if (txn == nullptr) return false;
@@ -378,7 +554,15 @@ bool commit_index_service_txn(const char *scope, uint64_t txn_id,
 
     const auto changelog_delta_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
-    append_pending_change_log_delta_locked(txn_id, pending_delta);
+    if (!append_pending_change_log_delta_locked(txn_id, pending_delta)) {
+      if (!rollback_runtime_commit_state_locked(before_state) ||
+          !g_index_service.restore_pending_state(txn_id,
+                                                 before_pending_state)) {
+        return false;
+      }
+      vector_status::record_txn_commit_failure();
+      return false;
+    }
     changelog_delta_ms =
         pending_delta_ms +
         vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
@@ -443,15 +627,21 @@ bool commit_index_service_txn(const char *scope, uint64_t txn_id,
   return true;
 }
 
-uint64_t begin_txn() { return allocate_txn_id(); }
+uint64_t begin_txn() {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) return 0;
+  return allocate_txn_id();
+}
 
 bool commit_txn(uint64_t txn_id) {
   vector_status::record_txn_commit_request();
+  if (txn_id == 0) return false;
   return commit_index_service_txn("explicit", txn_id, false);
 }
 
 bool rollback_txn(uint64_t txn_id) {
   vector_status::record_txn_rollback_request();
+  if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   const size_t pending_change_count = g_index_service.pending_change_count(txn_id);
@@ -463,18 +653,21 @@ bool rollback_txn(uint64_t txn_id) {
 }
 
 size_t pending_txn_changes(uint64_t txn_id) {
+  if (txn_id == 0) return 0;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return 0;
   return g_index_service.pending_change_count(txn_id);
 }
 
 bool savepoint_txn(uint64_t txn_id, const std::string &name) {
+  if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   return g_index_service.savepoint(txn_id, name);
 }
 
 bool rollback_to_savepoint_txn(uint64_t txn_id, const std::string &name) {
+  if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   const size_t pending_before = g_index_service.pending_change_count(txn_id);
@@ -489,6 +682,7 @@ bool rollback_to_savepoint_txn(uint64_t txn_id, const std::string &name) {
 }
 
 bool release_savepoint_txn(uint64_t txn_id, const std::string &name) {
+  if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   return g_index_service.release_savepoint(txn_id, name);
@@ -497,19 +691,27 @@ bool release_savepoint_txn(uint64_t txn_id, const std::string &name) {
 bool stage_upsert(uint64_t txn_id, const std::string &index_name, uint64_t doc_id,
                  const vector_index::vector_data &vector) {
   vector_status::record_stage_upsert_request();
+  if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   const bool ok = g_index_service.stage_upsert(txn_id, index_name, doc_id, vector);
-  if (ok) vector_status::add_pending_txn_changes(1);
+  if (ok) {
+    advance_txn_id_high_water(txn_id);
+    vector_status::add_pending_txn_changes(1);
+  }
   return ok;
 }
 
 bool stage_erase(uint64_t txn_id, const std::string &index_name, uint64_t doc_id) {
   vector_status::record_stage_erase_request();
+  if (txn_id == 0) return false;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   const bool ok = g_index_service.stage_erase(txn_id, index_name, doc_id);
-  if (ok) vector_status::add_pending_txn_changes(1);
+  if (ok) {
+    advance_txn_id_high_water(txn_id);
+    vector_status::add_pending_txn_changes(1);
+  }
   return ok;
 }
 
@@ -521,6 +723,8 @@ bool stage_upsert_for_thd_txn(uint64_t thd_id, uint64_t statement_id,
   if (!ensure_metadata_loaded_locked()) return false;
 
   thd_txn_context *ctx = get_or_create_thd_txn_context_locked(thd_id);
+  if (ctx == nullptr) return false;
+  if (ctx->attached_dml) return false;
   if (!ensure_stmt_savepoint_locked(ctx, statement_id)) return false;
 
   const bool ok =
@@ -536,11 +740,90 @@ bool stage_erase_for_thd_txn(uint64_t thd_id, uint64_t statement_id,
   if (!ensure_metadata_loaded_locked()) return false;
 
   thd_txn_context *ctx = get_or_create_thd_txn_context_locked(thd_id);
+  if (ctx == nullptr) return false;
+  if (ctx->attached_dml) return false;
   if (!ensure_stmt_savepoint_locked(ctx, statement_id)) return false;
 
   const bool ok = g_index_service.stage_erase(ctx->txn_id, index_name, doc_id);
   if (ok) vector_status::add_pending_txn_changes(1);
   return ok;
+}
+
+bool stage_changes_for_thd_txn(
+    THD *thd, uint64_t statement_id,
+    const std::vector<vector_index::index_service::pending_change_snapshot>
+        &changes) {
+  if (thd == nullptr || changes.empty()) return false;
+
+  const uint64_t thd_id = static_cast<uint64_t>(thd->thread_id());
+  uint64_t txn_id = 0;
+  std::vector<vector_index_metadata_store::change_log_row> durable_rows;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) return false;
+
+    thd_txn_context *ctx = get_or_create_thd_txn_context_locked(thd_id);
+    if (ctx == nullptr) return false;
+    if (!ctx->attached_dml &&
+        g_index_service.pending_change_count(ctx->txn_id) != 0) {
+      return false;
+    }
+    if (!ensure_stmt_savepoint_locked(ctx, statement_id)) return false;
+    ctx->attached_dml = true;
+    txn_id = ctx->txn_id;
+
+    for (const auto &change : changes) {
+      if (change.erase) {
+        vector_status::record_stage_erase_request();
+      } else {
+        vector_status::record_stage_upsert_request();
+      }
+      const bool staged =
+          change.erase
+              ? g_index_service.stage_erase(txn_id, change.index_name,
+                                            change.doc_id)
+              : g_index_service.stage_upsert(txn_id, change.index_name,
+                                             change.doc_id, change.vector);
+      if (!staged) {
+        (void)rollback_staged_statement_locked(ctx);
+        return false;
+      }
+      vector_status::add_pending_txn_changes(1);
+    }
+
+    if (!allocate_pending_change_log_delta_locked(txn_id, changes,
+                                                  &durable_rows)) {
+      (void)rollback_staged_statement_locked(ctx);
+      return false;
+    }
+  }
+
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  if (!truth_store->supports_attached_dml() ||
+      !truth_store->apply_attached_dml(thd, durable_rows)) {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    auto it = g_thd_txn_contexts.find(thd_id);
+    if (it != g_thd_txn_contexts.end() && it->second.txn_id == txn_id) {
+      (void)rollback_staged_statement_locked(&it->second);
+    }
+    return false;
+  }
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  auto it = g_thd_txn_contexts.find(thd_id);
+  if (it == g_thd_txn_contexts.end() || it->second.txn_id != txn_id) {
+    return false;
+  }
+  try {
+    it->second.durable_change_log_rows.insert(
+        it->second.durable_change_log_rows.end(), durable_rows.begin(),
+        durable_rows.end());
+  } catch (...) {
+    (void)rollback_staged_statement_locked(&it->second);
+    return false;
+  }
+  return true;
 }
 
 bool commit_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id) {
@@ -573,22 +856,62 @@ bool rollback_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id) {
     return true;
   }
 
-  const size_t pending_before = g_index_service.pending_change_count(ctx.txn_id);
-  if (!g_index_service.rollback_to_savepoint(ctx.txn_id, ctx.stmt_savepoint_name)) {
-    return false;
-  }
-  const size_t pending_after = g_index_service.pending_change_count(ctx.txn_id);
-  if (pending_before > pending_after) {
-    vector_status::subtract_pending_txn_changes(pending_before - pending_after);
+  return rollback_staged_statement_locked(&ctx);
+}
+
+bool publish_thd_txn(uint64_t thd_id) {
+  if (vector_index_truth_store::internal_sql_active()) return true;
+
+  uint64_t txn_id = 0;
+  bool has_context = false;
+  std::vector<vector_index_metadata_store::change_log_row> durable_rows;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    auto it = g_thd_txn_contexts.find(thd_id);
+    if (it != g_thd_txn_contexts.end()) {
+      if (!ensure_metadata_loaded_locked()) return false;
+
+      has_context = true;
+      thd_txn_context &ctx = it->second;
+      if (ctx.stmt_savepoint_active) {
+        if (!g_index_service.release_savepoint(ctx.txn_id,
+                                               ctx.stmt_savepoint_name)) {
+          return false;
+        }
+        clear_stmt_savepoint_state(&ctx);
+      }
+      txn_id = ctx.txn_id;
+      durable_rows = ctx.durable_change_log_rows;
+    }
   }
 
-  DBUG_EXECUTE_IF("vector_registry_fail_release_stmt_savepoint_after_rollback",
-                  return false;);
-  if (!g_index_service.release_savepoint(ctx.txn_id, ctx.stmt_savepoint_name)) {
-    return false;
-  }
+  if (!has_context) return publish_unapplied_truth_rows();
 
-  clear_stmt_savepoint_state(&ctx);
+  const bool published = publish_pending_runtime(txn_id, durable_rows, true);
+  if (!published) return false;
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  auto it = g_thd_txn_contexts.find(thd_id);
+  if (it != g_thd_txn_contexts.end() && it->second.txn_id == txn_id) {
+    g_thd_txn_contexts.erase(it);
+  }
+  return true;
+}
+
+bool detach_thd_txn_for_prepare(uint64_t thd_id) {
+  if (vector_index_truth_store::internal_sql_active()) return true;
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  auto it = g_thd_txn_contexts.find(thd_id);
+  if (it == g_thd_txn_contexts.end()) return true;
+  if (!ensure_metadata_loaded_locked()) return false;
+
+  const size_t pending_change_count =
+      g_index_service.pending_change_count(it->second.txn_id);
+  g_index_service.rollback(it->second.txn_id);
+  if (pending_change_count > 0) {
+    vector_status::subtract_pending_txn_changes(pending_change_count);
+  }
+  g_thd_txn_contexts.erase(it);
   return true;
 }
 
@@ -639,6 +962,7 @@ xa_status_code detail::apply_prepared_xid_locked(const XID &xid, bool commit,
         row.doc_id, row.vector});
   }
   if (replay_txn_id == 0) replay_txn_id = allocate_txn_id();
+  if (replay_txn_id == 0) return XAER_RMERR;
   DBUG_EXECUTE_IF("vector_registry_fail_restore_pending_for_prepared_replay",
                   return XAER_RMERR;);
   if (!g_index_service.restore_pending_changes(replay_txn_id, changes)) {
@@ -662,7 +986,11 @@ xa_status_code detail::apply_prepared_xid_locked(const XID &xid, bool commit,
   }
 
   const size_t change_log_size_before = g_change_log_rows.size();
-  append_pending_change_log_delta_locked(replay_txn_id, pending_delta);
+  if (!append_pending_change_log_delta_locked(replay_txn_id, pending_delta)) {
+    rollback_runtime_state_locked(metadata_before, committed_before,
+                                  change_log_before, lagging_indexes_before);
+    return XAER_RMERR;
+  }
   const std::vector<vector_index_metadata_store::change_log_row>
       commit_delta_rows(g_change_log_rows.begin() + change_log_size_before,
                         g_change_log_rows.end());
@@ -842,7 +1170,7 @@ int recover_prepared_xids(XA_recover_txn *txn_list, uint len,
   for (const auto &row : g_prepared_change_rows) {
     if (count >= len) break;
     XID xid;
-    xid_from_prepared_row(row, &xid);
+    if (!xid_from_prepared_row(row, &xid)) return 0;
 
     bool seen = false;
     for (size_t i = 0; i < count; ++i) {
@@ -868,7 +1196,7 @@ int recover_prepared_in_tc(Xa_state_list &xa_list) {
     if (!row.prepared_in_tc) continue;
 
     XID xid;
-    xid_from_prepared_row(row, &xid);
+    if (!xid_from_prepared_row(row, &xid)) return 1;
     if (xid.get_my_xid() != 0) continue;
     (void)xa_list.add(xid, enum_ha_recover_xa_state::PREPARED_IN_TC);
   }
@@ -898,6 +1226,7 @@ bool savepoint_thd_txn(uint64_t thd_id, const std::string &name) {
   if (!ensure_metadata_loaded_locked()) return false;
 
   thd_txn_context *ctx = get_or_create_thd_txn_context_locked(thd_id);
+  if (ctx == nullptr) return false;
   return g_index_service.savepoint(ctx->txn_id,
                                    make_user_savepoint_name(name));
 }
@@ -918,6 +1247,10 @@ bool rollback_to_savepoint_thd_txn(uint64_t thd_id, const std::string &name) {
     return false;
   }
   const size_t pending_after = g_index_service.pending_change_count(ctx.txn_id);
+  if (ctx.attached_dml) {
+    if (pending_after > ctx.durable_change_log_rows.size()) return false;
+    ctx.durable_change_log_rows.resize(pending_after);
+  }
   if (pending_before > pending_after) {
     vector_status::subtract_pending_txn_changes(pending_before - pending_after);
   }
@@ -955,6 +1288,7 @@ bool upsert(const std::string &index_name, uint64_t doc_id,
   }
 
   const uint64_t txn_id = allocate_txn_id();
+  if (txn_id == 0) return false;
   if (!stage_upsert(txn_id, index_name, doc_id, vector)) return false;
   if (!commit_txn(txn_id)) {
     rollback_txn(txn_id);
@@ -979,6 +1313,7 @@ bool erase(const std::string &index_name, uint64_t doc_id) {
   }
 
   const uint64_t txn_id = allocate_txn_id();
+  if (txn_id == 0) return false;
   if (!stage_erase(txn_id, index_name, doc_id)) return false;
   if (!commit_txn(txn_id)) {
     rollback_txn(txn_id);

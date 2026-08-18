@@ -16,18 +16,47 @@ INSERT INTO t_vec_xa_crash VALUES (1, VEC_FROMTEXT('[1,1]'));
 XA END 'vec_xa_crash';
 XA PREPARE 'vec_xa_crash';
 
-CALL mtr.add_suppression("Found 2 prepared XA transactions");
+CALL mtr.add_suppression("Found 1 prepared XA transactions");
 
 --source include/kill_and_restart_mysqld.inc
 
 XA RECOVER;
 SELECT COUNT(*) FROM t_vec_xa_crash WHERE id = 1;
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 8);
 
 XA COMMIT 'vec_xa_crash';
 SELECT id, VEC_TOTEXT(v) FROM t_vec_xa_crash ORDER BY id;
 SELECT JSON_CONTAINS(
   VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 8), CAST(1 AS JSON));
 XA RECOVER;
+
+INSERT INTO t_vec_xa_crash VALUES (2, VEC_FROMTEXT('[4,4]'));
+
+XA START 'vec_xa_update';
+UPDATE t_vec_xa_crash SET v = VEC_FROMTEXT('[9,9]') WHERE id = 1;
+XA END 'vec_xa_update';
+XA PREPARE 'vec_xa_update';
+
+--source include/kill_and_restart_mysqld.inc
+
+SELECT id, VEC_TOTEXT(v) FROM t_vec_xa_crash ORDER BY id;
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[9,9]', 1);
+XA ROLLBACK 'vec_xa_update';
+SELECT id, VEC_TOTEXT(v) FROM t_vec_xa_crash ORDER BY id;
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[9,9]', 1);
+
+XA START 'vec_xa_delete';
+DELETE FROM t_vec_xa_crash WHERE id = 1;
+XA END 'vec_xa_delete';
+XA PREPARE 'vec_xa_delete';
+
+--source include/kill_and_restart_mysqld.inc
+
+SELECT COUNT(*) FROM t_vec_xa_crash WHERE id = 1;
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 1);
+XA COMMIT 'vec_xa_delete';
+SELECT COUNT(*) FROM t_vec_xa_crash WHERE id = 1;
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 1);
 
 DROP VECTOR INDEX ON t_vec_xa_crash(v);
 DROP TABLE t_vec_xa_crash;

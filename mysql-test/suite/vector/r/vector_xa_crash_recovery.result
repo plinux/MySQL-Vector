@@ -13,7 +13,7 @@ XA START 'vec_xa_crash';
 INSERT INTO t_vec_xa_crash VALUES (1, VEC_FROMTEXT('[1,1]'));
 XA END 'vec_xa_crash';
 XA PREPARE 'vec_xa_crash';
-CALL mtr.add_suppression("Found 2 prepared XA transactions");
+CALL mtr.add_suppression("Found 1 prepared XA transactions");
 # Kill and restart
 XA RECOVER;
 formatID	gtrid_length	bqual_length	data
@@ -21,6 +21,9 @@ formatID	gtrid_length	bqual_length	data
 SELECT COUNT(*) FROM t_vec_xa_crash WHERE id = 1;
 COUNT(*)
 0
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 8);
+VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 8)
+[]
 XA COMMIT 'vec_xa_crash';
 SELECT id, VEC_TOTEXT(v) FROM t_vec_xa_crash ORDER BY id;
 id	VEC_TOTEXT(v)
@@ -32,5 +35,44 @@ VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 8), CAST(1 AS JSON))
 1
 XA RECOVER;
 formatID	gtrid_length	bqual_length	data
+INSERT INTO t_vec_xa_crash VALUES (2, VEC_FROMTEXT('[4,4]'));
+XA START 'vec_xa_update';
+UPDATE t_vec_xa_crash SET v = VEC_FROMTEXT('[9,9]') WHERE id = 1;
+XA END 'vec_xa_update';
+XA PREPARE 'vec_xa_update';
+# Kill and restart
+SELECT id, VEC_TOTEXT(v) FROM t_vec_xa_crash ORDER BY id;
+id	VEC_TOTEXT(v)
+1	[1,1]
+2	[4,4]
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[9,9]', 1);
+VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[9,9]', 1)
+[2]
+XA ROLLBACK 'vec_xa_update';
+SELECT id, VEC_TOTEXT(v) FROM t_vec_xa_crash ORDER BY id;
+id	VEC_TOTEXT(v)
+1	[1,1]
+2	[4,4]
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[9,9]', 1);
+VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[9,9]', 1)
+[2]
+XA START 'vec_xa_delete';
+DELETE FROM t_vec_xa_crash WHERE id = 1;
+XA END 'vec_xa_delete';
+XA PREPARE 'vec_xa_delete';
+# Kill and restart
+SELECT COUNT(*) FROM t_vec_xa_crash WHERE id = 1;
+COUNT(*)
+1
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 1);
+VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 1)
+[1]
+XA COMMIT 'vec_xa_delete';
+SELECT COUNT(*) FROM t_vec_xa_crash WHERE id = 1;
+COUNT(*)
+0
+SELECT VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 1);
+VEC_INDEX_SEARCH('test.t_vec_xa_crash.v', '[1,1]', 1)
+[2]
 DROP VECTOR INDEX ON t_vec_xa_crash(v);
 DROP TABLE t_vec_xa_crash;

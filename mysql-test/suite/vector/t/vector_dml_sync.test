@@ -24,6 +24,7 @@ INSERT INTO t_dml_sync VALUES (2, VEC_FROMTEXT('[2,2]'));
 ROLLBACK;
 SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[2,2]', 1);
 
+INSERT INTO t_dml_sync VALUES (4, VEC_FROMTEXT('[4,4]'));
 START TRANSACTION;
 INSERT INTO t_dml_sync VALUES (3, VEC_FROMTEXT('[3,3]'));
 SAVEPOINT sp_vec;
@@ -31,6 +32,7 @@ UPDATE t_dml_sync SET v=VEC_FROMTEXT('[9,9]') WHERE id=3;
 ROLLBACK TO SAVEPOINT sp_vec;
 COMMIT;
 SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[3,3]', 1);
+DELETE FROM t_dml_sync WHERE id=4;
 
 UPDATE t_dml_sync SET v=VEC_FROMTEXT('[4,4]') WHERE id=1;
 SELECT VEC_INDEX_SEARCH('test.t_dml_sync.v', '[4,4]', 1);

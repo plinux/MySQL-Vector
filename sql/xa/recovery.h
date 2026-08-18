@@ -30,9 +30,6 @@
 
 struct xarecover_st {
   int len, found_foreign_xids, found_my_xids;
-#ifdef HAVE_VECTOR_INDEX
-  int found_my_xids_in_engines;
-#endif
   XA_recover_txn *list;
   Xid_commit_list const *commit_list;
   Xa_state_list *xa_list;

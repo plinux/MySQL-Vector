@@ -26,11 +26,14 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstring>
 #include <filesystem>
+#include <iterator>
+#include <limits>
+#include <map>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -48,6 +51,7 @@
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_mapped_search.h"
 #include "sql/vector/vector_status.h"
+#include "sql/vector/vector_trx_participant.h"
 
 namespace vector_index_registry::detail {
 
@@ -491,29 +495,48 @@ bool compact_change_log_locked() {
   return true;
 }
 
+bool prepared_rows_are_valid(
+    const std::vector<vector_index_metadata_store::prepared_change_row> &rows) {
+  using xid_identity = std::tuple<int64_t, int64_t, int64_t, std::string>;
+  try {
+    std::map<xid_identity, std::pair<uint64_t, bool>> xid_to_txn;
+    std::map<uint64_t, xid_identity> txn_to_xid;
+    for (const auto &row : rows) {
+      if (row.txn_id == 0 ||
+          !vector_index_metadata_store::valid_prepared_xid(row)) {
+        return false;
+      }
+
+      const xid_identity identity{row.format_id, row.gtrid_length,
+                                  row.bqual_length, row.xid_data};
+      const auto [xid_it, xid_inserted] = xid_to_txn.emplace(
+          identity, std::make_pair(row.txn_id, row.prepared_in_tc));
+      if (!xid_inserted && (xid_it->second.first != row.txn_id ||
+                            xid_it->second.second != row.prepared_in_tc)) {
+        return false;
+      }
+
+      const auto [txn_it, txn_inserted] =
+          txn_to_xid.emplace(row.txn_id, identity);
+      if (!txn_inserted && txn_it->second != identity) return false;
+    }
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 bool xid_matches_row(
     const XID &xid,
     const vector_index_metadata_store::prepared_change_row &row) {
-  return static_cast<int64_t>(xid.get_format_id()) == row.format_id &&
-         static_cast<int64_t>(xid.get_gtrid_length()) == row.gtrid_length &&
-         static_cast<int64_t>(xid.get_bqual_length()) == row.bqual_length &&
-         row.xid_data.size() == static_cast<size_t>(xid.get_gtrid_length() +
-                                                    xid.get_bqual_length()) &&
-         std::memcmp(row.xid_data.data(), xid.get_data(),
-                     row.xid_data.size()) == 0;
+  return vector_index_metadata_store::prepared_xid_matches(row, xid);
 }
 
-void xid_from_prepared_row(
+bool xid_from_prepared_row(
     const vector_index_metadata_store::prepared_change_row &row, XID *xid) {
-  xid->reset();
-  xid->set_format_id(static_cast<long>(row.format_id));
-  xid->set_gtrid_length(static_cast<long>(row.gtrid_length));
-  xid->set_bqual_length(static_cast<long>(row.bqual_length));
-  if (!row.xid_data.empty()) {
-    xid->set_data(row.xid_data.data(), static_cast<long>(row.xid_data.size()));
-  }
+  return vector_index_metadata_store::get_prepared_xid(row, xid);
 }
 
 bool find_prepared_rows_for_xid_locked(
@@ -571,7 +594,30 @@ bool persist_registry_state_locked();
 bool persist_prepared_locked();
 
 uint64_t allocate_txn_id() {
-  return g_next_txn_id.fetch_add(1, std::memory_order_relaxed);
+  uint64_t candidate = g_next_txn_id.load(std::memory_order_relaxed);
+  while (candidate != 0) {
+    const uint64_t next =
+        candidate == std::numeric_limits<uint64_t>::max() ? 0 : candidate + 1;
+    if (g_next_txn_id.compare_exchange_weak(
+            candidate, next, std::memory_order_relaxed,
+            std::memory_order_relaxed)) {
+      return candidate;
+    }
+  }
+  return 0;
+}
+
+void advance_txn_id_high_water(uint64_t txn_id) {
+  if (txn_id == 0) return;
+
+  const uint64_t next =
+      txn_id == std::numeric_limits<uint64_t>::max() ? 0 : txn_id + 1;
+  uint64_t current = g_next_txn_id.load(std::memory_order_relaxed);
+  while (current != 0 && current <= txn_id &&
+         !g_next_txn_id.compare_exchange_weak(
+             current, next, std::memory_order_relaxed,
+             std::memory_order_relaxed)) {
+  }
 }
 
 std::string make_stmt_savepoint_name(uint64_t statement_id) {
@@ -1137,15 +1183,15 @@ bool snapshot_prepared_rows_for_txn_locked(
   if (!g_index_service.snapshot_pending_changes(txn_id, &pending_changes))
     return false;
 
+  vector_index_metadata_store::prepared_change_row xid_identity;
+  if (txn_id == 0 ||
+      !vector_index_metadata_store::set_prepared_xid(xid, &xid_identity)) {
+    return false;
+  }
+
   rows->reserve(pending_changes.size());
   for (const auto &change : pending_changes) {
-    vector_index_metadata_store::prepared_change_row row;
-    row.format_id = xid.get_format_id();
-    row.gtrid_length = xid.get_gtrid_length();
-    row.bqual_length = xid.get_bqual_length();
-    row.xid_data.assign(
-        xid.get_data(),
-        xid.get_data() + xid.get_gtrid_length() + xid.get_bqual_length());
+    vector_index_metadata_store::prepared_change_row row = xid_identity;
     row.prepared_in_tc = false;
     row.txn_id = txn_id;
     row.op = change.erase ? vector_index_metadata_store::change_op::kErase
@@ -1251,32 +1297,69 @@ void refresh_manifest_status_locked() {
       g_manifest_change_log_checkpoint);
 }
 
-void append_pending_change_log_delta_locked(
+bool allocate_pending_change_log_delta_locked(
+    uint64_t txn_id,
+    const std::vector<vector_index::index_service::pending_change_snapshot>
+        &changes,
+    std::vector<vector_index_metadata_store::change_log_row> *rows) {
+  if (rows == nullptr) return false;
+  rows->clear();
+  if (changes.empty()) return true;
+  const uint64_t max_sequence = std::numeric_limits<uint64_t>::max();
+  if (changes.size() > max_sequence - g_next_change_log_sequence) {
+    return false;
+  }
+
+  try {
+    std::vector<vector_index::index_service::pending_change_snapshot> ordered(
+        changes);
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto &lhs, const auto &rhs) {
+                if (lhs.index_name != rhs.index_name)
+                  return lhs.index_name < rhs.index_name;
+                if (lhs.doc_id != rhs.doc_id) return lhs.doc_id < rhs.doc_id;
+                return lhs.erase < rhs.erase;
+              });
+
+    std::vector<vector_index_metadata_store::change_log_row> allocated_rows;
+    allocated_rows.reserve(ordered.size());
+    uint64_t sequence = g_next_change_log_sequence;
+    for (const auto &change : ordered) {
+      vector_index_metadata_store::change_log_row row;
+      row.sequence = sequence++;
+      row.txn_id = txn_id;
+      row.op = change.erase ? vector_index_metadata_store::change_op::kErase
+                            : vector_index_metadata_store::change_op::kUpsert;
+      row.index_name = change.index_name;
+      row.doc_id = change.doc_id;
+      row.vector = change.vector;
+      allocated_rows.push_back(std::move(row));
+    }
+    *rows = std::move(allocated_rows);
+    g_next_change_log_sequence = sequence;
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
+bool append_pending_change_log_delta_locked(
     uint64_t txn_id,
     const std::vector<vector_index::index_service::pending_change_snapshot>
         &changes) {
-  std::vector<vector_index::index_service::pending_change_snapshot> ordered(
-      changes);
-  std::sort(ordered.begin(), ordered.end(),
-            [](const auto &lhs, const auto &rhs) {
-              if (lhs.index_name != rhs.index_name)
-                return lhs.index_name < rhs.index_name;
-              if (lhs.doc_id != rhs.doc_id) return lhs.doc_id < rhs.doc_id;
-              return lhs.erase < rhs.erase;
-            });
-
-  for (const auto &change : ordered) {
-    vector_index_metadata_store::change_log_row row;
-    row.sequence = g_next_change_log_sequence++;
-    row.txn_id = txn_id;
-    row.op = change.erase ? vector_index_metadata_store::change_op::kErase
-                          : vector_index_metadata_store::change_op::kUpsert;
-    row.index_name = change.index_name;
-    row.doc_id = change.doc_id;
-    row.vector = change.vector;
-    g_change_log_rows.push_back(std::move(row));
+  std::vector<vector_index_metadata_store::change_log_row> delta;
+  if (!allocate_pending_change_log_delta_locked(txn_id, changes, &delta)) {
+    return false;
+  }
+  try {
+    g_change_log_rows.insert(g_change_log_rows.end(),
+                             std::make_move_iterator(delta.begin()),
+                             std::make_move_iterator(delta.end()));
+  } catch (...) {
+    return false;
   }
   g_manifest_change_log_checkpoint = g_change_log_rows.size();
+  return true;
 }
 
 void prune_change_log_for_index_locked(const std::string &index_name) {
@@ -1355,6 +1438,10 @@ bool persist_index_config_manifest_locked(
 }
 
 bool ensure_metadata_loaded_locked() {
+  // A pre-commit search can load runtime before a detached XA is resolved.
+  // Keep the after-commit observer available so that resolution catches up the
+  // durable outbox even when this process has no original THD transaction state.
+  (void)vector_trx_participant::ensure_observer_registered();
   if (g_metadata_loaded) return true;
 
   vector_index_truth_store::truth_store *truth_store =
@@ -1454,9 +1541,19 @@ bool ensure_metadata_loaded_locked() {
     vector_status::record_metadata_load_failure();
     if (!truth_store->quarantine_prepared()) return false;
     prepared_rows.clear();
+  } else if (!prepared_rows_are_valid(prepared_rows)) {
+    vector_status::record_metadata_load_failure();
+    if (!truth_store->quarantine_prepared()) return false;
+    prepared_rows.clear();
   }
   remove_prepared_rows_for_indexes(incomplete_create_indexes, &prepared_rows);
   g_prepared_change_rows = std::move(prepared_rows);
+  for (const auto &row : g_change_log_rows) {
+    advance_txn_id_high_water(row.txn_id);
+  }
+  for (const auto &row : g_prepared_change_rows) {
+    advance_txn_id_high_water(row.txn_id);
+  }
 
   std::vector<vector_index_metadata_store::segment_task_row> segment_task_rows;
   if (!truth_store->load_segment_tasks(&segment_task_rows)) {
@@ -1602,6 +1699,11 @@ bool persist_segment_tasks_locked() {
 }
 
 bool persist_manifest_locked() {
+  if (g_manifest_version >= std::numeric_limits<uint64_t>::max() - 1) {
+    vector_status::record_metadata_persist_failure();
+    vector_status::record_manifest_persist_failure();
+    return false;
+  }
   vector_index_metadata_store::manifest_row row;
   row.state = "ready";
   row.version = g_manifest_version + 1;
@@ -1864,9 +1966,14 @@ bool persist_commit_artifacts_locked(
 }
 
 thd_txn_context *get_or_create_thd_txn_context_locked(uint64_t thd_id) {
-  thd_txn_context &ctx = g_thd_txn_contexts[thd_id];
-  if (ctx.txn_id == 0) ctx.txn_id = allocate_txn_id();
-  return &ctx;
+  const auto [it, inserted] = g_thd_txn_contexts.try_emplace(thd_id);
+  thd_txn_context &ctx = it->second;
+  if (ctx.txn_id != 0) return &ctx;
+
+  ctx.txn_id = allocate_txn_id();
+  if (ctx.txn_id != 0) return &ctx;
+  if (inserted) g_thd_txn_contexts.erase(it);
+  return nullptr;
 }
 
 bool ensure_stmt_savepoint_locked(thd_txn_context *ctx, uint64_t statement_id) {
@@ -1954,8 +2061,9 @@ bool restore_runtime_state_locked(
     const std::vector<vector_index_metadata_store::change_log_row>
         &change_log_rows,
     const std::vector<std::string> &lagging_index_names) {
+  const uint64_t next_change_log_sequence = g_next_change_log_sequence;
   g_change_log_rows = change_log_rows;
-  g_next_change_log_sequence = 1;
+  g_next_change_log_sequence = next_change_log_sequence;
   for (const auto &row : g_change_log_rows) {
     if (row.sequence >= g_next_change_log_sequence) {
       g_next_change_log_sequence = row.sequence + 1;

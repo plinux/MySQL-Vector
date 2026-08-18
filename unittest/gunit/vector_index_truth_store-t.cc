@@ -160,6 +160,8 @@ class NullNameTruthStore final : public dummy_truth_store {
 TEST(VectorIndexTruthStoreTest, TruthStoreDefaultsCoverNoopAndDeltaFallbacks) {
   dummy_truth_store store;
   EXPECT_FALSE(store.supports_delta_persist());
+  EXPECT_FALSE(store.supports_attached_dml());
+  EXPECT_FALSE(store.apply_attached_dml(nullptr, {}));
   EXPECT_TRUE(store.begin_persist());
   EXPECT_TRUE(store.commit_persist());
   store.rollback_persist();
@@ -592,6 +594,18 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
         vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
       &stored_prepared));
   EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7, 65, 0, std::string(65, 'g'), false, 9,
+        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7, 0, 65, std::string(65, 'b'), false, 9,
+        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
+      {{7, 1, 0, "g", false, 0,
+        vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
+      &stored_prepared));
+  EXPECT_FALSE(detail::to_innodb_prepared_rows_impl(
       {{7, 1, 1, "g", false, 9,
         vector_index_metadata_store::change_op::kUpsert, "idx", 1, {1.0F}}},
       &stored_prepared));
@@ -628,6 +642,17 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
       &prepared_rows));
   EXPECT_FALSE(detail::from_innodb_prepared_rows_impl(
       {{9, 1, 7, 1, overflow, "gb", 0, 1, "idx", 1, 1, fp32_payload(1)}},
+      &prepared_rows));
+  EXPECT_FALSE(detail::from_innodb_prepared_rows_impl(
+      {{9, 1, 7, 65, 0, std::string(65, 'g'), 0, 1, "idx", 1, 1,
+        fp32_payload(1)}},
+      &prepared_rows));
+  EXPECT_FALSE(detail::from_innodb_prepared_rows_impl(
+      {{9, 1, 7, 0, 65, std::string(65, 'b'), 0, 1, "idx", 1, 1,
+        fp32_payload(1)}},
+      &prepared_rows));
+  EXPECT_FALSE(detail::from_innodb_prepared_rows_impl(
+      {{0, 1, 7, 1, 0, "g", 0, 1, "idx", 1, 1, fp32_payload(1)}},
       &prepared_rows));
   EXPECT_FALSE(detail::from_innodb_prepared_rows_impl(
       {{9, 1, 7, 1, 1, "g", 0, 1, "idx", 1, 1, fp32_payload(1)}},

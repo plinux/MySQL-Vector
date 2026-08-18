@@ -1,0 +1,28 @@
+#
+# WL#Vector: attached truth failure rolls back the user row
+#
+DROP TABLE IF EXISTS t_dml_attached_failure;
+Warnings:
+Note	1051	Unknown table 'test.t_dml_attached_failure'
+CREATE TABLE t_dml_attached_failure (
+id INT PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_dml_attached_failure(v) WITH (2);
+INSERT INTO t_dml_attached_failure VALUES (1, VEC_FROMTEXT('[1,1]'));
+ERROR HY000: Internal error: Failed to stage vector truth changes
+SELECT COUNT(*) FROM t_dml_attached_failure;
+COUNT(*)
+0
+SELECT VEC_INDEX_SEARCH('test.t_dml_attached_failure.v', '[1,1]', 1);
+VEC_INDEX_SEARCH('test.t_dml_attached_failure.v', '[1,1]', 1)
+[]
+INSERT INTO t_dml_attached_failure VALUES (1, VEC_FROMTEXT('[1,1]'));
+SELECT COUNT(*) FROM t_dml_attached_failure;
+COUNT(*)
+1
+SELECT VEC_INDEX_SEARCH('test.t_dml_attached_failure.v', '[1,1]', 1);
+VEC_INDEX_SEARCH('test.t_dml_attached_failure.v', '[1,1]', 1)
+[1]
+DROP VECTOR INDEX ON t_dml_attached_failure(v);
+DROP TABLE t_dml_attached_failure;

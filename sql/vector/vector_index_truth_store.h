@@ -65,6 +65,28 @@ class truth_store {
   virtual bool supports_delta_persist() const { return false; }
 
   /**
+    Whether mapped DML can write truth rows through the caller's InnoDB trx.
+  */
+  virtual bool supports_attached_dml() const { return false; }
+
+  /**
+    Apply committed projection and changelog rows in the caller's transaction.
+
+    Backends that do not share the user's InnoDB transaction must keep the
+    default failure result. The SQL DML path must not fall back to a separate
+    persistence transaction.
+
+    @param thd current user thread
+    @param rows exact durable rows allocated for this statement
+    @return true when both projection and changelog writes were staged
+  */
+  virtual bool apply_attached_dml(
+      THD *,
+      const std::vector<vector_index_metadata_store::change_log_row> &) {
+    return false;
+  }
+
+  /**
     Begin a grouped persist operation across truth-store objects.
 
     File-based stores may keep the default no-op behavior. Transactional

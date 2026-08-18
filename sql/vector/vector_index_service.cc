@@ -577,6 +577,11 @@ bool vector_entry_store::find_committed_entry(const std::string &index_name,
   return true;
 }
 
+bool vector_entry_store::prepare_index_for_mutation(
+    const std::string &index_name) {
+  return ensure_index_cached(index_name);
+}
+
 bool vector_entry_store::for_each_committed_entry(
     const std::string &index_name, const entry_visitor &visitor) const {
   if (!visitor) return false;
@@ -2655,6 +2660,39 @@ std::string standalone_entry_store::raw_docid_path(
 
 namespace detail {
 
+bool index_configs_equal(const index_service::index_config &lhs,
+                         const index_service::index_config &rhs) {
+  return lhs.dimension == rhs.dimension && lhs.metric == rhs.metric &&
+         lhs.mode == rhs.mode && lhs.provider == rhs.provider &&
+         lhs.backend_variant == rhs.backend_variant &&
+         lhs.search_ef == rhs.search_ef && lhs.hnsw_m == rhs.hnsw_m &&
+         lhs.hnsw_ef_construction == rhs.hnsw_ef_construction &&
+         lhs.hnsw_build_threads == rhs.hnsw_build_threads &&
+         lhs.faiss_nlist == rhs.faiss_nlist &&
+         lhs.faiss_nprobe == rhs.faiss_nprobe &&
+         lhs.faiss_pq_m == rhs.faiss_pq_m &&
+         lhs.faiss_pq_bits == rhs.faiss_pq_bits &&
+         lhs.faiss_build_threads == rhs.faiss_build_threads &&
+         lhs.diskann_max_degree == rhs.diskann_max_degree &&
+         lhs.diskann_build_complexity == rhs.diskann_build_complexity &&
+         lhs.diskann_build_threads == rhs.diskann_build_threads &&
+         lhs.diskann_build_blas_threads == rhs.diskann_build_blas_threads &&
+         lhs.diskann_build_mode_value == rhs.diskann_build_mode_value &&
+         lhs.diskann_search_complexity == rhs.diskann_search_complexity &&
+         lhs.diskann_search_beamwidth == rhs.diskann_search_beamwidth &&
+         lhs.diskann_pq_code_budget_size ==
+             rhs.diskann_pq_code_budget_size &&
+         lhs.diskann_disk_pq_dims == rhs.diskann_disk_pq_dims &&
+         lhs.diskann_cache_nodes == rhs.diskann_cache_nodes &&
+         lhs.diskann_accelerate_build == rhs.diskann_accelerate_build &&
+         lhs.diskann_shuffle_build == rhs.diskann_shuffle_build &&
+         lhs.diskann_use_bfs_cache == rhs.diskann_use_bfs_cache &&
+         lhs.diskann_build_mode_specified ==
+             rhs.diskann_build_mode_specified &&
+         lhs.diskann_segmented_serving == rhs.diskann_segmented_serving &&
+         lhs.consistency_mode == rhs.consistency_mode;
+}
+
 diskann_build_mode effective_diskann_build_mode(
     const vector_index::index_service::index_config &config) {
   if (config.provider != backend_provider::kDiskAnn ||
@@ -2796,6 +2834,7 @@ namespace {
 
 using detail::build_backend_from_config;
 using detail::all_true;
+using detail::index_configs_equal;
 
 constexpr const char *LIFECYCLE_READY = "ready";
 constexpr const char *LIFECYCLE_BULK_LOADING = "bulk_loading";
@@ -2944,39 +2983,6 @@ bool has_any_pending_changes(const pending_changes_map &pending_changes) {
     if (!txn_changes.second.empty()) return true;
   }
   return false;
-}
-
-bool index_configs_equal(const index_service::index_config &lhs,
-                         const index_service::index_config &rhs) {
-  return lhs.dimension == rhs.dimension && lhs.metric == rhs.metric &&
-         lhs.mode == rhs.mode && lhs.provider == rhs.provider &&
-         lhs.backend_variant == rhs.backend_variant &&
-         lhs.search_ef == rhs.search_ef && lhs.hnsw_m == rhs.hnsw_m &&
-         lhs.hnsw_ef_construction == rhs.hnsw_ef_construction &&
-         lhs.hnsw_build_threads == rhs.hnsw_build_threads &&
-         lhs.faiss_nlist == rhs.faiss_nlist &&
-         lhs.faiss_nprobe == rhs.faiss_nprobe &&
-         lhs.faiss_pq_m == rhs.faiss_pq_m &&
-         lhs.faiss_pq_bits == rhs.faiss_pq_bits &&
-         lhs.faiss_build_threads == rhs.faiss_build_threads &&
-         lhs.diskann_max_degree == rhs.diskann_max_degree &&
-         lhs.diskann_build_complexity == rhs.diskann_build_complexity &&
-         lhs.diskann_build_threads == rhs.diskann_build_threads &&
-         lhs.diskann_build_blas_threads == rhs.diskann_build_blas_threads &&
-         lhs.diskann_build_mode_value == rhs.diskann_build_mode_value &&
-         lhs.diskann_search_complexity == rhs.diskann_search_complexity &&
-         lhs.diskann_search_beamwidth == rhs.diskann_search_beamwidth &&
-         lhs.diskann_pq_code_budget_size ==
-             rhs.diskann_pq_code_budget_size &&
-         lhs.diskann_disk_pq_dims == rhs.diskann_disk_pq_dims &&
-         lhs.diskann_cache_nodes == rhs.diskann_cache_nodes &&
-         lhs.diskann_accelerate_build == rhs.diskann_accelerate_build &&
-         lhs.diskann_shuffle_build == rhs.diskann_shuffle_build &&
-         lhs.diskann_use_bfs_cache == rhs.diskann_use_bfs_cache &&
-         lhs.diskann_build_mode_specified ==
-             rhs.diskann_build_mode_specified &&
-         lhs.diskann_segmented_serving == rhs.diskann_segmented_serving &&
-         lhs.consistency_mode == rhs.consistency_mode;
 }
 
 bool lazy_external_runtime_enabled() {

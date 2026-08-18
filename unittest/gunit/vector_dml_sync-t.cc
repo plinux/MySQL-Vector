@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -34,6 +35,7 @@
 #include "sql/vector/vector_index_metadata_store.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_trx_participant.h"
 #include "unittest/gunit/base_mock_field.h"
 #include "unittest/gunit/fake_table.h"
 #include "unittest/gunit/mock_field_long.h"
@@ -56,6 +58,39 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
  public:
   const char *backend_name() const override { return "memory"; }
   bool is_transactional() const override { return true; }
+  bool supports_attached_dml() const override { return true; }
+
+  bool apply_attached_dml(
+      THD *,
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
+    ++apply_attached_dml_calls;
+    if (fail_apply_attached_dml) return false;
+    attached_rows.insert(attached_rows.end(), rows.begin(), rows.end());
+    return true;
+  }
+
+  void commit_attached_dml() {
+    for (const auto &row : attached_rows) {
+      auto it = std::find_if(committed_rows.begin(), committed_rows.end(),
+                             [&](const auto &entry) {
+                               return entry.index_name == row.index_name &&
+                                      entry.doc_id == row.doc_id;
+                             });
+      if (row.op == vector_index_metadata_store::change_op::kErase) {
+        if (it != committed_rows.end()) committed_rows.erase(it);
+      } else if (it == committed_rows.end()) {
+        committed_rows.push_back({row.index_name, row.doc_id, row.vector});
+      } else {
+        it->vector = row.vector;
+      }
+    }
+    change_log_rows.insert(change_log_rows.end(), attached_rows.begin(),
+                           attached_rows.end());
+    attached_rows.clear();
+  }
+
+  void rollback_attached_dml() { attached_rows.clear(); }
 
   bool load_metadata(
       std::vector<vector_index_metadata_store::metadata_row> *rows) override {
@@ -152,8 +187,11 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
   std::vector<vector_index_metadata_store::metadata_row> metadata_rows;
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
   std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
+  std::vector<vector_index_metadata_store::change_log_row> attached_rows;
   std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows;
   vector_index_metadata_store::manifest_row manifest_row;
+  bool fail_apply_attached_dml{false};
+  uint64_t apply_attached_dml_calls{0};
 };
 
 std::string binary_vector_payload(std::initializer_list<float> values) {
@@ -192,6 +230,7 @@ class VectorDmlSyncFixture : public ::testing::Test {
  protected:
   void SetUp() override {
     initializer_.SetUp();
+    vector_trx_participant::set_registration_bypass_for_testing(true);
     vector_index_truth_store::set_for_testing(&store_);
     vector_index_registry::reset_for_testing();
   }
@@ -199,6 +238,7 @@ class VectorDmlSyncFixture : public ::testing::Test {
   void TearDown() override {
     vector_index_registry::reset_for_testing();
     vector_index_truth_store::reset_for_testing();
+    vector_trx_participant::set_registration_bypass_for_testing(false);
     initializer_.TearDown();
   }
 
@@ -622,11 +662,14 @@ TEST_F(VectorDmlSyncFixture, StagePreparedChangesCoversSuccessAndFailure) {
 
   thd()->set_query_id(101);
   EXPECT_FALSE(vector_dml_sync::stage_prepared_changes(thd(), changes));
+  EXPECT_EQ(1U, store_.apply_attached_dml_calls);
+  ASSERT_EQ(2U, store_.attached_rows.size());
   EXPECT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(
       static_cast<uint64_t>(thd()->thread_id()),
       static_cast<uint64_t>(thd()->query_id)));
-  EXPECT_TRUE(
-      vector_index_registry::commit_thd_txn(static_cast<uint64_t>(thd()->thread_id())));
+  store_.commit_attached_dml();
+  EXPECT_TRUE(vector_index_registry::publish_thd_txn(
+      static_cast<uint64_t>(thd()->thread_id())));
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(
@@ -642,6 +685,18 @@ TEST_F(VectorDmlSyncFixture, StagePreparedChangesCoversSuccessAndFailure) {
   EXPECT_TRUE(vector_dml_sync::stage_prepared_changes(thd(), bad_changes));
   thd()->clear_error();
   Server_initializer::set_expected_error(0);
+
+  store_.fail_apply_attached_dml = true;
+  thd()->set_query_id(103);
+  vector_dml_sync::prepared_changes persist_failure;
+  persist_failure.push_back(
+      {mapped_index_name(table.get()), 23, false, {3.0F, 3.0F}});
+  Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
+  EXPECT_TRUE(vector_dml_sync::stage_prepared_changes(thd(), persist_failure));
+  thd()->clear_error();
+  Server_initializer::set_expected_error(0);
+  EXPECT_EQ(0U, vector_index_registry::total_pending_vector_memory_bytes());
+  EXPECT_TRUE(store_.attached_rows.empty());
 }
 
 TEST_F(VectorDmlSyncFixture, StageUpdateRowCoversSuccessPath) {
@@ -664,8 +719,9 @@ TEST_F(VectorDmlSyncFixture, StageUpdateRowCoversSuccessPath) {
   EXPECT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(
       static_cast<uint64_t>(thd()->thread_id()),
       static_cast<uint64_t>(thd()->query_id)));
-  EXPECT_TRUE(
-      vector_index_registry::commit_thd_txn(static_cast<uint64_t>(thd()->thread_id())));
+  store_.commit_attached_dml();
+  EXPECT_TRUE(vector_index_registry::publish_thd_txn(
+      static_cast<uint64_t>(thd()->thread_id())));
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(vector_index_registry::search(mapped_index_name(table.get()),

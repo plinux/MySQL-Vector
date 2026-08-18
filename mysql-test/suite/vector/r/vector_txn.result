@@ -101,4 +101,17 @@ COMMIT;
 SELECT VEC_INDEX_SEARCH('test.t_txn_savepoint_idx.v', '[8,8]', 1);
 VEC_INDEX_SEARCH('test.t_txn_savepoint_idx.v', '[8,8]', 1)
 [8]
+# vector savepoint names should follow MySQL collation semantics
+START TRANSACTION;
+INSERT INTO t_txn_savepoint_idx VALUES (5, VEC_FROMTEXT('[5,5]'));
+SAVEPOINT VectorPoint;
+INSERT INTO t_txn_savepoint_idx VALUES (6, VEC_FROMTEXT('[6,6]'));
+SAVEPOINT vectorpoint;
+INSERT INTO t_txn_savepoint_idx VALUES (10, VEC_FROMTEXT('[10,10]'));
+ROLLBACK TO SAVEPOINT VECTORPOINT;
+RELEASE SAVEPOINT VectorPoint;
+COMMIT;
+SELECT VEC_INDEX_SEARCH('test.t_txn_savepoint_idx.v', '[10,10]', 5);
+VEC_INDEX_SEARCH('test.t_txn_savepoint_idx.v', '[10,10]', 5)
+[8,6,5,4]
 DROP TABLE t_txn_savepoint_idx;

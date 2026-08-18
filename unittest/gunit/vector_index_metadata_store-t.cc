@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,7 @@
 #include "sql/mysqld.h"
 #include "sql/vector/vector_index_metadata_store.h"
 #include "sql/vector/vector_index_metadata_store_internal.h"
+#include "sql/xa.h"
 #include "unittest/gunit/vector_test_utils.h"
 
 namespace vector_index_metadata_store_unittest {
@@ -341,9 +343,13 @@ TEST_F(MetadataStoreTest, DetailHelpersCoverParserAndArtifactPathEdges) {
   EXPECT_FALSE(detail::decode_hex("0g", &decoded));
 
   uint64_t value = 0;
+  EXPECT_FALSE(detail::parse_uint64("0", nullptr));
   EXPECT_FALSE(detail::parse_uint64("", &value));
   EXPECT_FALSE(detail::parse_uint64("x", &value));
   EXPECT_FALSE(detail::parse_uint64("12x", &value));
+  EXPECT_FALSE(detail::parse_uint64("-1", &value));
+  EXPECT_FALSE(detail::parse_uint64("+1", &value));
+  EXPECT_FALSE(detail::parse_uint64(" 1", &value));
   EXPECT_FALSE(detail::parse_uint64("18446744073709551616", &value));
   EXPECT_TRUE(detail::parse_uint64("18446744073709551615", &value));
   EXPECT_EQ(UINT64_MAX, value);
@@ -1861,6 +1867,34 @@ TEST_F(MetadataStoreTest, SaveThenLoadPreparedRoundTrip) {
   EXPECT_TRUE(loaded[1].vector.empty());
 }
 
+TEST_F(MetadataStoreTest, PreparedXidHelpersEnforceMysqlComponentLimits) {
+  XID xid;
+  xid.set(7, "global", 6, "branch", 6);
+
+  vector_index_metadata_store::prepared_change_row row;
+  ASSERT_TRUE(vector_index_metadata_store::set_prepared_xid(xid, &row));
+  EXPECT_TRUE(vector_index_metadata_store::valid_prepared_xid(row));
+  EXPECT_TRUE(vector_index_metadata_store::prepared_xid_matches(row, xid));
+
+  XID restored;
+  ASSERT_TRUE(vector_index_metadata_store::get_prepared_xid(row, &restored));
+  EXPECT_TRUE(restored.eq(&xid));
+
+  row.gtrid_length = MAXGTRIDSIZE + 1;
+  row.bqual_length = 0;
+  row.xid_data.assign(MAXGTRIDSIZE + 1, 'g');
+  EXPECT_FALSE(vector_index_metadata_store::valid_prepared_xid(row));
+  EXPECT_FALSE(vector_index_metadata_store::get_prepared_xid(row, &restored));
+  EXPECT_FALSE(vector_index_metadata_store::prepared_xid_matches(row, xid));
+
+  const std::string oversized_gtrid(MAXGTRIDSIZE + 1, 'g');
+  XID oversized;
+  oversized.set(8, oversized_gtrid.data(), oversized_gtrid.size(), "", 0);
+  EXPECT_FALSE(vector_index_metadata_store::set_prepared_xid(oversized, &row));
+  EXPECT_FALSE(vector_index_metadata_store::set_prepared_xid(xid, nullptr));
+  EXPECT_FALSE(vector_index_metadata_store::get_prepared_xid(row, nullptr));
+}
+
 TEST_F(MetadataStoreTest, LoadPreparedRejectsCorruptedRow) {
   std::ofstream file(m_prepared_path,
                      std::ios::out | std::ios::binary | std::ios::trunc);
@@ -1973,6 +2007,18 @@ TEST_F(MetadataStoreTest, DeserializePreparedRejectsInvalidFields) {
           index_hex + "\t7\t0000803f\n",
       &loaded));
   EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t65\t0\t" + encode_hex_for_test(std::string(65, 'g')) +
+          "\t0\t99\tupsert\t" + index_hex + "\t7\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t0\t65\t" + encode_hex_for_test(std::string(65, 'b')) +
+          "\t0\t99\tupsert\t" + index_hex + "\t7\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
+      header + "1\t3\t0\t616263\t0\t0\tupsert\t" + index_hex +
+          "\t7\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_prepared_rows(
       header + "1\t3\t0\t616263\t0\tnot_a_txn\tupsert\t" + index_hex +
           "\t7\t0000803f\n",
       &loaded));
@@ -2014,6 +2060,22 @@ TEST_F(MetadataStoreTest, SavePreparedRejectsInvalidRows) {
 
   rows[0].gtrid_length = 3;
   rows[0].bqual_length = -1;
+  EXPECT_FALSE(vector_index_metadata_store::save_prepared(rows));
+
+  rows[0].gtrid_length = MAXGTRIDSIZE + 1;
+  rows[0].bqual_length = 0;
+  rows[0].xid_data.assign(MAXGTRIDSIZE + 1, 'g');
+  EXPECT_FALSE(vector_index_metadata_store::save_prepared(rows));
+
+  rows[0].gtrid_length = 0;
+  rows[0].bqual_length = MAXBQUALSIZE + 1;
+  rows[0].xid_data.assign(MAXBQUALSIZE + 1, 'b');
+  EXPECT_FALSE(vector_index_metadata_store::save_prepared(rows));
+
+  rows[0].gtrid_length = 3;
+  rows[0].bqual_length = 0;
+  rows[0].xid_data = "abc";
+  rows[0].txn_id = 0;
   EXPECT_FALSE(vector_index_metadata_store::save_prepared(rows));
 }
 
@@ -2279,6 +2341,19 @@ TEST_F(MetadataStoreTest, LoadManifestRejectsOverflowVersion) {
   EXPECT_FALSE(vector_index_metadata_store::load_manifest(&loaded));
 }
 
+TEST_F(MetadataStoreTest, LoadManifestRejectsExhaustedVersion) {
+  std::ofstream file(m_manifest_path,
+                     std::ios::out | std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(file.good());
+  file << "mysql-vector-manifest-v1\n";
+  file << "ready\t18446744073709551615\t0\t0\t0\n";
+  file.close();
+  ASSERT_TRUE(file);
+
+  vector_index_metadata_store::manifest_row loaded;
+  EXPECT_FALSE(vector_index_metadata_store::load_manifest(&loaded));
+}
+
 TEST_F(MetadataStoreTest, LoadManifestRejectsEmptyState) {
   std::ofstream file(m_manifest_path,
                      std::ios::out | std::ios::binary | std::ios::trunc);
@@ -2333,6 +2408,13 @@ TEST_F(MetadataStoreTest, SaveManifestRejectsInvalidInput) {
   EXPECT_FALSE(vector_index_metadata_store::save_manifest(invalid_zero_version));
   EXPECT_FALSE(vector_index_metadata_store::serialize_manifest_row(
       invalid_zero_version, &payload));
+
+  vector_index_metadata_store::manifest_row exhausted_version;
+  exhausted_version.state = "ready";
+  exhausted_version.version = std::numeric_limits<uint64_t>::max();
+  EXPECT_FALSE(vector_index_metadata_store::save_manifest(exhausted_version));
+  EXPECT_FALSE(vector_index_metadata_store::serialize_manifest_row(
+      exhausted_version, &payload));
 }
 
 TEST_F(MetadataStoreTest,
@@ -2526,6 +2608,20 @@ TEST_F(MetadataStoreTest, LoadChangeLogRejectsOverflowSequence) {
   EXPECT_FALSE(vector_index_metadata_store::load_change_log(&loaded));
 }
 
+TEST_F(MetadataStoreTest, LoadChangeLogRejectsExhaustedSequence) {
+  std::ofstream file(m_change_log_path,
+                     std::ios::out | std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(file.good());
+  file << "mysql-vector-changelog-v1\n";
+  file << "18446744073709551615\t88\tupsert\t6964785f626164\t101\t"
+          "0000803f\n";
+  file.close();
+  ASSERT_TRUE(file);
+
+  std::vector<vector_index_metadata_store::change_log_row> loaded;
+  EXPECT_FALSE(vector_index_metadata_store::load_change_log(&loaded));
+}
+
 TEST_F(MetadataStoreTest, DeserializeChangeLogRejectsInvalidFields) {
   const std::string index_hex = encode_hex_for_test("idx_bad");
   const std::string header = "mysql-vector-changelog-v1\n";
@@ -2563,6 +2659,11 @@ TEST_F(MetadataStoreTest, SaveChangeLogRejectsInvalidRows) {
   bad_rows[0].index_name = "idx_bad";
   bad_rows[0].op = vector_index_metadata_store::change_op::kErase;
   bad_rows[0].vector = {1.0F};
+  EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
+
+  bad_rows[0].sequence = std::numeric_limits<uint64_t>::max();
+  bad_rows[0].op = vector_index_metadata_store::change_op::kErase;
+  bad_rows[0].vector.clear();
   EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
 }
 

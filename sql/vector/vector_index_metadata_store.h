@@ -32,6 +32,8 @@
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_segment_task.h"
 
+struct xid_t;
+
 namespace vector_index_metadata_store {
 
 inline constexpr const char *kMetadataHeaderV1 = "VECTOR_INDEX_METADATA_V1";
@@ -147,6 +149,49 @@ struct prepared_change_row {
   uint64_t doc_id{0};
   vector_index::vector_data vector;
 };
+
+/**
+  Validate the persisted XA identity in a prepared change row.
+
+  @param row Prepared change row to validate.
+
+  @retval true The format id, component lengths, and payload agree.
+  @retval false The persisted identity cannot be represented as a MySQL XID.
+*/
+bool valid_prepared_xid(const prepared_change_row &row);
+
+/**
+  Copy a validated MySQL XID into a prepared row identity.
+
+  @param xid Source MySQL XID.
+  @param row Destination prepared change row.
+
+  @retval true The identity was copied.
+  @retval false An argument is invalid or the XID exceeds MySQL limits.
+*/
+bool set_prepared_xid(const xid_t &xid, prepared_change_row *row);
+
+/**
+  Restore a validated prepared row identity as a MySQL XID.
+
+  @param row Source prepared change row.
+  @param xid Destination MySQL XID.
+
+  @retval true The identity was restored.
+  @retval false An argument or persisted identity is invalid.
+*/
+bool get_prepared_xid(const prepared_change_row &row, xid_t *xid);
+
+/**
+  Compare a MySQL XID with a validated prepared row identity.
+
+  @param row Persisted prepared change row.
+  @param xid MySQL XID to compare.
+
+  @retval true Both validated identities are equal.
+  @retval false Either identity is invalid or they differ.
+*/
+bool prepared_xid_matches(const prepared_change_row &row, const xid_t &xid);
 
 /**
   Load all metadata rows from persistent storage.

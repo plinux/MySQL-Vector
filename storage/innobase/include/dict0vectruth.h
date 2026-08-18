@@ -33,6 +33,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <string>
 #include <vector>
 
+class THD;
+
 namespace innodb_vector_truth_store {
 
 struct Session;
@@ -78,6 +80,16 @@ struct prepared_change_row {
 };
 
 Session *begin_session(bool read_write);
+/**
+  Open a truth-store session on the InnoDB transaction owned by a THD.
+
+  The returned session owns only its query graph and heap. Closing it never
+  commits, rolls back, or frees the borrowed user transaction.
+
+  @param thd user thread whose active InnoDB transaction is borrowed
+  @return attached session, or nullptr when no InnoDB transaction is available
+*/
+Session *begin_attached_session(THD *thd);
 void close_session(Session *session);
 bool commit_session(Session *session);
 void rollback_session(Session *session);

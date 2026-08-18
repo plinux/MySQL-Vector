@@ -301,9 +301,25 @@ bool stage_upsert_for_thd_txn(uint64_t thd_id, uint64_t statement_id,
                           const vector_index::vector_data &vector);
 bool stage_erase_for_thd_txn(uint64_t thd_id, uint64_t statement_id,
                          const std::string &index_name, uint64_t doc_id);
+/**
+  Stage mapped DML and its durable truth rows in the caller's transaction.
+
+  @param thd current user thread
+  @param statement_id SQL statement identifier used by statement savepoints
+  @param changes vector changes produced after the base-table row mutation
+  @return true when runtime pending state and durable truth writes are staged
+*/
+bool stage_changes_for_thd_txn(
+    THD *thd, uint64_t statement_id,
+    const std::vector<vector_index::index_service::pending_change_snapshot>
+        &changes);
 
 bool commit_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id);
 bool rollback_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id);
+/** Publish a committed THD transaction into the derived ANN runtime. */
+bool publish_thd_txn(uint64_t thd_id);
+/** Drop volatile pending state after InnoDB has accepted XA prepare. */
+bool detach_thd_txn_for_prepare(uint64_t thd_id);
 bool commit_thd_txn(uint64_t thd_id);
 bool rollback_thd_txn(uint64_t thd_id);
 /**

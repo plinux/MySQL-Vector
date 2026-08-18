@@ -321,7 +321,8 @@ bool to_innodb_prepared_rows(
   out->reserve(rows.size());
   uint64_t row_no = 1;
   for (const auto &row : rows) {
-    if (row.format_id < 0 || row.gtrid_length < 0 || row.bqual_length < 0) {
+    if (row.txn_id == 0 ||
+        !vector_index_metadata_store::valid_prepared_xid(row)) {
       return false;
     }
     innodb_vector_truth_store::prepared_change_row stored;
@@ -335,7 +336,6 @@ bool to_innodb_prepared_rows(
     stored.index_name = row.index_name;
     stored.doc_id = row.doc_id;
     if (stored.index_name.empty() ||
-        stored.xid_data.size() != stored.gtrid_length + stored.bqual_length ||
         !encode_truth_op(row.op, &stored.op) ||
         !vector_to_truth_payload(row.vector, &stored.dimension,
                                  &stored.vector_payload)) {
@@ -374,9 +374,9 @@ bool from_innodb_prepared_rows(
     loaded.prepared_in_tc = row.prepared_in_tc != 0;
     loaded.index_name = row.index_name;
     loaded.doc_id = row.doc_id;
-    if (loaded.index_name.empty() ||
-        loaded.xid_data.size() !=
-            static_cast<size_t>(loaded.gtrid_length + loaded.bqual_length) ||
+    if (loaded.txn_id == 0 ||
+        !vector_index_metadata_store::valid_prepared_xid(loaded) ||
+        loaded.index_name.empty() ||
         !decode_truth_op(row.op, &loaded.op) ||
         !truth_payload_to_vector(row.dimension, row.vector_payload,
                                  &loaded.vector)) {
@@ -582,6 +582,32 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
 
   bool is_transactional() const override { return true; }
   bool supports_delta_persist() const override { return true; }
+  bool supports_attached_dml() const override { return true; }
+
+  bool apply_attached_dml(
+      THD *thd,
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
+    if (thd == nullptr || rows.empty()) return false;
+
+    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+    if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
+
+    innodb_vector_truth_store::Session *session =
+        innodb_vector_truth_store::begin_attached_session(thd);
+    if (session == nullptr) return false;
+
+    const bool committed_ok =
+        innodb_vector_truth_store::apply_committed_delta(stored_rows, session);
+    DBUG_EXECUTE_IF("vector_truth_fail_attached_changelog",
+                    innodb_vector_truth_store::close_session(session);
+                    return false;);
+    const bool changelog_ok =
+        committed_ok && innodb_vector_truth_store::append_change_log_delta(
+                            stored_rows, session);
+    innodb_vector_truth_store::close_session(session);
+    return committed_ok && changelog_ok;
+  }
 
   bool bootstrap_initialize(THD *thd) { return thd != nullptr; }
 

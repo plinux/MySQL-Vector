@@ -311,7 +311,8 @@ bool deserialize_manifest_row_impl(const std::string &payload, manifest_row *row
 
     row->state = fields[0];
     if (row->state.empty()) return false;
-    if (!parse_uint64(fields[1], &row->version) || row->version == 0) {
+    if (!parse_uint64(fields[1], &row->version) || row->version == 0 ||
+        row->version == std::numeric_limits<uint64_t>::max()) {
       return false;
     }
     if (!parse_uint64(fields[2], &row->metadata_checkpoint)) return false;
@@ -323,7 +324,10 @@ bool deserialize_manifest_row_impl(const std::string &payload, manifest_row *row
 }
 
 bool serialize_manifest_row_impl(const manifest_row &row, std::string *payload) {
-  if (payload == nullptr || row.state.empty() || row.version == 0) return false;
+  if (payload == nullptr || row.state.empty() || row.version == 0 ||
+      row.version == std::numeric_limits<uint64_t>::max()) {
+    return false;
+  }
   std::ostringstream stream;
   stream << kManifestHeaderV1 << "\n";
   stream << row.state << "\t" << row.version << "\t"
@@ -356,7 +360,8 @@ bool deserialize_change_log_rows_impl(const std::string &payload,
     if (fields.size() != 6) return false;
 
     change_log_row row;
-    if (!parse_uint64(fields[0], &row.sequence) || row.sequence == 0) {
+    if (!parse_uint64(fields[0], &row.sequence) || row.sequence == 0 ||
+        row.sequence == std::numeric_limits<uint64_t>::max()) {
       return false;
     }
     if (!parse_uint64(fields[1], &row.txn_id)) return false;
@@ -387,7 +392,11 @@ bool serialize_change_log_rows_impl(const std::vector<change_log_row> &rows,
   std::ostringstream stream;
   stream << kChangeLogHeaderV1 << "\n";
   for (const change_log_row &row : rows) {
-    if (row.sequence == 0 || row.index_name.empty()) return false;
+    if (row.sequence == 0 ||
+        row.sequence == std::numeric_limits<uint64_t>::max() ||
+        row.index_name.empty()) {
+      return false;
+    }
     if (row.op == change_op::kErase && !row.vector.empty()) return false;
 
     const char *data = reinterpret_cast<const char *>(row.vector.data());
@@ -443,10 +452,7 @@ bool deserialize_prepared_rows_impl(const std::string &payload,
     }
     row.bqual_length = static_cast<int64_t>(u64);
     if (!decode_hex(fields[3], &row.xid_data)) return false;
-    if (static_cast<int64_t>(row.xid_data.size()) !=
-        row.gtrid_length + row.bqual_length) {
-      return false;
-    }
+    if (!valid_prepared_xid(row)) return false;
     if (fields[4] == "0") {
       row.prepared_in_tc = false;
     } else if (fields[4] == "1") {
@@ -454,7 +460,7 @@ bool deserialize_prepared_rows_impl(const std::string &payload,
     } else {
       return false;
     }
-    if (!parse_uint64(fields[5], &row.txn_id)) return false;
+    if (!parse_uint64(fields[5], &row.txn_id) || row.txn_id == 0) return false;
     if (!parse_change_op(fields[6], &row.op)) return false;
     if (!decode_hex(fields[7], &row.index_name) || row.index_name.empty()) {
       return false;
@@ -482,12 +488,8 @@ bool serialize_prepared_rows_impl(const std::vector<prepared_change_row> &rows,
   std::ostringstream stream;
   stream << kPreparedHeaderV1 << "\n";
   for (const prepared_change_row &row : rows) {
-    if (row.format_id < 0 || row.gtrid_length < 0 || row.bqual_length < 0 ||
+    if (!valid_prepared_xid(row) || row.txn_id == 0 ||
         row.index_name.empty()) {
-      return false;
-    }
-    if (static_cast<int64_t>(row.xid_data.size()) !=
-        row.gtrid_length + row.bqual_length) {
       return false;
     }
     if (row.op == change_op::kErase && !row.vector.empty()) return false;

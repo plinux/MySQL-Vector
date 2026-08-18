@@ -1,0 +1,35 @@
+--source include/have_vector_index.inc
+--source include/have_vector_search_library.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # WL#Vector: attached truth failure rolls back the user row
+--echo #
+
+DROP TABLE IF EXISTS t_dml_attached_failure;
+CREATE TABLE t_dml_attached_failure (
+  id INT PRIMARY KEY,
+  v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_dml_attached_failure(v) WITH (2);
+
+--disable_query_log
+SET GLOBAL debug = '+d,vector_truth_fail_attached_changelog';
+--enable_query_log
+
+--error ER_INTERNAL_ERROR
+INSERT INTO t_dml_attached_failure VALUES (1, VEC_FROMTEXT('[1,1]'));
+
+--disable_query_log
+SET GLOBAL debug = '-d,vector_truth_fail_attached_changelog';
+--enable_query_log
+
+SELECT COUNT(*) FROM t_dml_attached_failure;
+SELECT VEC_INDEX_SEARCH('test.t_dml_attached_failure.v', '[1,1]', 1);
+
+INSERT INTO t_dml_attached_failure VALUES (1, VEC_FROMTEXT('[1,1]'));
+SELECT COUNT(*) FROM t_dml_attached_failure;
+SELECT VEC_INDEX_SEARCH('test.t_dml_attached_failure.v', '[1,1]', 1);
+
+DROP VECTOR INDEX ON t_dml_attached_failure(v);
+DROP TABLE t_dml_attached_failure;

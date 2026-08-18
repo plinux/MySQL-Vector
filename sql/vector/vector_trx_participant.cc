@@ -24,16 +24,16 @@
 #include "sql/vector/vector_trx_participant.h"
 
 #include <cstdint>
-#include <string>
+#include <mutex>
+#include <unordered_set>
 
+#include "mysql/components/services/log_builtins.h"
 #include "mysql/plugin.h"
 #include "my_base.h"
 #include "sql/handler.h"
+#include "sql/replication.h"
 #include "sql/sql_class.h"
-#include "sql/log.h"
-#include "sql/mysqld.h"
 #include "sql/sql_lex.h"
-#include "sql/vector/vector_index_metadata_store.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
 
@@ -41,6 +41,14 @@ namespace {
 
 handlerton *vector_trx_hton = nullptr;
 unsigned char vector_trx_token = 0;
+
+std::mutex publication_mutex;
+std::unordered_set<my_thread_id> publication_threads;
+std::mutex observer_registration_mutex;
+bool observer_registered = false;
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool registration_bypass_for_testing = false;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 uint64_t vector_thd_id(const THD *thd) {
   return thd == nullptr ? 0 : static_cast<uint64_t>(thd->thread_id());
@@ -59,66 +67,27 @@ bool has_vector_trx_context(THD *thd) {
          thd_get_ha_data(thd, vector_trx_hton) != nullptr;
 }
 
+bool is_xa_commit_publication_fallback(THD *thd, my_thread_id thread_id) {
+  return thd != nullptr && thd->thread_id() == thread_id && thd->lex != nullptr &&
+         thd->lex->sql_command == SQLCOM_XA_COMMIT;
+}
+
 bool is_real_vector_scope(THD *thd, bool all) {
   return all || !in_multi_stmt_vector_trx(thd);
 }
 
-bool skip_recovery_for_bootstrap(THD *thd) {
-  return opt_initialize ||
-         (thd != nullptr &&
-          thd->system_thread == SYSTEM_THREAD_SERVER_INITIALIZE);
-}
+/*
+  SQL transaction entry points own vector savepoint state. They also observe
+  savepoints created before this hidden handlerton joins the transaction.
+  These callbacks remain installed only so MySQL accepts the participant in a
+  transaction that already has savepoints; mutating state here would process
+  rollback/release twice.
+*/
+int vector_trx_savepoint_set(handlerton *, THD *, void *) { return 0; }
 
-XID current_xid(THD *thd) {
-  XID xid;
-  if (thd != nullptr) thd_get_xid(thd, reinterpret_cast<MYSQL_XID *>(&xid));
-  return xid;
-}
+int vector_trx_savepoint_rollback(handlerton *, THD *, void *) { return 0; }
 
-void xid_from_prepared_row(const vector_index_metadata_store::prepared_change_row &row,
-                           XID *xid) {
-  xid->reset();
-  xid->set_format_id(static_cast<long>(row.format_id));
-  xid->set_gtrid_length(static_cast<long>(row.gtrid_length));
-  xid->set_bqual_length(static_cast<long>(row.bqual_length));
-  if (!row.xid_data.empty()) {
-    xid->set_data(row.xid_data.data(), static_cast<long>(row.xid_data.size()));
-  }
-}
-
-bool load_prepared_rows(
-    std::vector<vector_index_metadata_store::prepared_change_row> *rows) {
-  if (rows == nullptr) return false;
-  if (vector_index_truth_store::get()->load_prepared(rows)) return true;
-
-  // Missing prepared rows are represented by a successful empty load. Corrupt
-  // prepared rows can be treated as empty only after they are durably
-  // quarantined; otherwise the TC could miss an RM that needs recovery.
-  rows->clear();
-  return vector_index_truth_store::get()->quarantine_prepared();
-}
-
-bool init_empty_mod_tables(XA_recover_txn *txn, MEM_ROOT *mem_root) {
-  if (txn == nullptr) return false;
-  txn->mod_tables = nullptr;
-  if (mem_root == nullptr) return true;
-
-  txn->mod_tables = new (mem_root) List<st_handler_tablename>();
-  return txn->mod_tables != nullptr;
-}
-
-#ifdef EXTRA_CODE_FOR_UNIT_TESTING
-std::string savepoint_token_name(THD *thd, void *savepoint) {
-  if (thd != nullptr && thd->lex != nullptr && thd->lex->ident.str != nullptr &&
-      thd->lex->ident.length > 0) {
-    return std::string(thd->lex->ident.str, thd->lex->ident.length);
-  }
-  return std::string("ha:") +
-         std::to_string(reinterpret_cast<uintptr_t>(savepoint));
-}
-#endif  // EXTRA_CODE_FOR_UNIT_TESTING
-
-int vector_trx_savepoint_noop(handlerton *, THD *, void *) { return 0; }
+int vector_trx_savepoint_release(handlerton *, THD *, void *) { return 0; }
 
 bool vector_trx_savepoint_rollback_can_release_mdl(handlerton *, THD *) {
   return true;
@@ -128,36 +97,30 @@ int vector_trx_prepare(handlerton *, THD *thd, bool all) {
   if (!has_vector_trx_context(thd) || !is_real_vector_scope(thd, all)) {
     return 0;
   }
-  XID xid = current_xid(thd);
-  if (xid.is_null()) return 0;
-  return vector_index_registry::prepare_thd_txn(vector_thd_id(thd), xid)
+  return vector_index_registry::detach_thd_txn_for_prepare(vector_thd_id(thd))
              ? 0
              : HA_ERR_INTERNAL_ERROR;
 }
 
+int vector_trx_set_prepared_in_tc(handlerton *, THD *) {
+  // InnoDB owns the XA record; the vector participant has no durable TC state.
+  return 0;
+}
+
 int vector_trx_commit(handlerton *, THD *thd, bool all) {
   if (!has_vector_trx_context(thd)) return 0;
-  bool ok = false;
   if (is_real_vector_scope(thd, all)) {
-    XID xid = current_xid(thd);
-    const xa_status_code xa_ret =
-        xid.is_null() ? XAER_NOTA
-                      : vector_index_registry::commit_prepared_xid_for_thd(
-                            vector_thd_id(thd), xid);
-    ok = xa_ret == XA_OK
-             ? true
-             : (xa_ret == XAER_NOTA
-                    ? vector_index_registry::commit_thd_txn(vector_thd_id(thd))
-                    : false);
-  } else {
-    ok = in_multi_stmt_vector_trx(thd)
-             ? vector_index_registry::commit_stmt_for_thd_txn(vector_thd_id(thd),
-                                                         vector_stmt_id(thd))
-             : vector_index_registry::commit_thd_txn(vector_thd_id(thd));
-  }
-  if (ok && is_real_vector_scope(thd, all)) {
+    {
+      std::lock_guard<std::mutex> guard(publication_mutex);
+      publication_threads.insert(thd->thread_id());
+    }
+    thd->get_transaction()->m_flags.run_hooks = true;
     thd_set_ha_data(thd, vector_trx_hton, nullptr);
+    return 0;
   }
+
+  const bool ok = vector_index_registry::commit_stmt_for_thd_txn(
+      vector_thd_id(thd), vector_stmt_id(thd));
   return ok ? 0 : HA_ERR_INTERNAL_ERROR;
 }
 
@@ -165,16 +128,7 @@ int vector_trx_rollback(handlerton *, THD *thd, bool all) {
   if (!has_vector_trx_context(thd)) return 0;
   bool ok = false;
   if (is_real_vector_scope(thd, all)) {
-    XID xid = current_xid(thd);
-    const xa_status_code xa_ret =
-        xid.is_null() ? XAER_NOTA
-                      : vector_index_registry::rollback_prepared_xid_for_thd(
-                            vector_thd_id(thd), xid);
-    ok = xa_ret == XA_OK
-             ? true
-             : (xa_ret == XAER_NOTA
-                    ? vector_index_registry::rollback_thd_txn(vector_thd_id(thd))
-                    : false);
+    ok = vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
   } else {
     ok = in_multi_stmt_vector_trx(thd)
              ? vector_index_registry::rollback_stmt_for_thd_txn(vector_thd_id(thd),
@@ -187,127 +141,126 @@ int vector_trx_rollback(handlerton *, THD *thd, bool all) {
   return ok ? 0 : HA_ERR_INTERNAL_ERROR;
 }
 
-int vector_trx_recover(handlerton *, XA_recover_txn *txn_list, uint len,
-                       MEM_ROOT *mem_root) {
-  if (skip_recovery_for_bootstrap(current_thd)) return 0;
-  std::vector<vector_index_metadata_store::prepared_change_row> rows;
-  if (!load_prepared_rows(&rows) || txn_list == nullptr || len == 0) return 0;
-
-  uint count = 0;
-  for (const auto &row : rows) {
-    if (count >= len) break;
-
-    XID xid;
-    xid_from_prepared_row(row, &xid);
-    bool seen = false;
-    for (uint i = 0; i < count; ++i) {
-      if (txn_list[i].id.eq(&xid)) {
-        seen = true;
-        break;
-      }
-    }
-    if (seen) continue;
-
-    txn_list[count].id = xid;
-    if (!init_empty_mod_tables(&txn_list[count], mem_root)) break;
-    ++count;
-  }
-  return static_cast<int>(count);
-}
-
-int vector_trx_recover_prepared_in_tc(handlerton *, Xa_state_list &xa_list) {
-  if (skip_recovery_for_bootstrap(current_thd)) return 0;
-  std::vector<vector_index_metadata_store::prepared_change_row> rows;
-  /*
-    The truth-store backend reports a missing prepared artifact as an empty set
-    for pre-vector data directories. If corrupt rows can be quarantined, the
-    isolated artifact is no longer a recoverable prepared set; if quarantine
-    fails, abort recovery instead of pretending there are no prepared rows.
-  */
-  if (!load_prepared_rows(&rows)) return 1;
-
-  for (const auto &row : rows) {
-    if (!row.prepared_in_tc) continue;
-
-    XID xid;
-    xid_from_prepared_row(row, &xid);
-    if (xid.get_my_xid() != 0) continue;
-    (void)xa_list.add(xid, enum_ha_recover_xa_state::PREPARED_IN_TC);
-  }
-  return 0;
-}
-
-xa_status_code vector_trx_commit_by_xid(handlerton *, XID *xid) {
-  if (xid == nullptr) return XAER_INVAL;
-  if (!mysqld_server_started) {
-    vector_index_registry::queue_recovery_commit_xid(*xid);
-    return XA_OK;
-  }
-  return vector_index_registry::commit_prepared_xid_if_loaded(*xid);
-}
-
-xa_status_code vector_trx_rollback_by_xid(handlerton *, XID *xid) {
-  if (xid == nullptr) return XAER_INVAL;
-  if (!mysqld_server_started) {
-    vector_index_registry::queue_recovery_rollback_xid(*xid);
-    return XA_OK;
-  }
-  return vector_index_registry::rollback_prepared_xid_if_loaded(*xid);
-}
-
-int vector_trx_set_prepared_in_tc(handlerton *, THD *thd) {
-  if (thd == nullptr) return HA_ERR_INTERNAL_ERROR;
-  if (!has_vector_trx_context(thd)) return 0;
-  XID xid = current_xid(thd);
-  return xid.is_null() || vector_index_registry::set_prepared_in_tc(xid)
-             ? 0
-             : HA_ERR_INTERNAL_ERROR;
-}
-
-xa_status_code vector_trx_set_prepared_in_tc_by_xid(handlerton *, XID *xid) {
-  if (xid == nullptr) return XAER_INVAL;
-  if (!mysqld_server_started) {
-    vector_index_registry::queue_recovery_set_prepared_in_tc(*xid);
-    return XA_OK;
-  }
-  return vector_index_registry::set_prepared_in_tc(*xid) ? XA_OK : XAER_RMERR;
-}
-
 int vector_trx_close_connection(handlerton *, THD *thd) {
   if (thd != nullptr) {
+    {
+      std::lock_guard<std::mutex> guard(publication_mutex);
+      publication_threads.erase(thd->thread_id());
+    }
     (void)vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
     thd_set_ha_data(thd, vector_trx_hton, nullptr);
   }
   return 0;
 }
 
+void vector_trx_after_commit(void *arg) {
+  auto *param = static_cast<Trans_param *>(arg);
+  if (param == nullptr || (param->flags & TRANS_IS_REAL_TRANS) == 0) return;
+
+  bool publish = false;
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    publish = publication_threads.erase(param->thread_id) != 0;
+  }
+  if (!publish &&
+      !is_xa_commit_publication_fallback(current_thd, param->thread_id)) {
+    return;
+  }
+  if (!vector_index_registry::publish_thd_txn(
+          static_cast<uint64_t>(param->thread_id))) {
+    LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
+           "Vector runtime publication failed after transaction commit");
+  }
+}
+
+void vector_trx_before_rollback(void *arg) {
+  auto *param = static_cast<Trans_param *>(arg);
+  if (param == nullptr || (param->flags & TRANS_IS_REAL_TRANS) == 0) return;
+
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    publication_threads.erase(param->thread_id);
+  }
+  (void)vector_index_registry::rollback_thd_txn(
+      static_cast<uint64_t>(param->thread_id));
+}
+
+int vector_trx_observe_before_rollback(Trans_param *param) {
+  vector_trx_before_rollback(param);
+  return 0;
+}
+
+int vector_trx_observe_after_commit(Trans_param *param) {
+  vector_trx_after_commit(param);
+  return 0;
+}
+
+Trans_observer vector_trx_observer{
+    sizeof(Trans_observer),
+    nullptr,
+    nullptr,
+    vector_trx_observe_before_rollback,
+    vector_trx_observe_after_commit,
+    nullptr,
+    nullptr,
+};
+
+bool ensure_observer_registered_impl() {
+  std::lock_guard<std::mutex> guard(observer_registration_mutex);
+  if (observer_registered) return true;
+  if (vector_trx_hton == nullptr || vector_trx_hton->slot == HA_SLOT_UNDEF) {
+    return false;
+  }
+
+  st_plugin_int *plugin = hton2plugin(vector_trx_hton->slot);
+  if (plugin == nullptr || register_trans_observer(&vector_trx_observer, plugin)) {
+    return false;
+  }
+  observer_registered = true;
+  return true;
+}
+
 int vector_trx_init(void *p) {
   auto *hton = static_cast<handlerton *>(p);
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    publication_threads.clear();
+  }
+  {
+    std::lock_guard<std::mutex> guard(observer_registration_mutex);
+    observer_registered = false;
+  }
   vector_trx_hton = hton;
   hton->state = SHOW_OPTION_YES;
   hton->db_type = DB_TYPE_UNKNOWN;
   hton->savepoint_offset = 0;
   hton->close_connection = vector_trx_close_connection;
-  hton->savepoint_set = vector_trx_savepoint_noop;
-  hton->savepoint_rollback = vector_trx_savepoint_noop;
+  hton->savepoint_set = vector_trx_savepoint_set;
+  hton->savepoint_rollback = vector_trx_savepoint_rollback;
   hton->savepoint_rollback_can_release_mdl =
       vector_trx_savepoint_rollback_can_release_mdl;
-  hton->savepoint_release = vector_trx_savepoint_noop;
+  hton->savepoint_release = vector_trx_savepoint_release;
   hton->commit = vector_trx_commit;
   hton->rollback = vector_trx_rollback;
   hton->prepare = vector_trx_prepare;
-  hton->recover = vector_trx_recover;
-  hton->recover_prepared_in_tc = vector_trx_recover_prepared_in_tc;
-  hton->commit_by_xid = vector_trx_commit_by_xid;
-  hton->rollback_by_xid = vector_trx_rollback_by_xid;
   hton->set_prepared_in_tc = vector_trx_set_prepared_in_tc;
-  hton->set_prepared_in_tc_by_xid = vector_trx_set_prepared_in_tc_by_xid;
   hton->flags =
       HTON_NOT_USER_SELECTABLE | HTON_HIDDEN | HTON_NO_GLOBAL_2PC;
   return 0;
 }
 
 int vector_trx_deinit(void *) {
+  {
+    std::lock_guard<std::mutex> guard(observer_registration_mutex);
+    if (observer_registered) {
+      (void)unregister_trans_observer(&vector_trx_observer, nullptr);
+      observer_registered = false;
+    }
+  }
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    publication_threads.clear();
+  }
   vector_trx_hton = nullptr;
   return 0;
 }
@@ -331,22 +284,32 @@ bool is_real_scope_for_testing(THD *thd, bool all) {
   return is_real_vector_scope(thd, all);
 }
 
-bool skip_recovery_for_bootstrap_for_testing(THD *thd) {
-  return skip_recovery_for_bootstrap(thd);
+bool is_xa_commit_publication_fallback_for_testing(THD *thd,
+                                                   uint64_t thread_id) {
+  return is_xa_commit_publication_fallback(
+      thd, static_cast<my_thread_id>(thread_id));
 }
 
-std::string savepoint_token_name_for_testing(THD *thd, void *savepoint) {
-  return savepoint_token_name(thd, savepoint);
-}
-
-bool load_prepared_rows_for_testing(
-    std::vector<vector_index_metadata_store::prepared_change_row> *rows) {
-  return load_prepared_rows(rows);
+void set_registration_bypass_for_testing(bool bypass) {
+  registration_bypass_for_testing = bypass;
 }
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
-void register_participant(THD *thd) {
-  if (thd == nullptr || vector_trx_hton == nullptr) return;
+bool ensure_observer_registered() {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  if (registration_bypass_for_testing) return true;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+  return ensure_observer_registered_impl();
+}
+
+bool register_participant(THD *thd) {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  if (registration_bypass_for_testing) return thd != nullptr;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+  if (thd == nullptr || vector_trx_hton == nullptr ||
+      !vector_trx_participant::ensure_observer_registered()) {
+    return false;
+  }
 
   if (thd_get_ha_data(thd, vector_trx_hton) == nullptr) {
     thd_set_ha_data(thd, vector_trx_hton, &vector_trx_token);
@@ -356,10 +319,7 @@ void register_participant(THD *thd) {
   if (thd->in_multi_stmt_transaction_mode()) {
     trans_register_ha(thd, true, vector_trx_hton, nullptr);
   }
-
-  thd->get_ha_data(vector_trx_hton->slot)->ha_info[0].set_trx_read_write();
-  auto *all_info = &thd->get_ha_data(vector_trx_hton->slot)->ha_info[1];
-  if (all_info->is_started()) all_info->set_trx_read_write();
+  return true;
 }
 
 }  // namespace vector_trx_participant

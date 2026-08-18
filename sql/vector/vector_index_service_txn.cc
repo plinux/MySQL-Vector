@@ -42,6 +42,7 @@
 #include <utility>
 #include <vector>
 
+#include "my_dbug.h"
 #include "my_sys.h"
 #include "sql/mysqld.h"
 #include "sql/vector/vector_index_build_options.h"
@@ -63,6 +64,7 @@ namespace {
 
 using detail::build_backend_from_config;
 using detail::all_true;
+using detail::index_configs_equal;
 
 constexpr const char *LIFECYCLE_BULK_LOADING = "bulk_loading";
 constexpr uint32_t ERROR_BACKEND_APPLY_FAILED = 1006;
@@ -89,6 +91,13 @@ bool should_batch_rebuild_on_commit(const backend *index_backend) {
   if (index_backend == nullptr) return false;
   if (index_backend->mode() != backend_mode::kExternal) return false;
   return index_backend->provider() == backend_provider::kFaiss;
+}
+
+bool savepoint_names_equal(const std::string &lhs, const std::string &rhs) {
+  return my_strnncoll(system_charset_info,
+                      reinterpret_cast<const uchar *>(lhs.data()), lhs.size(),
+                      reinterpret_cast<const uchar *>(rhs.data()),
+                      rhs.size()) == 0;
 }
 
 bool pending_change_snapshots_equal(
@@ -163,43 +172,23 @@ class pending_spill_guard {
 };
 
 committed_entry_reader make_commit_rebuild_reader(
-    const vector_entry_store &entry_store, const std::string &index_name,
-    const std::vector<index_service::pending_change_snapshot> &changes) {
-  return [&entry_store, &index_name,
-          &changes](const committed_entry_visitor &visitor) {
+    const committed_entries &candidate_entries) {
+  return [&candidate_entries](const committed_entry_visitor &visitor) {
     if (!visitor) return false;
 
-    std::map<uint64_t, const index_service::pending_change_snapshot *> overlay;
-    for (const index_service::pending_change_snapshot &change : changes) {
-      overlay[change.doc_id] = &change;
+    std::vector<uint64_t> doc_ids;
+    doc_ids.reserve(candidate_entries.size());
+    for (const auto &entry : candidate_entries) {
+      doc_ids.push_back(entry.first);
     }
+    std::sort(doc_ids.begin(), doc_ids.end());
 
-    if (!entry_store.for_each_committed_entry(
-            index_name,
-            [&](uint64_t doc_id, const vector_data &committed_vector) {
-              const auto overlay_it = overlay.find(doc_id);
-              if (overlay_it == overlay.end())
-                return visitor(doc_id, committed_vector);
-              const index_service::pending_change_snapshot *change =
-                  overlay_it->second;
-              return change->erase ? true : visitor(doc_id, change->vector);
-            })) {
-      return false;
-    }
-
-    for (const auto &overlay_entry : overlay) {
-      const index_service::pending_change_snapshot *change =
-          overlay_entry.second;
-      if (change->erase) continue;
-      vector_data committed_vector;
-      bool committed_found = false;
-      if (!entry_store.find_committed_entry(index_name, overlay_entry.first,
-                                            &committed_vector,
-                                            &committed_found)) {
+    for (const uint64_t doc_id : doc_ids) {
+      const auto entry_it = candidate_entries.find(doc_id);
+      if (entry_it == candidate_entries.end() ||
+          !visitor(entry_it->first, entry_it->second)) {
         return false;
       }
-      if (committed_found) continue;
-      if (!visitor(change->doc_id, change->vector)) return false;
     }
     return true;
   };
@@ -208,6 +197,8 @@ committed_entry_reader make_commit_rebuild_reader(
 bool apply_entry_store_change(vector_entry_store *entry_store,
                               const index_service::pending_change_snapshot &change) {
   if (entry_store == nullptr) return false;
+  DBUG_EXECUTE_IF("vector_service_fail_commit_entry_store_apply",
+                  return false;);
   if (!change.erase) {
     return entry_store->upsert(change.index_name, change.doc_id, change.vector);
   }
@@ -378,6 +369,7 @@ bool index_service::snapshot_commit_build_plan(uint64_t txn_id,
                                                commit_build_plan *plan) {
   if (plan == nullptr) return false;
   plan->changes.clear();
+  plan->indexes.clear();
   plan->rebuilds.clear();
 
   auto pending_it = m_pending_changes.find(txn_id);
@@ -438,21 +430,52 @@ bool index_service::snapshot_commit_build_plan(uint64_t txn_id,
       return false;
     }
 
+    commit_index_plan index_plan;
+    index_plan.index_name = entry.first;
+    index_plan.config = config_it->second;
+    index_plan.before_generation = m_entry_store.generation(entry.first);
+    std::unordered_set<uint64_t> captured_doc_ids;
+    captured_doc_ids.reserve(entry.second.size());
+    for (const pending_change_snapshot *change : entry.second) {
+      if (!captured_doc_ids.insert(change->doc_id).second) continue;
+      commit_entry_before_image before_image;
+      before_image.doc_id = change->doc_id;
+      if (!m_entry_store.find_committed_entry(
+              entry.first, change->doc_id, &before_image.vector,
+              &before_image.found)) {
+        return false;
+      }
+      index_plan.before_images.push_back(std::move(before_image));
+    }
+
     auto lifecycle_it = m_lifecycle_infos.find(entry.first);
     if (lifecycle_it != m_lifecycle_infos.end() &&
         lifecycle_is_bulk_loading(lifecycle_it->second)) {
+      plan->indexes.push_back(std::move(index_plan));
       continue;
     }
-    if (!should_batch_rebuild_on_commit(index_it->second.get())) continue;
+    if (!should_batch_rebuild_on_commit(index_it->second.get())) {
+      plan->indexes.push_back(std::move(index_plan));
+      continue;
+    }
 
     commit_rebuild_plan rebuild_plan;
     rebuild_plan.index_name = entry.first;
     rebuild_plan.config = config_it->second;
-    rebuild_plan.before_generation = m_entry_store.generation(entry.first);
+    if (!m_entry_store.snapshot_index(entry.first,
+                                      &rebuild_plan.candidate_entries)) {
+      return false;
+    }
     rebuild_plan.changes.reserve(entry.second.size());
     for (const pending_change_snapshot *change : entry.second) {
       rebuild_plan.changes.push_back(*change);
+      if (change->erase) {
+        rebuild_plan.candidate_entries.erase(change->doc_id);
+      } else {
+        rebuild_plan.candidate_entries[change->doc_id] = change->vector;
+      }
     }
+    plan->indexes.push_back(std::move(index_plan));
     plan->rebuilds.push_back(std::move(rebuild_plan));
   }
   return true;
@@ -463,8 +486,8 @@ bool index_service::build_commit_backends(commit_build_plan *plan) const {
   for (commit_rebuild_plan &rebuild_plan : plan->rebuilds) {
     std::unique_ptr<backend> rebuilt =
         build_backend_from_config(rebuild_plan.index_name, rebuild_plan.config);
-    const committed_entry_reader reader = make_commit_rebuild_reader(
-        m_entry_store, rebuild_plan.index_name, rebuild_plan.changes);
+    const committed_entry_reader reader =
+        make_commit_rebuild_reader(rebuild_plan.candidate_entries);
     if (rebuilt == nullptr ||
         !rebuilt->rebuild_from_committed_entries_from_reader(reader)) {
       return false;
@@ -495,24 +518,103 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
   std::unordered_set<std::string> rebuild_indexes;
   rebuild_indexes.reserve(plan->rebuilds.size());
   for (const commit_rebuild_plan &rebuild_plan : plan->rebuilds) {
-    rebuild_indexes.insert(rebuild_plan.index_name);
+    if (!rebuild_indexes.insert(rebuild_plan.index_name).second) return false;
   }
 
-  for (const commit_rebuild_plan &rebuild_plan : plan->rebuilds) {
-    if (rebuild_plan.rebuilt_backend == nullptr) return false;
-    auto index_it = m_indexes.find(rebuild_plan.index_name);
-    auto config_it = m_index_configs.find(rebuild_plan.index_name);
-    if (!all_true(index_it != m_indexes.end(), config_it != m_index_configs.end(),
-                  m_entry_store.has_index(rebuild_plan.index_name),
-                  m_entry_store.generation(rebuild_plan.index_name) ==
-                      rebuild_plan.before_generation,
-                  config_it->second.dimension == rebuild_plan.config.dimension,
-                  config_it->second.metric == rebuild_plan.config.metric,
-                  config_it->second.mode == rebuild_plan.config.mode,
-                  config_it->second.provider == rebuild_plan.config.provider)) {
+  std::unordered_map<std::string, const commit_index_plan *> index_plans;
+  index_plans.reserve(plan->indexes.size());
+  for (const commit_index_plan &index_plan : plan->indexes) {
+    if (!index_plans.emplace(index_plan.index_name, &index_plan).second) {
+      return false;
+    }
+    auto index_it = m_indexes.find(index_plan.index_name);
+    auto config_it = m_index_configs.find(index_plan.index_name);
+    if (index_it == m_indexes.end() || config_it == m_index_configs.end() ||
+        !m_entry_store.has_index(index_plan.index_name)) {
+      return false;
+    }
+    if (m_entry_store.generation(index_plan.index_name) !=
+            index_plan.before_generation ||
+        !index_configs_equal(config_it->second, index_plan.config)) {
       return false;
     }
   }
+
+  for (const pending_change_snapshot &change : plan->changes) {
+    if (index_plans.find(change.index_name) == index_plans.end()) return false;
+  }
+
+  std::vector<std::pair<backend_ptr *, commit_rebuild_plan *>> rebuild_targets;
+  rebuild_targets.reserve(plan->rebuilds.size());
+  for (commit_rebuild_plan &rebuild_plan : plan->rebuilds) {
+    const auto plan_it = index_plans.find(rebuild_plan.index_name);
+    auto index_it = m_indexes.find(rebuild_plan.index_name);
+    if (rebuild_plan.rebuilt_backend == nullptr ||
+        plan_it == index_plans.end() ||
+        index_it == m_indexes.end() ||
+        !index_configs_equal(rebuild_plan.config, plan_it->second->config)) {
+      return false;
+    }
+    rebuild_targets.emplace_back(&index_it->second, &rebuild_plan);
+  }
+
+  for (const commit_index_plan &index_plan : plan->indexes) {
+    if (!m_entry_store.prepare_index_for_mutation(index_plan.index_name)) {
+      return false;
+    }
+  }
+
+  std::unordered_set<std::string> touched_backends;
+  auto restore_entry_store = [&]() {
+    bool restored = true;
+    for (const commit_index_plan &index_plan : plan->indexes) {
+      for (const commit_entry_before_image &before_image :
+           index_plan.before_images) {
+        const bool ok = before_image.found
+                            ? m_entry_store.upsert(index_plan.index_name,
+                                                   before_image.doc_id,
+                                                   before_image.vector)
+                            : m_entry_store.erase(index_plan.index_name,
+                                                  before_image.doc_id);
+        restored = ok && restored;
+      }
+    }
+    return restored;
+  };
+  auto restore_touched_backends = [&]() {
+    bool restored = true;
+    for (const std::string &index_name : touched_backends) {
+      const auto plan_it = index_plans.find(index_name);
+      if (plan_it == index_plans.end()) {
+        restored = false;
+        continue;
+      }
+      committed_entries entries;
+      std::unique_ptr<backend> rebuilt =
+          build_backend_from_config(index_name, plan_it->second->config);
+      if (rebuilt == nullptr ||
+          !m_entry_store.snapshot_index(index_name, &entries) ||
+          !rebuilt->rebuild_from_committed_entries(entries)) {
+        restored = false;
+        continue;
+      }
+      auto index_it = m_indexes.find(index_name);
+      if (index_it == m_indexes.end()) {
+        restored = false;
+        continue;
+      }
+      index_it->second = std::move(rebuilt);
+    }
+    return restored;
+  };
+  auto fail_and_restore = [&](const std::string &index_name) {
+    mark_failure_for_index(index_name, ERROR_BACKEND_APPLY_FAILED);
+    const bool entry_store_restored = restore_entry_store();
+    const bool backends_restored = restore_touched_backends();
+    (void)entry_store_restored;
+    (void)backends_restored;
+    return false;
+  };
 
   for (const pending_change_snapshot &change : plan->changes) {
     auto index_it = m_indexes.find(change.index_name);
@@ -526,6 +628,7 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
       continue;
     }
 
+    touched_backends.insert(change.index_name);
     bool ok = false;
     {
       std::unique_lock<std::shared_mutex> runtime_guard(
@@ -534,32 +637,19 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
                          : index_it->second->erase(change.doc_id);
     }
     if (!ok) {
-      mark_failure_for_index(change.index_name, ERROR_BACKEND_APPLY_FAILED);
-      return false;
+      return fail_and_restore(change.index_name);
     }
-  }
-
-  for (commit_rebuild_plan &rebuild_plan : plan->rebuilds) {
-    auto index_it = m_indexes.find(rebuild_plan.index_name);
-    if (!all_true(index_it != m_indexes.end(),
-                  m_entry_store.has_index(rebuild_plan.index_name))) {
-      return false;
-    }
-    for (const pending_change_snapshot &change : rebuild_plan.changes) {
-      if (!apply_entry_store_change(&m_entry_store, change)) {
-        return false;
-      }
-    }
-    index_it->second = std::move(rebuild_plan.rebuilt_backend);
-    maybe_unload_runtime(rebuild_plan.index_name);
   }
 
   for (const pending_change_snapshot &change : plan->changes) {
-    if (rebuild_indexes.find(change.index_name) != rebuild_indexes.end()) {
-      continue;
+    if (!apply_entry_store_change(&m_entry_store, change)) {
+      return fail_and_restore(change.index_name);
     }
-    if (!m_entry_store.has_index(change.index_name)) return false;
-    if (!apply_entry_store_change(&m_entry_store, change)) return false;
+  }
+
+  for (auto &target : rebuild_targets) {
+    *target.first = std::move(target.second->rebuilt_backend);
+    maybe_unload_runtime(target.second->index_name);
   }
 
   auto pending_it = m_pending_changes.find(txn_id);
@@ -587,7 +677,8 @@ bool index_service::savepoint(uint64_t txn_id, const std::string &name) {
   std::vector<savepoint_marker> &savepoints = m_savepoints[txn_id];
   savepoints.erase(std::remove_if(savepoints.begin(), savepoints.end(),
                                   [&](const savepoint_marker &marker) {
-                                    return marker.name == name;
+                                    return savepoint_names_equal(marker.name,
+                                                                 name);
                                   }),
                    savepoints.end());
   savepoints.push_back(savepoint_marker{name, pending_count});
@@ -599,10 +690,11 @@ bool index_service::rollback_to_savepoint(uint64_t txn_id, const std::string &na
   if (savepoint_it == m_savepoints.end() || name.empty()) return false;
 
   std::vector<savepoint_marker> &savepoints = savepoint_it->second;
-  auto marker_it = std::find_if(savepoints.begin(), savepoints.end(),
-                                [&](const savepoint_marker &marker) {
-                                  return marker.name == name;
-                                });
+  auto marker_it =
+      std::find_if(savepoints.begin(), savepoints.end(),
+                   [&](const savepoint_marker &marker) {
+                     return savepoint_names_equal(marker.name, name);
+                   });
   if (marker_it == savepoints.end()) return false;
 
   std::vector<pending_change> &changes = m_pending_changes[txn_id];
@@ -619,10 +711,11 @@ bool index_service::release_savepoint(uint64_t txn_id, const std::string &name) 
   if (savepoint_it == m_savepoints.end() || name.empty()) return false;
 
   std::vector<savepoint_marker> &savepoints = savepoint_it->second;
-  auto marker_it = std::find_if(savepoints.begin(), savepoints.end(),
-                                [&](const savepoint_marker &marker) {
-                                  return marker.name == name;
-                                });
+  auto marker_it =
+      std::find_if(savepoints.begin(), savepoints.end(),
+                   [&](const savepoint_marker &marker) {
+                     return savepoint_names_equal(marker.name, name);
+                   });
   if (marker_it == savepoints.end()) return false;
 
   savepoints.erase(marker_it);

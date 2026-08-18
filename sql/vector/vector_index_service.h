@@ -70,6 +70,8 @@ class vector_entry_store {
                       committed_entries *entries) const;
   bool find_committed_entry(const std::string &index_name, uint64_t doc_id,
                             vector_data *vector, bool *found) const;
+  /** Materialize an evicted index before a multi-step mutation sequence. */
+  bool prepare_index_for_mutation(const std::string &index_name);
   bool for_each_committed_entry(const std::string &index_name,
                                 const entry_visitor &visitor) const;
   bool evict_until_under_budget(size_t budget);
@@ -334,16 +336,32 @@ class index_service {
     std::vector<pending_savepoint_snapshot> savepoints;
   };
 
-  struct commit_rebuild_plan {
+  struct commit_entry_before_image {
+    uint64_t doc_id{0};
+    bool found{false};
+    vector_data vector;
+  };
+
+  /** Immutable validation and rollback state for one affected index. */
+  struct commit_index_plan {
     std::string index_name;
     index_config config;
     uint64_t before_generation{0};
+    std::vector<commit_entry_before_image> before_images;
+  };
+
+  /** Candidate committed state and shadow backend for a rebuild index. */
+  struct commit_rebuild_plan {
+    std::string index_name;
+    index_config config;
     std::vector<pending_change_snapshot> changes;
+    committed_entries candidate_entries;
     std::unique_ptr<backend> rebuilt_backend;
   };
 
   struct commit_build_plan {
     std::vector<pending_change_snapshot> changes;
+    std::vector<commit_index_plan> indexes;
     std::vector<commit_rebuild_plan> rebuilds;
   };
 

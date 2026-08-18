@@ -330,29 +330,25 @@ bool stage_prepared_changes(THD *thd, const prepared_changes &changes) {
   if (thd == nullptr) return true;
   if (changes.empty()) return false;
 
-  vector_trx_participant::register_participant(thd);
+  if (!vector_trx_participant::register_participant(thd)) {
+    my_error(ER_INTERNAL_ERROR, MYF(0),
+             "Failed to register vector transaction participant");
+    return true;
+  }
 
-  const uint64_t thd_id = static_cast<uint64_t>(thd->thread_id());
   const uint64_t statement_id = static_cast<uint64_t>(thd->query_id);
-
+  std::vector<vector_index::index_service::pending_change_snapshot>
+      staged_changes;
+  staged_changes.reserve(changes.size());
   for (const prepared_change &change : changes) {
-    bool ok = false;
-    if (change.erase) {
-      ok = vector_index_registry::stage_erase_for_thd_txn(
-          thd_id, statement_id, change.index_name, change.doc_id);
-      if (!ok) {
-        my_error(ER_INTERNAL_ERROR, MYF(0), "Failed to stage vector erase");
-        return true;
-      }
-      continue;
-    }
-
-    ok = vector_index_registry::stage_upsert_for_thd_txn(
-        thd_id, statement_id, change.index_name, change.doc_id, change.vector);
-    if (!ok) {
-      my_error(ER_INTERNAL_ERROR, MYF(0), "Failed to stage vector upsert");
-      return true;
-    }
+    staged_changes.push_back({change.index_name, change.erase, change.doc_id,
+                              change.vector});
+  }
+  if (!vector_index_registry::stage_changes_for_thd_txn(
+          thd, statement_id, staged_changes)) {
+    my_error(ER_INTERNAL_ERROR, MYF(0),
+             "Failed to stage vector truth changes");
+    return true;
   }
   return false;
 }

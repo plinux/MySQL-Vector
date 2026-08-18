@@ -42,6 +42,28 @@
 
 namespace vector_gunit {
 
+template <typename T>
+class ScopedValueGuard {
+ public:
+  ScopedValueGuard(T *value, T replacement)
+      : m_value(value), m_original(*value) {
+    *m_value = replacement;
+  }
+
+  ~ScopedValueGuard() { *m_value = m_original; }
+
+  ScopedValueGuard(const ScopedValueGuard &) = delete;
+  ScopedValueGuard &operator=(const ScopedValueGuard &) = delete;
+
+ private:
+  T *m_value;
+  T m_original;
+};
+
+using BoolGuard = ScopedValueGuard<bool>;
+using UlongGuard = ScopedValueGuard<ulong>;
+using UlonglongGuard = ScopedValueGuard<ulonglong>;
+
 class ScopedTempDirectory {
  public:
   explicit ScopedTempDirectory(const char *prefix) {

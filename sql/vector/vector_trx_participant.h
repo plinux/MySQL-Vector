@@ -26,10 +26,6 @@
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 #include <cstdint>
-#include <string>
-#include <vector>
-
-#include "sql/vector/vector_index_metadata_store.h"
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 class THD;
@@ -39,16 +35,27 @@ namespace vector_trx_participant {
 
 int init_plugin(void *p);
 int deinit_plugin(void *p);
-void register_participant(THD *thd);
+/**
+  Ensure the vector transaction lifecycle observer is registered.
+
+  @return true when the observer is available, false otherwise.
+*/
+bool ensure_observer_registered();
+/**
+  Register the vector participant and its transaction lifecycle observer.
+
+  @param thd Thread context.
+  @return true when both registrations are available, false otherwise.
+*/
+bool register_participant(THD *thd);
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 uint64_t thd_id_for_testing(const THD *thd);
 uint64_t stmt_id_for_testing(const THD *thd);
 bool in_multi_stmt_for_testing(THD *thd);
 bool is_real_scope_for_testing(THD *thd, bool all);
-bool skip_recovery_for_bootstrap_for_testing(THD *thd);
-std::string savepoint_token_name_for_testing(THD *thd, void *savepoint);
-bool load_prepared_rows_for_testing(
-    std::vector<vector_index_metadata_store::prepared_change_row> *rows);
+bool is_xa_commit_publication_fallback_for_testing(THD *thd,
+                                                   uint64_t thread_id);
+void set_registration_bypass_for_testing(bool bypass);
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 }  // namespace vector_trx_participant

@@ -42,6 +42,11 @@ std::unique_ptr<backend> build_backend_from_config(
     const std::string &index_name,
     const vector_index::index_service::index_config &config);
 
+/** Compare every persisted and runtime-relevant index configuration field. */
+bool index_configs_equal(
+    const vector_index::index_service::index_config &lhs,
+    const vector_index::index_service::index_config &rhs);
+
 /** Merge one segment's build diagnostics into the index-wide aggregate. */
 void merge_segment_build_diagnostics(
     uint64_t segment_row_count, const backend_build_diagnostics &source,

@@ -59,7 +59,10 @@ struct thd_txn_context {
   uint64_t txn_id{0};
   uint64_t active_stmt_id{0};
   bool stmt_savepoint_active{false};
+  bool attached_dml{false};
   std::string stmt_savepoint_name;
+  std::vector<vector_index_metadata_store::change_log_row>
+      durable_change_log_rows;
 };
 
 struct index_binding {
@@ -207,7 +210,7 @@ bool rollback_runtime_commit_state_locked(
 bool xid_matches_row(
     const XID &xid,
     const vector_index_metadata_store::prepared_change_row &row);
-void xid_from_prepared_row(
+bool xid_from_prepared_row(
     const vector_index_metadata_store::prepared_change_row &row, XID *xid);
 bool find_prepared_rows_for_xid_locked(
     const XID &xid,
@@ -219,11 +222,17 @@ void queue_recovery_action_locked(const XID &xid, recovery_action_type type,
 bool snapshot_prepared_rows_for_txn_locked(
     uint64_t txn_id, const XID &xid,
     std::vector<vector_index_metadata_store::prepared_change_row> *rows);
-void append_pending_change_log_delta_locked(
+bool append_pending_change_log_delta_locked(
     uint64_t txn_id,
     const std::vector<vector_index::index_service::pending_change_snapshot>
         &changes);
+bool allocate_pending_change_log_delta_locked(
+    uint64_t txn_id,
+    const std::vector<vector_index::index_service::pending_change_snapshot>
+        &changes,
+    std::vector<vector_index_metadata_store::change_log_row> *rows);
 uint64_t allocate_txn_id();
+void advance_txn_id_high_water(uint64_t txn_id);
 std::string make_stmt_savepoint_name(uint64_t statement_id);
 std::string make_user_savepoint_name(const std::string &name);
 std::string make_mapped_index_name(const std::string &db_name,

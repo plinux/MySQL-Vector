@@ -51,6 +51,15 @@ namespace vector_index_service_unittest {
 
 namespace {
 
+using vector_gunit::BoolGuard;
+using vector_gunit::ScopedDebugFlag;
+using vector_gunit::UlongGuard;
+using vector_gunit::UlonglongGuard;
+
+// Service unit tests use the exact native backend to isolate service behavior
+// from optional third-party libraries in both Debug and Release builds.
+const vector_gunit::NativeProviderGuard native_provider_guard;
+
 bool has_prefix(const std::string &text, const std::string &prefix) {
   return text.size() >= prefix.size() &&
          text.compare(0, prefix.size(), prefix) == 0;
@@ -494,20 +503,6 @@ class configurable_backend final : public vector_index::backend {
   vector_index::memory_backend m_storage;
 };
 
-class BoolGuard {
- public:
-  BoolGuard(bool *value, bool replacement)
-      : m_value(value), m_original(*value) {
-    *m_value = replacement;
-  }
-
-  ~BoolGuard() { *m_value = m_original; }
-
- private:
-  bool *m_value;
-  bool m_original;
-};
-
 struct segmented_search_concurrency_probe {
   void enter() {
     const size_t active = active_searches.fetch_add(1) + 1;
@@ -620,34 +615,6 @@ class shared_search_worker_pool_guard {
   ~shared_search_worker_pool_guard() {
     vector_index::reset_shared_search_worker_pool_for_testing();
   }
-};
-
-class UlonglongGuard {
- public:
-  UlonglongGuard(ulonglong *value, ulonglong replacement)
-      : m_value(value), m_original(*value) {
-    *m_value = replacement;
-  }
-
-  ~UlonglongGuard() { *m_value = m_original; }
-
- private:
-  ulonglong *m_value;
-  ulonglong m_original;
-};
-
-class UlongGuard {
- public:
-  UlongGuard(ulong *value, ulong replacement)
-      : m_value(value), m_original(*value) {
-    *m_value = replacement;
-  }
-
-  ~UlongGuard() { *m_value = m_original; }
-
- private:
-  ulong *m_value;
-  ulong m_original;
 };
 
 class committed_rows_truth_store final : public vector_index_truth_store::truth_store {
@@ -964,6 +931,55 @@ class NonWritableBackend final : public vector_index::backend {
     return vector_index::backend_provider::kDiskAnn;
   }
   bool supports_mutations() const override { return false; }
+};
+
+class FailAfterMutationBackend final : public vector_index::backend {
+ public:
+  void fail_after_successful_mutations(size_t successful_mutations) {
+    m_successful_mutations_before_failure = successful_mutations;
+    m_mutation_count = 0;
+  }
+
+  bool upsert(uint64_t doc_id,
+              const vector_index::vector_data &vector) override {
+    if (should_fail_mutation()) return false;
+    return m_backend.upsert(doc_id, vector);
+  }
+
+  bool erase(uint64_t doc_id) override {
+    if (should_fail_mutation()) return false;
+    return m_backend.erase(doc_id);
+  }
+
+  bool search(const vector_index::vector_data &query, size_t top_k,
+              std::vector<vector_index::search_result> *results) const override {
+    return m_backend.search(query, top_k, results);
+  }
+
+  size_t dimension() const override { return 2; }
+  vector_index::metric_type metric() const override {
+    return vector_index::metric_type::kEuclidean;
+  }
+  vector_index::backend_mode mode() const override {
+    return vector_index::backend_mode::kMemory;
+  }
+  vector_index::backend_provider provider() const override {
+    return vector_index::backend_provider::kNative;
+  }
+  bool supports_mutations() const override { return true; }
+
+ private:
+  bool should_fail_mutation() {
+    if (m_mutation_count == m_successful_mutations_before_failure) return true;
+    ++m_mutation_count;
+    return false;
+  }
+
+  vector_index::memory_backend m_backend{
+      2, vector_index::metric_type::kEuclidean};
+  size_t m_successful_mutations_before_failure{
+      std::numeric_limits<size_t>::max()};
+  size_t m_mutation_count{0};
 };
 
 class RerankProbeDiskAnnBackend final : public vector_index::backend {
@@ -8445,8 +8461,8 @@ TEST(VectorIndexServiceTest, StagedCommitPlanCoversGuardAndFailureBranches) {
   invalid_entries_rebuild.config = {2, vector_index::metric_type::kEuclidean,
                                     vector_index::backend_mode::kMemory,
                                     vector_index::backend_provider::kNative, ""};
-  invalid_entries_rebuild.changes.push_back(
-      {"idx_invalid_entries", false, 1, {1.0F}});
+  invalid_entries_rebuild.candidate_entries.emplace(
+      1, vector_index::vector_data{1.0F});
   EXPECT_FALSE(service.build_commit_backends(&invalid_entries_plan));
 }
 
@@ -8467,6 +8483,20 @@ TEST(VectorIndexServiceTest,
   EXPECT_FALSE(service.apply_commit_build_plan(70, &plan));
   EXPECT_EQ(2U, service.pending_change_count(70));
   service.rollback(70);
+
+  ASSERT_TRUE(service.register_index_from_strings("idx_stale_committed", 2,
+                                                  "euclidean", "memory",
+                                                  "native"));
+  ASSERT_TRUE(service.stage_upsert(77, "idx_stale_committed", 1,
+                                   {1.0F, 1.0F}));
+  ASSERT_TRUE(service.snapshot_commit_build_plan(77, &plan));
+  ASSERT_TRUE(service.stage_upsert(78, "idx_stale_committed", 2,
+                                   {2.0F, 2.0F}));
+  ASSERT_TRUE(service.commit(78));
+  ASSERT_TRUE(service.build_commit_backends(&plan));
+  EXPECT_FALSE(service.apply_commit_build_plan(77, &plan));
+  EXPECT_EQ(1U, service.pending_change_count(77));
+  service.rollback(77);
 
   ASSERT_TRUE(service.register_index_from_strings("idx_staged_drop_before_plan", 2,
                                                   "euclidean", "memory",
@@ -8544,11 +8574,17 @@ TEST(VectorIndexServiceTest,
   vector_index::index_service::commit_build_plan stale_plan;
   ASSERT_TRUE(service.snapshot_commit_build_plan(81, &stale_plan));
   ASSERT_EQ(1U, stale_plan.rebuilds.size());
-  ASSERT_TRUE(service.build_commit_backends(&stale_plan));
+  const auto &stale_entries = stale_plan.rebuilds[0].candidate_entries;
+  EXPECT_EQ(0U, stale_entries.count(1));
+  EXPECT_EQ(1U, stale_entries.count(2));
+  EXPECT_EQ(1U, stale_entries.count(3));
+  EXPECT_EQ(0U, stale_entries.count(4));
 
   ASSERT_TRUE(service.stage_upsert(82, "idx_staged_faiss", 4,
                                    {4.0F, 4.0F}));
   ASSERT_TRUE(service.commit(82));
+  EXPECT_EQ(0U, stale_entries.count(4));
+  ASSERT_TRUE(service.build_commit_backends(&stale_plan));
   EXPECT_FALSE(service.apply_commit_build_plan(81, &stale_plan));
   EXPECT_EQ(2U, service.pending_change_count(81));
 
@@ -8567,6 +8603,42 @@ TEST(VectorIndexServiceTest,
   EXPECT_EQ(1U, index_it->second.count(2));
   EXPECT_EQ(1U, index_it->second.count(3));
   EXPECT_EQ(1U, index_it->second.count(4));
+
+  std::filesystem::remove_all(root);
+}
+
+TEST(VectorIndexServiceTest,
+     StagedCommitPlanExternalFaissRejectsConfigurationChange) {
+  const std::string root = std::string(testing::TempDir()) +
+                           "/vector_service_staged_faiss_config_t";
+  std::filesystem::remove_all(root);
+  faiss_snapshot_root_guard faiss_root(root);
+
+  vector_index::index_service service;
+  if (!service.register_index_from_strings("idx_staged_faiss_config", 2,
+                                           "euclidean", "external", "faiss")) {
+    GTEST_SKIP() << "FAISS external backend unavailable in current build";
+  }
+  ASSERT_TRUE(service.stage_upsert(830, "idx_staged_faiss_config", 1,
+                                   {1.0F, 1.0F}));
+  ASSERT_TRUE(service.commit(830));
+  ASSERT_TRUE(service.stage_upsert(83, "idx_staged_faiss_config", 2,
+                                   {2.0F, 2.0F}));
+
+  vector_index::index_service::commit_build_plan plan;
+  ASSERT_TRUE(service.snapshot_commit_build_plan(83, &plan));
+  ASSERT_EQ(1U, plan.rebuilds.size());
+  ASSERT_TRUE(service.build_commit_backends(&plan));
+
+  vector_index::index_service::index_config changed_config;
+  ASSERT_TRUE(service.describe_index("idx_staged_faiss_config",
+                                     &changed_config, nullptr, nullptr,
+                                     nullptr));
+  changed_config.faiss_build_threads = 2;
+  ASSERT_TRUE(
+      service.restore_index_config("idx_staged_faiss_config", changed_config));
+  EXPECT_FALSE(service.apply_commit_build_plan(83, &plan));
+  EXPECT_EQ(1U, service.pending_change_count(83));
 
   std::filesystem::remove_all(root);
 }

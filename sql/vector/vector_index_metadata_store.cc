@@ -39,7 +39,9 @@
 #include <vector>
 
 #include "my_dbug.h"
+#include "sql/handler.h"
 #include "sql/mysqld.h"
+#include "sql/xa.h"
 
 namespace vector_index_metadata_store::detail {
 
@@ -123,11 +125,12 @@ bool decode_hex(const std::string &encoded, std::string *decoded) {
 }
 
 bool parse_uint64(const std::string &text, uint64_t *value) {
-  if (text.empty()) return false;
+  if (value == nullptr || text.empty()) return false;
+  for (const char character : text) {
+    if (character < '0' || character > '9') return false;
+  }
   errno = 0;
-  char *end = nullptr;
-  const unsigned long long parsed = std::strtoull(text.c_str(), &end, 10);
-  if (end == text.c_str() || *end != '\0') return false;
+  const unsigned long long parsed = std::strtoull(text.c_str(), nullptr, 10);
   if (parsed == std::numeric_limits<unsigned long long>::max() &&
       errno == ERANGE) {
     return false;
@@ -288,6 +291,81 @@ bool parse_change_op(const std::string &text,
 namespace vector_index_metadata_store {
 
 using namespace detail;
+
+namespace {
+
+bool xid_data_length(int64_t format_id, int64_t gtrid_length,
+                     int64_t bqual_length, size_t *data_length) {
+  if (data_length == nullptr) return false;
+  if (format_id < 0 ||
+      format_id > static_cast<int64_t>(std::numeric_limits<long>::max()) ||
+      gtrid_length < 0 || gtrid_length > MAXGTRIDSIZE ||
+      bqual_length < 0 || bqual_length > MAXBQUALSIZE) {
+    return false;
+  }
+
+  *data_length = static_cast<size_t>(gtrid_length) +
+                 static_cast<size_t>(bqual_length);
+  return *data_length <= XIDDATASIZE;
+}
+
+bool valid_xid_fields(int64_t format_id, int64_t gtrid_length,
+                      int64_t bqual_length, size_t stored_data_length) {
+  size_t expected_data_length = 0;
+  return xid_data_length(format_id, gtrid_length, bqual_length,
+                         &expected_data_length) &&
+         expected_data_length == stored_data_length;
+}
+
+bool valid_xid(const xid_t &xid, size_t *data_length) {
+  return xid_data_length(xid.get_format_id(), xid.get_gtrid_length(),
+                         xid.get_bqual_length(), data_length);
+}
+
+}  // namespace
+
+bool valid_prepared_xid(const prepared_change_row &row) {
+  return valid_xid_fields(row.format_id, row.gtrid_length, row.bqual_length,
+                          row.xid_data.size());
+}
+
+bool set_prepared_xid(const xid_t &xid, prepared_change_row *row) {
+  size_t data_length = 0;
+  if (row == nullptr || !valid_xid(xid, &data_length)) return false;
+
+  row->format_id = xid.get_format_id();
+  row->gtrid_length = xid.get_gtrid_length();
+  row->bqual_length = xid.get_bqual_length();
+  row->xid_data.assign(xid.get_data(), data_length);
+  return true;
+}
+
+bool get_prepared_xid(const prepared_change_row &row, xid_t *xid) {
+  if (xid == nullptr || !valid_prepared_xid(row)) return false;
+
+  xid->reset();
+  xid->set_format_id(static_cast<long>(row.format_id));
+  xid->set_gtrid_length(static_cast<long>(row.gtrid_length));
+  xid->set_bqual_length(static_cast<long>(row.bqual_length));
+  if (!row.xid_data.empty()) {
+    xid->set_data(row.xid_data.data(), static_cast<long>(row.xid_data.size()));
+  }
+  return true;
+}
+
+bool prepared_xid_matches(const prepared_change_row &row, const xid_t &xid) {
+  size_t xid_data_size = 0;
+  if (!valid_prepared_xid(row) || !valid_xid(xid, &xid_data_size) ||
+      row.xid_data.size() != xid_data_size ||
+      row.format_id != xid.get_format_id() ||
+      row.gtrid_length != xid.get_gtrid_length() ||
+      row.bqual_length != xid.get_bqual_length()) {
+    return false;
+  }
+  return row.xid_data.empty() ||
+         std::memcmp(row.xid_data.data(), xid.get_data(), row.xid_data.size()) ==
+             0;
+}
 
 bool deserialize_metadata_rows(const std::string &payload,
                              std::vector<metadata_row> *rows) {
