@@ -5130,6 +5130,7 @@ bool entry_store_vectors_match_dimension(const vector_entry_store &entry_store,
 }
 }  // namespace
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 bool parse_manifest_size_for_testing(const std::string &text, size_t *value) {
   return parse_manifest_size(text, value);
 }
@@ -5165,6 +5166,16 @@ bool raw_segments_use_single_backend_for_testing(
     const index_service::index_config &config) {
   return raw_segments_use_single_backend(config);
 }
+
+std::unique_ptr<backend> build_segmented_raw_backend_for_testing(
+    const std::string &index_name, const index_service::index_config &config,
+    std::vector<raw_vector_segment> raw_segments, bool keep_raw_input_paths,
+    std::vector<vector_index_metadata_store::segment_task_row> *task_rows) {
+  return build_segmented_backend_from_raw_segments(
+      index_name, config, std::move(raw_segments), "gunit_raw_segments",
+      keep_raw_input_paths, task_rows);
+}
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 void index_service::mark_index_ready(const std::string &index_name,
                                      lifecycle_info *lifecycle) {
@@ -5466,6 +5477,20 @@ bool index_service::register_index(const std::string &index_name,
   return register_index_impl(index_name, std::move(config), std::move(backend));
 }
 
+bool index_service::register_index(const std::string &index_name,
+                                   const index_config &config) {
+  if (!valid_vector_dimension(config.dimension)) return false;
+
+  std::unique_ptr<backend> backend =
+      build_backend_from_config(index_name, config);
+  if (backend == nullptr) return false;
+  index_config normalized_config = config;
+  detail::normalize_diskann_build_mode(&normalized_config);
+
+  return register_index_impl(index_name, std::move(normalized_config),
+                             std::move(backend));
+}
+
 bool index_service::register_index_impl(const std::string &index_name,
                                         index_config config,
                                         std::unique_ptr<backend> backend) {
@@ -5496,20 +5521,6 @@ bool index_service::register_index_impl(const std::string &index_name,
   publication.index_identity = m_next_index_identity++;
   m_publication_states.emplace(index_name, publication);
   return true;
-}
-
-bool index_service::register_index(const std::string &index_name,
-                                   const index_config &config) {
-  if (!valid_vector_dimension(config.dimension)) return false;
-
-  std::unique_ptr<backend> backend =
-      build_backend_from_config(index_name, config);
-  if (backend == nullptr) return false;
-  index_config normalized_config = config;
-  detail::normalize_diskann_build_mode(&normalized_config);
-
-  return register_index_impl(index_name, std::move(normalized_config),
-                             std::move(backend));
 }
 
 bool index_service::register_index_from_strings(const std::string &index_name,
@@ -7204,6 +7215,7 @@ bool index_service::set_index_consistency_mode(
                 lifecycle_it != m_lifecycle_infos.end())) {
     return false;
   }
+  if (config_it->second.consistency_mode == consistency_mode) return true;
   if (pending_changes_contain_index(m_pending_changes, index_name)) {
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_PENDING_CHANGES);
     return false;
@@ -7605,7 +7617,9 @@ bool index_service::replace_committed_entries_impl(
 
   index_it->second = std::move(rebuilt);
   if (!m_entry_store.replace_index(index_name, entries)) return false;
-  if (!preserve_lifecycle) mark_lifecycle_ready(&lifecycle_it->second);
+  if (!preserve_lifecycle) {
+    mark_index_ready(index_name, &lifecycle_it->second);
+  }
   maybe_unload_runtime(index_name);
   return true;
 }

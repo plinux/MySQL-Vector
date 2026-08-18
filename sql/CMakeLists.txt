@@ -723,8 +723,10 @@ IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
     vector/vector_resource_budget.cc
     vector/vector_mapped_search.cc
     vector/vector_index_service.cc
+    vector/vector_index_service_txn.cc
     vector/vector_index_truth_store.cc
     vector/vector_index_truth_store_api.cc
+    vector/vector_truth_recovery.cc
     vector/vector_trx_participant.cc
     COMPILE_DEFINITIONS EXTRA_CODE_FOR_UNIT_TESTING)
 ENDIF()

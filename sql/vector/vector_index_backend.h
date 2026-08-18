@@ -1112,9 +1112,11 @@ class hnswlib_backend final : public backend {
   bool supports_mutations() const override {
     return m_mode == backend_mode::kMemory;
   }
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
   bool hnsw_native_available_for_testing() const;
   bool hnsw_exact_fallback_active_for_testing() const;
   size_t hnsw_exact_fallback_entry_count_for_testing() const;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
  private:
   bool native_available() const;

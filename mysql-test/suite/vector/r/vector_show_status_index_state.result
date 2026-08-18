@@ -66,7 +66,7 @@ INDEX_STATE	idx_mem.diskann_accelerate_build	0
 INDEX_STATE	idx_mem.diskann_shuffle_build	0
 INDEX_STATE	idx_mem.diskann_use_bfs_cache	0
 INDEX_STATE	idx_mem.lifecycle_state	ready
-INDEX_STATE	idx_mem.lifecycle_version	2
+INDEX_STATE	idx_mem.lifecycle_version	1
 INDEX_STATE	idx_mem.supports_mutations	1
 INDEX_STATE	idx_mem.entry_count	0
 INDEX_STATE	idx_mem.committed_entry_count	0
@@ -162,14 +162,14 @@ INDEX_STATE	idx_ext.diskann_accelerate_build	0
 INDEX_STATE	idx_ext.diskann_shuffle_build	0
 INDEX_STATE	idx_ext.diskann_use_bfs_cache	0
 INDEX_STATE	idx_ext.lifecycle_state	ready
-INDEX_STATE	idx_ext.lifecycle_version	2
+INDEX_STATE	idx_ext.lifecycle_version	1
 INDEX_STATE	idx_ext.supports_mutations	1
 INDEX_STATE	idx_ext.entry_count	0
 INDEX_STATE	idx_ext.committed_entry_count	0
 BACKEND_HEALTH	idx_ext.backend_type	faiss
 BACKEND_HEALTH	idx_ext.backend_variant	hnsw
 BACKEND_HEALTH	idx_ext.backend_build_runtime	faiss_scheduler
-BACKEND_HEALTH	idx_ext.backend_build_input_source	reader
+BACKEND_HEALTH	idx_ext.backend_build_input_source	entries
 BACKEND_HEALTH	idx_ext.backend_build_rows	0
 BACKEND_HEALTH	idx_ext.backend_build_segments	1
 BACKEND_HEALTH	idx_ext.backend_build_invocations	1
@@ -191,7 +191,7 @@ BACKEND_HEALTH	idx_ext.backend_build_train_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_add_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_persist_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_training_rows	0
-BACKEND_HEALTH	idx_ext.backend_build_reader_passes	1
+BACKEND_HEALTH	idx_ext.backend_build_reader_passes	0
 BACKEND_HEALTH	idx_ext.backend_build_fallback_reason	
 BACKEND_HEALTH	idx_ext.scheduler_path	faiss_scheduler
 BACKEND_HEALTH	idx_ext.scheduler_segment_count	1
@@ -335,7 +335,7 @@ INDEX_STATE	test.t_vec_status_meta.v.diskann_accelerate_build	0
 INDEX_STATE	test.t_vec_status_meta.v.diskann_shuffle_build	0
 INDEX_STATE	test.t_vec_status_meta.v.diskann_use_bfs_cache	0
 INDEX_STATE	test.t_vec_status_meta.v.lifecycle_state	ready
-INDEX_STATE	test.t_vec_status_meta.v.lifecycle_version	5
+INDEX_STATE	test.t_vec_status_meta.v.lifecycle_version	4
 INDEX_STATE	test.t_vec_status_meta.v.supports_mutations	1
 INDEX_STATE	test.t_vec_status_meta.v.entry_count	0
 INDEX_STATE	test.t_vec_status_meta.v.committed_entry_count	0

@@ -29,32 +29,11 @@
 #include <string>
 
 #include "sql/vector/vector_index_diagnostics.h"
+#include "unittest/gunit/vector_test_utils.h"
 
 namespace vector_index_diagnostics_unittest {
 
 constexpr const char *kDiagnosticsPathEnv = "MYSQL_VECTOR_DIAG_FILE";
-
-class ScopedEnvVar {
- public:
-  explicit ScopedEnvVar(const char *name)
-      : m_name(name), m_old_value(std::getenv(name) == nullptr
-                                      ? ""
-                                      : std::getenv(name)),
-        m_had_old_value(std::getenv(name) != nullptr) {}
-
-  ~ScopedEnvVar() {
-    if (m_had_old_value) {
-      setenv(m_name, m_old_value.c_str(), 1);
-    } else {
-      unsetenv(m_name);
-    }
-  }
-
- private:
-  const char *m_name;
-  std::string m_old_value;
-  bool m_had_old_value;
-};
 
 TEST(VectorIndexDiagnosticsTest, FormatsJsonEventWithEscapedStrings) {
   const std::string event = vector_index_diagnostics::format_event_for_testing(
@@ -107,7 +86,7 @@ TEST(VectorIndexDiagnosticsTest, AppendEventRejectsInvalidPaths) {
 }
 
 TEST(VectorIndexDiagnosticsTest, RecordEventHonorsEnvironmentSwitch) {
-  ScopedEnvVar guard(kDiagnosticsPathEnv);
+  vector_gunit::EnvVarGuard guard(kDiagnosticsPathEnv);
   unsetenv(kDiagnosticsPathEnv);
 
   const std::string path =

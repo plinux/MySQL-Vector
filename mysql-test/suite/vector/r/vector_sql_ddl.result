@@ -79,7 +79,7 @@ INDEX_STATE	test.t_vector_ddl.v.diskann_accelerate_build	0
 INDEX_STATE	test.t_vector_ddl.v.diskann_shuffle_build	0
 INDEX_STATE	test.t_vector_ddl.v.diskann_use_bfs_cache	0
 INDEX_STATE	test.t_vector_ddl.v.lifecycle_state	ready
-INDEX_STATE	test.t_vector_ddl.v.lifecycle_version	5
+INDEX_STATE	test.t_vector_ddl.v.lifecycle_version	4
 INDEX_STATE	test.t_vector_ddl.v.supports_mutations	1
 INDEX_STATE	test.t_vector_ddl.v.entry_count	1
 INDEX_STATE	test.t_vector_ddl.v.committed_entry_count	1
@@ -233,7 +233,7 @@ INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_accelerate_build	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_shuffle_build	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.diskann_use_bfs_cache	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.lifecycle_state	ready
-INDEX_STATE	test.t_vector_ddl_renamed.v.lifecycle_version	5
+INDEX_STATE	test.t_vector_ddl_renamed.v.lifecycle_version	4
 INDEX_STATE	test.t_vector_ddl_renamed.v.supports_mutations	1
 INDEX_STATE	test.t_vector_ddl_renamed.v.entry_count	1
 INDEX_STATE	test.t_vector_ddl_renamed.v.committed_entry_count	1
@@ -424,7 +424,7 @@ INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_accelerate_build	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_shuffle_build	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.diskann_use_bfs_cache	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.lifecycle_state	ready
-INDEX_STATE	test.t_vector_alter_dropcol.v.lifecycle_version	5
+INDEX_STATE	test.t_vector_alter_dropcol.v.lifecycle_version	4
 INDEX_STATE	test.t_vector_alter_dropcol.v.supports_mutations	1
 INDEX_STATE	test.t_vector_alter_dropcol.v.entry_count	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.committed_entry_count	0

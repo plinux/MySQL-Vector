@@ -33,6 +33,7 @@
 
 #include "extra/vector/diskann-offline-adapter-cpp/mysql_vector_diskann_offline_checked_io.h"
 #include "sql/vector/vector_diskann_artifact_layout.h"
+#include "unittest/gunit/vector_test_utils.h"
 
 namespace vector_diskann_artifact_layout_unittest {
 namespace {
@@ -128,11 +129,10 @@ void rewrite_first_payload_byte(const std::string &path, uint8_t value) {
 }
 
 std::string test_prefix(const char *name) {
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_diskann_artifact_layout";
-  std::error_code ec;
-  std::filesystem::create_directories(root, ec);
-  return root + "/" + name;
+  static const vector_gunit::ScopedTempDirectory root(
+      "vector_diskann_artifact_layout");
+  EXPECT_TRUE(root.valid()) << root.error();
+  return (root.path() / name).string();
 }
 
 void write_valid_artifacts(

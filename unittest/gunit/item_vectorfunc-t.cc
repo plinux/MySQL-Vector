@@ -50,6 +50,8 @@
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_load_staging.h"
+#include "sql/vector/vector_statement_publication.h"
 #include "sql/vector/vector_status.h"
 #include "sql/vector/vector_trx_participant.h"
 #include "sql/vector/vector_utils.h"
@@ -332,6 +334,20 @@ class SecureFilePrivGuard {
   const char *m_original;
 };
 
+class vector_root_guard {
+ public:
+  explicit vector_root_guard(const std::string &root) {
+    vector_index::set_faiss_external_snapshot_root_for_testing(root);
+  }
+
+  ~vector_root_guard() {
+    vector_index::reset_faiss_external_snapshot_root_for_testing();
+  }
+
+  vector_root_guard(const vector_root_guard &) = delete;
+  vector_root_guard &operator=(const vector_root_guard &) = delete;
+};
+
 template <typename T>
 void write_binary_value(std::ofstream *file, T value) {
   file->write(reinterpret_cast<const char *>(&value), sizeof(value));
@@ -448,7 +464,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const std::vector<vector_index_metadata_store::metadata_row> &) override {
     return true;
   }
-
   bool load_committed(
       std::vector<vector_index_metadata_store::committed_row> *rows) override {
     if (rows != nullptr) rows->clear();
@@ -458,7 +473,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const std::vector<vector_index_metadata_store::committed_row> &) override {
     return true;
   }
-
   bool load_manifest(vector_index_metadata_store::manifest_row *row) override {
     if (row != nullptr) *row = vector_index_metadata_store::manifest_row();
     return true;
@@ -467,7 +481,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const vector_index_metadata_store::manifest_row &) override {
     return true;
   }
-
   bool load_change_log(
       std::vector<vector_index_metadata_store::change_log_row> *rows) override {
     if (rows != nullptr) rows->clear();
@@ -477,7 +490,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const std::vector<vector_index_metadata_store::change_log_row> &) override {
     return true;
   }
-
   bool load_prepared(
       std::vector<vector_index_metadata_store::prepared_change_row> *rows)
       override {
@@ -488,7 +500,6 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
       const std::vector<vector_index_metadata_store::prepared_change_row> &) override {
     return true;
   }
-
   bool load_segment_tasks(
       std::vector<vector_index_metadata_store::segment_task_row> *rows)
       override {
@@ -691,6 +702,7 @@ TEST(ItemVectorFuncTest,
 
   const std::string json = as_std_string(out);
   EXPECT_NE(std::string::npos, json.find("\"backend_variant\":null"));
+  EXPECT_NE(std::string::npos, json.find("\"owner_schema\":null"));
   EXPECT_NE(std::string::npos, json.find("\"schema_name\":null"));
   EXPECT_NE(std::string::npos, json.find("\"table_name\":null"));
   EXPECT_NE(std::string::npos, json.find("\"column_name\":null"));
@@ -709,6 +721,7 @@ TEST(ItemVectorFuncTest,
 
   vector_index_registry::index_info ready = make_base_info();
   ready.backend_variant = "hnsw";
+  ready.owner_schema = "db1";
   ready.schema_name = "db1";
   ready.table_name = "t1";
   ready.column_name = "v1";
@@ -732,6 +745,7 @@ TEST(ItemVectorFuncTest,
   ASSERT_TRUE(format_vector_index_info_json(ready, &out, &number_buf));
   std::string json = as_std_string(out);
   EXPECT_NE(std::string::npos, json.find("\"backend_variant\":\"hnsw\""));
+  EXPECT_NE(std::string::npos, json.find("\"owner_schema\":\"db1\""));
   EXPECT_NE(std::string::npos, json.find("\"schema_name\":\"db1\""));
   EXPECT_NE(std::string::npos, json.find("\"table_name\":\"t1\""));
   EXPECT_NE(std::string::npos, json.find("\"column_name\":\"v1\""));
@@ -1130,7 +1144,7 @@ TEST_F(ItemVectorFuncFixture, TxnItemHelpersCoverSuccessPaths) {
   EXPECT_STREQ("vec_index_txn_begin", begin_item->func_name());
   const longlong txn_id_ll = begin_item->val_int();
   ASSERT_FALSE(begin_item->null_value);
-  ASSERT_GT(txn_id_ll, 0);
+  ASSERT_GT(txn_id_ll, 0) << vector_index_registry::registry_failure_reason();
   const uint64_t txn_id = static_cast<uint64_t>(txn_id_ll);
 
   auto *pending_item = new Item_func_vec_index_txn_pending(
@@ -1327,7 +1341,8 @@ TEST_F(ItemVectorFuncFixture, IndexAdminItemsCoverSuccessAndErrorPaths) {
                              make_string_item("memory"),
                              make_string_item("native")}));
   fix_item(thd(), create_item);
-  EXPECT_EQ(1, create_item->val_int());
+  EXPECT_EQ(1, create_item->val_int())
+      << vector_index_registry::registry_failure_reason();
   EXPECT_FALSE(create_item->null_value);
   commit_statement_publication(thd(), &store);
 
@@ -2224,6 +2239,13 @@ TEST_F(ItemVectorFuncFixture, ItemAdminItemsCoverAdditionalInvalidArguments) {
 TEST_F(ItemVectorFuncFixture, LoadVectorCommandRejectsInvalidUserInputs) {
   const std::string unique_suffix =
       "_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+  const std::string root = std::string(testing::TempDir()) +
+                           "/load_vector_command_invalid" + unique_suffix;
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  vector_root_guard vector_root(root + "/managed");
+  controlled_truth_store store;
+  TruthStoreOverrideGuard truth_store_override(&store);
   const std::string transactional_index =
       "idx_load_transactional_cmd" + unique_suffix;
   const std::string standalone_index = "idx_load_standalone_cmd" + unique_suffix;
@@ -2275,6 +2297,7 @@ TEST_F(ItemVectorFuncFixture, LoadVectorCommandRejectsInvalidUserInputs) {
   expect_load_vector_error(true, "vectors.fbin", "", standalone_index.c_str(),
                            "FBIN", ER_CLIENT_LOCAL_FILES_DISABLED);
   opt_local_infile = saved_local_infile;
+  std::filesystem::remove_all(root, ec);
 }
 
 TEST_F(ItemVectorFuncFixture, LoadVectorCommandImportsRawFiles) {
@@ -2295,6 +2318,7 @@ TEST_F(ItemVectorFuncFixture, LoadVectorCommandImportsRawFiles) {
   write_raw_docid_file(docid_path, {101, 202});
 
   controlled_truth_store store;
+  vector_root_guard vector_root(root + "/managed");
   TruthStoreOverrideGuard truth_store_override(&store);
 
   vector_index_registry::create_index_options options;

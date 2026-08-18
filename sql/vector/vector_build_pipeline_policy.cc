@@ -62,14 +62,6 @@ uint64_t build_segment_row_limit(uint64_t dimension,
   return std::max<uint64_t>(1, row_limit);
 }
 
-uint64_t estimate_build_segment_count(
-    uint64_t row_count, uint64_t dimension,
-    const build_pipeline_thresholds &thresholds) {
-  if (row_count == 0) return 0;
-  const uint64_t row_limit = build_segment_row_limit(dimension, thresholds);
-  return (row_count - 1) / row_limit + 1;
-}
-
 diskann_segment_profile_result apply_diskann_segment_profile(
     uint64_t dimension, uint64_t, uint64_t, diskann_segment_profile profile,
     const build_pipeline_thresholds &manual, bool eligible) {

@@ -437,68 +437,56 @@ bool statement_operation_has_payload(
   return false;
 }
 
+bool config_statement_payload_valid(
+    const vector_statement_publication::operation_payload &payload);
+
 bool apply_config_statement(
     const vector_index_truth_store::publication_intent &intent,
     const vector_statement_publication::operation_payload &payload) {
   using vector_statement_publication::config_change;
+  if (!config_statement_payload_valid(payload)) return false;
   const auto &values = payload.unsigned_values;
   switch (payload.config) {
     case config_change::kSearchEf:
-      return values.size() == 1 &&
-             set_search_ef(intent.index_name,
-                           static_cast<uint32_t>(values[0]));
+      return set_search_ef(intent.index_name, static_cast<uint32_t>(values[0]));
     case config_change::kHnswBuildParams:
-      return values.size() == 2 &&
-             set_hnsw_build_params(intent.index_name,
+      return set_hnsw_build_params(intent.index_name,
                                    static_cast<uint32_t>(values[0]),
                                    static_cast<uint32_t>(values[1]));
     case config_change::kFaissIvfParams:
-      return values.size() == 2 &&
-             set_faiss_ivf_params(intent.index_name,
+      return set_faiss_ivf_params(intent.index_name,
                                   static_cast<uint32_t>(values[0]),
                                   static_cast<uint32_t>(values[1]));
     case config_change::kFaissIvfPqParams:
-      return values.size() == 4 &&
-             set_faiss_ivf_pq_params(
-                 intent.index_name, static_cast<uint32_t>(values[0]),
-                 static_cast<uint32_t>(values[1]),
-                 static_cast<uint32_t>(values[2]),
-                 static_cast<uint32_t>(values[3]));
+      return set_faiss_ivf_pq_params(
+          intent.index_name, static_cast<uint32_t>(values[0]),
+          static_cast<uint32_t>(values[1]), static_cast<uint32_t>(values[2]),
+          static_cast<uint32_t>(values[3]));
     case config_change::kDiskannBuildParams:
-      return values.size() == 3 &&
-             set_diskann_build_params(intent.index_name,
-                                      static_cast<uint32_t>(values[0]),
-                                      static_cast<uint32_t>(values[1]),
-                                      static_cast<uint32_t>(values[2]));
+      return set_diskann_build_params(
+          intent.index_name, static_cast<uint32_t>(values[0]),
+          static_cast<uint32_t>(values[1]), static_cast<uint32_t>(values[2]));
     case config_change::kDiskannSearchComplexity:
-      return values.size() == 1 &&
-             set_diskann_search_complexity(
-                 intent.index_name, static_cast<uint32_t>(values[0]));
+      return set_diskann_search_complexity(intent.index_name,
+                                           static_cast<uint32_t>(values[0]));
     case config_change::kDiskannSearchBeamwidth:
-      return values.size() == 1 &&
-             set_diskann_search_beamwidth(
-                 intent.index_name, static_cast<uint32_t>(values[0]));
+      return set_diskann_search_beamwidth(intent.index_name,
+                                          static_cast<uint32_t>(values[0]));
     case config_change::kDiskannPqCodeBudgetSize:
-      return values.size() == 1 &&
-             set_diskann_pq_code_budget_size(intent.index_name, values[0]);
+      return set_diskann_pq_code_budget_size(intent.index_name, values[0]);
     case config_change::kDiskannDiskPqDims:
-      return values.size() == 1 &&
-             set_diskann_disk_pq_dims(intent.index_name,
+      return set_diskann_disk_pq_dims(intent.index_name,
                                       static_cast<uint32_t>(values[0]));
     case config_change::kDiskannAccelerateBuild:
-      return values.size() == 1 && values[0] <= 1 &&
-             set_diskann_accelerate_build(intent.index_name, values[0] != 0);
+      return set_diskann_accelerate_build(intent.index_name, values[0] != 0);
     case config_change::kDiskannShuffleBuild:
-      return values.size() == 1 && values[0] <= 1 &&
-             set_diskann_shuffle_build(intent.index_name, values[0] != 0);
+      return set_diskann_shuffle_build(intent.index_name, values[0] != 0);
     case config_change::kDiskannUseBfsCache:
-      return values.size() == 1 && values[0] <= 1 &&
-             set_diskann_use_bfs_cache(intent.index_name, values[0] != 0);
+      return set_diskann_use_bfs_cache(intent.index_name, values[0] != 0);
     case config_change::kDiskannBuildMode:
-      return values.size() == 1 &&
-             set_diskann_build_mode(
-                 intent.index_name,
-                 static_cast<vector_index::diskann_build_mode>(values[0]));
+      return set_diskann_build_mode(
+          intent.index_name,
+          static_cast<vector_index::diskann_build_mode>(values[0]));
   }
   return false;
 }
@@ -506,50 +494,42 @@ bool apply_config_statement(
 bool config_statement_applied(
     const vector_index_truth_store::publication_intent &intent,
     const vector_statement_publication::operation_payload &payload) {
+  if (!config_statement_payload_valid(payload)) return false;
   vector_index_registry::index_info info;
   if (!get_index_info(intent.index_name, &info)) return false;
   const auto &values = payload.unsigned_values;
   using vector_statement_publication::config_change;
   switch (payload.config) {
     case config_change::kSearchEf:
-      return values.size() == 1 && info.search_ef == values[0];
+      return info.search_ef == values[0];
     case config_change::kHnswBuildParams:
-      return values.size() == 2 && info.hnsw_m == values[0] &&
-             info.hnsw_ef_construction == values[1];
+      return info.hnsw_m == values[0] && info.hnsw_ef_construction == values[1];
     case config_change::kFaissIvfParams:
-      return values.size() == 2 && info.faiss_nlist == values[0] &&
-             info.faiss_nprobe == values[1];
+      return info.faiss_nlist == values[0] && info.faiss_nprobe == values[1];
     case config_change::kFaissIvfPqParams:
-      return values.size() == 4 && info.faiss_nlist == values[0] &&
-             info.faiss_nprobe == values[1] && info.faiss_pq_m == values[2] &&
-             info.faiss_pq_bits == values[3];
+      return info.faiss_nlist == values[0] && info.faiss_nprobe == values[1] &&
+             info.faiss_pq_m == values[2] && info.faiss_pq_bits == values[3];
     case config_change::kDiskannBuildParams:
-      return values.size() == 3 && info.diskann_max_degree == values[0] &&
+      return info.diskann_max_degree == values[0] &&
              info.diskann_build_complexity == values[1] &&
              info.diskann_build_threads == values[2];
     case config_change::kDiskannSearchComplexity:
-      return values.size() == 1 &&
-             info.diskann_search_complexity == values[0];
+      return info.diskann_search_complexity == values[0];
     case config_change::kDiskannSearchBeamwidth:
-      return values.size() == 1 && info.diskann_search_beamwidth == values[0];
+      return info.diskann_search_beamwidth == values[0];
     case config_change::kDiskannPqCodeBudgetSize:
-      return values.size() == 1 &&
-             info.diskann_pq_code_budget_size == values[0];
+      return info.diskann_pq_code_budget_size == values[0];
     case config_change::kDiskannDiskPqDims:
-      return values.size() == 1 && info.diskann_disk_pq_dims == values[0];
+      return info.diskann_disk_pq_dims == values[0];
     case config_change::kDiskannAccelerateBuild:
-      return values.size() == 1 && values[0] <= 1 &&
-             info.diskann_accelerate_build == (values[0] != 0);
+      return info.diskann_accelerate_build == (values[0] != 0);
     case config_change::kDiskannShuffleBuild:
-      return values.size() == 1 && values[0] <= 1 &&
-             info.diskann_shuffle_build == (values[0] != 0);
+      return info.diskann_shuffle_build == (values[0] != 0);
     case config_change::kDiskannUseBfsCache:
-      return values.size() == 1 && values[0] <= 1 &&
-             info.diskann_use_bfs_cache == (values[0] != 0);
+      return info.diskann_use_bfs_cache == (values[0] != 0);
     case config_change::kDiskannBuildMode:
-      return values.size() == 1 &&
-             info.diskann_build_mode_value ==
-                 static_cast<vector_index::diskann_build_mode>(values[0]);
+      return info.diskann_build_mode_value ==
+             static_cast<vector_index::diskann_build_mode>(values[0]);
   }
   return false;
 }
@@ -2397,8 +2377,7 @@ bool erase_explicit_txn_owner_locked(uint64_t txn_id) {
 }
 
 uint64_t begin_txn_for_owner(const explicit_txn_owner &owner) {
-  if (owner.thd_id == 0) return 0;
-  if (!ensure_publication_intents_recovered()) return 0;
+  if (owner.thd_id == 0 || !ensure_publication_intents_recovered()) return 0;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return 0;
 
@@ -2820,7 +2799,6 @@ bool pending_index_names_for_thd_txn(
     uint64_t thd_id, std::vector<std::string> *index_names) {
   if (index_names == nullptr) return false;
   index_names->clear();
-  if (vector_index_truth_store::internal_sql_active()) return true;
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   const auto it = g_thd_txn_contexts.find(thd_id);
@@ -2832,7 +2810,6 @@ bool pending_index_names_for_thd_txn(
 
 bool prepare_thd_txn_publication(THD *thd, uint64_t thd_id) {
   if (thd == nullptr) return false;
-  if (vector_index_truth_store::internal_sql_active()) return true;
 
   uint64_t txn_id = 0;
   std::vector<vector_index_metadata_store::change_log_row> durable_rows;
@@ -2890,7 +2867,6 @@ bool prepare_thd_txn_publication(THD *thd, uint64_t thd_id) {
 }
 
 bool commit_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   auto it = g_thd_txn_contexts.find(thd_id);
   if (it == g_thd_txn_contexts.end()) return true;
@@ -2908,7 +2884,6 @@ bool commit_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id) {
 }
 
 bool rollback_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   auto it = g_thd_txn_contexts.find(thd_id);
   if (it == g_thd_txn_contexts.end()) return true;
@@ -2925,7 +2900,6 @@ bool rollback_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id) {
 bool publish_thd_txn(uint64_t thd_id, bool recover_detached_xa,
                      std::string *failure_stage) {
   if (failure_stage != nullptr) failure_stage->clear();
-  if (vector_index_truth_store::internal_sql_active()) return true;
 
   uint64_t txn_id = 0;
   bool has_context = false;
@@ -2995,7 +2969,6 @@ bool publish_thd_txn(uint64_t thd_id, bool recover_detached_xa,
 }
 
 bool detach_thd_txn_for_prepare(uint64_t thd_id) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   auto it = g_thd_txn_contexts.find(thd_id);
   if (it == g_thd_txn_contexts.end()) return true;
@@ -3131,7 +3104,6 @@ xa_status_code detail::apply_prepared_xid_locked(const XID &xid, bool commit,
 }
 
 bool commit_thd_txn(uint64_t thd_id) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   uint64_t txn_id = 0;
   {
     std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
@@ -3156,7 +3128,6 @@ bool commit_thd_txn(uint64_t thd_id) {
 }
 
 bool rollback_thd_txn(uint64_t thd_id) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   auto it = g_thd_txn_contexts.find(thd_id);
   if (it == g_thd_txn_contexts.end()) return true;
@@ -3175,7 +3146,6 @@ bool rollback_thd_txn(uint64_t thd_id) {
 }
 
 void discard_empty_thd_txn(uint64_t thd_id) {
-  if (vector_index_truth_store::internal_sql_active()) return;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   auto it = g_thd_txn_contexts.find(thd_id);
   if (it == g_thd_txn_contexts.end()) return;
@@ -3188,7 +3158,6 @@ void discard_empty_thd_txn(uint64_t thd_id) {
 }
 
 bool prepare_thd_txn(uint64_t thd_id, const XID &xid) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   auto it = g_thd_txn_contexts.find(thd_id);
   if (it == g_thd_txn_contexts.end()) return true;
@@ -3311,7 +3280,6 @@ int recover_prepared_in_tc(Xa_state_list &xa_list) {
 
 bool preflight_savepoint_thd_txn(uint64_t thd_id,
                                  const std::string &name) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (name.empty() || !ensure_metadata_loaded_locked()) return false;
 
@@ -3323,7 +3291,6 @@ bool preflight_savepoint_thd_txn(uint64_t thd_id,
 
 bool preflight_rollback_to_savepoint_thd_txn(
     uint64_t thd_id, const std::string &name) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (name.empty()) return false;
 
@@ -3344,7 +3311,6 @@ bool preflight_rollback_to_savepoint_thd_txn(
 
 bool preflight_release_savepoint_thd_txn(uint64_t thd_id,
                                          const std::string &name) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (name.empty()) return false;
 
@@ -3356,7 +3322,6 @@ bool preflight_release_savepoint_thd_txn(uint64_t thd_id,
 }
 
 bool savepoint_thd_txn(uint64_t thd_id, const std::string &name) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (name.empty()) return false;
 
@@ -3369,7 +3334,6 @@ bool savepoint_thd_txn(uint64_t thd_id, const std::string &name) {
 }
 
 bool rollback_to_savepoint_thd_txn(uint64_t thd_id, const std::string &name) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (name.empty()) return false;
 
@@ -3396,7 +3360,6 @@ bool rollback_to_savepoint_thd_txn(uint64_t thd_id, const std::string &name) {
 }
 
 bool release_savepoint_thd_txn(uint64_t thd_id, const std::string &name) {
-  if (vector_index_truth_store::internal_sql_active()) return true;
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (name.empty()) return false;
 
@@ -3581,7 +3544,7 @@ bool acknowledge_statement_publication_intent(
     return false;
   }
   if (intent.operation ==
-      vector_index_truth_store::publication_operation::kBulkLoad &&
+          vector_index_truth_store::publication_operation::kBulkLoad &&
       !vector_index::remove_managed_load_staging_artifact(intent)) {
     set_publication_failure(failure_stage, "remove_load_staging_artifact");
     request_publication_intent_recovery();

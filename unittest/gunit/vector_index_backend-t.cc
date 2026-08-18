@@ -27,8 +27,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -52,19 +52,19 @@
 #include <faiss/IndexIDMap.h>
 #include <faiss/IndexIVFFlat.h>
 #include <faiss/IndexIVFPQ.h>
-#include <faiss/invlists/InvertedLists.h>
 #include <faiss/index_io.h>
+#include <faiss/invlists/InvertedLists.h>
 #endif
 
 #include "my_io.h"
+#include "sql/mysqld.h"
 #include "sql/vector/vector_diskann_generation_store.h"
 #include "sql/vector/vector_diskann_pq_runtime.h"
-#include "sql/mysqld.h"
 #include "sql/vector/vector_diskann_scheduler.h"
 #include "sql/vector/vector_index_backend.h"
-#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
+#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_observability.h"
 #include "sql/vector/vector_index_runtime_config.h"
@@ -77,7 +77,36 @@ namespace vector_index_backend_unittest {
 
 namespace {
 
+using vector_gunit::BoolGuard;
+using vector_gunit::DataHomeGuard;
+using vector_gunit::EnvVarGuard;
 using vector_gunit::ScopedTempDirectory;
+using vector_gunit::UlongGuard;
+using vector_gunit::UlonglongGuard;
+
+class BuildResourceProbeGuard {
+ public:
+  BuildResourceProbeGuard(uint64_t memory_headroom, uint32_t cpu_slots) {
+    auto &manager = vector_index::global_resource_budget_manager();
+    manager.reset_for_testing();
+    manager.set_probe_for_testing([memory_headroom, cpu_slots] {
+      vector_index::resource_probe_snapshot probe;
+      probe.source = vector_index::resource_probe_source::kHost;
+      probe.host_available_memory = memory_headroom;
+      probe.memory_headroom = memory_headroom;
+      probe.hardware_cpu_slots = cpu_slots;
+      probe.effective_cpu_slots = cpu_slots;
+      return probe;
+    });
+  }
+
+  ~BuildResourceProbeGuard() {
+    vector_index::global_resource_budget_manager().reset_for_testing();
+  }
+
+  BuildResourceProbeGuard(const BuildResourceProbeGuard &) = delete;
+  BuildResourceProbeGuard &operator=(const BuildResourceProbeGuard &) = delete;
+};
 
 bool has_prefix(const std::string &text, const std::string &prefix) {
   return text.size() >= prefix.size() &&
@@ -89,9 +118,14 @@ bool has_suffix(const std::string &text, const std::string &suffix) {
          text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+std::string diskann_pq_runtime_test_path(const char *name) {
+  static const ScopedTempDirectory root("vector_backend_diskann_pq_runtime");
+  EXPECT_TRUE(root.valid()) << root.error();
+  return (root.path() / name).string();
+}
+
 const vector_index_status_fields::field_value *find_status_field(
-    const vector_index_status_fields::field_values &fields,
-    const char *name) {
+    const vector_index_status_fields::field_values &fields, const char *name) {
   for (const vector_index_status_fields::field_value &field : fields) {
     if (std::strcmp(field.name, name) == 0) return &field;
   }
@@ -105,7 +139,8 @@ const vector_index_status_fields::field_value *find_status_field(
   if (!std::filesystem::exists(dir, ec) || ec) return "";
 
   for (const auto &entry : std::filesystem::directory_iterator(
-           dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+           dir, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
     if (ec) return "";
     if (!entry.is_regular_file(ec)) {
       if (ec) return "";
@@ -151,8 +186,7 @@ const vector_index_status_fields::field_value *find_status_field(
   return find_snapshot_file(directory, "diskann_external.snapshot.");
 }
 
-[[maybe_unused]] std::string find_faiss_manifest_file(
-    const std::string &root) {
+[[maybe_unused]] std::string find_faiss_manifest_file(const std::string &root) {
   return find_manifest_file(root, "faiss_external.manifest.v1");
 }
 
@@ -162,8 +196,7 @@ const vector_index_status_fields::field_value *find_status_field(
 }
 
 #ifdef HAVE_FAISS
-void expect_faiss_ivf_layout(const std::string &root,
-                             size_t expected_nlist) {
+void expect_faiss_ivf_layout(const std::string &root, size_t expected_nlist) {
   const std::string manifest_path = find_faiss_manifest_file(root);
   ASSERT_FALSE(manifest_path.empty());
   const std::string snapshot_path = find_faiss_snapshot_file(
@@ -336,8 +369,7 @@ void write_binary_value(std::ofstream *file, T value) {
 }
 
 void write_raw_fbin_file(const std::string &path, uint32_t rows,
-                         uint32_t dimension,
-                         const std::vector<float> &values) {
+                         uint32_t dimension, const std::vector<float> &values) {
   std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(file.good());
   write_binary_value(&file, rows);
@@ -368,93 +400,11 @@ void write_faiss_index_file(const std::string &path,
 #endif
 
 bool hnswlib_tuning_supported() {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
-  return backend.set_search_ef(64) &&
-         backend.set_hnsw_build_params(16, 200);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
+  return backend.set_search_ef(64) && backend.set_hnsw_build_params(16, 200);
 }
-
-class DataHomeGuard {
- public:
-  DataHomeGuard() : m_original(mysql_real_data_home) {}
-
-  ~DataHomeGuard() {
-    std::snprintf(mysql_real_data_home, FN_REFLEN, "%s", m_original.c_str());
-  }
-
-  void Set(const std::string &value) {
-    std::snprintf(mysql_real_data_home, FN_REFLEN, "%s", value.c_str());
-  }
-
- private:
-  std::string m_original;
-};
-
-class EnvVarGuard {
- public:
-  explicit EnvVarGuard(const char *name) : m_name(name) {
-    const char *value = std::getenv(name);
-    if (value != nullptr) {
-      m_had_value = true;
-      m_value = value;
-    }
-  }
-
-  ~EnvVarGuard() {
-    if (m_had_value) {
-      setenv(m_name.c_str(), m_value.c_str(), 1);
-    } else {
-      unsetenv(m_name.c_str());
-    }
-  }
-
- private:
-  std::string m_name;
-  bool m_had_value{false};
-  std::string m_value;
-};
-
-class UlonglongGuard {
- public:
-  UlonglongGuard(ulonglong *value, ulonglong replacement)
-      : m_value(value), m_original(*value) {
-    *m_value = replacement;
-  }
-
-  ~UlonglongGuard() { *m_value = m_original; }
-
- private:
-  ulonglong *m_value;
-  ulonglong m_original;
-};
-
-class BoolGuard {
- public:
-  BoolGuard(bool *value, bool replacement)
-      : m_value(value), m_original(*value) {
-    *m_value = replacement;
-  }
-
-  ~BoolGuard() { *m_value = m_original; }
-
- private:
-  bool *m_value;
-  bool m_original;
-};
-
-class UlongGuard {
- public:
-  UlongGuard(ulong *value, ulong replacement)
-      : m_value(value), m_original(*value) {
-    *m_value = replacement;
-  }
-
-  ~UlongGuard() { *m_value = m_original; }
-
- private:
-  ulong *m_value;
-  ulong m_original;
-};
 
 class StubBackend final : public vector_index::backend {
  public:
@@ -469,9 +419,9 @@ class StubBackend final : public vector_index::backend {
 
   bool erase(uint64_t doc_id [[maybe_unused]]) override { return true; }
 
-  bool search(const vector_index::vector_data &query [[maybe_unused]],
-              size_t top_k,
-              std::vector<vector_index::search_result> *results) const override {
+  bool search(
+      const vector_index::vector_data &query [[maybe_unused]], size_t top_k,
+      std::vector<vector_index::search_result> *results) const override {
     ++search_calls;
     if (fail_search_call != 0 && search_calls == fail_search_call) return false;
     results->clear();
@@ -517,28 +467,13 @@ class StubBackend final : public vector_index::backend {
 
 }  // namespace
 
-TEST(VectorIndexRuntimeConfigTest, ValidatesFaissIvfPqLibraryBoundaries) {
-  EXPECT_TRUE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 4, 8));
-  EXPECT_TRUE(vector_index::valid_faiss_ivf_pq_config(
-      24, 8, 4, 6, vector_index::k_max_faiss_pq_bits));
-
-  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(0, 8, 4, 4, 8));
-  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 0, 4, 4, 8));
-  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 8, 0, 4, 8));
-  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 0, 8));
-  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 4, 0));
-  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(15, 8, 4, 4, 8));
-  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(
-      16, 8, 4, 4, vector_index::k_max_faiss_pq_bits + 1));
-}
-
 TEST(VectorIndexBackendTest, BackendHelperParseUint64RejectsMalformedInputs) {
   uint64_t value = 0;
   EXPECT_FALSE(vector_index::parse_uint64_for_testing("", &value));
   EXPECT_FALSE(vector_index::parse_uint64_for_testing("abc", &value));
   EXPECT_FALSE(vector_index::parse_uint64_for_testing("12x", &value));
-  EXPECT_FALSE(vector_index::parse_uint64_for_testing("18446744073709551616",
-                                                   &value));
+  EXPECT_FALSE(
+      vector_index::parse_uint64_for_testing("18446744073709551616", &value));
   EXPECT_FALSE(vector_index::parse_uint64_for_testing("7", nullptr));
   EXPECT_TRUE(vector_index::parse_uint64_for_testing("42", &value));
   EXPECT_EQ(42U, value);
@@ -583,15 +518,15 @@ TEST(VectorIndexBackendTest, BackendDefaultMethodsCoverReaderAndTuningGuards) {
   EXPECT_FALSE(backend.search_batch({{1.0F, 1.0F}}, 1, nullptr));
   EXPECT_TRUE(backend.search_batch({}, 1, &batch_results));
   EXPECT_TRUE(batch_results.empty());
-  EXPECT_TRUE(backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 1,
-                                   &batch_results));
+  EXPECT_TRUE(
+      backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 1, &batch_results));
   EXPECT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());
   EXPECT_EQ(1U, batch_results[0][0].doc_id);
   backend.search_calls = 0;
   backend.fail_search_call = 2;
-  EXPECT_FALSE(backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 1,
-                                    &batch_results));
+  EXPECT_FALSE(
+      backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 1, &batch_results));
   EXPECT_EQ(2U, backend.search_calls);
   backend.fail_search_call = 0;
 
@@ -698,8 +633,8 @@ TEST(VectorIndexBackendTest, BackendDefaultMethodsCoverReaderAndTuningGuards) {
   EXPECT_FALSE(backend.set_diskann_build_blas_threads(1));
   EXPECT_TRUE(
       backend.set_diskann_build_mode(vector_index::diskann_build_mode::kAuto));
-  EXPECT_FALSE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kSerial));
+  EXPECT_FALSE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kSerial));
   EXPECT_FALSE(backend.set_diskann_search_complexity(64));
   EXPECT_FALSE(backend.set_diskann_search_beamwidth(16));
   EXPECT_EQ(0U, backend.diskann_offline_search_threads());
@@ -707,6 +642,9 @@ TEST(VectorIndexBackendTest, BackendDefaultMethodsCoverReaderAndTuningGuards) {
   EXPECT_EQ(0U, backend.diskann_cache_nodes());
   EXPECT_FALSE(backend.external_manifest_present());
   EXPECT_EQ(0U, backend.external_manifest_generation());
+  vector_index::diskann_artifact_identity identity;
+  EXPECT_TRUE(backend.recover_artifact_publication(identity));
+  EXPECT_TRUE(backend.artifact_publication_matches(identity));
 }
 
 TEST(VectorIndexBackendTest, RerankFullCoverageUsesAuthoritativeDocIds) {
@@ -754,8 +692,7 @@ TEST(VectorIndexBackendTest, RerankFullCoverageUsesAuthoritativeDocIds) {
   EXPECT_EQ(1U, backend.search_calls);
 
   EXPECT_FALSE(backend.search_for_rerank({1.0F, 1.0F}, 2, 3, nullptr));
-  EXPECT_FALSE(backend.search_batch_for_rerank({{1.0F, 1.0F}}, 2, 3,
-                                               nullptr));
+  EXPECT_FALSE(backend.search_batch_for_rerank({{1.0F, 1.0F}}, 2, 3, nullptr));
   ASSERT_TRUE(backend.search_batch_for_rerank({}, 2, 3, &batch_results));
   EXPECT_EQ(0U, batch_results.query_count());
 }
@@ -859,15 +796,13 @@ TEST(VectorIndexBackendTest,
   const auto *runtime = find_status_field(fields, "backend_build_runtime");
   ASSERT_NE(nullptr, runtime);
   EXPECT_EQ("official_cpp_main", runtime->string_value);
-  const auto *source =
-      find_status_field(fields, "backend_build_input_source");
+  const auto *source = find_status_field(fields, "backend_build_input_source");
   ASSERT_NE(nullptr, source);
   EXPECT_EQ("raw_segments", source->string_value);
   const auto *rows = find_status_field(fields, "backend_build_rows");
   ASSERT_NE(nullptr, rows);
   EXPECT_EQ(42U, rows->uint_value);
-  const auto *segments =
-      find_status_field(fields, "backend_build_segments");
+  const auto *segments = find_status_field(fields, "backend_build_segments");
   ASSERT_NE(nullptr, segments);
   EXPECT_EQ(3U, segments->uint_value);
   const auto *build_invocations =
@@ -917,8 +852,7 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "backend_build_offline_ms");
   ASSERT_NE(nullptr, offline_ms);
   EXPECT_EQ("22", vector_index_status_fields::status_value(*offline_ms));
-  const auto *disk_pq_dims =
-      find_status_field(fields, "diskann_disk_pq_dims");
+  const auto *disk_pq_dims = find_status_field(fields, "diskann_disk_pq_dims");
   ASSERT_NE(nullptr, disk_pq_dims);
   EXPECT_EQ(12U, disk_pq_dims->uint_value);
   const auto *diskann_cache_nodes =
@@ -1151,9 +1085,8 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "scheduler_search_suggested_complexity");
   ASSERT_NE(nullptr, suggested_complexity);
   EXPECT_EQ(1600U, suggested_complexity->uint_value);
-  const auto *suggested_segment_target =
-      find_status_field(fields,
-                        "scheduler_search_suggested_segment_target_size");
+  const auto *suggested_segment_target = find_status_field(
+      fields, "scheduler_search_suggested_segment_target_size");
   ASSERT_NE(nullptr, suggested_segment_target);
   EXPECT_EQ(0U, suggested_segment_target->uint_value);
 }
@@ -1184,8 +1117,8 @@ TEST(VectorIndexBackendTest, DiskAnnSearchAdviceCoversTuningBranches) {
   diagnostics.search_per_segment_top_k = 64;
   diagnostics.search_candidate_count = 1024;
   diagnostics.search_total_candidate_rows = 4096;
-  advice = vector_index_observability::derive_diskann_search_advice(
-      diagnostics, 10, 1000);
+  advice = vector_index_observability::derive_diskann_search_advice(diagnostics,
+                                                                    10, 1000);
   EXPECT_EQ("increase_vector_search_batch_result_count", advice.advice);
   EXPECT_EQ("candidate_budget_truncates_batch", advice.reason);
 
@@ -1225,15 +1158,15 @@ TEST(VectorIndexBackendTest, FaissBuildPhaseDiagnosticsAppearInStatusFields) {
       {"backend_build_persist_ms", 15},
       {"backend_build_training_rows", 16},
       {"backend_build_reader_passes", 3}};
-  const auto verify_fields = [&expected_fields](
-                                 const vector_index_status_fields::field_values
-                                     &fields) {
-    for (const auto &[name, expected] : expected_fields) {
-      const auto *field = find_status_field(fields, name);
-      ASSERT_NE(nullptr, field) << name;
-      EXPECT_EQ(expected, field->uint_value) << name;
-    }
-  };
+  const auto verify_fields =
+      [&expected_fields](
+          const vector_index_status_fields::field_values &fields) {
+        for (const auto &[name, expected] : expected_fields) {
+          const auto *field = find_status_field(fields, name);
+          ASSERT_NE(nullptr, field) << name;
+          EXPECT_EQ(expected, field->uint_value) << name;
+        }
+      };
 
   vector_index_status_fields::field_values fields;
   vector_index_status_fields::collect_info_fields(info, &fields);
@@ -1317,10 +1250,9 @@ TEST(VectorIndexBackendTest,
       {"scheduler_search_total_candidate_rows",
        &diagnostics::search_total_candidate_rows}};
   for (const auto &field : uint_fields) {
-    expect_diagnostic(field.first,
-                      [member = field.second](diagnostics *value) {
-                        value->*member = 1;
-                      });
+    expect_diagnostic(field.first, [member = field.second](diagnostics *value) {
+      value->*member = 1;
+    });
   }
 
   const std::pair<const char *, std::string diagnostics::*> string_fields[] = {
@@ -1350,10 +1282,9 @@ TEST(VectorIndexBackendTest,
       {"scheduler_search_profile", &diagnostics::search_profile},
       {"scheduler_search_profile_reason", &diagnostics::search_profile_reason}};
   for (const auto &field : string_fields) {
-    expect_diagnostic(field.first,
-                      [member = field.second](diagnostics *value) {
-                        value->*member = "value";
-                      });
+    expect_diagnostic(field.first, [member = field.second](diagnostics *value) {
+      value->*member = "value";
+    });
   }
 
   const std::pair<const char *, bool diagnostics::*> bool_fields[] = {
@@ -1366,15 +1297,67 @@ TEST(VectorIndexBackendTest,
       {"native_pq_runtime_validation_failed",
        &diagnostics::native_pq_runtime_validation_failed}};
   for (const auto &field : bool_fields) {
-    expect_diagnostic(field.first,
-                      [member = field.second](diagnostics *value) {
-                        value->*member = true;
-                      });
+    expect_diagnostic(field.first, [member = field.second](diagnostics *value) {
+      value->*member = true;
+    });
   }
   expect_diagnostic("native_pq_runtime_effective_threads",
                     [](diagnostics *value) {
                       value->native_pq_runtime_effective_threads = 1;
                     });
+}
+
+TEST(VectorIndexBackendTest,
+     BackendHealthFieldsRecognizeResourceAndDiskannRuntimeDiagnostics) {
+  using diagnostics = vector_index::backend_build_diagnostics;
+  const auto expect_diagnostic = [](const char *field_name, auto member) {
+    SCOPED_TRACE(field_name);
+    vector_index_registry::index_info info;
+    info.provider = "diskann";
+    info.build_diagnostics.*member = 1;
+    vector_index_status_fields::field_values fields;
+    vector_index_status_fields::collect_backend_health_fields(info, &fields);
+    EXPECT_NE(nullptr, find_status_field(fields, field_name));
+  };
+
+  const std::pair<const char *, uint64_t diagnostics::*> uint_fields[] = {
+      {"backend_build_resource_configured_memory",
+       &diagnostics::resource_configured_memory_budget},
+      {"backend_build_resource_memory_reserve",
+       &diagnostics::resource_memory_reserve},
+      {"backend_build_resource_memory_limit",
+       &diagnostics::resource_memory_limit},
+      {"backend_build_resource_memory_current",
+       &diagnostics::resource_memory_current},
+      {"backend_build_resource_process_rss",
+       &diagnostics::resource_process_rss},
+      {"backend_build_resource_memory_headroom",
+       &diagnostics::resource_memory_headroom},
+      {"backend_build_resource_reserved_memory",
+       &diagnostics::resource_reserved_memory}};
+  for (const auto &field : uint_fields) {
+    expect_diagnostic(field.first, field.second);
+  }
+
+  const std::pair<const char *, uint32_t diagnostics::*> uint32_fields[] = {
+      {"backend_build_resource_reserved_cpu_slots",
+       &diagnostics::resource_reserved_cpu_slots},
+      {"backend_build_resource_active_builds",
+       &diagnostics::resource_active_builds},
+      {"backend_build_resource_waiting_builds",
+       &diagnostics::resource_waiting_builds}};
+  for (const auto &field : uint32_fields) {
+    expect_diagnostic(field.first, field.second);
+  }
+
+  vector_index_registry::index_info info;
+  info.provider = "diskann";
+  info.build_diagnostics.diskann_pq_runtime = "native_auto";
+  vector_index_status_fields::field_values fields;
+  vector_index_status_fields::collect_backend_health_fields(info, &fields);
+  const auto *runtime = find_status_field(fields, "diskann_pq_runtime");
+  ASSERT_NE(nullptr, runtime);
+  EXPECT_EQ("native_auto", runtime->string_value);
 }
 
 TEST(VectorIndexBackendTest, DiskAnnSearchAdviceCoversFallbackInputs) {
@@ -1390,8 +1373,8 @@ TEST(VectorIndexBackendTest, DiskAnnSearchAdviceCoversFallbackInputs) {
   const auto expect_not_applicable =
       [](vector_index::backend_build_diagnostics candidate) {
         const auto advice =
-            vector_index_observability::derive_diskann_search_advice(
-                candidate, 10, 0);
+            vector_index_observability::derive_diskann_search_advice(candidate,
+                                                                     10, 0);
         EXPECT_EQ("not_applicable", advice.advice);
         EXPECT_EQ("not_segmented_diskann_search", advice.reason);
       };
@@ -1410,23 +1393,23 @@ TEST(VectorIndexBackendTest, DiskAnnSearchAdviceCoversFallbackInputs) {
   EXPECT_EQ("no_action", advice.advice);
 
   diagnostics.search_result_budget = 1;
-  advice = vector_index_observability::derive_diskann_search_advice(
-      diagnostics, 10, 0);
+  advice = vector_index_observability::derive_diskann_search_advice(diagnostics,
+                                                                    10, 0);
   EXPECT_EQ("increase_vector_search_batch_result_count", advice.advice);
 
   diagnostics.search_result_budget = 4096;
   diagnostics.search_global_top_k = 10;
   diagnostics.search_per_segment_top_k = 20;
-  advice = vector_index_observability::derive_diskann_search_advice(
-      diagnostics, 0, 0);
+  advice = vector_index_observability::derive_diskann_search_advice(diagnostics,
+                                                                    0, 0);
   EXPECT_EQ("increase_search_complexity", advice.advice);
 
   diagnostics.search_per_segment_top_k = 64;
   diagnostics.search_candidate_count = 100;
   diagnostics.search_effective_complexity = 0;
   diagnostics.search_result_budget = 4096;
-  advice = vector_index_observability::derive_diskann_search_advice(
-      diagnostics, 10, 4096);
+  advice = vector_index_observability::derive_diskann_search_advice(diagnostics,
+                                                                    10, 4096);
   EXPECT_EQ("increase_search_complexity", advice.advice);
   EXPECT_EQ(3200U, advice.suggested_complexity);
 
@@ -1435,13 +1418,13 @@ TEST(VectorIndexBackendTest, DiskAnnSearchAdviceCoversFallbackInputs) {
   diagnostics.search_per_segment_top_k = 64;
   diagnostics.search_segment_max_entries = 100000;
   diagnostics.search_profile = "HIGH_RECALL";
-  advice = vector_index_observability::derive_diskann_search_advice(
-      diagnostics, 10, 4096);
+  advice = vector_index_observability::derive_diskann_search_advice(diagnostics,
+                                                                    10, 4096);
   EXPECT_EQ("no_action", advice.advice);
 
   diagnostics.search_profile = "high_recalx";
-  advice = vector_index_observability::derive_diskann_search_advice(
-      diagnostics, 10, 4096);
+  advice = vector_index_observability::derive_diskann_search_advice(diagnostics,
+                                                                    10, 4096);
   EXPECT_EQ("use_smaller_segments_or_high_recall_profile", advice.advice);
 
   vector_index_registry::index_info info;
@@ -1535,7 +1518,8 @@ TEST(VectorIndexBackendTest,
   vector_index_status_fields::collect_sync_pipeline_fields(info, nullptr);
 }
 
-TEST(VectorIndexBackendTest, BackendPublicHelpersCoverEntryCountAndParserEdges) {
+TEST(VectorIndexBackendTest,
+     BackendPublicHelpersCoverEntryCountAndParserEdges) {
   vector_index::memory_backend memory_backend(
       2, vector_index::metric_type::kEuclidean);
   std::unordered_map<uint64_t, vector_index::vector_data> entries;
@@ -1558,8 +1542,8 @@ TEST(VectorIndexBackendTest, BackendPublicHelpersCoverEntryCountAndParserEdges) 
                                                          &consistency_mode));
   EXPECT_EQ(vector_index::index_consistency_mode::kStandalone,
             consistency_mode);
-  EXPECT_FALSE(vector_index::parse_index_consistency_mode("standalone",
-                                                          nullptr));
+  EXPECT_FALSE(
+      vector_index::parse_index_consistency_mode("standalone", nullptr));
 
 #ifdef HAVE_FAISS
   vector_index::faiss_backend faiss_memory(
@@ -1651,8 +1635,8 @@ TEST(VectorIndexBackendTest,
       manifest_path, nullptr, 1));
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug,
-        "+d,vector_backend_fail_save_manifest_generation_rename");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_save_manifest_generation_rename");
     EXPECT_FALSE(vector_index::save_external_manifest_generation_for_testing(
         manifest_path, "header", 1));
   }
@@ -1680,11 +1664,12 @@ TEST(VectorIndexBackendTest,
 
   const std::string artifact_path = root + "/artifact.v1";
   write_binary_file(artifact_path, "payload");
-  EXPECT_TRUE(vector_index::quarantine_file_if_exists_for_testing(artifact_path));
+  EXPECT_TRUE(
+      vector_index::quarantine_file_if_exists_for_testing(artifact_path));
   EXPECT_FALSE(std::filesystem::exists(artifact_path));
   EXPECT_TRUE(std::filesystem::exists(artifact_path + ".corrupt"));
-  EXPECT_TRUE(
-      vector_index::quarantine_file_if_exists_for_testing(root + "/missing.v1"));
+  EXPECT_TRUE(vector_index::quarantine_file_if_exists_for_testing(
+      root + "/missing.v1"));
 
   const std::string snapshots_dir = root + "/snapshots";
   write_binary_file(snapshots_dir + "/faiss_external.snapshot.1.v1", "one");
@@ -1694,12 +1679,12 @@ TEST(VectorIndexBackendTest,
   write_binary_file(snapshots_dir + "/other_file.txt", "keep");
   EXPECT_TRUE(vector_index::remove_generated_snapshots_with_prefix_for_testing(
       snapshots_dir, "faiss_external.snapshot."));
-  EXPECT_FALSE(std::filesystem::exists(
-      snapshots_dir + "/faiss_external.snapshot.1.v1"));
-  EXPECT_FALSE(std::filesystem::exists(
-      snapshots_dir + "/faiss_external.snapshot.2.v1"));
-  EXPECT_TRUE(std::filesystem::exists(
-      snapshots_dir + "/faiss_external.snapshot.no_suffix"));
+  EXPECT_FALSE(
+      std::filesystem::exists(snapshots_dir + "/faiss_external.snapshot.1.v1"));
+  EXPECT_FALSE(
+      std::filesystem::exists(snapshots_dir + "/faiss_external.snapshot.2.v1"));
+  EXPECT_TRUE(std::filesystem::exists(snapshots_dir +
+                                      "/faiss_external.snapshot.no_suffix"));
   EXPECT_TRUE(std::filesystem::exists(snapshots_dir + "/other_file.txt"));
 
   EXPECT_TRUE(vector_index::remove_dir_if_empty_for_testing(snapshots_dir));
@@ -1709,7 +1694,8 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove(snapshots_dir + "/other_file.txt", ec);
   ASSERT_FALSE(ec);
   EXPECT_TRUE(vector_index::remove_dir_if_empty_for_testing(snapshots_dir));
-  EXPECT_TRUE(vector_index::remove_dir_if_empty_for_testing(root + "/missing_dir"));
+  EXPECT_TRUE(
+      vector_index::remove_dir_if_empty_for_testing(root + "/missing_dir"));
 
   const std::string not_dir = root + "/plain_file";
   write_binary_file(not_dir, "x");
@@ -1718,8 +1704,7 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest,
-     BackendHelperExternalProfileAndCleanupEdges) {
+TEST(VectorIndexBackendTest, BackendHelperExternalProfileAndCleanupEdges) {
   namespace detail = vector_index::detail;
 
   EXPECT_STREQ(detail::kDiskAnnExternalSnapshotHeader,
@@ -1756,22 +1741,24 @@ TEST(VectorIndexBackendTest,
 
   const std::string plain_file = root + "/plain_file";
   write_binary_file(plain_file, "x");
-  EXPECT_TRUE(detail::remove_generated_snapshots_with_prefix(plain_file,
-                                                            "prefix."));
+  EXPECT_TRUE(
+      detail::remove_generated_snapshots_with_prefix(plain_file, "prefix."));
 
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
-  const std::string manifest_quarantine_path = detail::external_manifest_path(
-      "idx_cleanup_quarantine",
-      vector_index::external_sidecar_profile::kFaiss) + ".corrupt";
+  const std::string manifest_quarantine_path =
+      detail::external_manifest_path(
+          "idx_cleanup_quarantine",
+          vector_index::external_sidecar_profile::kFaiss) +
+      ".corrupt";
   std::filesystem::create_directories(manifest_quarantine_path + "/child", ec);
   ASSERT_FALSE(ec);
   EXPECT_FALSE(detail::remove_external_sidecar_artifacts(
-      "idx_cleanup_quarantine",
-      vector_index::external_sidecar_profile::kFaiss, false));
+      "idx_cleanup_quarantine", vector_index::external_sidecar_profile::kFaiss,
+      false));
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug,
-        "+d,vector_backend_fail_remove_dir_if_empty");
+                             "+d,vector_backend_fail_remove_dir_if_empty");
     EXPECT_FALSE(detail::remove_external_sidecar_artifacts(
         "idx_cleanup_edges", vector_index::external_sidecar_profile::kFaiss,
         true));
@@ -1809,15 +1796,12 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest,
      BackendHelperDiskAnnOfflineLoadUsesBfsWhenCachingNodes) {
-  EXPECT_EQ(0U,
-            vector_index::diskann_offline_load_use_bfs_cache_for_testing(0,
-                                                                         false));
-  EXPECT_EQ(1U,
-            vector_index::diskann_offline_load_use_bfs_cache_for_testing(1,
-                                                                         false));
-  EXPECT_EQ(1U,
-            vector_index::diskann_offline_load_use_bfs_cache_for_testing(0,
-                                                                         true));
+  EXPECT_EQ(0U, vector_index::diskann_offline_load_use_bfs_cache_for_testing(
+                    0, false));
+  EXPECT_EQ(1U, vector_index::diskann_offline_load_use_bfs_cache_for_testing(
+                    1, false));
+  EXPECT_EQ(1U, vector_index::diskann_offline_load_use_bfs_cache_for_testing(
+                    0, true));
 }
 
 TEST(VectorIndexBackendTest, DiskAnnOfflineAdapterUsesSingleCurrentAbi) {
@@ -1847,8 +1831,8 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove_all(root, ec);
   ASSERT_FALSE(ec);
 
-  EXPECT_TRUE(
-      vector_index::ensure_parent_directory_for_testing(root + "/nested/child.txt"));
+  EXPECT_TRUE(vector_index::ensure_parent_directory_for_testing(
+      root + "/nested/child.txt"));
   EXPECT_TRUE(std::filesystem::exists(root + "/nested"));
   EXPECT_TRUE(vector_index::ensure_parent_directory_for_testing("manifest.v1"));
 
@@ -1856,8 +1840,8 @@ TEST(VectorIndexBackendTest,
   EXPECT_FALSE(vector_index::ensure_parent_directory_for_testing(
       root + "/plain_file/child.txt"));
 
-  EXPECT_TRUE(
-      vector_index::ends_with_for_testing("diskann_external.snapshot.v1", ".v1"));
+  EXPECT_TRUE(vector_index::ends_with_for_testing(
+      "diskann_external.snapshot.v1", ".v1"));
   EXPECT_TRUE(vector_index::ends_with_for_testing("abc", ""));
   EXPECT_FALSE(vector_index::ends_with_for_testing("abc", "abcd"));
   EXPECT_FALSE(vector_index::ends_with_for_testing("abc", ".v1"));
@@ -1917,15 +1901,35 @@ TEST(VectorIndexBackendTest,
       true, true, true, true, true, true, false, true));
   EXPECT_TRUE(vector_index::diskann_offline_api_available_for_testing(
       true, true, true, true, true, true, true, true));
+  EXPECT_FALSE(vector_index::diskann_offline_api_available_for_testing(
+      true, true, true, true, true, true, true, false));
+  EXPECT_FALSE(
+      vector_index::diskann_offline_api_manifest_build_available_for_testing(
+          false, true, true, true, true, true, true, true));
+  EXPECT_FALSE(
+      vector_index::diskann_offline_api_manifest_build_available_for_testing(
+          true, false, true, true, true, true, true, true));
   EXPECT_FALSE(
       vector_index::diskann_offline_api_manifest_build_available_for_testing(
           true, true, false, true, true, true, true, true));
+  EXPECT_FALSE(
+      vector_index::diskann_offline_api_manifest_build_available_for_testing(
+          true, true, true, false, true, true, true, true));
+  EXPECT_FALSE(
+      vector_index::diskann_offline_api_manifest_build_available_for_testing(
+          true, true, true, true, false, true, true, true));
   EXPECT_TRUE(
       vector_index::diskann_offline_api_manifest_build_available_for_testing(
           true, true, true, true, true, true, true, true));
   EXPECT_TRUE(
       vector_index::diskann_offline_api_manifest_build_available_for_testing(
           true, true, true, true, true, false, true, true));
+  EXPECT_FALSE(
+      vector_index::diskann_offline_api_manifest_build_available_for_testing(
+          true, true, true, true, true, true, false, true));
+  EXPECT_FALSE(
+      vector_index::diskann_offline_api_manifest_build_available_for_testing(
+          true, true, true, true, true, true, true, false));
   EXPECT_FALSE(
       vector_index::diskann_offline_api_native_pq_build_available_for_testing(
           false, true));
@@ -1942,7 +1946,8 @@ TEST(VectorIndexBackendTest,
   }
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_diskann_api_symbol");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_diskann_api_symbol");
     EXPECT_FALSE(vector_index::diskann_api_load_for_testing());
   }
 
@@ -1953,8 +1958,8 @@ TEST(VectorIndexBackendTest,
   }
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug,
-                             "+d,vector_backend_fail_diskann_offline_api_symbol");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_diskann_offline_api_symbol");
     EXPECT_FALSE(vector_index::diskann_offline_api_load_for_testing());
   }
 
@@ -1979,7 +1984,8 @@ TEST(VectorIndexBackendTest,
 }
 #endif
 
-TEST(VectorIndexBackendTest, DiskAnnApiLoadIgnoresRuntimeEnvironmentCandidates) {
+TEST(VectorIndexBackendTest,
+     DiskAnnApiLoadIgnoresRuntimeEnvironmentCandidates) {
   EnvVarGuard lib_guard("MYSQL_VECTOR_DISKANN_LIB");
   EnvVarGuard lib_dir_guard("MYSQL_VECTOR_DISKANN_LIB_DIR");
   const std::string root =
@@ -2015,12 +2021,12 @@ TEST(VectorIndexBackendTest, DiskAnnSelectedRealLibraryMatchesAbiV2) {
 }
 
 TEST(VectorIndexBackendTest, DiskAnnOfflineBuildMemorySizeMapsToGigabytes) {
-  EXPECT_DOUBLE_EQ(
-      0.0009765625, vector_index::diskann_build_memory_size_gb_for_testing(
-                        1024ULL * 1024ULL));
-  EXPECT_DOUBLE_EQ(
-      0.00146484375, vector_index::diskann_build_memory_size_gb_for_testing(
-                         1536ULL * 1024ULL));
+  EXPECT_DOUBLE_EQ(0.0009765625,
+                   vector_index::diskann_build_memory_size_gb_for_testing(
+                       1024ULL * 1024ULL));
+  EXPECT_DOUBLE_EQ(0.00146484375,
+                   vector_index::diskann_build_memory_size_gb_for_testing(
+                       1536ULL * 1024ULL));
   EXPECT_GT(vector_index::diskann_build_memory_size_gb_for_testing(1), 0.0);
 }
 
@@ -2096,28 +2102,22 @@ TEST(VectorIndexBackendTest, DiskAnnSegmentBudgetUsesSectorSafeDiskPqDims) {
 }
 
 TEST(VectorIndexBackendTest, DiskAnnEffectiveOfflineDegreeBoundsTinyBuilds) {
-  EXPECT_EQ(0U,
-            vector_index::diskann_effective_offline_max_degree_for_testing(
-                100, 0));
-  EXPECT_EQ(32U,
-            vector_index::diskann_effective_offline_max_degree_for_testing(
-                0, 32));
-  EXPECT_EQ(0U,
-            vector_index::diskann_effective_offline_max_degree_for_testing(
-                3, 32));
-  EXPECT_EQ(3U,
-            vector_index::diskann_effective_offline_max_degree_for_testing(
-                4, 32));
-  EXPECT_EQ(5U,
-            vector_index::diskann_effective_offline_max_degree_for_testing(
-                6, 32));
-  EXPECT_EQ(32U,
-            vector_index::diskann_effective_offline_max_degree_for_testing(
-                100, 32));
-  EXPECT_EQ(32U,
-            vector_index::diskann_effective_offline_max_degree_for_testing(
-                static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1U,
-                32));
+  EXPECT_EQ(0U, vector_index::diskann_effective_offline_max_degree_for_testing(
+                    100, 0));
+  EXPECT_EQ(32U, vector_index::diskann_effective_offline_max_degree_for_testing(
+                     0, 32));
+  EXPECT_EQ(0U, vector_index::diskann_effective_offline_max_degree_for_testing(
+                    3, 32));
+  EXPECT_EQ(3U, vector_index::diskann_effective_offline_max_degree_for_testing(
+                    4, 32));
+  EXPECT_EQ(5U, vector_index::diskann_effective_offline_max_degree_for_testing(
+                    6, 32));
+  EXPECT_EQ(32U, vector_index::diskann_effective_offline_max_degree_for_testing(
+                     100, 32));
+  EXPECT_EQ(
+      32U,
+      vector_index::diskann_effective_offline_max_degree_for_testing(
+          static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1U, 32));
 }
 
 TEST(VectorIndexBackendTest,
@@ -2129,7 +2129,7 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ(0U, vector_index::diskann_cache_nodes_for_build_for_testing(
                     100, 32, 0, 129, 0.0));
   EXPECT_EQ(4U, vector_index::diskann_cache_nodes_for_build_for_testing(
-                     100, 32, 0, 0, 0.1));
+                    100, 32, 0, 0, 0.1));
   EXPECT_EQ(0U, vector_index::diskann_cache_nodes_for_build_for_testing(
                     100, 32, 0, 0, 0.001));
   EXPECT_EQ(100U, vector_index::diskann_cache_nodes_for_build_for_testing(
@@ -2140,11 +2140,11 @@ TEST(VectorIndexBackendTest,
                     0, 32, 7, 1024, 0.1));
   EXPECT_EQ(0U, vector_index::diskann_cache_nodes_for_build_for_testing(
                     100, 0, 0, 1024, 0.1));
-  EXPECT_EQ(0U, vector_index::diskann_cache_nodes_for_build_for_testing(
-                    100,
-                    static_cast<size_t>(std::numeric_limits<uint32_t>::max()) +
-                        1U,
-                    0, 1024, 0.1));
+  EXPECT_EQ(
+      0U,
+      vector_index::diskann_cache_nodes_for_build_for_testing(
+          100, static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1U,
+          0, 1024, 0.1));
   EXPECT_EQ(0U, vector_index::diskann_cache_nodes_for_build_for_testing(
                     std::numeric_limits<size_t>::max(), 32, 0, 1024, 0.1));
   EXPECT_EQ(0U, vector_index::diskann_cache_nodes_for_build_for_testing(
@@ -2159,8 +2159,8 @@ TEST(VectorIndexBackendTest,
                     3, 32, 0, 0, 0.1, 32));
   EXPECT_EQ(3U, vector_index::diskann_cache_nodes_for_build_for_testing(
                     100, 32, 0, 1024, 0.1, 32, 2048));
-  EXPECT_EQ(vector_index::diskann_cache_nodes_for_build_for_testing(
-                100, 128, 0, 0, 0.1),
+  EXPECT_EQ(vector_index::diskann_cache_nodes_for_build_for_testing(100, 128, 0,
+                                                                    0, 0.1),
             vector_index::diskann_effective_loaded_cache_nodes_for_testing(
                 100, 0, 0.1));
 }
@@ -2188,8 +2188,8 @@ TEST(VectorIndexBackendTest,
       std::string(testing::TempDir()) + "/vector_diskann_binary_values_t.bin";
   std::error_code ec;
   std::filesystem::remove(path, ec);
-  ASSERT_TRUE(vector_index::diskann_write_binary_values_for_testing(
-      path, 17U, 23ULL));
+  ASSERT_TRUE(
+      vector_index::diskann_write_binary_values_for_testing(path, 17U, 23ULL));
 
   std::ifstream file(path, std::ios::in | std::ios::binary);
   ASSERT_TRUE(file.good());
@@ -2262,15 +2262,15 @@ TEST(VectorIndexBackendTest, DiskAnnVendoredRuntimeConfigValidation) {
   EXPECT_FALSE(vector_index::diskann_vendored_search_config_valid_for_testing(
       10, 100, 129, &error));
   EXPECT_EQ("beamwidth is too large", error);
-  EXPECT_TRUE(vector_index::diskann_vendored_batch_search_available_for_testing());
+  EXPECT_TRUE(
+      vector_index::diskann_vendored_batch_search_available_for_testing());
 }
 
 TEST(VectorIndexBackendTest, DiskAnnFlattenMemoryBudgetBoundsTempArrays) {
-  const uint64_t exact_budget =
-      3U * sizeof(uint64_t) + 3U * 2U * sizeof(float);
+  const uint64_t exact_budget = 3U * sizeof(uint64_t) + 3U * 2U * sizeof(float);
 
-  EXPECT_TRUE(vector_index::diskann_flatten_memory_budget_allows_for_testing(
-      3, 2, 0));
+  EXPECT_TRUE(
+      vector_index::diskann_flatten_memory_budget_allows_for_testing(3, 2, 0));
   EXPECT_TRUE(vector_index::diskann_flatten_memory_budget_allows_for_testing(
       3, 2, exact_budget));
   EXPECT_FALSE(vector_index::diskann_flatten_memory_budget_allows_for_testing(
@@ -2282,8 +2282,8 @@ TEST(VectorIndexBackendTest, DiskAnnFlattenMemoryBudgetBoundsTempArrays) {
 
 TEST(VectorIndexBackendTest, DiskAnnMemoryModeRejectsExternalOnlyOperations) {
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kMemory,
-      "idx_diskann_memory_reject");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kMemory, "idx_diskann_memory_reject");
   const std::unordered_map<uint64_t, vector_index::vector_data> entries{
       {1, {1.0F, 2.0F}}};
 
@@ -2302,7 +2302,8 @@ TEST(VectorIndexBackendTest, DiskAnnMemoryModeRejectsExternalOnlyOperations) {
   EXPECT_EQ(0U, backend.diskann_search_complexity());
 }
 
-TEST(VectorIndexBackendTest, DiskAnnExternalRejectsWrongDimensionsBeforeNativePath) {
+TEST(VectorIndexBackendTest,
+     DiskAnnExternalRejectsWrongDimensionsBeforeNativePath) {
   const std::string root =
       std::string(testing::TempDir()) + "/vector_diskann_wrong_dimension_t";
   std::error_code ec;
@@ -2312,8 +2313,8 @@ TEST(VectorIndexBackendTest, DiskAnnExternalRejectsWrongDimensionsBeforeNativePa
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_wrong_dimension");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_wrong_dimension");
   const std::unordered_map<uint64_t, vector_index::vector_data> bad_entries{
       {1, {1.0F}}};
   std::vector<vector_index::search_result> result;
@@ -2333,8 +2334,8 @@ TEST(VectorIndexBackendTest, DiskAnnExternalRejectsWrongDimensionsBeforeNativePa
   EXPECT_TRUE(backend.search_batch({}, 1, &batch_results));
   EXPECT_TRUE(batch_results.empty());
   EXPECT_FALSE(backend.search_batch({{1.0F}}, 1, &batch_results));
-  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 0,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 0, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   EXPECT_TRUE(batch_results[0].empty());
   EXPECT_TRUE(batch_results[1].empty());
@@ -2345,6 +2346,10 @@ TEST(VectorIndexBackendTest, DiskAnnExternalRejectsWrongDimensionsBeforeNativePa
 
 TEST(VectorIndexBackendTest,
      DiskAnnExternalUsesExactFallbackForUnsignedDocIdsBeyondSidecarRange) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    GTEST_SKIP() << "DiskANN provider is not compiled in";
+  }
   const std::string root =
       std::string(testing::TempDir()) + "/vector_diskann_uint64_fallback_t";
   std::error_code ec;
@@ -2397,8 +2402,8 @@ TEST(VectorIndexBackendTest,
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_offline_batch");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 4));
 
   const std::unordered_map<uint64_t, vector_index::vector_data> entries{
@@ -2414,17 +2419,17 @@ TEST(VectorIndexBackendTest,
   }
 
   std::vector<std::vector<vector_index::search_result>> batch_results;
-  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 1,
-                                                       1, nullptr));
-  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 1, 0,
-                                                       1, &batch_results));
-  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 2,
-                                                       1, &batch_results));
-  EXPECT_TRUE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 0,
-                                                      1, &batch_results));
+  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 1, 1,
+                                                       nullptr));
+  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 1, 0, 1,
+                                                       &batch_results));
+  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 2, 1,
+                                                       &batch_results));
+  EXPECT_TRUE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 0, 1,
+                                                      &batch_results));
   EXPECT_TRUE(batch_results.empty());
-  EXPECT_TRUE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 1,
-                                                      0, &batch_results));
+  EXPECT_TRUE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 1, 0,
+                                                      &batch_results));
   ASSERT_EQ(1U, batch_results.size());
   EXPECT_TRUE(batch_results[0].empty());
   EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F}}, 0, 1, 1,
@@ -2460,8 +2465,8 @@ TEST(VectorIndexBackendTest,
   }
 
   backend.clear_committed_snapshot_for_testing();
-  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {9.0F, 9.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 1.0F}, {9.0F, 9.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());
   ASSERT_EQ(1U, batch_results[1].size());
@@ -2524,18 +2529,19 @@ TEST(VectorIndexBackendTest,
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   data_home_guard.Set("");
 
-  EXPECT_EQ("", vector_index::diskann_term_directory_for_testing("idx_diskann_empty", 7));
-  EXPECT_EQ("",
-            vector_index::diskann_key_path_for_testing("idx_diskann_empty", 7, ""));
+  EXPECT_EQ("", vector_index::diskann_term_directory_for_testing(
+                    "idx_diskann_empty", 7));
+  EXPECT_EQ("", vector_index::diskann_key_path_for_testing("idx_diskann_empty",
+                                                           7, ""));
   std::string value;
-  EXPECT_FALSE(vector_index::diskann_load_value_for_testing("idx_diskann_empty", 7,
-                                                        "", &value));
-  EXPECT_FALSE(vector_index::diskann_load_value_for_testing("idx_diskann_empty", 7,
-                                                        "aa", nullptr));
-  EXPECT_FALSE(vector_index::diskann_save_value_for_testing("idx_diskann_empty", 7,
-                                                        "", "value"));
-  EXPECT_FALSE(vector_index::diskann_delete_value_for_testing("idx_diskann_empty", 7,
-                                                          ""));
+  EXPECT_FALSE(vector_index::diskann_load_value_for_testing("idx_diskann_empty",
+                                                            7, "", &value));
+  EXPECT_FALSE(vector_index::diskann_load_value_for_testing("idx_diskann_empty",
+                                                            7, "aa", nullptr));
+  EXPECT_FALSE(vector_index::diskann_save_value_for_testing("idx_diskann_empty",
+                                                            7, "", "value"));
+  EXPECT_FALSE(vector_index::diskann_delete_value_for_testing(
+      "idx_diskann_empty", 7, ""));
 
   const std::string root =
       std::string(testing::TempDir()) + "/vector_diskann_helper_store_t";
@@ -2550,48 +2556,41 @@ TEST(VectorIndexBackendTest,
   const std::string term_directory =
       vector_index::diskann_term_directory_for_testing("idx_diskann_helper", 5);
   ASSERT_FALSE(term_directory.empty());
-  EXPECT_NE(std::string::npos,
-            vector_index::diskann_term_directory_for_testing(
-                "idx_diskann_helper", 0)
-                .find("/vector"));
-  EXPECT_NE(std::string::npos,
-            vector_index::diskann_term_directory_for_testing(
-                "idx_diskann_helper", 1)
-                .find("/neighbors"));
-  EXPECT_NE(std::string::npos,
-            vector_index::diskann_term_directory_for_testing(
-                "idx_diskann_helper", 2)
-                .find("/quantized"));
-  EXPECT_NE(std::string::npos,
-            vector_index::diskann_term_directory_for_testing(
-                "idx_diskann_helper", 3)
-                .find("/attributes"));
-  EXPECT_NE(std::string::npos,
-            vector_index::diskann_term_directory_for_testing(
-                "idx_diskann_helper", 4)
-                .find("/metadata"));
-  EXPECT_NE(std::string::npos,
-            vector_index::diskann_term_directory_for_testing(
-                "idx_diskann_helper", 6)
-                .find("/extmap"));
-  EXPECT_NE(std::string::npos,
-            vector_index::diskann_term_directory_for_testing(
-                "idx_diskann_helper", 7)
-                .find("/unknown"));
+  EXPECT_NE(std::string::npos, vector_index::diskann_term_directory_for_testing(
+                                   "idx_diskann_helper", 0)
+                                   .find("/vector"));
+  EXPECT_NE(std::string::npos, vector_index::diskann_term_directory_for_testing(
+                                   "idx_diskann_helper", 1)
+                                   .find("/neighbors"));
+  EXPECT_NE(std::string::npos, vector_index::diskann_term_directory_for_testing(
+                                   "idx_diskann_helper", 2)
+                                   .find("/quantized"));
+  EXPECT_NE(std::string::npos, vector_index::diskann_term_directory_for_testing(
+                                   "idx_diskann_helper", 3)
+                                   .find("/attributes"));
+  EXPECT_NE(std::string::npos, vector_index::diskann_term_directory_for_testing(
+                                   "idx_diskann_helper", 4)
+                                   .find("/metadata"));
+  EXPECT_NE(std::string::npos, vector_index::diskann_term_directory_for_testing(
+                                   "idx_diskann_helper", 6)
+                                   .find("/extmap"));
+  EXPECT_NE(std::string::npos, vector_index::diskann_term_directory_for_testing(
+                                   "idx_diskann_helper", 7)
+                                   .find("/unknown"));
   const std::string key_path = vector_index::diskann_key_path_for_testing(
       "idx_diskann_helper", 5, key_bytes);
   ASSERT_FALSE(key_path.empty());
 
-  ASSERT_TRUE(vector_index::diskann_save_value_for_testing("idx_diskann_helper", 5,
-                                                       key_bytes, payload));
+  ASSERT_TRUE(vector_index::diskann_save_value_for_testing(
+      "idx_diskann_helper", 5, key_bytes, payload));
   value.clear();
-  ASSERT_TRUE(vector_index::diskann_load_value_for_testing("idx_diskann_helper", 5,
-                                                       key_bytes, &value));
+  ASSERT_TRUE(vector_index::diskann_load_value_for_testing(
+      "idx_diskann_helper", 5, key_bytes, &value));
   EXPECT_EQ(payload, value);
-  ASSERT_TRUE(vector_index::diskann_delete_value_for_testing("idx_diskann_helper", 5,
-                                                         key_bytes));
-  EXPECT_FALSE(vector_index::diskann_load_value_for_testing("idx_diskann_helper", 5,
-                                                        key_bytes, &value));
+  ASSERT_TRUE(vector_index::diskann_delete_value_for_testing(
+      "idx_diskann_helper", 5, key_bytes));
+  EXPECT_FALSE(vector_index::diskann_load_value_for_testing(
+      "idx_diskann_helper", 5, key_bytes, &value));
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -2622,6 +2621,9 @@ TEST(VectorIndexBackendTest,
   EXPECT_FALSE(vector_index::diskann_build_memory_store_round_trip_for_testing(
       "idx_diskann_memory_store_null_after", 5, key_bytes, payload,
       &loaded_before_flush, &file_exists_before_flush, nullptr));
+  EXPECT_FALSE(vector_index::diskann_build_memory_store_round_trip_for_testing(
+      "idx_diskann_memory_store_empty_key", 5, "", payload,
+      &loaded_before_flush, &file_exists_before_flush, &loaded_after_flush));
 
   ASSERT_TRUE(vector_index::diskann_build_memory_store_round_trip_for_testing(
       "idx_diskann_memory_store", 5, key_bytes, payload, &loaded_before_flush,
@@ -2629,8 +2631,9 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ(payload, loaded_before_flush);
   EXPECT_FALSE(file_exists_before_flush);
   EXPECT_EQ(payload, loaded_after_flush);
-  EXPECT_TRUE(std::filesystem::exists(vector_index::diskann_key_path_for_testing(
-      "idx_diskann_memory_store", 5, key_bytes)));
+  EXPECT_TRUE(
+      std::filesystem::exists(vector_index::diskann_key_path_for_testing(
+          "idx_diskann_memory_store", 5, key_bytes)));
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -2648,8 +2651,11 @@ TEST(VectorIndexBackendTest,
 
   std::string loaded_after_removing_file;
   EXPECT_FALSE(vector_index::diskann_resident_store_round_trip_for_testing(
-      "idx_diskann_resident_store_null", 5, "resident-key",
-      "resident-payload", nullptr));
+      "idx_diskann_resident_store_null", 5, "resident-key", "resident-payload",
+      nullptr));
+  EXPECT_FALSE(vector_index::diskann_resident_store_round_trip_for_testing(
+      "idx_diskann_resident_store_empty_key", 5, "", "resident-payload",
+      &loaded_after_removing_file));
   ASSERT_TRUE(vector_index::diskann_resident_store_round_trip_for_testing(
       "idx_diskann_resident_store", 5, "resident-key", "resident-payload",
       &loaded_after_removing_file));
@@ -2685,8 +2691,8 @@ TEST(VectorIndexBackendTest,
       "idx_diskann_rmw_store_null_build_memory", 5, "rmw-key", "abcdefgh",
       "XYZ", 8, &persistent_value, nullptr, &resident_value));
   EXPECT_FALSE(vector_index::diskann_read_modify_write_round_trip_for_testing(
-      "idx_diskann_rmw_store_null_resident", 5, "rmw-key", "abcdefgh", "XYZ",
-      8, &persistent_value, &build_memory_value, nullptr));
+      "idx_diskann_rmw_store_null_resident", 5, "rmw-key", "abcdefgh", "XYZ", 8,
+      &persistent_value, &build_memory_value, nullptr));
   EXPECT_FALSE(vector_index::diskann_read_modify_write_round_trip_for_testing(
       "idx_diskann_rmw_store_empty_key", 5, "", "abcdefgh", "XYZ", 8,
       &persistent_value, &build_memory_value, &resident_value));
@@ -2703,10 +2709,11 @@ TEST(VectorIndexBackendTest,
      BackendHelperDiskAnnParsePrefixedKeysCoversMalformedAndVisitorFailure) {
   std::vector<std::string> keys;
 
-  EXPECT_TRUE(vector_index::diskann_parse_prefixed_keys_for_testing("", 0, &keys));
+  EXPECT_TRUE(
+      vector_index::diskann_parse_prefixed_keys_for_testing("", 0, &keys));
   EXPECT_TRUE(keys.empty());
-  EXPECT_FALSE(vector_index::diskann_parse_prefixed_keys_for_testing("", 0,
-                                                                     nullptr));
+  EXPECT_FALSE(
+      vector_index::diskann_parse_prefixed_keys_for_testing("", 0, nullptr));
   EXPECT_FALSE(
       vector_index::diskann_parse_prefixed_keys_for_testing("", 1, &keys));
 
@@ -2729,13 +2736,14 @@ TEST(VectorIndexBackendTest,
   payload.append(reinterpret_cast<const char *>(&l2), sizeof(l2));
   payload.append(k2);
 
-  ASSERT_TRUE(vector_index::diskann_parse_prefixed_keys_for_testing(payload, 2, &keys));
+  ASSERT_TRUE(
+      vector_index::diskann_parse_prefixed_keys_for_testing(payload, 2, &keys));
   ASSERT_EQ(2U, keys.size());
   EXPECT_EQ(k1, keys[0]);
   EXPECT_EQ(k2, keys[1]);
 
-  EXPECT_FALSE(
-      vector_index::diskann_parse_prefixed_keys_for_testing(payload, 2, &keys, 1));
+  EXPECT_FALSE(vector_index::diskann_parse_prefixed_keys_for_testing(payload, 2,
+                                                                     &keys, 1));
 }
 
 TEST(VectorIndexBackendTest, BaseLoadCommittedEntriesUsesMutationContract) {
@@ -2778,7 +2786,8 @@ TEST(VectorIndexBackendTest,
   EXPECT_FALSE(backend.load_committed_entries_from_reader(reader));
 
   StubBackend rebuild_backend;
-  EXPECT_TRUE(rebuild_backend.rebuild_from_committed_entries_from_reader(reader));
+  EXPECT_TRUE(
+      rebuild_backend.rebuild_from_committed_entries_from_reader(reader));
   EXPECT_EQ(2U, rebuild_backend.upsert_calls);
 
   StubBackend recover_backend;
@@ -2825,8 +2834,8 @@ TEST(VectorIndexBackendTest, BaseBackendDefaultsRejectUnsupportedTunings) {
   EXPECT_EQ(0U, backend.diskann_build_blas_threads());
   EXPECT_TRUE(
       backend.set_diskann_build_mode(vector_index::diskann_build_mode::kAuto));
-  EXPECT_FALSE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  EXPECT_FALSE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   EXPECT_EQ(vector_index::diskann_build_mode::kAuto,
             backend.diskann_build_mode_value());
   EXPECT_FALSE(backend.set_diskann_search_complexity(64));
@@ -2836,7 +2845,8 @@ TEST(VectorIndexBackendTest, BaseBackendDefaultsRejectUnsupportedTunings) {
 }
 
 TEST(VectorIndexBackendTest, MemoryBackendEuclideanTopK) {
-  vector_index::memory_backend backend(2, vector_index::metric_type::kEuclidean);
+  vector_index::memory_backend backend(2,
+                                       vector_index::metric_type::kEuclidean);
   std::vector<vector_index::search_result> result;
 
   EXPECT_TRUE(backend.upsert(11, {0.0F, 0.0F}));
@@ -2850,7 +2860,8 @@ TEST(VectorIndexBackendTest, MemoryBackendEuclideanTopK) {
 }
 
 TEST(VectorIndexBackendTest, MemoryBackendEuclideanTieBreaksByDocId) {
-  vector_index::memory_backend backend(2, vector_index::metric_type::kEuclidean);
+  vector_index::memory_backend backend(2,
+                                       vector_index::metric_type::kEuclidean);
   std::vector<vector_index::search_result> result;
 
   EXPECT_TRUE(backend.upsert(20, {1.0F, 0.0F}));
@@ -2862,7 +2873,8 @@ TEST(VectorIndexBackendTest, MemoryBackendEuclideanTieBreaksByDocId) {
 }
 
 TEST(VectorIndexBackendTest, MemoryBackendRejectsDimensionMismatch) {
-  vector_index::memory_backend backend(2, vector_index::metric_type::kEuclidean);
+  vector_index::memory_backend backend(2,
+                                       vector_index::metric_type::kEuclidean);
   std::vector<vector_index::search_result> result;
 
   EXPECT_FALSE(backend.upsert(1, {1.0F, 2.0F, 3.0F}));
@@ -3031,6 +3043,61 @@ TEST(VectorIndexRuntimeThreadPoolTest, WorkerInitiatedRuntimeResetFailsFast) {
       "");
 }
 
+TEST(VectorIndexRuntimeThreadPoolTest,
+     ConcurrentJobsOverlapAndGrowTheSharedWorkerPool) {
+  vector_index::reset_runtime_worker_pool_for_testing();
+
+  std::mutex barrier_mutex;
+  std::condition_variable barrier_cv;
+  std::array<bool, 2> entered{false, false};
+  std::atomic<bool> invalid_worker_id{false};
+  const auto run_job = [&](size_t job_id, size_t thread_count) {
+    return vector_index::parallel_for_ranges(
+        thread_count, thread_count,
+        [&](size_t, size_t, size_t logical_worker_id) {
+          if (logical_worker_id >= thread_count) {
+            invalid_worker_id.store(true, std::memory_order_relaxed);
+          }
+          std::unique_lock<std::mutex> barrier_guard(barrier_mutex);
+          entered[job_id] = true;
+          barrier_cv.notify_all();
+          return barrier_cv.wait_for(
+              barrier_guard, std::chrono::seconds(5),
+              [&]() { return entered[0] && entered[1]; });
+        });
+  };
+
+  auto first = std::async(std::launch::async, [&]() { return run_job(0, 2); });
+  {
+    std::unique_lock<std::mutex> barrier_guard(barrier_mutex);
+    ASSERT_TRUE(barrier_cv.wait_for(barrier_guard, std::chrono::seconds(5),
+                                    [&]() { return entered[0]; }));
+  }
+  auto second = std::async(std::launch::async, [&]() { return run_job(1, 4); });
+
+  EXPECT_TRUE(first.get());
+  EXPECT_TRUE(second.get());
+  EXPECT_FALSE(invalid_worker_id.load(std::memory_order_relaxed));
+  EXPECT_EQ(4U, vector_index::runtime_worker_pool_size_for_testing());
+
+  std::atomic<size_t> successful_ranges{0};
+  auto failing = std::async(std::launch::async, [&]() {
+    return vector_index::parallel_for_ranges(
+        4, 2, [](size_t begin, size_t, size_t) { return begin == 0; });
+  });
+  auto successful = std::async(std::launch::async, [&]() {
+    return vector_index::parallel_for_ranges(4, 2, [&](size_t, size_t, size_t) {
+      successful_ranges.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    });
+  });
+  EXPECT_FALSE(failing.get());
+  EXPECT_TRUE(successful.get());
+  EXPECT_EQ(2U, successful_ranges.load(std::memory_order_relaxed));
+
+  vector_index::reset_runtime_worker_pool_for_testing();
+}
+
 #ifndef NDEBUG
 TEST(VectorIndexRuntimeThreadPoolTest,
      QueueAllocationFailureLeavesWorkerPoolReusable) {
@@ -3120,8 +3187,8 @@ TEST(VectorIndexRuntimeThreadPoolTest,
   EXPECT_TRUE(vector_index::parallel_for_ranges_scoped(
       seen.size(), 2, [&](size_t begin, size_t end, size_t) {
         return vector_index::parallel_for_ranges(
-            end - begin, 2, [&](size_t nested_begin, size_t nested_end,
-                                size_t) {
+            end - begin, 2,
+            [&](size_t nested_begin, size_t nested_end, size_t) {
               for (size_t i = begin + nested_begin; i < begin + nested_end;
                    ++i) {
                 ++seen[i];
@@ -3335,11 +3402,25 @@ TEST(VectorIndexRuntimeConfigTest, ValidatesProviderModeSemantics) {
       static_cast<vector_index::backend_provider>(999), &default_mode));
 }
 
+TEST(VectorIndexRuntimeConfigTest, ValidatesFaissIvfPqLibraryBoundaries) {
+  EXPECT_TRUE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 4, 8));
+  EXPECT_TRUE(vector_index::valid_faiss_ivf_pq_config(
+      24, 8, 4, 6, vector_index::k_max_faiss_pq_bits));
+
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(0, 8, 4, 4, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 0, 4, 4, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 8, 0, 4, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 0, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(16, 8, 4, 4, 0));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(15, 8, 4, 4, 8));
+  EXPECT_FALSE(vector_index::valid_faiss_ivf_pq_config(
+      16, 8, 4, 4, vector_index::k_max_faiss_pq_bits + 1));
+}
+
 TEST(VectorIndexBackendTest, CommonHelpersCoverDistanceHexAndSizeBounds) {
   double distance = 0.0;
   EXPECT_FALSE(vector_index::detail::compute_distance(
-      vector_index::metric_type::kEuclidean, {1.0F}, {1.0F, 2.0F},
-      &distance));
+      vector_index::metric_type::kEuclidean, {1.0F}, {1.0F, 2.0F}, &distance));
   ASSERT_TRUE(vector_index::detail::compute_distance(
       vector_index::metric_type::kEuclidean, {1.0F, 1.0F}, {4.0F, 5.0F},
       &distance));
@@ -3411,6 +3492,17 @@ TEST(VectorIndexRuntimeConfigTest, SelectsUniformSamplePositions) {
   ASSERT_TRUE(
       vector_index::runtime_uniform_sample_position(3, 10, 4, &position));
   EXPECT_EQ(7U, position);
+  ASSERT_TRUE(
+      vector_index::runtime_uniform_sample_position(3, 7, 4, &position));
+  EXPECT_EQ(5U, position);
+
+  const size_t max_size = std::numeric_limits<size_t>::max();
+  ASSERT_TRUE(vector_index::runtime_uniform_sample_position(
+      max_size - 2, max_size, max_size - 1, &position));
+  EXPECT_EQ(max_size - 2, position);
+  ASSERT_TRUE(vector_index::runtime_uniform_sample_position(
+      max_size - 1, max_size, max_size, &position));
+  EXPECT_EQ(max_size - 1, position);
 
   EXPECT_FALSE(
       vector_index::runtime_uniform_sample_position(0, 0, 4, &position));
@@ -3423,7 +3515,8 @@ TEST(VectorIndexRuntimeConfigTest, SelectsUniformSamplePositions) {
   EXPECT_FALSE(vector_index::runtime_uniform_sample_position(0, 4, 1, nullptr));
 }
 
-TEST(VectorIndexBuildOptionsTest, GlobalEnumOptionsReturnKnownValuesAndFallbacks) {
+TEST(VectorIndexBuildOptionsTest,
+     GlobalEnumOptionsReturnKnownValuesAndFallbacks) {
   UlongGuard diskann_build_mode_guard(
       &opt_vector_diskann_build_mode,
       static_cast<ulong>(vector_index::diskann_build_mode::kAuto));
@@ -3453,8 +3546,9 @@ TEST(VectorIndexBuildOptionsTest, GlobalEnumOptionsReturnKnownValuesAndFallbacks
       static_cast<ulong>(vector_index::diskann_pq_runtime_mode::kOfficial);
   EXPECT_EQ(vector_index::diskann_pq_runtime_mode::kOfficial,
             vector_index::global_diskann_pq_runtime_mode());
-  EXPECT_STREQ("official", vector_index::diskann_pq_runtime_mode_name(
-                               vector_index::diskann_pq_runtime_mode::kOfficial));
+  EXPECT_STREQ("official",
+               vector_index::diskann_pq_runtime_mode_name(
+                   vector_index::diskann_pq_runtime_mode::kOfficial));
   opt_vector_diskann_pq_runtime =
       static_cast<ulong>(vector_index::diskann_pq_runtime_mode::kNativeAuto);
   EXPECT_EQ(vector_index::diskann_pq_runtime_mode::kNativeAuto,
@@ -3514,7 +3608,8 @@ TEST(VectorIndexBuildOptionsTest, GlobalEnumOptionsReturnKnownValuesAndFallbacks
 }
 
 TEST(VectorIndexBackendTest, MemoryBackendEraseAndZeroTopK) {
-  vector_index::memory_backend backend(2, vector_index::metric_type::kEuclidean);
+  vector_index::memory_backend backend(2,
+                                       vector_index::metric_type::kEuclidean);
   std::vector<vector_index::search_result> result;
 
   EXPECT_TRUE(backend.upsert(1, {1.0F, 2.0F}));
@@ -3551,7 +3646,8 @@ TEST(VectorIndexBackendTest, MemoryBackendCosineRejectsZeroNorm) {
 }
 
 TEST(VectorIndexBackendTest, MemoryBackendInnerProductDistanceOrdering) {
-  vector_index::memory_backend backend(2, vector_index::metric_type::kInnerProduct);
+  vector_index::memory_backend backend(
+      2, vector_index::metric_type::kInnerProduct);
   std::vector<vector_index::search_result> result;
 
   EXPECT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
@@ -3563,7 +3659,8 @@ TEST(VectorIndexBackendTest, MemoryBackendInnerProductDistanceOrdering) {
 }
 
 TEST(VectorIndexBackendTest, ExternalBackendSupportsMutableSearch) {
-  vector_index::external_backend backend(2, vector_index::metric_type::kEuclidean);
+  vector_index::external_backend backend(2,
+                                         vector_index::metric_type::kEuclidean);
   std::vector<vector_index::search_result> result;
 
   EXPECT_TRUE(backend.supports_mutations());
@@ -3578,7 +3675,8 @@ TEST(VectorIndexBackendTest, ExternalBackendSupportsMutableSearch) {
 }
 
 TEST(VectorIndexBackendTest, ExternalBackendEuclideanTieBreaksByDocId) {
-  vector_index::external_backend backend(2, vector_index::metric_type::kEuclidean);
+  vector_index::external_backend backend(2,
+                                         vector_index::metric_type::kEuclidean);
   std::vector<vector_index::search_result> result;
 
   EXPECT_TRUE(backend.upsert(20, {1.0F, 0.0F}));
@@ -3590,7 +3688,8 @@ TEST(VectorIndexBackendTest, ExternalBackendEuclideanTieBreaksByDocId) {
 }
 
 TEST(VectorIndexBackendTest, ExternalBackendRejectsBadDimensionsAndZeroTopK) {
-  vector_index::external_backend backend(2, vector_index::metric_type::kEuclidean);
+  vector_index::external_backend backend(2,
+                                         vector_index::metric_type::kEuclidean);
   std::vector<vector_index::search_result> result;
 
   EXPECT_FALSE(backend.upsert(1, {1.0F, 2.0F, 3.0F}));
@@ -3602,7 +3701,7 @@ TEST(VectorIndexBackendTest, ExternalBackendRejectsBadDimensionsAndZeroTopK) {
 
 TEST(VectorIndexBackendTest, FaissMemoryFallbackBehavesLikeMemoryBackend) {
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kMemory);
+                                      vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result;
 
   EXPECT_EQ(vector_index::backend_provider::kFaiss, backend.provider());
@@ -3659,9 +3758,10 @@ TEST(VectorIndexBackendTest, FaissRejectsDocIdBeyondNativeLabelRange) {
 #endif
 }
 
-TEST(VectorIndexBackendTest, FaissMemoryLoadCommittedAndRecoverStayInMemoryMode) {
+TEST(VectorIndexBackendTest,
+     FaissMemoryLoadCommittedAndRecoverStayInMemoryMode) {
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kMemory);
+                                      vector_index::backend_mode::kMemory);
   std::unordered_map<uint64_t, vector_index::vector_data> committed_entries{
       {7, {7.0F, 7.0F}}, {9, {9.0F, 9.0F}}};
   std::vector<vector_index::search_result> result;
@@ -3685,9 +3785,39 @@ TEST(VectorIndexBackendTest, FaissMemoryLoadCommittedAndRecoverStayInMemoryMode)
   ASSERT_EQ(2U, result.size());
 }
 
+TEST(VectorIndexBackendTest,
+     FaissMemorySourceAdmissionPrecedesReaderIo) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss source admission requires HAVE_FAISS";
+#else
+  constexpr uint64_t k_one_mib = 1024ULL * 1024ULL;
+  UlonglongGuard build_memory_guard(&opt_vector_build_memory_size, k_one_mib);
+  UlonglongGuard reserve_guard(&opt_vector_build_memory_reserve_size, 0);
+  BuildResourceProbeGuard probe_guard(k_one_mib, 1);
+  vector_index::faiss_backend backend(2,
+                                      vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+
+  size_t reader_calls = 0;
+  const vector_index::committed_entry_source source{
+      [&reader_calls](const vector_index::committed_entry_visitor &visitor) {
+        ++reader_calls;
+        return visitor(2, {2.0F, 0.0F});
+      },
+      1, true};
+
+  EXPECT_FALSE(backend.load_committed_entries_from_source(source));
+  EXPECT_FALSE(backend.recover_committed_entries_from_source(source));
+  EXPECT_FALSE(backend.rebuild_from_committed_entry_source(source));
+  EXPECT_EQ(0U, reader_calls);
+  EXPECT_EQ(1U, backend.entry_count());
+#endif
+}
+
 TEST(VectorIndexBackendTest, FaissExternalFallbackSupportsMutableSearch) {
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
   std::vector<vector_index::search_result> result;
 
   EXPECT_EQ(vector_index::backend_provider::kFaiss, backend.provider());
@@ -3702,9 +3832,9 @@ TEST(VectorIndexBackendTest, FaissExternalFallbackSupportsMutableSearch) {
 }
 
 TEST(VectorIndexBackendTest, FaissMemoryInnerProductUsesFlatIpIndex) {
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kInnerProduct,
-      vector_index::backend_mode::kMemory);
+  vector_index::faiss_backend backend(2,
+                                      vector_index::metric_type::kInnerProduct,
+                                      vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result;
 
   EXPECT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
@@ -3747,7 +3877,7 @@ TEST(VectorIndexBackendTest, FaissExternalIgnoresRuntimeEnvironmentOptions) {
   setenv("MYSQL_VECTOR_FAISS_SEARCH_EF", "96", 1);
   setenv("MYSQL_VECTOR_FAISS_KEEP_LOADED", "1", 1);
   vector_index::faiss_backend tuned(2, vector_index::metric_type::kEuclidean,
-                                   vector_index::backend_mode::kExternal);
+                                    vector_index::backend_mode::kExternal);
   EXPECT_EQ(32U, tuned.hnsw_m());
   EXPECT_EQ(40U, tuned.hnsw_ef_construction());
   EXPECT_EQ(64U, tuned.search_ef());
@@ -3757,7 +3887,7 @@ TEST(VectorIndexBackendTest, FaissExternalIgnoresRuntimeEnvironmentOptions) {
   setenv("MYSQL_VECTOR_FAISS_SEARCH_EF", "4294967296", 1);
   setenv("MYSQL_VECTOR_FAISS_KEEP_LOADED", "invalid", 1);
   vector_index::faiss_backend fallback(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal);
+                                       vector_index::backend_mode::kExternal);
   EXPECT_EQ(32U, fallback.hnsw_m());
   EXPECT_EQ(40U, fallback.hnsw_ef_construction());
   EXPECT_EQ(64U, fallback.search_ef());
@@ -3772,13 +3902,12 @@ TEST(VectorIndexBackendTest, FaissExternalIgnoresRuntimeEnvironmentOptions) {
   EXPECT_EQ(40U, trailing_junk.hnsw_ef_construction());
   EXPECT_EQ(64U, trailing_junk.search_ef());
 
-  const char *bool_values[] = {"true", "TRUE", "yes", "YES", "on", "ON",
-                               "0",    "false", "FALSE", "no",
-                               "NO",   "off",   "OFF"};
+  const char *bool_values[] = {"true",  "TRUE",  "yes", "YES", "on",  "ON", "0",
+                               "false", "FALSE", "no",  "NO",  "off", "OFF"};
   for (const char *value : bool_values) {
     setenv("MYSQL_VECTOR_FAISS_KEEP_LOADED", value, 1);
     vector_index::faiss_backend parser(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal);
+                                       vector_index::backend_mode::kExternal);
     EXPECT_EQ(32U, parser.hnsw_m());
     EXPECT_EQ(40U, parser.hnsw_ef_construction());
     EXPECT_EQ(64U, parser.search_ef());
@@ -3805,8 +3934,12 @@ TEST(VectorIndexBackendTest, FaissSearchAcceptsZeroTopK) {
 }
 
 TEST(VectorIndexBackendTest, FaissSearchBatchCoversGuardAndEdgePaths) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kMemory);
+                                      vector_index::backend_mode::kMemory);
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
   ASSERT_TRUE(backend.upsert(2, {2.0F, 2.0F}));
 
@@ -3814,17 +3947,16 @@ TEST(VectorIndexBackendTest, FaissSearchBatchCoversGuardAndEdgePaths) {
   EXPECT_FALSE(backend.search_batch({{1.0F, 1.0F}}, 1, nullptr));
   EXPECT_TRUE(backend.search_batch({}, 1, &batch_results));
   EXPECT_TRUE(batch_results.empty());
-  EXPECT_FALSE(backend.search_batch({{1.0F, 1.0F, 1.0F}}, 1,
-                                    &batch_results));
+  EXPECT_FALSE(backend.search_batch({{1.0F, 1.0F, 1.0F}}, 1, &batch_results));
 
-  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 0,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 0, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   EXPECT_TRUE(batch_results[0].empty());
   EXPECT_TRUE(batch_results[1].empty());
 
-  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 1.0F}, {2.0F, 2.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());
   ASSERT_EQ(1U, batch_results[1].size());
@@ -3840,8 +3972,7 @@ TEST(VectorIndexBackendTest, FaissSearchBatchCoversGuardAndEdgePaths) {
       vector_index::backend_mode::kMemory);
   EXPECT_FALSE(cosine_backend.upsert(1, {0.0F, 0.0F}));
   ASSERT_TRUE(cosine_backend.upsert(1, {1.0F, 0.0F}));
-  EXPECT_FALSE(
-      cosine_backend.search_batch({{0.0F, 0.0F}}, 1, &batch_results));
+  EXPECT_FALSE(cosine_backend.search_batch({{0.0F, 0.0F}}, 1, &batch_results));
 }
 
 TEST(VectorIndexBackendTest,
@@ -3870,8 +4001,8 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ(1U, result[0].doc_id);
   UlongGuard faiss_threads_guard(&opt_vector_faiss_search_threads, 2);
   std::vector<std::vector<vector_index::search_result>> batch_results;
-  ASSERT_TRUE(euclidean.search_batch({{1.0F, 0.0F}, {2.0F, 0.0F}}, 1,
-                                     &batch_results));
+  ASSERT_TRUE(
+      euclidean.search_batch({{1.0F, 0.0F}, {2.0F, 0.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());
   ASSERT_EQ(1U, batch_results[1].size());
@@ -3887,9 +4018,9 @@ TEST(VectorIndexBackendTest,
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(1U, result[0].doc_id);
 
-  vector_index::faiss_backend cosine(
-      2, vector_index::metric_type::kCosine,
-      vector_index::backend_mode::kExternal, "idx_faiss_released_cos");
+  vector_index::faiss_backend cosine(2, vector_index::metric_type::kCosine,
+                                     vector_index::backend_mode::kExternal,
+                                     "idx_faiss_released_cos");
   ASSERT_TRUE(cosine.upsert(1, {1.0F, 0.0F}));
   ASSERT_TRUE(cosine.upsert(2, {0.0F, 1.0F}));
   ASSERT_TRUE(cosine.search({1.0F, 0.0F}, 1, &result));
@@ -3900,15 +4031,16 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest, FaissExternalClearsSnapshotWhenNativeIndexStaysLoaded) {
+TEST(VectorIndexBackendTest,
+     FaissExternalClearsSnapshotWhenNativeIndexStaysLoaded) {
 #ifndef HAVE_FAISS
   GTEST_SKIP() << "Faiss native snapshot dedup requires HAVE_FAISS";
 #else
   BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, true);
 
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_faiss_snapshot_dedup");
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_snapshot_dedup");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
   ASSERT_TRUE(backend.upsert(2, {2.0F, 0.0F}));
 
@@ -3922,15 +4054,16 @@ TEST(VectorIndexBackendTest, FaissExternalClearsSnapshotWhenNativeIndexStaysLoad
 #endif
 }
 
-TEST(VectorIndexBackendTest, FaissExternalKeepsSnapshotWhenNativeIndexIsReleased) {
+TEST(VectorIndexBackendTest,
+     FaissExternalKeepsSnapshotWhenNativeIndexIsReleased) {
 #ifndef HAVE_FAISS
   GTEST_SKIP() << "Faiss native snapshot fallback requires HAVE_FAISS";
 #else
   BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, false);
 
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_faiss_snapshot_fallback");
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_snapshot_fallback");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
   ASSERT_TRUE(backend.upsert(2, {2.0F, 0.0F}));
 
@@ -3947,8 +4080,12 @@ TEST(VectorIndexBackendTest, FaissExternalKeepsSnapshotWhenNativeIndexIsReleased
 }
 
 TEST(VectorIndexBackendTest, FaissExternalSearchEfCanBeConfigured) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
 
   EXPECT_EQ(64U, backend.search_ef());
   EXPECT_TRUE(backend.set_search_ef(96));
@@ -3957,8 +4094,12 @@ TEST(VectorIndexBackendTest, FaissExternalSearchEfCanBeConfigured) {
 }
 
 TEST(VectorIndexBackendTest, FaissExternalHnswBuildParamsCanBeConfigured) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
 
   EXPECT_EQ(32U, backend.hnsw_m());
   EXPECT_EQ(40U, backend.hnsw_ef_construction());
@@ -3970,8 +4111,12 @@ TEST(VectorIndexBackendTest, FaissExternalHnswBuildParamsCanBeConfigured) {
 }
 
 TEST(VectorIndexBackendTest, FaissExternalIvfParamsCanBeConfigured) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
 
   EXPECT_EQ(0U, backend.faiss_nlist());
   EXPECT_EQ(0U, backend.faiss_nprobe());
@@ -3987,7 +4132,7 @@ TEST(VectorIndexBackendTest, FaissExternalIvfParamsCanBeConfigured) {
 
 TEST(VectorIndexBackendTest, FaissExternalIvfParamsRejectPartialZeroConfigs) {
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
   EXPECT_FALSE(backend.set_faiss_ivf_params(0, 1));
   EXPECT_FALSE(backend.set_faiss_ivf_params(1, 0));
 }
@@ -4025,9 +4170,13 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest, FaissExternalIvfParamsWithEntriesCanBeConfigured) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_ivf_with_entries");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_ivf_with_entries");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
   ASSERT_TRUE(backend.upsert(9, {9.0F, 9.0F}));
 
@@ -4042,9 +4191,9 @@ TEST(VectorIndexBackendTest, FaissExternalIvfTrainingHonorsTrainSizeBudget) {
   GTEST_SKIP() << "Faiss native training budget requires HAVE_FAISS";
 #else
   UlonglongGuard guard(&opt_vector_faiss_train_size, 2U * 2U * sizeof(float));
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_faiss_ivf_train_budget");
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_ivf_train_budget");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
   ASSERT_TRUE(backend.upsert(2, {2.0F, 2.0F}));
   ASSERT_TRUE(backend.upsert(3, {3.0F, 3.0F}));
@@ -4072,18 +4221,18 @@ TEST(VectorIndexBackendTest,
   const std::unordered_map<uint64_t, vector_index::vector_data> rows{
       {1, {1.0F, 1.0F}}, {2, {2.0F, 2.0F}}};
   {
-    vector_index::faiss_backend writer(
-        2, vector_index::metric_type::kEuclidean,
-        vector_index::backend_mode::kExternal, "idx_faiss_ivf_map_nlist");
+    vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_ivf_map_nlist");
     ASSERT_TRUE(writer.set_faiss_ivf_params(8, 1));
     ASSERT_TRUE(writer.load_committed_entries(rows));
     EXPECT_EQ(rows.size(), writer.entry_count());
     expect_faiss_ivf_layout(root.path().string(), rows.size());
   }
 
-  vector_index::faiss_backend reader(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_faiss_ivf_map_nlist");
+  vector_index::faiss_backend reader(2, vector_index::metric_type::kEuclidean,
+                                     vector_index::backend_mode::kExternal,
+                                     "idx_faiss_ivf_map_nlist");
   ASSERT_TRUE(reader.recover());
   EXPECT_FALSE(reader.last_recover_used_fallback());
   EXPECT_EQ(rows.size(), reader.faiss_nlist());
@@ -4109,9 +4258,9 @@ TEST(VectorIndexBackendTest,
   const std::vector<std::pair<uint64_t, vector_index::vector_data>> rows{
       {1, {1.0F, 1.0F}}, {2, {2.0F, 2.0F}}};
   {
-    vector_index::faiss_backend writer(
-        2, vector_index::metric_type::kEuclidean,
-        vector_index::backend_mode::kExternal, "idx_faiss_ivf_reader_nlist");
+    vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_ivf_reader_nlist");
     ASSERT_TRUE(writer.set_faiss_ivf_params(8, 1));
     ASSERT_TRUE(writer.rebuild_from_committed_entry_source(
         {[&rows](const vector_index::committed_entry_visitor &visitor) {
@@ -4125,9 +4274,9 @@ TEST(VectorIndexBackendTest,
     expect_faiss_ivf_layout(root.path().string(), rows.size());
   }
 
-  vector_index::faiss_backend reader(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_faiss_ivf_reader_nlist");
+  vector_index::faiss_backend reader(2, vector_index::metric_type::kEuclidean,
+                                     vector_index::backend_mode::kExternal,
+                                     "idx_faiss_ivf_reader_nlist");
   ASSERT_TRUE(reader.recover());
   EXPECT_FALSE(reader.last_recover_used_fallback());
   EXPECT_EQ(rows.size(), reader.entry_count());
@@ -4154,9 +4303,9 @@ TEST(VectorIndexBackendTest,
                                                  2,           0,          1};
 
   {
-    vector_index::faiss_backend writer(
-        2, vector_index::metric_type::kEuclidean,
-        vector_index::backend_mode::kExternal, "idx_faiss_ivf_raw_nlist");
+    vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_ivf_raw_nlist");
     ASSERT_TRUE(writer.set_faiss_ivf_params(8, 1));
     ASSERT_TRUE(writer.rebuild_from_raw_segments(
         [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
@@ -4166,9 +4315,9 @@ TEST(VectorIndexBackendTest,
     expect_faiss_ivf_layout(root.path().string(), 2);
   }
 
-  vector_index::faiss_backend reader(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_faiss_ivf_raw_nlist");
+  vector_index::faiss_backend reader(2, vector_index::metric_type::kEuclidean,
+                                     vector_index::backend_mode::kExternal,
+                                     "idx_faiss_ivf_raw_nlist");
   ASSERT_TRUE(reader.recover());
   EXPECT_FALSE(reader.last_recover_used_fallback());
   EXPECT_EQ(2U, reader.entry_count());
@@ -4183,9 +4332,9 @@ TEST(VectorIndexBackendTest,
   GTEST_SKIP() << "Faiss reader rebuild requires HAVE_FAISS";
 #else
   UlonglongGuard guard(&opt_vector_faiss_train_size, 2U * 2U * sizeof(float));
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_faiss_reader_rebuild");
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_reader_rebuild");
 
   EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(nullptr));
   EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(
@@ -4203,8 +4352,8 @@ TEST(VectorIndexBackendTest,
       {4, {4.0F, 4.0F}}};
   size_t reader_calls = 0;
   ASSERT_TRUE(backend.rebuild_from_committed_entries_from_reader(
-      [&rows, &reader_calls](
-          const vector_index::committed_entry_visitor &visitor) {
+      [&rows,
+       &reader_calls](const vector_index::committed_entry_visitor &visitor) {
         ++reader_calls;
         for (const auto &row : rows) {
           if (!visitor(row.first, row.second)) return false;
@@ -4219,8 +4368,8 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ(2U, diagnostics.training_rows);
 
   std::vector<std::vector<vector_index::search_result>> batch_results;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {4.0F, 4.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 1.0F}, {4.0F, 4.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   EXPECT_FALSE(batch_results[0].empty());
   EXPECT_FALSE(batch_results[1].empty());
@@ -4232,18 +4381,16 @@ TEST(VectorIndexBackendTest,
 #ifndef HAVE_FAISS
   GTEST_SKIP() << "Faiss reader rebuild requires HAVE_FAISS";
 #else
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_faiss_reader_single_pass");
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_reader_single_pass");
 
   const std::vector<std::pair<uint64_t, vector_index::vector_data>> rows{
-      {1, {1.0F, 1.0F}},
-      {2, {2.0F, 2.0F}},
-      {3, {3.0F, 3.0F}}};
+      {1, {1.0F, 1.0F}}, {2, {2.0F, 2.0F}}, {3, {3.0F, 3.0F}}};
   size_t reader_calls = 0;
   ASSERT_TRUE(backend.rebuild_from_committed_entries_from_reader(
-      [&rows, &reader_calls](
-          const vector_index::committed_entry_visitor &visitor) {
+      [&rows,
+       &reader_calls](const vector_index::committed_entry_visitor &visitor) {
         ++reader_calls;
         for (const auto &row : rows) {
           if (!visitor(row.first, row.second)) return false;
@@ -4271,8 +4418,8 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ(0U, diagnostics.train_ms);
 
   std::vector<std::vector<vector_index::search_result>> batch_results;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {3.0F, 3.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 1.0F}, {3.0F, 3.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());
   ASSERT_EQ(1U, batch_results[1].size());
@@ -4519,12 +4666,10 @@ TEST(VectorIndexBackendTest,
   const std::string zero_docids = (root.path() / "zero.u64").string();
   write_raw_fbin_file(zero_vectors, 1, 2, {0.0F, 0.0F});
   write_raw_docid_file(zero_docids, {50});
-  const vector_index::raw_vector_segment zero_segment{zero_vectors,
-                                                       zero_docids, 1, 2, 0,
-                                                       4};
+  const vector_index::raw_vector_segment zero_segment{
+      zero_vectors, zero_docids, 1, 2, 0, 4};
   EXPECT_FALSE(backend.rebuild_from_raw_segments(
-      [&zero_segment](
-          const vector_index::raw_vector_segment_visitor &visitor) {
+      [&zero_segment](const vector_index::raw_vector_segment_visitor &visitor) {
         return visitor(zero_segment);
       }));
 
@@ -4532,8 +4677,7 @@ TEST(VectorIndexBackendTest,
       (root.path() / "replaced-vectors.fbin").string();
   const std::string replaced_docids =
       (root.path() / "replaced-docids.u64").string();
-  write_raw_fbin_file(replaced_vectors, 2, 2,
-                      {5.0F, 0.0F, 6.0F, 0.0F});
+  write_raw_fbin_file(replaced_vectors, 2, 2, {5.0F, 0.0F, 6.0F, 0.0F});
   write_raw_docid_file(replaced_docids, {60, 70});
   const vector_index::raw_vector_segment replaced_segment{
       replaced_vectors, replaced_docids, 2, 2, 0, 5};
@@ -4613,11 +4757,11 @@ TEST(VectorIndexBackendTest,
   const std::string vector_path = (root.path() / "vectors.fbin").string();
   const std::string docid_path = (root.path() / "docids.u64").string();
   write_raw_fbin_file(vector_path, 4, 4,
-                      {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
-                       0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F});
+                      {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F,
+                       0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F});
   write_raw_docid_file(docid_path, {1, 2, 3, 4});
   const vector_index::raw_vector_segment segment{vector_path, docid_path, 4,
-                                                  4,           0,          1};
+                                                 4,           0,          1};
   const vector_index::raw_vector_segment_reader reader =
       [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
         return visitor(segment);
@@ -4647,8 +4791,7 @@ TEST(VectorIndexBackendTest,
       (root.path() / "invalid-id.fbin").string();
   const std::string invalid_id_docids =
       (root.path() / "invalid-id.u64").string();
-  write_raw_fbin_file(invalid_id_vectors, 1, 4,
-                      {1.0F, 0.0F, 0.0F, 0.0F});
+  write_raw_fbin_file(invalid_id_vectors, 1, 4, {1.0F, 0.0F, 0.0F, 0.0F});
   write_raw_docid_file(invalid_id_docids,
                        {std::numeric_limits<uint64_t>::max()});
   const vector_index::raw_vector_segment invalid_id_segment{
@@ -4663,12 +4806,10 @@ TEST(VectorIndexBackendTest,
   const std::string zero_docids = (root.path() / "zero.u64").string();
   write_raw_fbin_file(zero_vectors, 1, 4, {0.0F, 0.0F, 0.0F, 0.0F});
   write_raw_docid_file(zero_docids, {5});
-  const vector_index::raw_vector_segment zero_segment{zero_vectors,
-                                                       zero_docids, 1, 4, 0,
-                                                       3};
+  const vector_index::raw_vector_segment zero_segment{
+      zero_vectors, zero_docids, 1, 4, 0, 3};
   EXPECT_FALSE(backend.rebuild_from_raw_segments(
-      [&zero_segment](
-          const vector_index::raw_vector_segment_visitor &visitor) {
+      [&zero_segment](const vector_index::raw_vector_segment_visitor &visitor) {
         return visitor(zero_segment);
       }));
   EXPECT_EQ(4U, backend.entry_count());
@@ -4725,7 +4866,7 @@ TEST(VectorIndexBackendTest, FaissMemoryRawBlocksUseGenericRebuildPath) {
   write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 2.0F, 0.0F});
   write_raw_docid_file(docid_path, {10, 20});
   const vector_index::raw_vector_segment segment{vector_path, docid_path, 2,
-                                                  2,           0,          1};
+                                                 2,           0,          1};
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
                                       vector_index::backend_mode::kMemory);
@@ -4756,11 +4897,10 @@ TEST(VectorIndexBackendTest,
 
   const std::string vector_path = (root.path() / "vectors.fbin").string();
   const std::string docid_path = (root.path() / "docids.u64").string();
-  write_raw_fbin_file(vector_path, 3, 2,
-                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F});
+  write_raw_fbin_file(vector_path, 3, 2, {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F});
   write_raw_docid_file(docid_path, {10, 20, 30});
   const vector_index::raw_vector_segment segment{vector_path, docid_path, 3,
-                                                  2,           0,          1};
+                                                 2,           0,          1};
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
                                       vector_index::backend_mode::kExternal,
@@ -4788,9 +4928,13 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest, FaissExternalIvfPqParamsCanBeConfigured) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(4, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_ivfpq");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_ivfpq");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F, 0.0F, 0.0F}));
   ASSERT_TRUE(backend.upsert(2, {0.0F, 1.0F, 0.0F, 0.0F}));
   ASSERT_TRUE(backend.upsert(3, {0.0F, 0.0F, 1.0F, 0.0F}));
@@ -4808,9 +4952,13 @@ TEST(VectorIndexBackendTest, FaissExternalIvfPqParamsCanBeConfigured) {
 
 TEST(VectorIndexBackendTest,
      FaissExternalIvfPqRejectsZeroComponentsAndSupportsNonTrainableConfig) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(4, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_ivfpq_small");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_ivfpq_small");
   EXPECT_FALSE(backend.set_faiss_ivf_pq_params(0, 1, 1, 1));
   EXPECT_FALSE(backend.set_faiss_ivf_pq_params(2, 0, 1, 1));
   EXPECT_FALSE(backend.set_faiss_ivf_pq_params(2, 1, 0, 1));
@@ -4829,7 +4977,7 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest, FaissExternalSearchRejectsDimensionMismatch) {
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
   std::vector<vector_index::search_result> result;
 
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
@@ -4838,7 +4986,7 @@ TEST(VectorIndexBackendTest, FaissExternalSearchRejectsDimensionMismatch) {
 
 TEST(VectorIndexBackendTest, FaissExternalCosineRejectsZeroNormQuery) {
   vector_index::faiss_backend backend(2, vector_index::metric_type::kCosine,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
   std::vector<vector_index::search_result> result;
 
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
@@ -4847,49 +4995,71 @@ TEST(VectorIndexBackendTest, FaissExternalCosineRejectsZeroNormQuery) {
 
 TEST(VectorIndexBackendTest,
      FaissExternalCosineRejectsZeroNormVectorDuringUpsertAndReload) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kCosine,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
   EXPECT_FALSE(backend.upsert(1, {0.0F, 0.0F}));
   EXPECT_FALSE(backend.rebuild_from_committed_entries({{1, {0.0F, 0.0F}}}));
 }
 
 TEST(VectorIndexBackendTest,
      FaissExternalRebuildRejectsWrongDimensionCommittedEntries) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal);
-  EXPECT_FALSE(backend.rebuild_from_committed_entries({{1, {1.0F}},
-                                                    {2, {2.0F, 2.0F}}}));
+                                      vector_index::backend_mode::kExternal);
+  EXPECT_FALSE(
+      backend.rebuild_from_committed_entries({{1, {1.0F}}, {2, {2.0F, 2.0F}}}));
 }
 
 TEST(VectorIndexBackendTest,
      FaissExternalCosineRebuildRejectsMixedZeroNormCommittedEntries) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kCosine,
-                                     vector_index::backend_mode::kExternal);
-  EXPECT_FALSE(backend.rebuild_from_committed_entries({{1, {1.0F, 0.0F}},
-                                                    {2, {0.0F, 0.0F}}}));
+                                      vector_index::backend_mode::kExternal);
+  EXPECT_FALSE(backend.rebuild_from_committed_entries(
+      {{1, {1.0F, 0.0F}}, {2, {0.0F, 0.0F}}}));
 }
 
 TEST(VectorIndexBackendTest,
      FaissExternalIvfRebuildRejectsWrongDimensionCommittedEntries) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
   ASSERT_TRUE(backend.set_faiss_ivf_params(2, 1));
-  EXPECT_FALSE(backend.rebuild_from_committed_entries({{1, {1.0F}},
-                                                    {2, {2.0F, 2.0F}}}));
+  EXPECT_FALSE(
+      backend.rebuild_from_committed_entries({{1, {1.0F}}, {2, {2.0F, 2.0F}}}));
 }
 
 TEST(VectorIndexBackendTest,
      FaissExternalCosineIvfRebuildRejectsZeroNormCommittedEntries) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   vector_index::faiss_backend backend(2, vector_index::metric_type::kCosine,
-                                     vector_index::backend_mode::kExternal);
+                                      vector_index::backend_mode::kExternal);
   ASSERT_TRUE(backend.set_faiss_ivf_params(2, 1));
-  EXPECT_FALSE(backend.rebuild_from_committed_entries({{1, {1.0F, 0.0F}},
-                                                    {2, {0.0F, 0.0F}}}));
+  EXPECT_FALSE(backend.rebuild_from_committed_entries(
+      {{1, {1.0F, 0.0F}}, {2, {0.0F, 0.0F}}}));
 }
 
-TEST(VectorIndexBackendTest, FaissExternalInnerProductSearchUsesDistanceBranch) {
-  vector_index::faiss_backend backend(2, vector_index::metric_type::kInnerProduct,
-                                     vector_index::backend_mode::kExternal);
+TEST(VectorIndexBackendTest,
+     FaissExternalInnerProductSearchUsesDistanceBranch) {
+  vector_index::faiss_backend backend(2,
+                                      vector_index::metric_type::kInnerProduct,
+                                      vector_index::backend_mode::kExternal);
   std::vector<vector_index::search_result> result;
 
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
@@ -4899,8 +5069,7 @@ TEST(VectorIndexBackendTest, FaissExternalInnerProductSearchUsesDistanceBranch) 
   EXPECT_EQ(1U, result[0].doc_id);
 }
 
-TEST(VectorIndexBackendTest,
-     FaissExternalUsesDataHomeRootWhenOverrideIsUnset) {
+TEST(VectorIndexBackendTest, FaissExternalUsesDataHomeRootWhenOverrideIsUnset) {
   DataHomeGuard data_home_guard;
   vector_index::reset_faiss_external_snapshot_root_for_testing();
 
@@ -4914,8 +5083,8 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_default_root");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_default_root");
     EXPECT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
     EXPECT_TRUE(writer.external_manifest_present());
     EXPECT_GT(writer.external_manifest_generation(), 0U);
@@ -4923,8 +5092,8 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::faiss_backend reader(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_default_root");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_default_root");
     std::vector<vector_index::search_result> result;
     EXPECT_TRUE(reader.recover());
     EXPECT_TRUE(reader.search({1.0F, 1.0F}, 1, &result));
@@ -4945,8 +5114,8 @@ TEST(VectorIndexBackendTest,
   data_home_guard.Set("");
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_empty_home");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_empty_home");
   std::vector<vector_index::search_result> result;
   EXPECT_TRUE(backend.upsert(3, {3.0F, 3.0F}));
   EXPECT_FALSE(backend.external_manifest_present());
@@ -4969,9 +5138,9 @@ TEST(VectorIndexBackendTest, FaissExternalRecoverWithoutArtifactsStaysEmpty) {
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_recover_empty");
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_recover_empty");
   std::vector<vector_index::search_result> result;
 
   EXPECT_TRUE(backend.recover());
@@ -4986,8 +5155,8 @@ TEST(VectorIndexBackendTest, FaissExternalRecoverWithoutArtifactsStaysEmpty) {
 }
 
 TEST(VectorIndexBackendTest, FaissExternalSnapshotPersistsAndRecovers) {
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_faiss_external_snapshot_t";
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_external_snapshot_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -4996,8 +5165,8 @@ TEST(VectorIndexBackendTest, FaissExternalSnapshotPersistsAndRecovers) {
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_external_snapshot");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_external_snapshot");
     std::vector<vector_index::search_result> result;
     EXPECT_TRUE(writer.upsert(101, {1.0F, 1.0F}));
     EXPECT_TRUE(writer.upsert(202, {2.0F, 2.0F}));
@@ -5011,8 +5180,8 @@ TEST(VectorIndexBackendTest, FaissExternalSnapshotPersistsAndRecovers) {
 
   {
     vector_index::faiss_backend reader(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_external_snapshot");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_external_snapshot");
     std::vector<vector_index::search_result> result;
     EXPECT_TRUE(reader.recover());
     EXPECT_TRUE(reader.external_manifest_present());
@@ -5036,9 +5205,9 @@ TEST(VectorIndexBackendTest, FaissExternalEraseLastEntryRemovesArtifacts) {
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_erase_last");
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_erase_last");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string manifest_path = find_faiss_manifest_file(root);
@@ -5073,14 +5242,15 @@ TEST(VectorIndexBackendTest,
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_erase_last_fail");
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_erase_last_fail");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string manifest_path = find_faiss_manifest_file(root);
   ASSERT_FALSE(manifest_path.empty());
-  ASSERT_TRUE(std::filesystem::create_directories(manifest_path + ".corrupt", ec));
+  ASSERT_TRUE(
+      std::filesystem::create_directories(manifest_path + ".corrupt", ec));
   ASSERT_FALSE(ec);
   write_binary_file(manifest_path + ".corrupt/blocker", "block");
 
@@ -5095,7 +5265,8 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest, FaissExternalLargeCommittedSnapshotRecoversSearch) {
+TEST(VectorIndexBackendTest,
+     FaissExternalLargeCommittedSnapshotRecoversSearch) {
   const std::string root = std::string(testing::TempDir()) +
                            "/vector_faiss_external_large_snapshot_t";
   std::error_code ec;
@@ -5107,13 +5278,14 @@ TEST(VectorIndexBackendTest, FaissExternalLargeCommittedSnapshotRecoversSearch) 
   std::unordered_map<uint64_t, vector_index::vector_data> committed_entries;
   for (uint64_t id = 1; id <= 512; ++id) {
     committed_entries.emplace(
-        id, vector_index::vector_data{static_cast<float>(id), static_cast<float>(id)});
+        id, vector_index::vector_data{static_cast<float>(id),
+                                      static_cast<float>(id)});
   }
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_external_large");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_external_large");
     ASSERT_TRUE(writer.load_committed_entries(committed_entries));
     EXPECT_TRUE(writer.external_manifest_present());
     EXPECT_GT(writer.external_manifest_generation(), 0U);
@@ -5126,7 +5298,8 @@ TEST(VectorIndexBackendTest, FaissExternalLargeCommittedSnapshotRecoversSearch) 
     const std::string snapshot_path = find_faiss_snapshot_file(
         std::filesystem::path(manifest_path).parent_path().string());
     ASSERT_FALSE(snapshot_path.empty());
-    std::unique_ptr<faiss::Index> index(faiss::read_index(snapshot_path.c_str()));
+    std::unique_ptr<faiss::Index> index(
+        faiss::read_index(snapshot_path.c_str()));
     auto *id_map = dynamic_cast<faiss::IndexIDMap2 *>(index.get());
     ASSERT_NE(nullptr, id_map);
     EXPECT_EQ(nullptr, dynamic_cast<faiss::IndexFlat *>(id_map->index));
@@ -5136,8 +5309,8 @@ TEST(VectorIndexBackendTest, FaissExternalLargeCommittedSnapshotRecoversSearch) 
 
   {
     vector_index::faiss_backend reader(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_external_large");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_external_large");
     std::vector<vector_index::search_result> result;
     ASSERT_TRUE(reader.recover());
     ASSERT_TRUE(reader.search({256.0F, 256.0F}, 5, &result));
@@ -5156,8 +5329,7 @@ TEST(VectorIndexBackendTest,
     const char *payload;
   };
   const MalformedCase cases[] = {
-      {"bad_header",
-       "mysql-vector-wrong-header\n1\t0000803f0000803f\n"},
+      {"bad_header", "mysql-vector-wrong-header\n1\t0000803f0000803f\n"},
       {"missing_tab", "mysql-vector-faiss-external-v1\n1\n"},
       {"bad_docid", "mysql-vector-faiss-external-v1\nbad\t0000803f0000803f\n"},
       {"bad_hex", "mysql-vector-faiss-external-v1\n1\tzz\n"},
@@ -5208,8 +5380,8 @@ TEST(VectorIndexBackendTest,
 #ifndef HAVE_FAISS
   GTEST_SKIP() << "Faiss native recovery requires HAVE_FAISS";
 #else
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_faiss_wrong_dim_native_t";
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_wrong_dim_native_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -5218,8 +5390,8 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_wrong_dim_native");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_wrong_dim_native");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -5238,8 +5410,8 @@ TEST(VectorIndexBackendTest,
 
   const uint64_t fallback_before = vector_status::backend_recover_fallbacks();
   vector_index::faiss_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_wrong_dim_native");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_wrong_dim_native");
   ASSERT_TRUE(recovered.recover());
   EXPECT_TRUE(recovered.last_recover_used_fallback());
   EXPECT_EQ(fallback_before + 1, vector_status::backend_recover_fallbacks());
@@ -5254,8 +5426,8 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest, FaissExternalRecoverLoadsCurrentTextSnapshot) {
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_faiss_valid_text_snapshot_t";
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_valid_text_snapshot_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -5263,9 +5435,9 @@ TEST(VectorIndexBackendTest, FaissExternalRecoverLoadsCurrentTextSnapshot) {
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   {
-    vector_index::faiss_backend writer(
-        2, vector_index::metric_type::kEuclidean,
-        vector_index::backend_mode::kExternal, "idx_faiss_valid_text_snapshot");
+    vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_valid_text_snapshot");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 2.0F}));
   }
 
@@ -5276,9 +5448,8 @@ TEST(VectorIndexBackendTest, FaissExternalRecoverLoadsCurrentTextSnapshot) {
   ASSERT_FALSE(snapshot_path.empty());
 
   const vector_index::vector_data vector{1.0F, 2.0F};
-  write_binary_file(snapshot_path,
-                    "mysql-vector-faiss-external-v1\n\n1\t" +
-                        hex_encode_vector(vector) + "\n");
+  write_binary_file(snapshot_path, "mysql-vector-faiss-external-v1\n\n1\t" +
+                                       hex_encode_vector(vector) + "\n");
 
   vector_index::faiss_backend recovered(
       2, vector_index::metric_type::kEuclidean,
@@ -5300,8 +5471,8 @@ TEST(VectorIndexBackendTest,
 #ifndef HAVE_FAISS
   GTEST_SKIP() << "Faiss native recovery requires HAVE_FAISS";
 #else
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_faiss_non_idmap_native_t";
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_non_idmap_native_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -5310,8 +5481,8 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_non_idmap_native");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_non_idmap_native");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -5327,8 +5498,8 @@ TEST(VectorIndexBackendTest,
   write_faiss_index_file(snapshot_path, std::move(native_index));
 
   vector_index::faiss_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_non_idmap_native");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_non_idmap_native");
   ASSERT_TRUE(recovered.recover());
   EXPECT_TRUE(recovered.last_recover_used_fallback());
 
@@ -5346,8 +5517,8 @@ TEST(VectorIndexBackendTest,
 #ifndef HAVE_FAISS
   GTEST_SKIP() << "Faiss native recovery requires HAVE_FAISS";
 #else
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_faiss_flat_native_t";
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_flat_native_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -5356,8 +5527,8 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_flat_native");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_flat_native");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -5375,8 +5546,8 @@ TEST(VectorIndexBackendTest,
   write_faiss_index_file(snapshot_path, std::move(native_index));
 
   vector_index::faiss_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_flat_native");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_flat_native");
   ASSERT_TRUE(recovered.recover());
   EXPECT_TRUE(recovered.last_recover_used_fallback());
 
@@ -5404,8 +5575,8 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_ivf_flat_native");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_ivf_flat_native");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -5428,8 +5599,8 @@ TEST(VectorIndexBackendTest,
   write_faiss_index_file(snapshot_path, std::move(native_index));
 
   vector_index::faiss_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_ivf_flat_native");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_ivf_flat_native");
   ASSERT_TRUE(recovered.recover());
   EXPECT_FALSE(recovered.last_recover_used_fallback());
   EXPECT_EQ(2U, recovered.faiss_nlist());
@@ -5462,8 +5633,8 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_ivfpq_native");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_ivfpq_native");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -5486,8 +5657,8 @@ TEST(VectorIndexBackendTest,
   write_faiss_index_file(snapshot_path, std::move(native_index));
 
   vector_index::faiss_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_ivfpq_native");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_ivfpq_native");
   ASSERT_TRUE(recovered.recover());
   EXPECT_FALSE(recovered.last_recover_used_fallback());
   EXPECT_EQ(2U, recovered.faiss_nlist());
@@ -5522,9 +5693,8 @@ TEST(VectorIndexBackendTest,
 
   for (const auto &test_case : cases) {
     SCOPED_TRACE(test_case.suffix);
-    const std::string root =
-        std::string(testing::TempDir()) + "/vector_faiss_bad_manifest_" +
-        test_case.suffix;
+    const std::string root = std::string(testing::TempDir()) +
+                             "/vector_faiss_bad_manifest_" + test_case.suffix;
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root, ec);
@@ -5568,16 +5738,17 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_manifest_load_fail");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_manifest_load_fail");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
 
   vector_index::faiss_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_manifest_load_fail");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_manifest_load_fail");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_load_manifest_generation");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_load_manifest_generation");
     ASSERT_TRUE(recovered.recover());
   }
 
@@ -5591,8 +5762,8 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest,
      FaissExternalSecondPersistRecoversFromInjectedManifestLoadFailure) {
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_faiss_manifest_load_persist_t";
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_manifest_load_persist_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -5600,11 +5771,12 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_manifest_load_persist");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_manifest_load_persist");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_load_manifest_generation");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_load_manifest_generation");
     ASSERT_TRUE(backend.upsert(2, {2.0F, 2.0F}));
   }
 
@@ -5632,12 +5804,13 @@ TEST(VectorIndexBackendTest,
   const std::string index_name = "idx_faiss_cleanup_stale";
   const std::string encoded = hex_encode(index_name);
   const std::string snapshot_dir = root + "/" + encoded;
-  const std::string manifest_path = snapshot_dir + "/faiss_external.manifest.v1";
+  const std::string manifest_path =
+      snapshot_dir + "/faiss_external.manifest.v1";
   const std::string manifest_quarantine = manifest_path + ".corrupt";
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     index_name);
+                                      vector_index::backend_mode::kExternal,
+                                      index_name);
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   std::filesystem::create_directories(snapshot_dir, ec);
@@ -5671,18 +5844,20 @@ TEST(VectorIndexBackendTest,
   const std::string index_name = "idx_diskann_cleanup_stale";
   const std::string encoded = hex_encode(index_name);
   const std::string snapshot_dir = root + "/" + encoded;
-  const std::string diskann_manifest = snapshot_dir + "/diskann_external.manifest.v1";
+  const std::string diskann_manifest =
+      snapshot_dir + "/diskann_external.manifest.v1";
   const std::string diskann_manifest_quarantine = diskann_manifest + ".corrupt";
 
-  vector_index::diskann_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal,
-                                       index_name);
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, index_name);
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   std::filesystem::create_directories(snapshot_dir, ec);
   ASSERT_FALSE(ec);
   ec.clear();
-  write_binary_file(diskann_manifest_quarantine, "stale-diskann-manifest-corrupt");
+  write_binary_file(diskann_manifest_quarantine,
+                    "stale-diskann-manifest-corrupt");
 
   ASSERT_TRUE(backend.erase(1));
   EXPECT_FALSE(backend.external_manifest_present());
@@ -5697,9 +5872,10 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest, RemoveBackendArtifactsClearsFaissExternalSnapshot) {
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_faiss_external_cleanup_t";
+TEST(VectorIndexBackendTest,
+     RemoveBackendArtifactsClearsFaissExternalSnapshot) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_external_cleanup_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -5707,8 +5883,8 @@ TEST(VectorIndexBackendTest, RemoveBackendArtifactsClearsFaissExternalSnapshot) 
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_cleanup");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_cleanup");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string snapshot_path =
@@ -5727,18 +5903,19 @@ TEST(VectorIndexBackendTest, RemoveBackendArtifactsClearsFaissExternalSnapshot) 
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest, RemoveBackendArtifactsClearsDiskAnnExternalSnapshot) {
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_diskann_external_cleanup_t";
+TEST(VectorIndexBackendTest,
+     RemoveBackendArtifactsClearsDiskAnnExternalSnapshot) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_diskann_external_cleanup_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::diskann_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal,
-                                       "idx_diskann_cleanup");
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_cleanup");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string manifest_path = find_diskann_manifest_file(root);
@@ -5764,8 +5941,8 @@ TEST(VectorIndexBackendTest, RemoveBackendArtifactsClearsDiskAnnExternalSnapshot
 
 TEST(VectorIndexBackendTest,
      RemoveBackendArtifactsFailsWhenGeneratedSnapshotCleanupIsInjected) {
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_faiss_external_cleanup_fail_t";
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_external_cleanup_fail_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -5773,15 +5950,16 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_cleanup_fail");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_cleanup_fail");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string snapshot_directory =
       root + "/6964785f66616973735f636c65616e75705f6661696c";
   ASSERT_FALSE(find_faiss_snapshot_file(snapshot_directory).empty());
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_remove_generated_snapshots");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_remove_generated_snapshots");
     EXPECT_FALSE(vector_index::remove_backend_artifacts(
         "idx_faiss_cleanup_fail", vector_index::backend_mode::kExternal,
         vector_index::backend_provider::kFaiss));
@@ -5795,8 +5973,8 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest,
      RemoveBackendArtifactsFailsWhenArtifactRemovalIsInjected) {
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_faiss_external_remove_fail_t";
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_external_remove_fail_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -5804,8 +5982,8 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_remove_fail");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_remove_fail");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string snapshot_directory =
@@ -5836,9 +6014,9 @@ TEST(VectorIndexBackendTest,
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::diskann_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal,
-                                       "idx_diskann_cleanup_fail");
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_cleanup_fail");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string manifest_path = find_diskann_manifest_file(root);
@@ -5847,7 +6025,8 @@ TEST(VectorIndexBackendTest,
       std::filesystem::path(manifest_path).parent_path().string();
   ASSERT_FALSE(find_diskann_snapshot_file(snapshot_directory).empty());
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_remove_generated_snapshots");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_remove_generated_snapshots");
     EXPECT_FALSE(vector_index::remove_backend_artifacts(
         "idx_diskann_cleanup_fail", vector_index::backend_mode::kExternal,
         vector_index::backend_provider::kDiskAnn));
@@ -5869,9 +6048,9 @@ TEST(VectorIndexBackendTest,
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::diskann_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal,
-                                       "idx_diskann_dir_cleanup_fail");
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_dir_cleanup_fail");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string manifest_path = find_diskann_manifest_file(root);
@@ -5880,7 +6059,8 @@ TEST(VectorIndexBackendTest,
       std::filesystem::path(manifest_path).parent_path().string();
   ASSERT_FALSE(find_diskann_snapshot_file(snapshot_directory).empty());
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_remove_dir_if_empty");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_remove_dir_if_empty");
     EXPECT_FALSE(vector_index::remove_backend_artifacts(
         "idx_diskann_dir_cleanup_fail", vector_index::backend_mode::kExternal,
         vector_index::backend_provider::kDiskAnn));
@@ -5892,49 +6072,78 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest, CreateBackendFactoryReturnsExpectedImplementations) {
+TEST(VectorIndexBackendTest,
+     CreateBackendFactoryReturnsExpectedImplementations) {
   EXPECT_TRUE(vector_index::valid_vector_dimension(
       vector_index::k_max_vector_dimension));
   EXPECT_FALSE(vector_index::valid_vector_dimension(0));
+  EXPECT_EQ(nullptr, vector_index::create_backend(
+                         static_cast<size_t>(
+                             vector_index::k_max_vector_dimension) +
+                             1,
+                         vector_index::metric_type::kEuclidean,
+                         vector_index::backend_mode::kMemory,
+                         vector_index::backend_provider::kNative));
 #ifndef NDEBUG
-  auto native_mem = vector_index::create_backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kMemory,
-      vector_index::backend_provider::kNative);
+  auto native_mem =
+      vector_index::create_backend(2, vector_index::metric_type::kEuclidean,
+                                   vector_index::backend_mode::kMemory,
+                                   vector_index::backend_provider::kNative);
   ASSERT_NE(nullptr, native_mem);
   EXPECT_EQ(vector_index::backend_provider::kNative, native_mem->provider());
   EXPECT_TRUE(native_mem->supports_mutations());
 #else
-  vector_gunit::NativeProviderGuard native_provider_guard(false);
+  EXPECT_FALSE(vector_index::native_provider_supported_for_testing());
   EXPECT_EQ(nullptr, vector_index::create_backend(
                          2, vector_index::metric_type::kEuclidean,
                          vector_index::backend_mode::kMemory,
                          vector_index::backend_provider::kNative));
 #endif
 
-  auto faiss_ext = vector_index::create_backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      vector_index::backend_provider::kFaiss);
-  ASSERT_NE(nullptr, faiss_ext);
-  EXPECT_EQ(vector_index::backend_provider::kFaiss, faiss_ext->provider());
-  EXPECT_TRUE(faiss_ext->supports_mutations());
+  auto faiss_ext =
+      vector_index::create_backend(2, vector_index::metric_type::kEuclidean,
+                                   vector_index::backend_mode::kExternal,
+                                   vector_index::backend_provider::kFaiss);
+  if (vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    ASSERT_NE(nullptr, faiss_ext);
+    EXPECT_EQ(vector_index::backend_provider::kFaiss, faiss_ext->provider());
+    EXPECT_TRUE(faiss_ext->supports_mutations());
+  } else {
+    EXPECT_EQ(nullptr, faiss_ext);
+  }
 
-  auto diskann_ext = vector_index::create_backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      vector_index::backend_provider::kDiskAnn);
-  ASSERT_NE(nullptr, diskann_ext);
-  EXPECT_EQ(vector_index::backend_provider::kDiskAnn, diskann_ext->provider());
-  EXPECT_TRUE(diskann_ext->supports_mutations());
+  auto diskann_ext =
+      vector_index::create_backend(2, vector_index::metric_type::kEuclidean,
+                                   vector_index::backend_mode::kExternal,
+                                   vector_index::backend_provider::kDiskAnn);
+  if (vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    ASSERT_NE(nullptr, diskann_ext);
+    EXPECT_EQ(vector_index::backend_provider::kDiskAnn,
+              diskann_ext->provider());
+    EXPECT_TRUE(diskann_ext->supports_mutations());
+  } else {
+    EXPECT_EQ(nullptr, diskann_ext);
+  }
 
-  auto hnsw_mem = vector_index::create_backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kMemory,
-      vector_index::backend_provider::kHnswlib);
-  ASSERT_NE(nullptr, hnsw_mem);
-  EXPECT_EQ(vector_index::backend_provider::kHnswlib, hnsw_mem->provider());
-  EXPECT_TRUE(hnsw_mem->supports_mutations());
+  auto hnsw_mem =
+      vector_index::create_backend(2, vector_index::metric_type::kEuclidean,
+                                   vector_index::backend_mode::kMemory,
+                                   vector_index::backend_provider::kHnswlib);
+  if (vector_index::backend_provider_supported(
+          vector_index::backend_provider::kHnswlib)) {
+    ASSERT_NE(nullptr, hnsw_mem);
+    EXPECT_EQ(vector_index::backend_provider::kHnswlib, hnsw_mem->provider());
+    EXPECT_TRUE(hnsw_mem->supports_mutations());
+  } else {
+    EXPECT_EQ(nullptr, hnsw_mem);
+  }
 
-  auto diskann_mem = vector_index::create_backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kMemory,
-      vector_index::backend_provider::kDiskAnn);
+  auto diskann_mem =
+      vector_index::create_backend(2, vector_index::metric_type::kEuclidean,
+                                   vector_index::backend_mode::kMemory,
+                                   vector_index::backend_provider::kDiskAnn);
   EXPECT_EQ(nullptr, diskann_mem);
 }
 
@@ -5974,9 +6183,9 @@ TEST(VectorIndexBackendTest,
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::diskann_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal,
-                                       "idx_diskann_ext");
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_ext");
   std::vector<vector_index::search_result> result;
   std::unordered_map<uint64_t, vector_index::vector_data> committed_entries;
   committed_entries.emplace(9, vector_index::vector_data{9.0F, 9.0F});
@@ -6001,8 +6210,8 @@ TEST(VectorIndexBackendTest,
   UlongGuard diskann_thread_guard(&opt_vector_diskann_search_threads, 0);
   std::vector<std::vector<vector_index::search_result>> batch_results;
   opt_vector_diskann_search_threads = 1;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {9.0F, 9.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 1.0F}, {9.0F, 9.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());
   ASSERT_EQ(1U, batch_results[1].size());
@@ -6010,16 +6219,16 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ(9U, batch_results[1][0].doc_id);
 
   opt_vector_diskann_search_threads = 64;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {9.0F, 9.0F},
-                                    {0.9F, 1.1F}, {8.5F, 9.5F}},
-                                   1, &batch_results));
+  ASSERT_TRUE(backend.search_batch(
+      {{1.0F, 1.0F}, {9.0F, 9.0F}, {0.9F, 1.1F}, {8.5F, 9.5F}}, 1,
+      &batch_results));
   ASSERT_EQ(4U, batch_results.size());
   EXPECT_EQ(1U, batch_results[0][0].doc_id);
   EXPECT_EQ(9U, batch_results[1][0].doc_id);
 
   vector_index::diskann_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_ext");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_ext");
   ASSERT_TRUE(recovered.recover());
   EXPECT_FALSE(recovered.last_recover_used_fallback());
   EXPECT_TRUE(recovered.external_manifest_present());
@@ -6036,8 +6245,9 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest, HnswlibMemoryFallbackBehavesLikeMemoryBackend) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result;
 
   EXPECT_EQ(vector_index::backend_provider::kHnswlib, backend.provider());
@@ -6055,8 +6265,9 @@ TEST(VectorIndexBackendTest,
      HnswlibMemoryExactFallbackHandlesUnavailableNativeState) {
   VECTOR_SCOPED_DEBUG_FLAG(
       debug, "+d,vector_backend_force_hnswlib_native_unavailable");
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result{{99, 99.0}};
 
   EXPECT_FALSE(backend.hnsw_native_available_for_testing());
@@ -6080,8 +6291,8 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ(1U, result[0].doc_id);
 
   std::vector<std::vector<vector_index::search_result>> batch_results;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 0.0F}, {0.0F, 2.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 0.0F}, {0.0F, 2.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());
   ASSERT_EQ(1U, batch_results[1].size());
@@ -6103,8 +6314,9 @@ TEST(VectorIndexBackendTest,
      HnswlibMemoryExactFallbackRebuildsFromSnapshotAndReader) {
   VECTOR_SCOPED_DEBUG_FLAG(
       debug, "+d,vector_backend_force_hnswlib_native_unavailable");
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
 
   ASSERT_TRUE(backend.rebuild_from_committed_entries(
       {{4, vector_index::vector_data{4.0F, 0.0F}},
@@ -6165,15 +6377,16 @@ TEST(VectorIndexBackendTest,
       };
   {
     UlonglongGuard guard(&opt_vector_hnsw_index_memory_size, 1);
-    EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(
-        budget_reader));
+    EXPECT_FALSE(
+        backend.rebuild_from_committed_entries_from_reader(budget_reader));
   }
   EXPECT_EQ(2U, backend.entry_count());
 }
 
 TEST(VectorIndexBackendTest, HnswlibMemoryUpsertReplacementRebuildsGraph) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result;
 
   ASSERT_TRUE(backend.upsert(1, {0.0F, 0.0F}));
@@ -6188,8 +6401,9 @@ TEST(VectorIndexBackendTest, HnswlibMemorySearchEfCanBeConfigured) {
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
   }
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
 
   EXPECT_EQ(64U, backend.search_ef());
   EXPECT_TRUE(backend.set_search_ef(128));
@@ -6201,8 +6415,9 @@ TEST(VectorIndexBackendTest, HnswlibMemoryBuildParamsCanBeConfigured) {
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
   }
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
 
   EXPECT_EQ(16U, backend.hnsw_m());
   EXPECT_EQ(200U, backend.hnsw_ef_construction());
@@ -6218,8 +6433,9 @@ TEST(VectorIndexBackendTest,
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
   }
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result;
 
   ASSERT_TRUE(backend.upsert(10, {1.0F, 1.0F}));
@@ -6242,8 +6458,9 @@ TEST(VectorIndexBackendTest, HnswlibMemoryRejectsIndexMemoryLimit) {
     GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
   }
   UlonglongGuard guard(&opt_vector_hnsw_index_memory_size, 1);
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
 
   EXPECT_FALSE(backend.upsert(1, {1.0F, 0.0F}));
   EXPECT_EQ(0U, backend.entry_count());
@@ -6257,8 +6474,9 @@ TEST(VectorIndexBackendTest,
     GTEST_SKIP() << "hnswlib native rebuild requires HAVE_HNSWLIB";
   }
   UlonglongGuard guard(&opt_vector_hnsw_index_memory_size, 1024 * 1024);
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
 
   ASSERT_TRUE(backend.rebuild_from_committed_entries({}));
@@ -6275,8 +6493,9 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest,
      HnswlibMemoryRejectsDimensionMismatchAndEraseMissing) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result;
 
   EXPECT_FALSE(backend.upsert(1, {1.0F, 2.0F, 3.0F}));
@@ -6285,8 +6504,9 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest, HnswlibMemoryInnerProductSearchUsesBranch) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kInnerProduct,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(
+      2, vector_index::metric_type::kInnerProduct,
+      vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result;
 
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
@@ -6301,7 +6521,7 @@ TEST(VectorIndexBackendTest, HnswlibMemoryCosineHandlesZeroNormAndZeroTopK) {
     GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
   }
   vector_index::hnswlib_backend backend(2, vector_index::metric_type::kCosine,
-                                       vector_index::backend_mode::kMemory);
+                                        vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result{{99, 99.0}};
 
   ASSERT_TRUE(backend.upsert(1, {0.0F, 0.0F}));
@@ -6314,8 +6534,9 @@ TEST(VectorIndexBackendTest, HnswlibMemoryCosineHandlesZeroNormAndZeroTopK) {
 }
 
 TEST(VectorIndexBackendTest, HnswlibExternalModeIsNonWritableWhenConstructed) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal);
   std::vector<vector_index::search_result> result;
 
   EXPECT_FALSE(backend.supports_mutations());
@@ -6326,8 +6547,9 @@ TEST(VectorIndexBackendTest, HnswlibExternalModeIsNonWritableWhenConstructed) {
 }
 
 TEST(VectorIndexBackendTest, HnswlibExternalRejectsMemoryOnlyTunings) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal);
 
   EXPECT_EQ(0U, backend.entry_count());
   EXPECT_EQ(0U, backend.search_ef());
@@ -6339,8 +6561,9 @@ TEST(VectorIndexBackendTest, HnswlibExternalRejectsMemoryOnlyTunings) {
 
 TEST(VectorIndexBackendTest,
      HnswlibExternalRejectsThreadAndCommittedStateMutation) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal);
   const vector_index::committed_entry_reader committed_reader =
       [](const vector_index::committed_entry_visitor &visitor) {
         return visitor(1, {1.0F, 0.0F});
@@ -6388,8 +6611,9 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest,
      HnswlibMemoryRebuildRejectsWrongDimensionCommittedEntries) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
 
   EXPECT_FALSE(backend.rebuild_from_committed_entries(
@@ -6407,8 +6631,9 @@ TEST(VectorIndexBackendTest,
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native reader rebuild requires HAVE_HNSWLIB";
   }
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   size_t visits = 0;
   const vector_index::committed_entry_reader reader =
       [&visits](const vector_index::committed_entry_visitor &visitor) {
@@ -6435,6 +6660,32 @@ TEST(VectorIndexBackendTest,
   ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(1U, result[0].doc_id);
+}
+
+TEST(VectorIndexBackendTest,
+     HnswlibSourceAdmissionPrecedesReaderIo) {
+  constexpr uint64_t k_one_mib = 1024ULL * 1024ULL;
+  UlonglongGuard build_memory_guard(&opt_vector_build_memory_size, k_one_mib);
+  UlonglongGuard reserve_guard(&opt_vector_build_memory_reserve_size, 0);
+  BuildResourceProbeGuard probe_guard(k_one_mib, 1);
+  vector_index::hnswlib_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
+
+  size_t reader_calls = 0;
+  const vector_index::committed_entry_source source{
+      [&reader_calls](const vector_index::committed_entry_visitor &visitor) {
+        ++reader_calls;
+        return visitor(2, {2.0F, 0.0F});
+      },
+      1, true};
+
+  EXPECT_FALSE(backend.load_committed_entries_from_source(source));
+  EXPECT_FALSE(backend.recover_committed_entries_from_source(source));
+  EXPECT_FALSE(backend.rebuild_from_committed_entry_source(source));
+  EXPECT_EQ(0U, reader_calls);
+  EXPECT_EQ(1U, backend.entry_count());
 }
 
 TEST(VectorIndexBackendTest,
@@ -6509,8 +6760,7 @@ TEST(VectorIndexBackendTest,
       (root.path() / "vectors-duplicate.fbin").string();
   const std::string duplicate_docid_path =
       (root.path() / "docids-duplicate.u64").string();
-  write_raw_fbin_file(duplicate_vector_path, 2, 2,
-                      {6.0F, 0.0F, 7.0F, 0.0F});
+  write_raw_fbin_file(duplicate_vector_path, 2, 2, {6.0F, 0.0F, 7.0F, 0.0F});
   write_raw_docid_file(duplicate_docid_path, {60, 60});
   const vector_index::raw_vector_segment duplicate_segment{
       duplicate_vector_path, duplicate_docid_path, 2, 2, 0, 3};
@@ -6547,7 +6797,7 @@ TEST(VectorIndexBackendTest,
   write_raw_fbin_file(vector_path, 2, 2, {3.0F, 4.0F, 0.0F, 0.0F});
   write_raw_docid_file(docid_path, {70, 80});
   const vector_index::raw_vector_segment segment{vector_path, docid_path, 2,
-                                                  2,           0,          1};
+                                                 2,           0,          1};
 
   vector_index::hnswlib_backend backend(2, vector_index::metric_type::kCosine,
                                         vector_index::backend_mode::kMemory);
@@ -6577,7 +6827,7 @@ TEST(VectorIndexBackendTest,
   write_raw_fbin_file(vector_path, 2, 2, {2.0F, 0.0F, 3.0F, 0.0F});
   write_raw_docid_file(docid_path, {2, 3});
   const vector_index::raw_vector_segment segment{vector_path, docid_path, 2,
-                                                  2,           0,          1};
+                                                 2,           0,          1};
 
   vector_index::hnswlib_backend backend(2,
                                         vector_index::metric_type::kEuclidean,
@@ -6613,8 +6863,9 @@ TEST(VectorIndexBackendTest,
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native reader rebuild requires HAVE_HNSWLIB";
   }
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   const vector_index::committed_entry_reader reader =
       [](const vector_index::committed_entry_visitor &visitor) {
         return visitor(1, {1.0F, 0.0F}) && visitor(2, {0.0F, 1.0F});
@@ -6637,8 +6888,9 @@ TEST(VectorIndexBackendTest,
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native reader rebuild requires HAVE_HNSWLIB";
   }
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
   const vector_index::committed_entry_reader bad_reader =
       [](const vector_index::committed_entry_visitor &visitor) {
@@ -6659,8 +6911,9 @@ TEST(VectorIndexBackendTest,
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native reader rebuild requires HAVE_HNSWLIB";
   }
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
 
   EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(nullptr));
@@ -6682,13 +6935,13 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest, HnswlibMemoryResizesPastInitialCapacity) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   std::vector<vector_index::search_result> result;
 
   for (uint64_t doc_id = 0; doc_id < 1100; ++doc_id) {
-    ASSERT_TRUE(
-        backend.upsert(doc_id, {static_cast<float>(doc_id), 0.0F}));
+    ASSERT_TRUE(backend.upsert(doc_id, {static_cast<float>(doc_id), 0.0F}));
   }
 
   EXPECT_EQ(1100U, backend.entry_count());
@@ -6700,8 +6953,9 @@ TEST(VectorIndexBackendTest, HnswlibMemoryResizesPastInitialCapacity) {
 TEST(VectorIndexBackendTest, HnswlibSearchBatchCoversGuardAndThreadPaths) {
   UlongGuard batch_thread_guard(&opt_vector_batch_search_threads, 32);
   UlongGuard hnsw_thread_guard(&opt_vector_hnsw_search_threads, 0);
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
   ASSERT_TRUE(backend.upsert(2, {0.0F, 1.0F}));
   ASSERT_TRUE(backend.upsert(3, {2.0F, 0.0F}));
@@ -6714,19 +6968,19 @@ TEST(VectorIndexBackendTest, HnswlibSearchBatchCoversGuardAndThreadPaths) {
 
   opt_vector_batch_search_threads = 32;
   opt_vector_hnsw_search_threads = 0;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 0.0F}, {0.0F, 1.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 0.0F}, {0.0F, 1.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
 
   opt_vector_batch_search_threads = 0;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 0.0F}, {0.0F, 1.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 0.0F}, {0.0F, 1.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
 
   opt_vector_batch_search_threads = 32;
   opt_vector_hnsw_search_threads = 0;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 0.0F}, {0.0F, 1.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 0.0F}, {0.0F, 1.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
 
   opt_vector_hnsw_search_threads = 1;
@@ -6737,16 +6991,16 @@ TEST(VectorIndexBackendTest, HnswlibSearchBatchCoversGuardAndThreadPaths) {
 
   opt_vector_hnsw_search_threads = 0;
   opt_vector_batch_search_threads = 2;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 0.0F}, {0.0F, 1.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 0.0F}, {0.0F, 1.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   EXPECT_EQ(1U, batch_results[0][0].doc_id);
   EXPECT_EQ(2U, batch_results[1][0].doc_id);
 
   opt_vector_batch_search_threads = 64;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 0.0F}, {0.0F, 1.0F},
-                                    {2.0F, 0.0F}, {1.0F, 1.0F}},
-                                   2, &batch_results));
+  ASSERT_TRUE(backend.search_batch(
+      {{1.0F, 0.0F}, {0.0F, 1.0F}, {2.0F, 0.0F}, {1.0F, 1.0F}}, 2,
+      &batch_results));
   ASSERT_EQ(4U, batch_results.size());
 }
 
@@ -6755,15 +7009,16 @@ TEST(VectorIndexBackendTest,
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
   }
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   ASSERT_TRUE(backend.set_hnsw_build_threads(2));
   EXPECT_EQ(2U, backend.hnsw_build_threads());
   EXPECT_FALSE(backend.set_hnsw_build_threads(65536));
   std::unordered_map<uint64_t, vector_index::vector_data> entries;
   for (uint64_t doc_id = 1; doc_id <= 16; ++doc_id) {
-    entries.emplace(doc_id, vector_index::vector_data{
-                                static_cast<float>(doc_id), 0.0F});
+    entries.emplace(
+        doc_id, vector_index::vector_data{static_cast<float>(doc_id), 0.0F});
   }
 
   ASSERT_TRUE(backend.set_search_ef(32));
@@ -6798,8 +7053,9 @@ TEST(VectorIndexBackendTest,
   if (!hnswlib_tuning_supported()) {
     GTEST_SKIP() << "hnswlib native tuning requires HAVE_HNSWLIB";
   }
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kMemory);
   ASSERT_TRUE(backend.set_hnsw_build_threads(2));
   ASSERT_TRUE(backend.upsert(1, {1.0F, 0.0F}));
 
@@ -6819,8 +7075,9 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest, HnswlibSearchBatchExternalModeClearsResults) {
-  vector_index::hnswlib_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal);
+  vector_index::hnswlib_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal);
   std::vector<std::vector<vector_index::search_result>> batch_results{
       {{99, 99.0}}};
 
@@ -6855,7 +7112,8 @@ TEST(VectorIndexBackendTest, parse_backend_modeAcceptsMemoryAndExternal) {
 }
 
 TEST(VectorIndexBackendTest, parse_backend_providerAcceptsAliases) {
-  vector_index::backend_provider provider = vector_index::backend_provider::kNative;
+  vector_index::backend_provider provider =
+      vector_index::backend_provider::kNative;
   EXPECT_TRUE(vector_index::parse_backend_provider("native", &provider));
   EXPECT_EQ(vector_index::backend_provider::kNative, provider);
   EXPECT_TRUE(vector_index::parse_backend_provider("faiss", &provider));
@@ -6876,46 +7134,44 @@ TEST(VectorIndexBackendTest, parse_backend_providerAcceptsAliases) {
   EXPECT_TRUE(vector_index::parse_diskann_build_mode("offline", &build_mode));
   EXPECT_EQ(vector_index::diskann_build_mode::kOffline, build_mode);
   EXPECT_FALSE(vector_index::parse_diskann_build_mode("bulk", &build_mode));
-  EXPECT_FALSE(vector_index::parse_diskann_build_mode("background", &build_mode));
+  EXPECT_FALSE(
+      vector_index::parse_diskann_build_mode("background", &build_mode));
   EXPECT_FALSE(vector_index::parse_diskann_build_mode("auto", nullptr));
 }
 
 TEST(VectorIndexBackendTest, parse_index_consistency_modeAcceptsAliases) {
   vector_index::index_consistency_mode consistency_mode =
       vector_index::index_consistency_mode::kStandalone;
-  EXPECT_TRUE(
-      vector_index::parse_index_consistency_mode("transactional",
-                                                 &consistency_mode));
+  EXPECT_TRUE(vector_index::parse_index_consistency_mode("transactional",
+                                                         &consistency_mode));
   EXPECT_EQ(vector_index::index_consistency_mode::kTransactional,
             consistency_mode);
   EXPECT_TRUE(vector_index::parse_index_consistency_mode(" STANDALONE ",
                                                          &consistency_mode));
   EXPECT_EQ(vector_index::index_consistency_mode::kStandalone,
             consistency_mode);
-  EXPECT_TRUE(vector_index::parse_index_consistency_mode(
-      "non_transactional", &consistency_mode));
+  EXPECT_TRUE(vector_index::parse_index_consistency_mode("non_transactional",
+                                                         &consistency_mode));
   EXPECT_EQ(vector_index::index_consistency_mode::kStandalone,
             consistency_mode);
+  EXPECT_FALSE(vector_index::parse_index_consistency_mode("snapshot",
+                                                          &consistency_mode));
   EXPECT_FALSE(
-      vector_index::parse_index_consistency_mode("snapshot", &consistency_mode));
-  EXPECT_FALSE(vector_index::parse_index_consistency_mode("standalone",
-                                                          nullptr));
+      vector_index::parse_index_consistency_mode("standalone", nullptr));
 }
 
 TEST(VectorIndexBackendTest, EnumToStringHelpersReturnCanonicalTokens) {
-  EXPECT_STREQ("euclidean",
-               vector_index::metric_to_string(vector_index::metric_type::kEuclidean));
-  EXPECT_STREQ("cosine",
-               vector_index::metric_to_string(vector_index::metric_type::kCosine));
-  EXPECT_STREQ("inner_product",
-               vector_index::metric_to_string(vector_index::metric_type::kInnerProduct));
+  EXPECT_STREQ("euclidean", vector_index::metric_to_string(
+                                vector_index::metric_type::kEuclidean));
+  EXPECT_STREQ("cosine", vector_index::metric_to_string(
+                             vector_index::metric_type::kCosine));
+  EXPECT_STREQ("inner_product", vector_index::metric_to_string(
+                                    vector_index::metric_type::kInnerProduct));
 
-  EXPECT_STREQ(
-      "memory",
-      vector_index::backend_mode_to_string(vector_index::backend_mode::kMemory));
-  EXPECT_STREQ(
-      "external",
-      vector_index::backend_mode_to_string(vector_index::backend_mode::kExternal));
+  EXPECT_STREQ("memory", vector_index::backend_mode_to_string(
+                             vector_index::backend_mode::kMemory));
+  EXPECT_STREQ("external", vector_index::backend_mode_to_string(
+                               vector_index::backend_mode::kExternal));
 
   EXPECT_STREQ("native", vector_index::backend_provider_to_string(
                              vector_index::backend_provider::kNative));
@@ -6940,29 +7196,32 @@ TEST(VectorIndexBackendTest, EnumToStringHelpersReturnCanonicalTokens) {
 }
 
 TEST(VectorIndexBackendTest, EnumToStringHelpersHandleUnknownValues) {
-  EXPECT_STREQ(
-      "unknown",
-      vector_index::metric_to_string(static_cast<vector_index::metric_type>(999)));
+  EXPECT_STREQ("unknown", vector_index::metric_to_string(
+                              static_cast<vector_index::metric_type>(999)));
   EXPECT_STREQ("unknown", vector_index::backend_mode_to_string(
                               static_cast<vector_index::backend_mode>(999)));
-  EXPECT_STREQ("unknown", vector_index::backend_provider_to_string(
-                              static_cast<vector_index::backend_provider>(999)));
-  EXPECT_STREQ("unknown", vector_index::diskann_build_mode_to_string(
-                              static_cast<vector_index::diskann_build_mode>(999)));
-  EXPECT_STREQ("unknown", vector_index::index_consistency_mode_to_string(
-                              static_cast<
-                                  vector_index::index_consistency_mode>(999)));
+  EXPECT_STREQ("unknown",
+               vector_index::backend_provider_to_string(
+                   static_cast<vector_index::backend_provider>(999)));
+  EXPECT_STREQ("unknown",
+               vector_index::diskann_build_mode_to_string(
+                   static_cast<vector_index::diskann_build_mode>(999)));
+  EXPECT_STREQ("unknown",
+               vector_index::index_consistency_mode_to_string(
+                   static_cast<vector_index::index_consistency_mode>(999)));
 }
 
 TEST(VectorIndexBackendTest, CreateBackendFactoryCreatesNativeExternal) {
 #ifdef NDEBUG
   GTEST_SKIP() << "native provider is available only in debug builds";
 #else
-  auto native_external = vector_index::create_backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      vector_index::backend_provider::kNative);
+  auto native_external =
+      vector_index::create_backend(2, vector_index::metric_type::kEuclidean,
+                                   vector_index::backend_mode::kExternal,
+                                   vector_index::backend_provider::kNative);
   ASSERT_NE(nullptr, native_external);
-  EXPECT_EQ(vector_index::backend_provider::kNative, native_external->provider());
+  EXPECT_EQ(vector_index::backend_provider::kNative,
+            native_external->provider());
   EXPECT_TRUE(native_external->supports_mutations());
 #endif
 }
@@ -6982,8 +7241,8 @@ TEST(VectorIndexBackendTest,
 
   vector_index::set_faiss_external_snapshot_root_for_testing(blocked_root);
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_blocked_root");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_blocked_root");
 
   EXPECT_FALSE(backend.upsert(1, {1.0F, 1.0F}));
   EXPECT_EQ(0U, backend.entry_count());
@@ -7000,6 +7259,10 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest,
      FaissExternalPersistRollbackWhenNativeSnapshotWriteIsInjected) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   const std::string root =
       std::string(testing::TempDir()) + "/vector_faiss_native_write_fail_t";
   std::error_code ec;
@@ -7009,10 +7272,11 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_native_write_fail");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_native_write_fail");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_persist_faiss_index_file");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_persist_faiss_index_file");
     EXPECT_FALSE(backend.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -7029,6 +7293,10 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest,
      FaissExternalPersistRollbackWhenNativeSnapshotRenameIsInjected) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
   const std::string root =
       std::string(testing::TempDir()) + "/vector_faiss_native_rename_fail_t";
   std::error_code ec;
@@ -7038,10 +7306,11 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_native_rename_fail");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_native_rename_fail");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_persist_faiss_index_rename");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_persist_faiss_index_rename");
     EXPECT_FALSE(backend.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -7071,8 +7340,8 @@ TEST(VectorIndexBackendTest,
 
   vector_index::set_faiss_external_snapshot_root_for_testing(blocked_root);
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_blocked_committed");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_blocked_committed");
 
   std::unordered_map<uint64_t, vector_index::vector_data> committed_entries;
   committed_entries.emplace(3, vector_index::vector_data{3.0F, 3.0F});
@@ -7093,10 +7362,11 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_manifest_save_fail");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_manifest_save_fail");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_save_manifest_generation");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_save_manifest_generation");
     EXPECT_FALSE(backend.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -7124,11 +7394,11 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_manifest_rename_fail");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_manifest_rename_fail");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug,
-        "+d,vector_backend_fail_save_manifest_generation_rename");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_save_manifest_generation_rename");
     EXPECT_FALSE(backend.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -7155,8 +7425,8 @@ TEST(
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_erase_last_cleanup_fail");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_erase_last_cleanup_fail");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   {
@@ -7184,8 +7454,8 @@ TEST(
 
 TEST(VectorIndexBackendTest,
      FaissExternalPersistRollbackWhenManifestQuarantineIsInjected) {
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_faiss_manifest_quarantine_fail_t";
+  const std::string root = std::string(testing::TempDir()) +
+                           "/vector_faiss_manifest_quarantine_fail_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -7194,19 +7464,20 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_manifest_quarantine_fail");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_manifest_quarantine_fail");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
   const std::string manifest_path = find_faiss_manifest_file(root);
   ASSERT_FALSE(manifest_path.empty());
   write_binary_file(manifest_path, "broken-manifest");
 
-  vector_index::faiss_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_manifest_quarantine_fail");
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_manifest_quarantine_fail");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_quarantine_file_if_exists");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_quarantine_file_if_exists");
     EXPECT_FALSE(backend.upsert(2, {2.0F, 2.0F}));
   }
 
@@ -7229,8 +7500,8 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_second_persist_remove");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_second_persist_remove");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   {
@@ -7303,8 +7574,8 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest,
      FaissExternalEraseLastEntryRollbackWhenArtifactRemovalIsInjected) {
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_faiss_erase_last_remove_fail_t";
+  const std::string root = std::string(testing::TempDir()) +
+                           "/vector_faiss_erase_last_remove_fail_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -7312,8 +7583,8 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_erase_last_remove_fail");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_erase_last_remove_fail");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   {
@@ -7342,8 +7613,8 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kExternal,
-                                     "idx_faiss_erase_last_dir_fail");
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_erase_last_dir_fail");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   {
@@ -7379,12 +7650,13 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   const std::string manifest_path =
-      root + "/6964785f66616973735f6d616e69666573745f6d697373/"
-             "faiss_external.manifest.v1";
+      root +
+      "/6964785f66616973735f6d616e69666573745f6d697373/"
+      "faiss_external.manifest.v1";
   {
     vector_index::faiss_backend writer(2, vector_index::metric_type::kEuclidean,
-                                      vector_index::backend_mode::kExternal,
-                                      "idx_faiss_manifest_miss");
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_faiss_manifest_miss");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -7400,8 +7672,8 @@ TEST(VectorIndexBackendTest,
 
   const uint64_t fallback_before = vector_status::backend_recover_fallbacks();
   vector_index::faiss_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_faiss_manifest_miss");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_manifest_miss");
   ASSERT_TRUE(recovered.recover());
   EXPECT_TRUE(recovered.last_recover_used_fallback());
   EXPECT_EQ(fallback_before + 1, vector_status::backend_recover_fallbacks());
@@ -7422,8 +7694,8 @@ TEST(VectorIndexBackendTest,
 
   {
     vector_index::diskann_backend writer(
-        2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-        "idx_diskann_manifest_miss");
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, "idx_diskann_manifest_miss");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
 
@@ -7441,8 +7713,8 @@ TEST(VectorIndexBackendTest,
   }
 
   vector_index::diskann_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_manifest_miss");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_manifest_miss");
   ASSERT_TRUE(recovered.recover());
   EXPECT_TRUE(recovered.last_recover_used_fallback());
 
@@ -7464,17 +7736,19 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   {
-    vector_index::diskann_backend writer(
-        2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-        "idx_diskann_manifest_load_fail");
+    vector_index::diskann_backend writer(2,
+                                         vector_index::metric_type::kEuclidean,
+                                         vector_index::backend_mode::kExternal,
+                                         "idx_diskann_manifest_load_fail");
     ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
   }
 
   vector_index::diskann_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_manifest_load_fail");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_manifest_load_fail");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_load_manifest_generation");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_load_manifest_generation");
     ASSERT_TRUE(recovered.recover());
   }
   EXPECT_TRUE(recovered.last_recover_used_fallback());
@@ -7497,12 +7771,14 @@ TEST(VectorIndexBackendTest,
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::diskann_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kExternal,
-                                       "idx_diskann_manifest_load_persist");
+  vector_index::diskann_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal,
+                                        "idx_diskann_manifest_load_persist");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_load_manifest_generation");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_load_manifest_generation");
     ASSERT_TRUE(backend.upsert(2, {2.0F, 2.0F}));
   }
 
@@ -7527,8 +7803,8 @@ TEST(VectorIndexBackendTest, DiskAnnExternalEraseLastEntryRemovesArtifacts) {
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_erase_last");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_erase_last");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string manifest_path = find_diskann_manifest_file(root);
@@ -7563,13 +7839,14 @@ TEST(VectorIndexBackendTest,
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_erase_last_fail");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_erase_last_fail");
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   const std::string manifest_path = find_diskann_manifest_file(root);
   ASSERT_FALSE(manifest_path.empty());
-  ASSERT_TRUE(std::filesystem::create_directories(manifest_path + ".corrupt", ec));
+  ASSERT_TRUE(
+      std::filesystem::create_directories(manifest_path + ".corrupt", ec));
   ASSERT_FALSE(ec);
   write_binary_file(manifest_path + ".corrupt/blocker", "block");
 
@@ -7594,8 +7871,8 @@ TEST(VectorIndexBackendTest, DiskAnnExternalRecoverWithoutArtifactsStaysEmpty) {
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_recover_empty");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_recover_empty");
   std::vector<vector_index::search_result> result;
 
   EXPECT_TRUE(backend.recover());
@@ -7611,8 +7888,8 @@ TEST(VectorIndexBackendTest, DiskAnnExternalRecoverWithoutArtifactsStaysEmpty) {
 
 TEST(VectorIndexBackendTest, DiskAnnExternalBuildParamsCanBeConfigured) {
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_params");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_params");
 
   EXPECT_EQ(32U, backend.diskann_max_degree());
   EXPECT_EQ(64U, backend.diskann_build_complexity());
@@ -7628,8 +7905,8 @@ TEST(VectorIndexBackendTest, DiskAnnExternalBuildParamsCanBeConfigured) {
   EXPECT_FALSE(backend.set_diskann_build_threads(65536));
   EXPECT_EQ(vector_index::diskann_build_mode::kAuto,
             backend.diskann_build_mode_value());
-  EXPECT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  EXPECT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   EXPECT_EQ(vector_index::diskann_build_mode::kOffline,
             backend.diskann_build_mode_value());
 }
@@ -7637,8 +7914,7 @@ TEST(VectorIndexBackendTest, DiskAnnExternalBuildParamsCanBeConfigured) {
 TEST(VectorIndexBackendTest, DiskAnnExactFallbackOrdersEqualDistancesByDocId) {
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal,
-      "idx_diskann_exact_tiebreak");
+      vector_index::backend_mode::kExternal, "idx_diskann_exact_tiebreak");
   std::vector<vector_index::search_result> result;
 
   ASSERT_TRUE(backend.upsert(20, {1.0F, 0.0F}));
@@ -7656,7 +7932,8 @@ TEST(VectorIndexBackendTest, DiskAnnExactFallbackOrdersEqualDistancesByDocId) {
   EXPECT_TRUE(result.empty());
 }
 
-TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeRejectsInjectedBuildFailure) {
+TEST(VectorIndexBackendTest,
+     DiskAnnOfflineBuildModeRejectsInjectedBuildFailure) {
   const std::string root =
       std::string(testing::TempDir()) + "/vector_diskann_offline_fail_t";
   std::error_code ec;
@@ -7669,17 +7946,16 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeRejectsInjectedBuildFailure)
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal,
       "idx_diskann_offline_rejects_build_failure");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug,
                              "+d,vector_backend_fail_diskann_offline_build");
-    EXPECT_FALSE(backend.rebuild_from_committed_entries(
-        {{1, {1.0F, 1.0F}},
-         {2, {2.0F, 2.0F}},
-         {3, {3.0F, 3.0F}},
-         {4, {4.0F, 4.0F}}}));
+    EXPECT_FALSE(backend.rebuild_from_committed_entries({{1, {1.0F, 1.0F}},
+                                                         {2, {2.0F, 2.0F}},
+                                                         {3, {3.0F, 3.0F}},
+                                                         {4, {4.0F, 4.0F}}}));
   }
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
@@ -7692,8 +7968,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeUsesOfflineAdapter) {
     GTEST_SKIP() << "DiskANN offline adapter unavailable in current runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -7713,8 +7989,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeUsesOfflineAdapter) {
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, index_name);
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 4));
   UlonglongGuard raw_segment_guard(&opt_vector_diskann_raw_segment_size,
                                    2U * 2U * sizeof(float));
@@ -7735,9 +8011,9 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeUsesOfflineAdapter) {
   EXPECT_EQ(entries.size(), backend.entry_count());
   EXPECT_TRUE(find_diskann_manifest_file(root).empty());
 
-  const std::filesystem::path store_dir =
-      std::filesystem::path(root) / hex_encode(index_name) /
-      "diskann_external.store";
+  const std::filesystem::path store_dir = std::filesystem::path(root) /
+                                          hex_encode(index_name) /
+                                          "diskann_external.store";
   const std::filesystem::path doc_ids_path =
       store_dir / "offline" / "diskann_mysql_vector_docids.bin";
   EXPECT_TRUE(std::filesystem::exists(doc_ids_path));
@@ -7762,12 +8038,12 @@ TEST(VectorIndexBackendTest,
      DiskAnnManagedArtifactPublicationCanFinalizeRollbackAndRecover) {
   install_diskann_offline_test_adapter();
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
-  const std::string root = std::string(testing::TempDir()) +
-                           "/vector_diskann_managed_generation_t";
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_diskann_managed_generation_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -7838,8 +8114,8 @@ TEST(VectorIndexBackendTest,
     ASSERT_TRUE(second_generation.set_diskann_build_params(4, 16, 2));
     ASSERT_TRUE(
         second_generation.rebuild_from_committed_entries(second_entries));
-    ASSERT_TRUE(second_generation.prepare_artifact_publication(
-        make_identity(4)));
+    ASSERT_TRUE(
+        second_generation.prepare_artifact_publication(make_identity(4)));
     ASSERT_TRUE(second_generation.publish_artifact());
     ASSERT_TRUE(second_generation.rollback_artifact());
   }
@@ -7875,13 +8151,155 @@ TEST(VectorIndexBackendTest,
 }
 
 TEST(VectorIndexBackendTest,
-     DiskAnnManagedEmptyArtifactRemainsMutableAfterPublication) {
+     DiskAnnArtifactPublicationRejectsInvalidLifecycleOrdering) {
   if (!vector_index::backend_provider_supported(
           vector_index::backend_provider::kDiskAnn)) {
     GTEST_SKIP() << "DiskANN provider is not compiled in";
   }
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_diskann_artifact_ordering_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  vector_index::diskann_artifact_identity identity;
+  identity.index_identity = 45;
+  identity.truth_generation = 8;
+  identity.config_generation = 3;
+  identity.dimension = 2;
+  identity.metric = "euclidean";
+  identity.mode = "external";
+  identity.provider = "diskann";
+  identity.consistency_mode = "transactional";
+
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_artifact_ordering");
+  EXPECT_FALSE(backend.has_pending_artifact_publication());
+  EXPECT_FALSE(backend.artifact_publication_matches(identity));
+  EXPECT_TRUE(backend.prepare_artifact_publication(identity));
+  EXPECT_TRUE(backend.publish_artifact());
+  EXPECT_TRUE(backend.rollback_artifact());
+  EXPECT_TRUE(backend.finalize_artifact());
+  EXPECT_FALSE(backend.collect_doc_ids(nullptr));
+
+  ASSERT_TRUE(backend.defer_artifact_publication());
+  ASSERT_TRUE(backend.rebuild_from_committed_entries({}));
+  ASSERT_TRUE(backend.has_pending_artifact_publication());
+  EXPECT_FALSE(backend.publish_artifact());
+  EXPECT_TRUE(backend.rollback_artifact());
+  EXPECT_FALSE(backend.has_pending_artifact_publication());
+
+  ASSERT_TRUE(backend.rebuild_from_committed_entries({}));
+  ASSERT_TRUE(backend.prepare_artifact_publication(identity));
+  EXPECT_FALSE(backend.prepare_artifact_publication(identity));
+  EXPECT_FALSE(backend.artifact_publication_matches(identity));
+  ASSERT_TRUE(backend.publish_artifact());
+  EXPECT_TRUE(backend.artifact_publication_matches(identity));
+  auto stale_identity = identity;
+  ++stale_identity.truth_generation;
+  EXPECT_FALSE(backend.artifact_publication_matches(stale_identity));
+  ASSERT_TRUE(backend.finalize_artifact());
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexBackendTest, DiskAnnExternalSettingsRejectInvalidBounds) {
+  vector_index::diskann_backend external_backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_external_options");
+  EXPECT_FALSE(external_backend.set_diskann_build_blas_threads(
+      vector_index::k_max_build_threads + 1));
+  ASSERT_TRUE(external_backend.set_diskann_build_blas_threads(1));
+  EXPECT_TRUE(external_backend.set_diskann_build_blas_threads(1));
+  ASSERT_TRUE(external_backend.set_diskann_build_params(8, 16, 1));
+  EXPECT_TRUE(external_backend.set_diskann_build_params(8, 17, 1));
+  EXPECT_FALSE(external_backend.set_diskann_disk_pq_dims(
+      vector_index::k_max_diskann_disk_pq_dims + 1));
+  EXPECT_FALSE(external_backend.set_diskann_search_beamwidth(0));
+}
+
+TEST(VectorIndexBackendTest,
+     DiskAnnSerialArtifactPublicationStagesAndRecoversStore) {
   if (!vector_index::diskann_api_load_for_testing()) {
-    GTEST_SKIP() << "DiskANN serial API unavailable in current build/runtime";
+    GTEST_SKIP() << "DiskANN serial API unavailable in current runtime";
+  }
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_diskann_serial_generation_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  const std::string index_name = "idx_diskann_serial_generation";
+  vector_index::diskann_artifact_identity identity;
+  identity.index_identity = 44;
+  identity.truth_generation = 5;
+  identity.config_generation = 2;
+  identity.doc_id_count = 2;
+  identity.dimension = 2;
+  identity.metric = "euclidean";
+  identity.mode = "external";
+  identity.provider = "diskann";
+  identity.consistency_mode = "transactional";
+  const std::unordered_map<uint64_t, vector_index::vector_data> entries{
+      {10, {0.0F, 0.0F}}, {20, {1.0F, 1.0F}}};
+
+  {
+    vector_index::diskann_backend backend(
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, index_name);
+    ASSERT_TRUE(backend.defer_artifact_publication());
+    ASSERT_TRUE(backend.set_diskann_build_mode(
+        vector_index::diskann_build_mode::kSerial));
+    ASSERT_TRUE(backend.rebuild_from_committed_entries(entries));
+    EXPECT_EQ("diskann_serial", backend.backend_variant());
+    EXPECT_TRUE(backend.has_pending_artifact_publication());
+
+    std::vector<vector_index::search_result> result;
+    ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &result));
+    ASSERT_EQ(1U, result.size());
+    EXPECT_EQ(20U, result[0].doc_id);
+
+    ASSERT_TRUE(backend.prepare_artifact_publication(identity));
+    ASSERT_TRUE(backend.publish_artifact());
+    EXPECT_TRUE(backend.artifact_publication_matches(identity));
+    ASSERT_TRUE(backend.finalize_artifact());
+  }
+
+  vector_index::diskann_backend recovered(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, index_name);
+  ASSERT_TRUE(recovered.recover_artifact_publication(identity));
+  EXPECT_TRUE(recovered.artifact_publication_matches(identity));
+  EXPECT_EQ(entries.size(), recovered.entry_count());
+  EXPECT_EQ("diskann_serial", recovered.backend_variant());
+
+  std::vector<uint64_t> doc_ids;
+  ASSERT_TRUE(recovered.collect_doc_ids(&doc_ids));
+  ASSERT_EQ(2U, doc_ids.size());
+  EXPECT_EQ(10U, doc_ids[0]);
+  EXPECT_EQ(20U, doc_ids[1]);
+  ASSERT_TRUE(recovered.defer_artifact_publication());
+  EXPECT_FALSE(recovered.has_pending_artifact_publication());
+  EXPECT_TRUE(recovered.rollback_artifact());
+  EXPECT_TRUE(recovered.finalize_artifact());
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexBackendTest,
+     DiskAnnManagedEmptyArtifactRemainsMutableAfterPublication) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kDiskAnn)) {
+    GTEST_SKIP() << "DiskANN provider is not compiled in";
   }
 
   const std::string root =
@@ -7999,8 +8417,8 @@ TEST(VectorIndexBackendTest,
 TEST(VectorIndexBackendTest, DiskAnnNativePqBridgeBuildsOfflineIndex) {
   install_diskann_offline_test_adapter();
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   UlongGuard diskann_pq_runtime_guard(
@@ -8021,8 +8439,8 @@ TEST(VectorIndexBackendTest, DiskAnnNativePqBridgeBuildsOfflineIndex) {
   vector_index::diskann_backend backend(
       4, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_native_pq_bridge");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 1));
 
   std::unordered_map<uint64_t, vector_index::vector_data> entries;
@@ -8051,8 +8469,8 @@ TEST(VectorIndexBackendTest, DiskAnnNativePqBridgeBuildsOfflineIndex) {
     EXPECT_EQ("native_pq_graph_cache", diagnostics.native_pq_runtime_bridge);
     EXPECT_EQ("diskann_offline", backend.backend_variant());
     const std::filesystem::path store_dir =
-        std::filesystem::path(root) / hex_encode("idx_diskann_native_pq_bridge") /
-        "diskann_external.store";
+        std::filesystem::path(root) /
+        hex_encode("idx_diskann_native_pq_bridge") / "diskann_external.store";
     const std::string build_options = read_text_file(
         store_dir / "offline" / "diskann_mysql_vector_build_options.txt");
     EXPECT_NE(std::string::npos,
@@ -8125,8 +8543,8 @@ TEST(VectorIndexBackendTest, DiskAnnNativePqBridgeBuildsCosineIndex) {
 TEST(VectorIndexBackendTest, DiskAnnNativePqBridgeBuildsDiskPqIndex) {
   install_diskann_offline_test_adapter();
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   UlongGuard diskann_pq_runtime_guard(
@@ -8147,8 +8565,8 @@ TEST(VectorIndexBackendTest, DiskAnnNativePqBridgeBuildsDiskPqIndex) {
   vector_index::diskann_backend backend(
       4, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_native_disk_pq");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 1));
   ASSERT_TRUE(backend.set_diskann_disk_pq_dims(2));
 
@@ -8310,8 +8728,8 @@ TEST(VectorIndexBackendTest, DiskAnnNativePqRejectsDocIdOrdinalMismatch) {
 TEST(VectorIndexBackendTest, DiskAnnNativePqBudgetFallsBackToOfficialBuild) {
   install_diskann_offline_test_adapter();
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   UlongGuard diskann_pq_runtime_guard(
@@ -8330,8 +8748,8 @@ TEST(VectorIndexBackendTest, DiskAnnNativePqBudgetFallsBackToOfficialBuild) {
   vector_index::diskann_backend backend(
       4, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_native_pq_budget");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 1));
 
   std::unordered_map<uint64_t, vector_index::vector_data> entries;
@@ -8361,8 +8779,8 @@ TEST(VectorIndexBackendTest,
      DiskAnnNativePqStrictBudgetDoesNotFallbackToOfficialBuild) {
   install_diskann_offline_test_adapter();
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   UlongGuard diskann_pq_runtime_guard(
@@ -8378,12 +8796,12 @@ TEST(VectorIndexBackendTest,
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::diskann_backend backend(
-      4, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal,
-      "idx_diskann_native_pq_strict_budget");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  vector_index::diskann_backend backend(4,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal,
+                                        "idx_diskann_native_pq_strict_budget");
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 1));
 
   std::unordered_map<uint64_t, vector_index::vector_data> entries;
@@ -8407,27 +8825,28 @@ TEST(VectorIndexBackendTest,
 TEST(VectorIndexBackendTest, DiskAnnNativePqBridgeReportsUnavailableAdapter) {
   install_diskann_offline_test_adapter();
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   UlongGuard diskann_pq_runtime_guard(
       &opt_vector_diskann_pq_runtime,
       static_cast<ulong>(vector_index::diskann_pq_runtime_mode::kNativeStrict));
 
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_diskann_native_pq_unavailable_t";
+  const std::string root = std::string(testing::TempDir()) +
+                           "/vector_diskann_native_pq_unavailable_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::diskann_backend backend(
-      4, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal, "idx_diskann_native_pq_unavailable");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  vector_index::diskann_backend backend(4,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal,
+                                        "idx_diskann_native_pq_unavailable");
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 1));
 
   std::unordered_map<uint64_t, vector_index::vector_data> entries;
@@ -8450,9 +8869,8 @@ TEST(VectorIndexBackendTest, DiskAnnNativePqBridgeReportsUnavailableAdapter) {
   EXPECT_NE(std::string::npos,
             diagnostics.native_pq_runtime_artifact_validation.find(
                 "native PQ DiskANN bridge is unavailable"));
-  EXPECT_NE(std::string::npos,
-            diagnostics.fallback_reason.find(
-                "native PQ DiskANN bridge is unavailable"));
+  EXPECT_NE(std::string::npos, diagnostics.fallback_reason.find(
+                                   "native PQ DiskANN bridge is unavailable"));
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -8465,8 +8883,8 @@ TEST(VectorIndexBackendTest,
     GTEST_SKIP() << "DiskANN offline adapter unavailable in current runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -8483,8 +8901,8 @@ TEST(VectorIndexBackendTest,
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_offline_flags");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_accelerate_build(true));
 
   {
@@ -8496,9 +8914,10 @@ TEST(VectorIndexBackendTest,
                                                         {40, {9.0F, 9.0F}}}));
   }
   const auto diagnostics = backend.build_diagnostics();
-  EXPECT_EQ("DiskANN offline adapter does not support accelerated or shuffled "
-            "build",
-            diagnostics.fallback_reason);
+  EXPECT_EQ(
+      "DiskANN offline adapter does not support accelerated or shuffled "
+      "build",
+      diagnostics.fallback_reason);
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -8510,8 +8929,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeUsesDirectRawSegment) {
     GTEST_SKIP() << "DiskANN offline adapter unavailable in current runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -8531,8 +8950,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeUsesDirectRawSegment) {
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, index_name);
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 4));
   UlonglongGuard raw_segment_guard(&opt_vector_diskann_raw_segment_size,
                                    1024 * 1024);
@@ -8549,9 +8968,9 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeUsesDirectRawSegment) {
   EXPECT_EQ(entries.size(), backend.entry_count());
   EXPECT_TRUE(find_diskann_manifest_file(root).empty());
 
-  const std::filesystem::path store_dir =
-      std::filesystem::path(root) / hex_encode(index_name) /
-      "diskann_external.store";
+  const std::filesystem::path store_dir = std::filesystem::path(root) /
+                                          hex_encode(index_name) /
+                                          "diskann_external.store";
   expect_official_diskann_build_options_if_used(
       variant, store_dir, "build_source=manifest_direct\n");
 
@@ -8564,14 +8983,15 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeUsesDirectRawSegment) {
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest, DiskAnnOfflineRawSegmentRebuildUsesDirectManifest) {
+TEST(VectorIndexBackendTest,
+     DiskAnnOfflineRawSegmentRebuildUsesDirectManifest) {
   install_diskann_offline_test_adapter();
   if (!vector_index::diskann_offline_api_load_for_testing()) {
     GTEST_SKIP() << "DiskANN offline adapter unavailable in current runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -8585,8 +9005,7 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineRawSegmentRebuildUsesDirectManifest) 
   const std::string vector_path = root + "/raw-segment-1.fbin";
   const std::string docid_path = root + "/raw-segment-1.u64";
   write_raw_fbin_file(vector_path, 4, 2,
-                      {0.0F, 0.0F, 1.0F, 1.0F,
-                       5.0F, 5.0F, 9.0F, 9.0F});
+                      {0.0F, 0.0F, 1.0F, 1.0F, 5.0F, 5.0F, 9.0F, 9.0F});
   write_raw_docid_file(docid_path, {10, 20, 30, 40});
 
   vector_index::raw_vector_segment segment;
@@ -8607,8 +9026,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineRawSegmentRebuildUsesDirectManifest) 
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, index_name);
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 4));
 
   ASSERT_TRUE(backend.rebuild_from_raw_segments(
@@ -8620,9 +9039,9 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineRawSegmentRebuildUsesDirectManifest) 
   EXPECT_EQ(4U, backend.entry_count());
   EXPECT_FALSE(backend.external_manifest_present());
 
-  const std::filesystem::path store_dir =
-      std::filesystem::path(root) / hex_encode(index_name) /
-      "diskann_external.store";
+  const std::filesystem::path store_dir = std::filesystem::path(root) /
+                                          hex_encode(index_name) /
+                                          "diskann_external.store";
   expect_official_diskann_build_options_if_used(
       variant, store_dir, "build_source=manifest_direct\n");
   EXPECT_FALSE(std::filesystem::exists(
@@ -8747,8 +9166,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineRawSegmentsUseSingleManifestBuild) {
     GTEST_SKIP() << "DiskANN offline adapter unavailable in current runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -8764,12 +9183,10 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineRawSegmentsUseSingleManifestBuild) {
   const std::string vector_path_2 = root + "/raw-segment-2.fbin";
   const std::string docid_path_2 = root + "/raw-segment-2.u64";
   write_raw_fbin_file(vector_path_1, 4, 2,
-                      {0.0F, 0.0F, 5.0F, 5.0F,
-                       7.0F, 7.0F, 8.0F, 8.0F});
+                      {0.0F, 0.0F, 5.0F, 5.0F, 7.0F, 7.0F, 8.0F, 8.0F});
   write_raw_docid_file(docid_path_1, {10, 20, 50, 60});
   write_raw_fbin_file(vector_path_2, 4, 2,
-                      {1.0F, 1.0F, 9.0F, 9.0F,
-                       2.0F, 2.0F, 3.0F, 3.0F});
+                      {1.0F, 1.0F, 9.0F, 9.0F, 2.0F, 2.0F, 3.0F, 3.0F});
   write_raw_docid_file(docid_path_2, {30, 40, 70, 80});
 
   vector_index::raw_vector_segment segment_1;
@@ -8799,13 +9216,13 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineRawSegmentsUseSingleManifestBuild) {
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, index_name);
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 4));
 
   ASSERT_TRUE(backend.rebuild_from_raw_segments(
-      [&segment_1, &segment_2](
-          const vector_index::raw_vector_segment_visitor &visitor) {
+      [&segment_1,
+       &segment_2](const vector_index::raw_vector_segment_visitor &visitor) {
         return visitor(segment_1) && visitor(segment_2);
       }));
 
@@ -8814,9 +9231,9 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineRawSegmentsUseSingleManifestBuild) {
   EXPECT_EQ(8U, backend.entry_count());
   EXPECT_FALSE(backend.external_manifest_present());
 
-  const std::filesystem::path store_dir =
-      std::filesystem::path(root) / hex_encode(index_name) /
-      "diskann_external.store";
+  const std::filesystem::path store_dir = std::filesystem::path(root) /
+                                          hex_encode(index_name) /
+                                          "diskann_external.store";
   EXPECT_FALSE(std::filesystem::exists(store_dir / "segment-0"));
   EXPECT_FALSE(std::filesystem::exists(store_dir / "segment-1"));
   expect_official_diskann_build_options_if_used(
@@ -8835,8 +9252,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineRawSegmentsUseSingleManifestBuild) {
   EXPECT_EQ(10U, result[1].doc_id);
 
   std::vector<std::vector<vector_index::search_result>> batch_results;
-  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {9.0F, 9.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{1.0F, 1.0F}, {9.0F, 9.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_FALSE(batch_results[0].empty());
   ASSERT_FALSE(batch_results[1].empty());
@@ -8853,8 +9270,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineReaderBuildStreamsCommittedEntries) {
     GTEST_SKIP() << "DiskANN offline adapter unavailable in current runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -8869,8 +9286,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineReaderBuildStreamsCommittedEntries) {
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, index_name);
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 1));
   UlonglongGuard raw_segment_guard(&opt_vector_diskann_raw_segment_size,
                                    2U * 2U * sizeof(float));
@@ -8882,8 +9299,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineReaderBuildStreamsCommittedEntries) {
       {40, {9.0F, 9.0F}}};
   size_t visited_rows = 0;
   const vector_index::committed_entry_reader reader =
-      [&entries, &visited_rows](
-          const vector_index::committed_entry_visitor &visitor) {
+      [&entries,
+       &visited_rows](const vector_index::committed_entry_visitor &visitor) {
         for (const auto &entry : entries) {
           ++visited_rows;
           if (!visitor(entry.first, entry.second)) return false;
@@ -8898,9 +9315,9 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineReaderBuildStreamsCommittedEntries) {
   EXPECT_EQ(entries.size(), backend.entry_count());
   EXPECT_TRUE(find_diskann_manifest_file(root).empty());
 
-  const std::filesystem::path store_dir =
-      std::filesystem::path(root) / hex_encode(index_name) /
-      "diskann_external.store";
+  const std::filesystem::path store_dir = std::filesystem::path(root) /
+                                          hex_encode(index_name) /
+                                          "diskann_external.store";
   const std::filesystem::path doc_ids_path =
       store_dir / "offline" / "diskann_mysql_vector_docids.bin";
   EXPECT_TRUE(std::filesystem::exists(doc_ids_path));
@@ -8960,8 +9377,8 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineBuildModeRequiresManifestAbi) {
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_offline_manifest");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug,
@@ -8986,10 +9403,9 @@ TEST(VectorIndexBackendTest, DiskAnnOfflineReaderBuildRejectsBuildFailure) {
 
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal,
-      "idx_diskann_offline_reader_fail");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+      vector_index::backend_mode::kExternal, "idx_diskann_offline_reader_fail");
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
 
   const vector_index::committed_entry_reader reader =
       [](const vector_index::committed_entry_visitor &visitor) {
@@ -9028,39 +9444,38 @@ TEST(VectorIndexBackendTest, DiskAnnAutoBuildModePrefersOfflineAdapter) {
             backend.diskann_build_mode_value());
   ASSERT_TRUE(backend.set_diskann_build_params(4, 16, 4));
 
-  ASSERT_TRUE(backend.rebuild_from_committed_entries(
-      {{10, {0.0F, 0.0F}},
-       {20, {1.0F, 1.0F}},
-       {30, {2.0F, 2.0F}},
-       {40, {3.0F, 3.0F}}}));
+  ASSERT_TRUE(backend.rebuild_from_committed_entries({{10, {0.0F, 0.0F}},
+                                                      {20, {1.0F, 1.0F}},
+                                                      {30, {2.0F, 2.0F}},
+                                                      {40, {3.0F, 3.0F}}}));
   EXPECT_FALSE(backend.external_manifest_present());
 
   const std::filesystem::path doc_ids_path =
       std::filesystem::path(root) / hex_encode(index_name) /
-      "diskann_external.store" / "offline" /
-      "diskann_mysql_vector_docids.bin";
+      "diskann_external.store" / "offline" / "diskann_mysql_vector_docids.bin";
   EXPECT_TRUE(std::filesystem::exists(doc_ids_path));
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({1.0F, 1.0F}, 2, &result));
   ASSERT_FALSE(result.empty());
   for (const vector_index::search_result &hit : result) {
-    EXPECT_TRUE(hit.doc_id == 10 || hit.doc_id == 20 ||
-                hit.doc_id == 30 || hit.doc_id == 40);
+    EXPECT_TRUE(hit.doc_id == 10 || hit.doc_id == 20 || hit.doc_id == 30 ||
+                hit.doc_id == 40);
   }
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest, DiskAnnAutoBuildModeClampsDegreeForTinyOfflineInput) {
+TEST(VectorIndexBackendTest,
+     DiskAnnAutoBuildModeClampsDegreeForTinyOfflineInput) {
   install_diskann_offline_test_adapter();
   if (!vector_index::diskann_api_load_for_testing()) {
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -9075,11 +9490,10 @@ TEST(VectorIndexBackendTest, DiskAnnAutoBuildModeClampsDegreeForTinyOfflineInput
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_auto_below_degree");
   ASSERT_EQ(32U, backend.diskann_max_degree());
-  ASSERT_TRUE(backend.rebuild_from_committed_entries(
-      {{10, {0.0F, 0.0F}},
-       {20, {1.0F, 1.0F}},
-       {30, {2.0F, 2.0F}},
-       {40, {3.0F, 3.0F}}}));
+  ASSERT_TRUE(backend.rebuild_from_committed_entries({{10, {0.0F, 0.0F}},
+                                                      {20, {1.0F, 1.0F}},
+                                                      {30, {2.0F, 2.0F}},
+                                                      {40, {3.0F, 3.0F}}}));
 
   EXPECT_FALSE(backend.external_manifest_present());
   expect_diskann_offline_variant(backend.backend_variant());
@@ -9098,8 +9512,8 @@ TEST(VectorIndexBackendTest, DiskAnnAutoBuildModeClampsDegreeForTinyOfflineInput
   EXPECT_EQ(30U, result[0].doc_id);
 
   std::vector<std::vector<vector_index::search_result>> batch_results;
-  ASSERT_TRUE(backend.search_batch({{2.0F, 2.0F}, {0.0F, 0.0F}}, 1,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{2.0F, 2.0F}, {0.0F, 0.0F}}, 1, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());
   ASSERT_EQ(1U, batch_results[1].size());
@@ -9116,8 +9530,8 @@ TEST(VectorIndexBackendTest, DiskAnnAutoBuildModeUsesSerialForSingleEntry) {
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -9131,8 +9545,7 @@ TEST(VectorIndexBackendTest, DiskAnnAutoBuildModeUsesSerialForSingleEntry) {
   vector_index::diskann_backend backend(
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_auto_single");
-  ASSERT_TRUE(
-      backend.rebuild_from_committed_entries({{10, {1.0F, 1.0F}}}));
+  ASSERT_TRUE(backend.rebuild_from_committed_entries({{10, {1.0F, 1.0F}}}));
 
   EXPECT_FALSE(backend.external_manifest_present());
   EXPECT_EQ("diskann_serial", backend.backend_variant());
@@ -9184,8 +9597,8 @@ TEST(VectorIndexBackendTest,
         return true;
       };
   {
-    VECTOR_SCOPED_DEBUG_FLAG(
-        debug, "+d,vector_backend_diskann_offline_unavailable");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_diskann_offline_unavailable");
     ASSERT_TRUE(backend.rebuild_from_committed_entries_from_reader(reader));
   }
 
@@ -9215,8 +9628,8 @@ TEST(VectorIndexBackendTest, DiskAnnAutoReaderBuildUsesSerialForSingleEntry) {
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -9296,8 +9709,8 @@ TEST(VectorIndexBackendTest,
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_raw_auto_serial");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(
-        debug, "+d,vector_backend_diskann_offline_unavailable");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_diskann_offline_unavailable");
     ASSERT_TRUE(backend.rebuild_from_raw_segments(
         [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
           return visitor(segment);
@@ -9330,8 +9743,8 @@ TEST(VectorIndexBackendTest, DiskAnnAutoRawSegmentBuildUsesSerialForSingleRow) {
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
   if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
-    GTEST_SKIP()
-        << "DiskANN offline adapter manifest ABI unavailable in current runtime";
+    GTEST_SKIP() << "DiskANN offline adapter manifest ABI unavailable in "
+                    "current runtime";
   }
 
   const std::string root =
@@ -9383,7 +9796,8 @@ TEST(VectorIndexBackendTest, DiskAnnAutoRawSegmentBuildUsesSerialForSingleRow) {
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest, DiskAnnAutoBuildFallsBackToSerialWhenOfflineUnavailable) {
+TEST(VectorIndexBackendTest,
+     DiskAnnAutoBuildFallsBackToSerialWhenOfflineUnavailable) {
   if (!vector_index::diskann_api_load_for_testing()) {
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
@@ -9400,8 +9814,8 @@ TEST(VectorIndexBackendTest, DiskAnnAutoBuildFallsBackToSerialWhenOfflineUnavail
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_auto_serial");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(
-        debug, "+d,vector_backend_diskann_offline_unavailable");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_diskann_offline_unavailable");
     ASSERT_TRUE(backend.rebuild_from_committed_entries(
         {{1, {1.0F, 1.0F}}, {2, {2.0F, 2.0F}}}));
   }
@@ -9413,6 +9827,114 @@ TEST(VectorIndexBackendTest, DiskAnnAutoBuildFallsBackToSerialWhenOfflineUnavail
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({2.0F, 2.0F}, 1, &result));
   EXPECT_FALSE(result.empty());
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexBackendTest,
+     DiskAnnSerialReaderFailureRemovesPartialDocIdArtifact) {
+  ASSERT_TRUE(vector_index::diskann_api_load_for_testing());
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_diskann_serial_cleanup_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  const std::string index_name = "idx_diskann_serial_cleanup";
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, index_name);
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kSerial));
+  const vector_index::committed_entry_reader failing_reader =
+      [](const vector_index::committed_entry_visitor &visitor) {
+        if (!visitor(1, {1.0F, 1.0F})) return false;
+        return false;
+      };
+  EXPECT_FALSE(
+      backend.rebuild_from_committed_entries_from_reader(failing_reader));
+
+  const std::filesystem::path doc_ids_path =
+      std::filesystem::path(root) / hex_encode(index_name) /
+      "diskann_external.store" / "offline" / "diskann_mysql_vector_docids.bin";
+  EXPECT_FALSE(std::filesystem::exists(doc_ids_path));
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexBackendTest,
+     DiskAnnPostBuildConfigurationFailureRejectsEveryInputSource) {
+  ASSERT_TRUE(vector_index::diskann_api_load_for_testing());
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_diskann_post_build_fail_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  {
+    vector_index::diskann_backend backend(2,
+                                          vector_index::metric_type::kEuclidean,
+                                          vector_index::backend_mode::kExternal,
+                                          "idx_diskann_post_build_entries");
+    ASSERT_TRUE(backend.set_diskann_build_mode(
+        vector_index::diskann_build_mode::kSerial));
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_diskann_native_set_search_complexity");
+    EXPECT_FALSE(backend.rebuild_from_committed_entries({{1, {1.0F, 1.0F}}}));
+    EXPECT_EQ("set_search_complexity_failed",
+              backend.build_diagnostics().fallback_reason);
+  }
+
+  {
+    vector_index::diskann_backend backend(
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, "idx_diskann_post_build_reader");
+    ASSERT_TRUE(backend.set_diskann_build_mode(
+        vector_index::diskann_build_mode::kSerial));
+    const vector_index::committed_entry_reader reader =
+        [](const vector_index::committed_entry_visitor &visitor) {
+          return visitor(2, {2.0F, 2.0F});
+        };
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_diskann_native_set_search_complexity");
+    EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader(reader));
+    EXPECT_EQ("set_search_complexity_failed",
+              backend.build_diagnostics().fallback_reason);
+  }
+
+  const std::string vector_path = root + "/post-build-fail.fbin";
+  const std::string docid_path = root + "/post-build-fail.u64";
+  write_raw_fbin_file(vector_path, 1, 2, {3.0F, 3.0F});
+  write_raw_docid_file(docid_path, {3});
+  vector_index::raw_vector_segment segment;
+  segment.vector_path = vector_path;
+  segment.docid_path = docid_path;
+  segment.row_count = 1;
+  segment.dimension = 2;
+  segment.bytes = std::filesystem::file_size(vector_path, ec) +
+                  std::filesystem::file_size(docid_path, ec);
+  ASSERT_FALSE(ec);
+  {
+    vector_index::diskann_backend backend(
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, "idx_diskann_post_build_raw");
+    ASSERT_TRUE(backend.set_diskann_build_mode(
+        vector_index::diskann_build_mode::kSerial));
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_diskann_native_set_search_complexity");
+    EXPECT_FALSE(backend.rebuild_from_raw_segments(
+        [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+          return visitor(segment);
+        }));
+    EXPECT_EQ("set_search_complexity_failed",
+              backend.build_diagnostics().fallback_reason);
+  }
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
@@ -9432,9 +9954,9 @@ TEST(VectorIndexBackendTest,
       2, vector_index::metric_type::kEuclidean,
       vector_index::backend_mode::kExternal, "idx_diskann_auto_sidecar");
   {
-    VECTOR_SCOPED_DEBUG_FLAG(
-        debug, "+d,vector_backend_diskann_offline_unavailable,"
-               "vector_backend_diskann_native_unavailable");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_diskann_offline_unavailable,"
+                             "vector_backend_diskann_native_unavailable");
     ASSERT_TRUE(backend.rebuild_from_committed_entries(
         {{1, {1.0F, 1.0F}}, {2, {2.0F, 2.0F}}}));
   }
@@ -9463,8 +9985,8 @@ TEST(VectorIndexBackendTest,
 
 TEST(VectorIndexBackendTest, DiskAnnExternalSearchComplexityCanBeConfigured) {
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_search_complexity");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_search_complexity");
 
   EXPECT_EQ(64U, backend.diskann_search_complexity());
   EXPECT_TRUE(backend.set_diskann_search_complexity(80));
@@ -9473,6 +9995,10 @@ TEST(VectorIndexBackendTest, DiskAnnExternalSearchComplexityCanBeConfigured) {
   EXPECT_EQ(16U, backend.diskann_search_beamwidth());
   EXPECT_TRUE(backend.set_diskann_search_beamwidth(24));
   EXPECT_EQ(24U, backend.diskann_search_beamwidth());
+  EXPECT_TRUE(backend.set_diskann_search_beamwidth(128));
+  EXPECT_EQ(128U, backend.diskann_search_beamwidth());
+  EXPECT_FALSE(backend.set_diskann_search_beamwidth(129));
+  EXPECT_EQ(128U, backend.diskann_search_beamwidth());
   EXPECT_FALSE(backend.set_diskann_search_beamwidth(0));
   EXPECT_EQ(0U, backend.diskann_pq_code_budget_size());
   EXPECT_TRUE(backend.set_diskann_pq_code_budget_size(1048576));
@@ -9496,23 +10022,73 @@ TEST(VectorIndexBackendTest, DiskAnnExternalSearchComplexityCanBeConfigured) {
 }
 
 TEST(VectorIndexBackendTest,
+     DiskAnnPublicApiRejectsInvalidModeReadersAndSearchShapes) {
+  vector_index::diskann_backend memory_backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kMemory, "idx_diskann_invalid_memory");
+  EXPECT_FALSE(memory_backend.upsert(1, {1.0F, 2.0F}));
+  EXPECT_FALSE(memory_backend.erase(1));
+  EXPECT_FALSE(memory_backend.load_committed_entries({{1, {1.0F, 2.0F}}}));
+  EXPECT_FALSE(memory_backend.rebuild_from_committed_entries_from_reader({}));
+  EXPECT_FALSE(memory_backend.rebuild_from_raw_segments({}));
+
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_search_edges");
+  EXPECT_FALSE(backend.upsert(1, {1.0F}));
+  EXPECT_TRUE(backend.erase(999));
+  EXPECT_FALSE(backend.rebuild_from_committed_entries_from_reader({}));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments({}));
+
+  std::vector<vector_index::search_result> results{{99, 99.0}};
+  EXPECT_FALSE(backend.search({1.0F, 2.0F}, 1, nullptr));
+  EXPECT_FALSE(backend.search({1.0F}, 1, &results));
+  vector_index::backend_search_options invalid_options;
+  invalid_options.diskann_search_complexity = 64;
+  invalid_options.diskann_search_beamwidth = 129;
+  EXPECT_FALSE(
+      backend.search_with_options({1.0F, 2.0F}, 1, invalid_options, &results));
+
+  results = {{99, 99.0}};
+  EXPECT_TRUE(backend.search({1.0F, 2.0F}, 0, &results));
+  EXPECT_TRUE(results.empty());
+  EXPECT_TRUE(backend.search({1.0F, 2.0F}, 1, &results));
+  EXPECT_TRUE(results.empty());
+
+  std::vector<std::vector<vector_index::search_result>> batch_results{
+      {{99, 99.0}}};
+  EXPECT_FALSE(backend.search_batch({{1.0F, 2.0F}}, 1, nullptr));
+  EXPECT_FALSE(backend.search_batch({{1.0F}}, 1, &batch_results));
+  EXPECT_FALSE(backend.search_batch_with_options(
+      {{1.0F, 2.0F}}, 1, invalid_options, &batch_results));
+  EXPECT_TRUE(backend.search_batch({}, 1, &batch_results));
+  EXPECT_TRUE(batch_results.empty());
+  EXPECT_TRUE(backend.search_batch({{1.0F, 2.0F}}, 0, &batch_results));
+  ASSERT_EQ(1U, batch_results.size());
+  EXPECT_TRUE(batch_results[0].empty());
+  EXPECT_TRUE(backend.search_batch({{1.0F, 2.0F}}, 1, &batch_results));
+  ASSERT_EQ(1U, batch_results.size());
+  EXPECT_TRUE(batch_results[0].empty());
+}
+
+TEST(VectorIndexBackendTest,
      DiskAnnExternalOfflineSearchRuntimeParamsFollowGlobals) {
   UlongGuard offline_threads_guard(&opt_vector_diskann_offline_search_threads,
                                    7);
   UlongGuard io_limit_guard(&opt_vector_diskann_search_io_limit, 128);
   UlongGuard cache_nodes_guard(&opt_vector_diskann_cache_nodes, 512);
   UlongGuard beamwidth_guard(&opt_vector_diskann_search_beamwidth, 16);
-  UlonglongGuard pq_code_budget_guard(
-      &opt_vector_diskann_pq_code_budget_size, 1048576);
+  UlonglongGuard pq_code_budget_guard(&opt_vector_diskann_pq_code_budget_size,
+                                      1048576);
   UlongGuard disk_pq_dims_guard(&opt_vector_diskann_disk_pq_dims, 32);
   BoolGuard accelerate_build_guard(&opt_vector_diskann_accelerate_build, true);
   BoolGuard shuffle_build_guard(&opt_vector_diskann_shuffle_build, true);
   BoolGuard use_bfs_cache_guard(&opt_vector_diskann_use_bfs_cache, true);
 
-  vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean,
-      vector_index::backend_mode::kExternal,
-      "idx_diskann_offline_search_runtime");
+  vector_index::diskann_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal,
+                                        "idx_diskann_offline_search_runtime");
 
   EXPECT_EQ(7U, backend.diskann_offline_search_threads());
   EXPECT_EQ(128U, backend.diskann_search_io_limit());
@@ -9535,16 +10111,16 @@ TEST(VectorIndexBackendTest,
   ASSERT_FALSE(ec);
   vector_index::set_faiss_external_snapshot_root_for_testing(root);
 
-  vector_index::diskann_backend writer(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_recover_entries");
+  vector_index::diskann_backend writer(2, vector_index::metric_type::kEuclidean,
+                                       vector_index::backend_mode::kExternal,
+                                       "idx_diskann_recover_entries");
   ASSERT_TRUE(writer.upsert(1, {1.0F, 1.0F}));
 
   std::unordered_map<uint64_t, vector_index::vector_data> committed_entries{
       {9, {9.0F, 9.0F}}};
   vector_index::diskann_backend recovered(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_recover_entries");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_recover_entries");
   ASSERT_TRUE(recovered.recover_committed_entries(committed_entries));
 
   std::vector<vector_index::search_result> result;
@@ -9556,8 +10132,7 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest,
-     DiskAnnExternalNativeRebuildDoesNotCreateSidecar) {
+TEST(VectorIndexBackendTest, DiskAnnExternalNativeRebuildDoesNotCreateSidecar) {
   if (!vector_index::diskann_api_load_for_testing()) {
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
@@ -9604,14 +10179,15 @@ TEST(VectorIndexBackendTest,
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_native_insert_fail");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kSerial));
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_native_insert_fail");
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kSerial));
   ASSERT_TRUE(backend.rebuild_from_committed_entries({{1, {1.0F, 1.0F}}}));
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_diskann_native_insert");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_diskann_native_insert");
     ASSERT_TRUE(backend.upsert(2, {2.0F, 2.0F}));
   }
 
@@ -9633,14 +10209,15 @@ TEST(VectorIndexBackendTest,
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_native_remove_fail");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kSerial));
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_native_remove_fail");
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kSerial));
   ASSERT_TRUE(backend.rebuild_from_committed_entries({{1, {1.0F, 1.0F}}}));
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_diskann_native_remove");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_diskann_native_remove");
     ASSERT_TRUE(backend.erase(1));
   }
 
@@ -9655,15 +10232,16 @@ TEST(VectorIndexBackendTest,
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_native_search_fail");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kSerial));
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_native_search_fail");
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kSerial));
   ASSERT_TRUE(backend.rebuild_from_committed_entries({{1, {1.0F, 1.0F}}}));
 
   std::vector<vector_index::search_result> result;
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_diskann_native_search");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_diskann_native_search");
     ASSERT_TRUE(backend.search({1.0F, 1.0F}, 2, &result));
   }
   ASSERT_EQ(1U, result.size());
@@ -9698,25 +10276,33 @@ TEST(VectorIndexBackendTest,
 
   ASSERT_TRUE(backend.upsert(3, {3.0F, 3.0F}));
   EXPECT_EQ(3U, backend.entry_count());
-  ASSERT_TRUE(backend.upsert(1, {1.5F, 1.5F}));
+  ASSERT_TRUE(backend.upsert(3, {3.5F, 3.5F}));
   EXPECT_EQ(3U, backend.entry_count());
+  ASSERT_TRUE(backend.erase(3));
+  EXPECT_EQ(2U, backend.entry_count());
+  ASSERT_TRUE(backend.upsert(1, {1.5F, 1.5F}));
+  EXPECT_EQ(2U, backend.entry_count());
   ASSERT_TRUE(backend.erase(2));
+  EXPECT_EQ(1U, backend.entry_count());
+  ASSERT_TRUE(backend.erase(2));
+  EXPECT_EQ(1U, backend.entry_count());
+  ASSERT_TRUE(backend.upsert(2, {2.5F, 2.5F}));
   EXPECT_EQ(2U, backend.entry_count());
   ASSERT_TRUE(backend.erase(99));
   EXPECT_EQ(2U, backend.entry_count());
   std::vector<uint64_t> doc_ids;
   ASSERT_TRUE(backend.collect_doc_ids(&doc_ids));
   std::sort(doc_ids.begin(), doc_ids.end());
-  EXPECT_EQ((std::vector<uint64_t>{1, 3}), doc_ids);
+  EXPECT_EQ((std::vector<uint64_t>{1, 2}), doc_ids);
 
   std::vector<vector_index::search_result> results;
-  ASSERT_TRUE(backend.search({3.0F, 3.0F}, 2, &results));
+  ASSERT_TRUE(backend.search({2.5F, 2.5F}, 2, &results));
   ASSERT_FALSE(results.empty());
-  EXPECT_EQ(3U, results[0].doc_id);
+  EXPECT_EQ(2U, results[0].doc_id);
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug,
                              "+d,vector_backend_fail_diskann_native_search");
-    EXPECT_FALSE(backend.search({3.0F, 3.0F}, 2, &results));
+    EXPECT_FALSE(backend.search({2.5F, 2.5F}, 2, &results));
   }
   EXPECT_TRUE(results.empty());
 
@@ -9726,7 +10312,7 @@ TEST(VectorIndexBackendTest,
     EXPECT_FALSE(backend.upsert(4, {4.0F, 4.0F}));
   }
   EXPECT_EQ(2U, backend.entry_count());
-  EXPECT_FALSE(backend.search({3.0F, 3.0F}, 2, &results));
+  EXPECT_FALSE(backend.search({2.5F, 2.5F}, 2, &results));
   EXPECT_FALSE(backend.collect_doc_ids(&doc_ids));
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
@@ -9880,19 +10466,21 @@ TEST(VectorIndexBackendTest,
   vector_index::reset_faiss_external_snapshot_root_for_testing();
 }
 
-TEST(VectorIndexBackendTest,
-     DiskAnnExternalRebuildFromCommittedEntriesRejectsInjectedNativeRebuildFailure) {
+TEST(
+    VectorIndexBackendTest,
+    DiskAnnExternalRebuildFromCommittedEntriesRejectsInjectedNativeRebuildFailure) {
   if (!vector_index::diskann_api_load_for_testing()) {
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_native_rebuild_fail");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kSerial));
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_native_rebuild_fail");
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kSerial));
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_diskann_native_rebuild");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_diskann_native_rebuild");
     EXPECT_FALSE(backend.rebuild_from_committed_entries({{1, {1.0F, 1.0F}}}));
   }
 }
@@ -9903,15 +10491,16 @@ TEST(VectorIndexBackendTest,
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
   vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal,
       "idx_diskann_native_search_complexity_fail");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kSerial));
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kSerial));
   ASSERT_TRUE(backend.rebuild_from_committed_entries({{1, {1.0F, 1.0F}}}));
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug,
-        "+d,vector_backend_fail_diskann_native_live_search_complexity");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_diskann_native_live_search_complexity");
     EXPECT_FALSE(backend.set_diskann_search_complexity(80));
   }
   EXPECT_EQ(64U, backend.diskann_search_complexity());
@@ -9929,15 +10518,18 @@ TEST(VectorIndexBackendTest,
   if (!vector_index::diskann_api_load_for_testing()) {
     GTEST_SKIP() << "DiskANN API unavailable in current build/runtime";
   }
-  vector_index::diskann_backend backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_native_live_zero_topk");
-  ASSERT_TRUE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kSerial));
+  vector_index::diskann_backend backend(2,
+                                        vector_index::metric_type::kEuclidean,
+                                        vector_index::backend_mode::kExternal,
+                                        "idx_diskann_native_live_zero_topk");
+  ASSERT_TRUE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kSerial));
   ASSERT_TRUE(backend.rebuild_from_committed_entries({{1, {1.0F, 1.0F}}}));
 
   ASSERT_TRUE(backend.set_diskann_search_complexity(80));
   EXPECT_EQ(80U, backend.diskann_search_complexity());
+  ASSERT_TRUE(backend.set_diskann_search_beamwidth(32));
+  EXPECT_EQ(32U, backend.diskann_search_beamwidth());
 
   std::vector<vector_index::search_result> result{{99, 99.0}};
   ASSERT_TRUE(backend.search({1.0F, 1.0F}, 0, &result));
@@ -9950,20 +10542,23 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ(2U, result[0].doc_id);
 
   vector_index::diskann_backend empty_backend(
-      2, vector_index::metric_type::kEuclidean, vector_index::backend_mode::kExternal,
-      "idx_diskann_native_live_empty");
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_diskann_native_live_empty");
+  std::vector<std::vector<vector_index::search_result>> batch_result;
+  EXPECT_FALSE(empty_backend.native_search_batch_for_testing(
+      {{1.0F, 1.0F}}, 0, 1, 1, &batch_result));
   ASSERT_TRUE(empty_backend.rebuild_from_committed_entries({}));
   result = {{99, 99.0}};
   ASSERT_TRUE(empty_backend.search({1.0F, 1.0F}, 1, &result));
   EXPECT_TRUE(result.empty());
 
   std::vector<std::vector<vector_index::search_result>> batch_results;
-  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 1, 0,
-                                                       1, &batch_results));
-  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 1,
-                                                       1, nullptr));
-  if (backend.native_search_batch_for_testing(
-          {{2.0F, 2.0F}, {1.0F, 1.0F}}, 0, 2, 1, &batch_results)) {
+  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 1, 0, 1,
+                                                       &batch_results));
+  EXPECT_FALSE(backend.native_search_batch_for_testing({{1.0F, 1.0F}}, 0, 1, 1,
+                                                       nullptr));
+  if (backend.native_search_batch_for_testing({{2.0F, 2.0F}, {1.0F, 1.0F}}, 0,
+                                              2, 1, &batch_results)) {
     ASSERT_EQ(2U, batch_results.size());
     ASSERT_EQ(1U, batch_results[0].size());
     ASSERT_EQ(1U, batch_results[1].size());
@@ -9972,8 +10567,8 @@ TEST(VectorIndexBackendTest,
   }
 
   backend.clear_committed_snapshot_for_testing();
-  ASSERT_TRUE(backend.search_batch({{2.0F, 2.0F}, {1.0F, 1.0F}}, 10,
-                                   &batch_results));
+  ASSERT_TRUE(
+      backend.search_batch({{2.0F, 2.0F}, {1.0F, 1.0F}}, 10, &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());
   ASSERT_EQ(1U, batch_results[1].size());
@@ -10067,7 +10662,7 @@ TEST(VectorIndexBackendTest, DiskAnnSerialCallbacksContainCppExceptions) {
 
 TEST(VectorIndexBackendTest, FaissMemoryRejectsExternalOnlyTunings) {
   vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
-                                     vector_index::backend_mode::kMemory);
+                                      vector_index::backend_mode::kMemory);
 
   EXPECT_EQ("flat", backend.backend_variant());
   EXPECT_EQ(0U, backend.search_ef());
@@ -10084,8 +10679,7 @@ TEST(VectorIndexBackendTest, FaissMemoryRejectsExternalOnlyTunings) {
 }
 
 TEST(VectorIndexBackendTest, DiskannPqRuntimeSelectsPathAndEstimatesRows) {
-  const std::string input =
-      std::string(testing::TempDir()) + "/vector_diskann_pq_runtime_t.fbin";
+  const std::string input = diskann_pq_runtime_test_path("input.fbin");
   write_raw_fbin_file(input, 3, 128, std::vector<float>(3 * 128, 0.1F));
 
   vector_index::diskann_pq_runtime_config config;
@@ -10096,8 +10690,7 @@ TEST(VectorIndexBackendTest, DiskannPqRuntimeSelectsPathAndEstimatesRows) {
 
   vector_index::diskann_pq_runtime_result result;
   std::string error;
-  const std::string output_prefix =
-      std::string(testing::TempDir()) + "/vector_diskann_pq_runtime_out";
+  const std::string output_prefix = diskann_pq_runtime_test_path("runtime_out");
   ASSERT_TRUE(vector_index::build_diskann_pq_runtime(
       config, input.c_str(), output_prefix.c_str(), &result, &error))
       << error;
@@ -10112,15 +10705,13 @@ TEST(VectorIndexBackendTest, DiskannPqRuntimeSelectsPathAndEstimatesRows) {
   EXPECT_EQ(3U, result.train_rows);
   EXPECT_EQ(3U, result.compressed_rows);
   EXPECT_LE(result.memory_estimate_bytes, config.memory_budget_size);
-  EXPECT_TRUE(
-      has_suffix(result.artifacts.pivot_path, "_pq_pivots.bin"));
+  EXPECT_TRUE(has_suffix(result.artifacts.pivot_path, "_pq_pivots.bin"));
   EXPECT_TRUE(
       has_suffix(result.artifacts.compressed_path, "_pq_compressed.bin"));
 }
 
 TEST(VectorIndexBackendTest, DiskannPqRuntimeAutoThreads) {
-  const std::string input =
-      std::string(testing::TempDir()) + "/vector_diskann_pq_runtime_auto_t.fbin";
+  const std::string input = diskann_pq_runtime_test_path("auto_input.fbin");
   write_raw_fbin_file(input, 2, 128, std::vector<float>(2 * 128, 0.2F));
 
   vector_index::diskann_pq_runtime_config config;
@@ -10131,7 +10722,7 @@ TEST(VectorIndexBackendTest, DiskannPqRuntimeAutoThreads) {
   vector_index::diskann_pq_runtime_result result;
   std::string error;
   const std::string output_prefix =
-      std::string(testing::TempDir()) + "/vector_diskann_pq_runtime_auto_out";
+      diskann_pq_runtime_test_path("auto_runtime_out");
   ASSERT_TRUE(vector_index::build_diskann_pq_runtime(
       config, input.c_str(), output_prefix.c_str(), &result, &error))
       << error;
@@ -10144,9 +10735,50 @@ TEST(VectorIndexBackendTest, DiskannPqRuntimeAutoThreads) {
   EXPECT_TRUE(result.artifacts_written);
 }
 
-TEST(VectorIndexBackendTest, DiskannPqRuntimeRejectsInvalidDimension) {
+#ifndef NDEBUG
+TEST(VectorIndexBackendTest, DiskannPqRuntimePropagatesWorkerFailures) {
   const std::string input =
-      std::string(testing::TempDir()) + "/vector_diskann_pq_runtime_bad_t.fbin";
+      diskann_pq_runtime_test_path("worker_failure_input.fbin");
+  write_raw_fbin_file(input, 3, 16, std::vector<float>(3 * 16, 0.2F));
+
+  vector_index::diskann_pq_runtime_config config;
+  config.dimension = 16;
+  config.pq_chunks = 8;
+  config.threads = 4;
+
+  vector_index::diskann_pq_runtime_result result;
+  std::string error;
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_pq_runtime_fail_training_worker");
+    EXPECT_FALSE(vector_index::build_diskann_pq_runtime(
+        config, input.c_str(),
+        diskann_pq_runtime_test_path("training_failure_out").c_str(), &result,
+        &error));
+    EXPECT_EQ("pq chunk worker failed", error);
+  }
+
+  error.clear();
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_pq_runtime_fail_encode_worker");
+    EXPECT_FALSE(vector_index::build_diskann_pq_runtime(
+        config, input.c_str(),
+        diskann_pq_runtime_test_path("encode_failure_out").c_str(), &result,
+        &error));
+    EXPECT_EQ("pq centroid scan failed", error);
+  }
+
+  error.clear();
+  EXPECT_TRUE(vector_index::build_diskann_pq_runtime(
+      config, input.c_str(),
+      diskann_pq_runtime_test_path("worker_recovery_out").c_str(), &result,
+      &error))
+      << error;
+}
+#endif
+
+TEST(VectorIndexBackendTest, DiskannPqRuntimeRejectsInvalidDimension) {
+  const std::string input = diskann_pq_runtime_test_path("bad_input.fbin");
   write_fbin_header_file(input, 1, 128);
 
   vector_index::diskann_pq_runtime_config config;
@@ -10157,15 +10789,16 @@ TEST(VectorIndexBackendTest, DiskannPqRuntimeRejectsInvalidDimension) {
   vector_index::diskann_pq_runtime_result result;
   std::string error;
   EXPECT_FALSE(vector_index::build_diskann_pq_runtime(
-      config, input.c_str(), "vector_diskann_pq_runtime_bad_out", &result,
+      config, input.c_str(),
+      diskann_pq_runtime_test_path("bad_runtime_out").c_str(), &result,
       &error));
   EXPECT_EQ("dimension is zero", error);
 }
 
 TEST(VectorIndexBackendTest, DiskAnnMemoryRejectsExternalOnlyOperations) {
-  vector_index::diskann_backend backend(2, vector_index::metric_type::kEuclidean,
-                                       vector_index::backend_mode::kMemory,
-                                       "idx_diskann_mem_mode");
+  vector_index::diskann_backend backend(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kMemory, "idx_diskann_mem_mode");
   std::unordered_map<uint64_t, vector_index::vector_data> entries{
       {1, {1.0F, 1.0F}}};
   std::vector<vector_index::search_result> result{{99, 99.0}};
@@ -10184,17 +10817,34 @@ TEST(VectorIndexBackendTest, DiskAnnMemoryRejectsExternalOnlyOperations) {
   EXPECT_FALSE(backend.recover_committed_entries(entries));
   EXPECT_FALSE(backend.set_diskann_build_params(16, 32, 0));
   EXPECT_FALSE(backend.set_diskann_build_threads(1));
-  EXPECT_FALSE(
-      backend.set_diskann_build_mode(vector_index::diskann_build_mode::kOffline));
+  EXPECT_FALSE(backend.set_diskann_build_blas_threads(1));
+  EXPECT_FALSE(backend.set_diskann_build_mode(
+      vector_index::diskann_build_mode::kOffline));
   EXPECT_FALSE(backend.set_diskann_search_complexity(48));
+  EXPECT_FALSE(backend.set_diskann_search_beamwidth(8));
   EXPECT_FALSE(backend.set_diskann_pq_code_budget_size(1024));
+  EXPECT_FALSE(backend.set_diskann_disk_pq_dims(1));
+  EXPECT_FALSE(backend.set_diskann_accelerate_build(true));
+  EXPECT_FALSE(backend.set_diskann_shuffle_build(true));
+  EXPECT_FALSE(backend.set_diskann_use_bfs_cache(true));
   EXPECT_EQ(0U, backend.diskann_max_degree());
   EXPECT_EQ(0U, backend.diskann_build_complexity());
   EXPECT_EQ(0U, backend.diskann_build_threads());
+  EXPECT_EQ(0U, backend.diskann_build_blas_threads());
   EXPECT_EQ(vector_index::diskann_build_mode::kAuto,
             backend.diskann_build_mode_value());
   EXPECT_EQ(0U, backend.diskann_search_complexity());
+  EXPECT_EQ(0U, backend.diskann_search_beamwidth());
   EXPECT_EQ(0U, backend.diskann_pq_code_budget_size());
+  EXPECT_EQ(0U, backend.diskann_disk_pq_dims());
+  EXPECT_FALSE(backend.diskann_accelerate_build());
+  EXPECT_FALSE(backend.diskann_shuffle_build());
+  EXPECT_FALSE(backend.diskann_use_bfs_cache());
+  EXPECT_EQ(0U, backend.diskann_offline_search_threads());
+  EXPECT_EQ(0U, backend.diskann_search_io_limit());
+  EXPECT_EQ(0U, backend.diskann_cache_nodes());
+  vector_index::diskann_artifact_identity identity;
+  EXPECT_FALSE(backend.recover_artifact_publication(identity));
 }
 
 TEST(VectorIndexBackendTest, RemoveBackendArtifactsIsNoopForNonExternalModes) {

@@ -353,6 +353,35 @@ IF(HAVE_VECTOR_INDEX)
     OUTPUT_NAME "libmysql_vector_diskann_serial_fake_adapter"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/runtime_output_directory"
   )
+
+  FUNCTION(CONFIGURE_VECTOR_BACKEND_TEST_TARGET target use_offline_fake)
+    MYSQL_VECTOR_LINK_BACKEND_TESTS(${target})
+
+    IF(use_offline_fake AND TARGET vector_diskann_offline_fake_adapter)
+      ADD_DEPENDENCIES(${target} vector_diskann_offline_fake_adapter)
+      TARGET_COMPILE_DEFINITIONS(
+        ${target} PRIVATE
+        MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB="$<TARGET_FILE:vector_diskann_offline_fake_adapter>")
+    ELSEIF(MYSQL_VECTOR_DISKANN_OFFLINE_TARGET AND
+           NOT MYSQL_VECTOR_DISKANN_STATIC)
+      TARGET_COMPILE_DEFINITIONS(
+        ${target} PRIVATE
+        MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB="$<TARGET_FILE:${MYSQL_VECTOR_DISKANN_OFFLINE_TARGET}>")
+    ELSEIF(TARGET vector_diskann_offline_fake_adapter AND
+           NOT MYSQL_VECTOR_DISKANN_OFFLINE_TARGET)
+      ADD_DEPENDENCIES(${target} vector_diskann_offline_fake_adapter)
+      TARGET_COMPILE_DEFINITIONS(
+        ${target} PRIVATE
+        MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB="$<TARGET_FILE:vector_diskann_offline_fake_adapter>")
+    ENDIF()
+
+    IF(TARGET vector_diskann_serial_fake_adapter)
+      ADD_DEPENDENCIES(${target} vector_diskann_serial_fake_adapter)
+      TARGET_COMPILE_DEFINITIONS(
+        ${target} PRIVATE
+        MYSQL_VECTOR_DISKANN_TEST_LIB="$<TARGET_FILE:vector_diskann_serial_fake_adapter>")
+    ENDIF()
+  ENDFUNCTION()
 ENDIF()
 
 # Endless loop in FatalSignalDeathTest
@@ -422,7 +451,7 @@ MYSQL_ADD_EXECUTABLE(merge_large_tests-t ${ALL_LARGE_TESTS}
   LINK_LIBRARIES gunit_large server_unittest_library
 )
 IF(HAVE_VECTOR_INDEX)
-  MYSQL_VECTOR_LINK_BACKEND_TESTS(merge_large_tests-t)
+  CONFIGURE_VECTOR_BACKEND_TEST_TARGET(merge_large_tests-t TRUE)
 ENDIF()
 
 FOREACH(test ${TESTS})
@@ -471,36 +500,11 @@ FOREACH(test ${SERVER_TESTS})
     ADD_GCOV_TEST ${test}
   )
   IF(test MATCHES "^vector_index_backend$|^vector_index_service$")
-    MYSQL_VECTOR_LINK_BACKEND_TESTS(${test}-t)
-  ENDIF()
-  IF(test MATCHES "^vector_index_backend$|^vector_index_service$")
-    # Backend unit tests validate orchestration with the fake adapter. The real
-    # DiskANN builder reserves a large minimum workspace even for tiny inputs.
-    IF(test STREQUAL "vector_index_backend" AND
-       TARGET vector_diskann_offline_fake_adapter)
-      ADD_DEPENDENCIES(${test}-t vector_diskann_offline_fake_adapter)
-      TARGET_COMPILE_DEFINITIONS(
-        ${test}-t PRIVATE
-        MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB="$<TARGET_FILE:vector_diskann_offline_fake_adapter>")
-    ELSEIF(MYSQL_VECTOR_DISKANN_OFFLINE_TARGET AND
-           NOT MYSQL_VECTOR_DISKANN_STATIC)
-      TARGET_COMPILE_DEFINITIONS(
-        ${test}-t PRIVATE
-        MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB="$<TARGET_FILE:${MYSQL_VECTOR_DISKANN_OFFLINE_TARGET}>")
-    ELSEIF(TARGET vector_diskann_offline_fake_adapter AND
-           NOT MYSQL_VECTOR_DISKANN_OFFLINE_TARGET)
-      ADD_DEPENDENCIES(${test}-t vector_diskann_offline_fake_adapter)
-      TARGET_COMPILE_DEFINITIONS(
-        ${test}-t PRIVATE
-        MYSQL_VECTOR_DISKANN_OFFLINE_TEST_LIB="$<TARGET_FILE:vector_diskann_offline_fake_adapter>")
+    IF(test STREQUAL "vector_index_backend")
+      CONFIGURE_VECTOR_BACKEND_TEST_TARGET(${test}-t TRUE)
+    ELSE()
+      CONFIGURE_VECTOR_BACKEND_TEST_TARGET(${test}-t FALSE)
     ENDIF()
-  ENDIF()
-  IF(test MATCHES "^vector_index_backend$|^vector_index_service$" AND
-      TARGET vector_diskann_serial_fake_adapter)
-    ADD_DEPENDENCIES(${test}-t vector_diskann_serial_fake_adapter)
-    TARGET_COMPILE_DEFINITIONS(
-      ${test}-t PRIVATE
-      MYSQL_VECTOR_DISKANN_TEST_LIB="$<TARGET_FILE:vector_diskann_serial_fake_adapter>")
   ENDIF()
 ENDFOREACH()
 

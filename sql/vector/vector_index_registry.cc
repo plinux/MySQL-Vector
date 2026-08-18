@@ -782,12 +782,6 @@ void set_index_binding_locked(const std::string &index_name,
       index_binding{schema_name, table_name, column_name, doc_id_column_name};
 }
 
-void erase_index_binding_and_owner_schema_locked(
-    const std::string &index_name) {
-  g_index_bindings.erase(index_name);
-  g_index_owner_schemas.erase(index_name);
-}
-
 void rename_index_binding_locked(const std::string &old_index_name,
                                  const std::string &new_index_name) {
   const auto it = g_index_bindings.find(old_index_name);
@@ -811,6 +805,12 @@ void set_index_binding_and_owner_schema_locked(
   set_index_binding_locked(index_name, binding.schema_name, binding.table_name,
                            binding.column_name, binding.doc_id_column_name);
   g_index_owner_schemas[index_name] = owner_schema;
+}
+
+void erase_index_binding_and_owner_schema_locked(
+    const std::string &index_name) {
+  g_index_bindings.erase(index_name);
+  g_index_owner_schemas.erase(index_name);
 }
 
 void rename_index_binding_and_owner_schema_locked(
@@ -939,6 +939,12 @@ bool create_index_locked(
                                      &lagging_indexes_before)) {
     return false;
   }
+  const auto rollback_failed_create = [&] {
+    (void)rollback_runtime_state_locked(metadata_before, committed_before,
+                                        change_log_before,
+                                        lagging_indexes_before);
+    return false;
+  };
   if (owner_schema.empty()) return false;
   if (binding != nullptr && options.consistency_mode_specified &&
       options.consistency_mode ==
@@ -955,12 +961,7 @@ bool create_index_locked(
   if (!g_index_service.describe_index(index_name, &registered_config,
                                       &supports_mutations, &entry_count,
                                       &committed_entry_count)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const std::string effective_provider =
       vector_index::backend_provider_to_string(registered_config.provider);
@@ -973,45 +974,25 @@ bool create_index_locked(
   }
   if (!g_index_service.set_index_consistency_mode(index_name,
                                                   consistency_mode)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   if (!options.initial_lifecycle_state.empty() &&
       !g_index_service.set_lifecycle_state(index_name,
                                            options.initial_lifecycle_state)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const uint32_t hnsw_build_threads =
       effective_hnsw_build_threads(effective_provider, options);
   if (hnsw_build_threads != 0 &&
       !g_index_service.set_hnsw_build_threads(index_name, hnsw_build_threads)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const uint32_t faiss_build_threads =
       effective_faiss_build_threads(effective_provider, options);
   if (faiss_build_threads != 0 &&
       !g_index_service.set_faiss_build_threads(index_name,
                                                faiss_build_threads)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const uint32_t diskann_build_threads =
       effective_diskann_build_threads(effective_provider, options);
@@ -1025,46 +1006,26 @@ bool create_index_locked(
       !g_index_service.set_diskann_build_params(
           index_name, diskann_max_degree, diskann_build_complexity,
           diskann_build_threads)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   if (!diskann_build_params_applied && diskann_build_threads != 0 &&
       !g_index_service.set_diskann_build_threads(index_name,
                                                  diskann_build_threads)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const uint64_t diskann_pq_code_budget_size =
       effective_diskann_pq_code_budget_size(effective_provider, options);
   if (diskann_pq_code_budget_size != 0 &&
       !g_index_service.set_diskann_pq_code_budget_size(
           index_name, diskann_pq_code_budget_size)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const uint32_t diskann_disk_pq_dims =
       effective_diskann_disk_pq_dims(effective_provider, options);
   if (diskann_disk_pq_dims != 0 &&
       !g_index_service.set_diskann_disk_pq_dims(index_name,
                                                 diskann_disk_pq_dims)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const bool diskann_accelerate_build =
       effective_diskann_accelerate_build(effective_provider, options);
@@ -1072,72 +1033,42 @@ bool create_index_locked(
        options.diskann_accelerate_build_specified) &&
       !g_index_service.set_diskann_accelerate_build(
           index_name, diskann_accelerate_build)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const bool diskann_shuffle_build =
       effective_diskann_shuffle_build(effective_provider, options);
   if ((diskann_shuffle_build || options.diskann_shuffle_build_specified) &&
       !g_index_service.set_diskann_shuffle_build(index_name,
                                                  diskann_shuffle_build)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const bool diskann_use_bfs_cache =
       effective_diskann_use_bfs_cache(effective_provider, options);
   if ((diskann_use_bfs_cache || options.diskann_use_bfs_cache_specified) &&
       !g_index_service.set_diskann_use_bfs_cache(index_name,
                                                  diskann_use_bfs_cache)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const uint32_t diskann_search_complexity =
       effective_diskann_search_complexity(effective_provider, options);
   if (diskann_search_complexity != 0 &&
       !g_index_service.set_diskann_search_complexity(
           index_name, diskann_search_complexity)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   const uint32_t diskann_search_beamwidth =
       effective_diskann_search_beamwidth(effective_provider, options);
   if (diskann_search_beamwidth != 0 &&
       !g_index_service.set_diskann_search_beamwidth(index_name,
                                                     diskann_search_beamwidth)) {
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   set_index_binding_and_owner_schema_locked(
       index_name, binding == nullptr ? index_binding{} : *binding,
       owner_schema);
   if (!persist_registry_state_locked()) {
     vector_status::record_truth_store_persist_failure();
-    if (!rollback_runtime_state_locked(metadata_before, committed_before,
-                                       change_log_before,
-                                       lagging_indexes_before)) {
-      return false;
-    }
-    return false;
+    return rollback_failed_create();
   }
   vector_status::record_index_create_success();
   return true;

@@ -156,11 +156,14 @@ TEST(VectorUtilsTest, ParseBinaryVectorRejectsNonFiniteElements) {
 
 TEST(VectorUtilsTest, ParseDistanceMetricRecognizesAliases) {
   String l2("  L2 ", &my_charset_latin1);
+  String euclidean("euclidean", &my_charset_latin1);
   String cosine("cosine", &my_charset_latin1);
   String inner_product(" INNER_PRODUCT ", &my_charset_latin1);
   vector_utils::distance_metric metric = vector_utils::distance_metric::kCosine;
 
   EXPECT_TRUE(vector_utils::parse_distance_metric(&l2, &metric));
+  EXPECT_EQ(vector_utils::distance_metric::kEuclidean, metric);
+  EXPECT_TRUE(vector_utils::parse_distance_metric(&euclidean, &metric));
   EXPECT_EQ(vector_utils::distance_metric::kEuclidean, metric);
   EXPECT_TRUE(vector_utils::parse_distance_metric(&cosine, &metric));
   EXPECT_EQ(vector_utils::distance_metric::kCosine, metric);
@@ -206,6 +209,12 @@ TEST(VectorUtilsTest, ComputeDistanceCosineRejectsZeroNorm) {
   EXPECT_FALSE(vector_utils::compute_distance(
       vector_utils::distance_metric::kCosine, lhs.string(), rhs.string(),
       &distance));
+
+  binary_vector_data nonzero_lhs({1.0F, 2.0F});
+  binary_vector_data zero_rhs({0.0F, 0.0F});
+  EXPECT_FALSE(vector_utils::compute_distance(
+      vector_utils::distance_metric::kCosine, nonzero_lhs.string(),
+      zero_rhs.string(), &distance));
 }
 
 TEST(VectorUtilsTest, ComputeDotProduct) {

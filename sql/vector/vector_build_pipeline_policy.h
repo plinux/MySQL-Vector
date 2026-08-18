@@ -107,16 +107,6 @@ uint64_t build_segment_row_limit(uint64_t dimension,
                                  const build_pipeline_thresholds &thresholds);
 
 /**
-  Estimate how many raw build segments are needed for the input rows.
-
-  @retval 0 There are no rows to split.
-  @retval >0 Number of segments produced by the current threshold settings.
-*/
-uint64_t estimate_build_segment_count(
-    uint64_t row_count, uint64_t dimension,
-    const build_pipeline_thresholds &thresholds);
-
-/**
   Apply the DiskANN standalone segment profile to the build thresholds.
 
   The function is pure and does not read global variables. Callers decide

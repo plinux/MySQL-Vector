@@ -60,6 +60,10 @@ namespace vector_index_registry_unittest {
 
 namespace {
 
+using vector_gunit::BoolGuard;
+using vector_gunit::UlongGuard;
+using vector_gunit::UlonglongGuard;
+
 vector_index::index_service::index_config make_backend_config(
     vector_index::backend_mode mode, vector_index::backend_provider provider) {
   vector_index::index_service::index_config config;
@@ -1155,22 +1159,17 @@ TEST_F(VectorIndexRegistryTest,
     GTEST_SKIP() << "DiskANN provider is not compiled in";
   }
 
-  vector_gunit::UlongGuard build_threads(&opt_vector_diskann_build_threads, 7);
-  vector_gunit::UlongGuard max_degree(&opt_vector_diskann_max_degree, 48);
-  vector_gunit::UlongGuard build_complexity(
-      &opt_vector_diskann_build_complexity, 96);
-  vector_gunit::UlonglongGuard pq_budget(
-      &opt_vector_diskann_pq_code_budget_size, 4096);
-  vector_gunit::UlongGuard disk_pq_dims(&opt_vector_diskann_disk_pq_dims, 12);
-  vector_gunit::BoolGuard accelerate(&opt_vector_diskann_accelerate_build,
-                                     true);
-  vector_gunit::BoolGuard shuffle(&opt_vector_diskann_shuffle_build, true);
-  vector_gunit::BoolGuard bfs(&opt_vector_diskann_use_bfs_cache, true);
-  vector_gunit::UlongGuard search_complexity(
-      &opt_vector_diskann_search_complexity, 144);
-  vector_gunit::UlongGuard search_beamwidth(
-      &opt_vector_diskann_search_beamwidth, 28);
-  vector_gunit::UlongGuard consistency(
+  UlongGuard build_threads(&opt_vector_diskann_build_threads, 7);
+  UlongGuard max_degree(&opt_vector_diskann_max_degree, 48);
+  UlongGuard build_complexity(&opt_vector_diskann_build_complexity, 96);
+  UlonglongGuard pq_budget(&opt_vector_diskann_pq_code_budget_size, 4096);
+  UlongGuard disk_pq_dims(&opt_vector_diskann_disk_pq_dims, 12);
+  BoolGuard accelerate(&opt_vector_diskann_accelerate_build, true);
+  BoolGuard shuffle(&opt_vector_diskann_shuffle_build, true);
+  BoolGuard bfs(&opt_vector_diskann_use_bfs_cache, true);
+  UlongGuard search_complexity(&opt_vector_diskann_search_complexity, 144);
+  UlongGuard search_beamwidth(&opt_vector_diskann_search_beamwidth, 28);
+  UlongGuard consistency(
       &opt_vector_index_consistency_mode,
       static_cast<ulong>(vector_index::index_consistency_mode::kStandalone));
 
@@ -1743,48 +1742,6 @@ void expect_metadata_only_persist(const in_memory_truth_store &store) {
   EXPECT_EQ(0U, store.save_prepared_calls);
   EXPECT_EQ(0U, store.save_segment_tasks_calls);
 }
-
-class BoolGuard {
- public:
-  BoolGuard(bool *value, bool replacement)
-      : m_value(value), m_original(*value) {
-    *m_value = replacement;
-  }
-
- ~BoolGuard() { *m_value = m_original; }
-
- private:
-  bool *m_value;
-  bool m_original;
-};
-
-class UlongGuard {
- public:
-  UlongGuard(ulong *value, ulong replacement)
-      : m_value(value), m_original(*value) {
-    *m_value = replacement;
-  }
-
-  ~UlongGuard() { *m_value = m_original; }
-
- private:
-  ulong *m_value;
-  ulong m_original;
-};
-
-class UlonglongGuard {
- public:
-  UlonglongGuard(ulonglong *value, ulonglong replacement)
-      : m_value(value), m_original(*value) {
-    *m_value = replacement;
-  }
-
-  ~UlonglongGuard() { *m_value = m_original; }
-
- private:
-  ulonglong *m_value;
-  ulonglong m_original;
-};
 
 XID make_test_xid(long format_id, const char *data) {
   XID xid;
@@ -8730,8 +8687,12 @@ TEST_F(VectorIndexRegistryTest,
   external_snapshot_root_guard root_guard(root);
 
   const std::string index_name = "idx_registry_diskann_first_upsert";
-  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
-                                                  "external", "diskann"));
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_diskann_native_rebuild");
+    ASSERT_TRUE(vector_index_registry::create_index(
+        index_name, 2, "euclidean", "external", "diskann"));
+  }
   ASSERT_TRUE(
       vector_index_registry::set_diskann_build_params(index_name, 48, 96, 0));
   ASSERT_TRUE(

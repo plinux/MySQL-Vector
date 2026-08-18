@@ -24,6 +24,7 @@
 #include "sql/vector/vector_index_registry.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <shared_mutex>
@@ -1241,10 +1242,13 @@ void cleanup_drop_artifacts(const std::vector<drop_artifact_plan> &plans) {
   }
 }
 
-template <typename Prepare, typename Apply>
-bool apply_persisted_index_config_change_locked(const std::string &index_name,
-                                                Prepare prepare,
-                                                Apply apply) {
+using config_prepare_callback =
+    std::function<void(vector_index::index_service::index_config *)>;
+using config_apply_callback = std::function<bool()>;
+
+bool apply_persisted_index_config_change_locked(
+    const std::string &index_name, const config_prepare_callback &prepare,
+    const config_apply_callback &apply) {
   vector_index::index_service::index_config before;
   vector_index::index_service::index_publication_state publication_before;
   if (!snapshot_index_config_locked(index_name, &before) ||
@@ -2880,13 +2884,9 @@ bool get_global_status_summary(global_status_summary *summary) {
   }
 
   summary->rebuild_progress =
-      progress_index_count == 0
-          ? 0
-          : rebuild_progress_total / progress_index_count;
+      progress_index_count == 0 ? 0 : rebuild_progress_total / progress_index_count;
   summary->recover_progress =
-      progress_index_count == 0
-          ? 0
-          : recover_progress_total / progress_index_count;
+      progress_index_count == 0 ? 0 : recover_progress_total / progress_index_count;
   return true;
 }
 

@@ -18,7 +18,7 @@ VEC_INDEX_REBUILD('idx_fn_rpl')
 SHOW VECTOR STATUS FOR INDEX 'idx_fn_rpl'
   WHERE Variable_name = 'idx_fn_rpl.lifecycle_version';
 Section	Variable_name	Value
-INDEX_STATE	idx_fn_rpl.lifecycle_version	3
+INDEX_STATE	idx_fn_rpl.lifecycle_version	2
 SELECT JSON_CONTAINS(
 VEC_INDEX_SEARCH('idx_fn_rpl', '[1,1]', 8), CAST(1 AS JSON));
 JSON_CONTAINS(
@@ -30,7 +30,7 @@ VEC_INDEX_LIST()
 SHOW VECTOR STATUS FOR INDEX 'idx_fn_rpl'
   WHERE Variable_name = 'idx_fn_rpl.lifecycle_version';
 Section	Variable_name	Value
-INDEX_STATE	idx_fn_rpl.lifecycle_version	3
+INDEX_STATE	idx_fn_rpl.lifecycle_version	2
 SELECT JSON_CONTAINS(
 VEC_INDEX_SEARCH('idx_fn_rpl', '[1,1]', 8), CAST(1 AS JSON));
 JSON_CONTAINS(
@@ -42,11 +42,11 @@ VEC_INDEX_RECOVER('idx_fn_rpl')
 SHOW VECTOR STATUS FOR INDEX 'idx_fn_rpl'
   WHERE Variable_name = 'idx_fn_rpl.lifecycle_version';
 Section	Variable_name	Value
-INDEX_STATE	idx_fn_rpl.lifecycle_version	4
+INDEX_STATE	idx_fn_rpl.lifecycle_version	3
 SHOW VECTOR STATUS FOR INDEX 'idx_fn_rpl'
   WHERE Variable_name = 'idx_fn_rpl.lifecycle_version';
 Section	Variable_name	Value
-INDEX_STATE	idx_fn_rpl.lifecycle_version	4
+INDEX_STATE	idx_fn_rpl.lifecycle_version	3
 SELECT VEC_INDEX_ERASE('idx_fn_rpl', 1);
 VEC_INDEX_ERASE('idx_fn_rpl', 1)
 1

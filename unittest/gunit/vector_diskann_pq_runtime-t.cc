@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "sql/vector/vector_diskann_pq_runtime.h"
+#include "unittest/gunit/vector_test_utils.h"
 
 namespace vector_diskann_pq_runtime_unittest {
 namespace {
@@ -69,17 +70,18 @@ void append_byte(const std::string &path, char value) {
   ASSERT_TRUE(file.good());
 }
 
-std::string temp_path(const char *name) {
-  return std::string(testing::TempDir()) + "/" + name;
+const vector_gunit::ScopedTempDirectory &test_directory() {
+  static const vector_gunit::ScopedTempDirectory directory(
+      "vector_diskann_pq_runtime");
+  EXPECT_TRUE(directory.valid()) << directory.error();
+  return directory;
 }
 
-std::string temp_prefix(const char *name) {
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_diskann_pq_runtime";
-  std::error_code ec;
-  std::filesystem::create_directories(root, ec);
-  return root + "/" + name;
+std::string temp_path(const char *name) {
+  return (test_directory().path() / name).string();
 }
+
+std::string temp_prefix(const char *name) { return temp_path(name); }
 
 std::vector<uint8_t> read_compressed_codes(const std::string &path,
                                            uint32_t *rows, uint32_t *columns) {
@@ -716,10 +718,8 @@ TEST(VectorDiskannPqRuntimeTest, TrainsUnevenChunksWithScalarPreference) {
 }
 
 TEST(VectorDiskannPqRuntimeTest, TrainsRawManifestWithRelativeSegmentPath) {
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_diskann_pq_runtime_relative";
+  const std::string root = temp_path("relative_manifest");
   std::error_code ec;
-  std::filesystem::remove_all(root, ec);
   ASSERT_TRUE(std::filesystem::create_directories(root, ec));
 
   const std::string segment = root + "/relative_segment.fbin";
@@ -738,8 +738,6 @@ TEST(VectorDiskannPqRuntimeTest, TrainsRawManifestWithRelativeSegmentPath) {
       << error;
   EXPECT_EQ(4U, result.row_count);
   EXPECT_TRUE(result.artifacts_written);
-
-  std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorDiskannPqRuntimeTest, RejectsTooManyChunks) {

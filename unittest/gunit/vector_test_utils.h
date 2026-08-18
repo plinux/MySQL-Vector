@@ -29,6 +29,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -63,6 +65,52 @@ class ScopedValueGuard {
 using BoolGuard = ScopedValueGuard<bool>;
 using UlongGuard = ScopedValueGuard<ulong>;
 using UlonglongGuard = ScopedValueGuard<ulonglong>;
+
+class EnvVarGuard {
+ public:
+  explicit EnvVarGuard(const char *name) : m_name(name) {
+    const char *value = std::getenv(name);
+    if (value != nullptr) {
+      m_had_value = true;
+      m_value = value;
+    }
+  }
+
+  ~EnvVarGuard() {
+    if (m_had_value) {
+      setenv(m_name.c_str(), m_value.c_str(), 1);
+    } else {
+      unsetenv(m_name.c_str());
+    }
+  }
+
+  EnvVarGuard(const EnvVarGuard &) = delete;
+  EnvVarGuard &operator=(const EnvVarGuard &) = delete;
+
+ private:
+  std::string m_name;
+  bool m_had_value{false};
+  std::string m_value;
+};
+
+class DataHomeGuard {
+ public:
+  DataHomeGuard() : m_original(mysql_real_data_home) {}
+
+  ~DataHomeGuard() {
+    std::snprintf(mysql_real_data_home, FN_REFLEN, "%s", m_original.c_str());
+  }
+
+  void Set(const std::string &value) {
+    std::snprintf(mysql_real_data_home, FN_REFLEN, "%s", value.c_str());
+  }
+
+  DataHomeGuard(const DataHomeGuard &) = delete;
+  DataHomeGuard &operator=(const DataHomeGuard &) = delete;
+
+ private:
+  std::string m_original;
+};
 
 class ScopedTempDirectory {
  public:

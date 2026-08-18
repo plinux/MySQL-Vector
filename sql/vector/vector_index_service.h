@@ -43,19 +43,19 @@ namespace vector_index {
 using committed_entries = std::unordered_map<uint64_t, vector_data>;
 using committed_state = std::unordered_map<std::string, committed_entries>;
 
-/** Outcome of renaming an index and its standalone durable state. */
-enum class index_rename_result {
-  kNotRenamed,
-  kRenamedDurable,
-  kDurabilityUnknown
-};
-
 /** Durable receipt proving one standalone LOAD publication completed. */
 struct standalone_load_receipt {
   uint64_t publication_id{0};
   std::string artifact_identity;
   uint64_t vector_checksum{0};
   uint64_t docid_checksum{0};
+};
+
+/** Outcome of renaming an index and its standalone durable state. */
+enum class index_rename_result {
+  kNotRenamed,
+  kRenamedDurable,
+  kDurabilityUnknown
 };
 
 /**
@@ -864,6 +864,10 @@ std::unique_ptr<backend> make_segmented_backend_for_testing(
     backend_build_diagnostics diagnostics = {});
 bool raw_segments_use_single_backend_for_testing(
     const index_service::index_config &config);
+std::unique_ptr<backend> build_segmented_raw_backend_for_testing(
+    const std::string &index_name, const index_service::index_config &config,
+    std::vector<raw_vector_segment> raw_segments, bool keep_raw_input_paths,
+    std::vector<vector_index_metadata_store::segment_task_row> *task_rows);
 size_t diskann_exact_rerank_candidate_top_k_for_testing(
     size_t top_k, size_t query_count, size_t authoritative_count,
     size_t segment_count, uint32_t search_complexity,

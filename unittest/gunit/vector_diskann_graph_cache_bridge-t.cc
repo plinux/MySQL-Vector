@@ -31,16 +31,16 @@
 #include <vector>
 
 #include "sql/vector/vector_diskann_graph_cache_bridge.h"
+#include "unittest/gunit/vector_test_utils.h"
 
 namespace vector_diskann_graph_cache_bridge_unittest {
 namespace {
 
 std::string test_prefix(const char *name) {
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_diskann_graph_cache_bridge";
-  std::error_code ec;
-  std::filesystem::create_directories(root, ec);
-  return root + "/" + name;
+  static const vector_gunit::ScopedTempDirectory root(
+      "vector_diskann_graph_cache_bridge");
+  EXPECT_TRUE(root.valid()) << root.error();
+  return (root.path() / name).string();
 }
 
 void write_text_file(const std::string &path, const char *content) {

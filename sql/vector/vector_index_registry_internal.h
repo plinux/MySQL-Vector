@@ -288,13 +288,13 @@ void set_index_binding_locked(const std::string &index_name,
                               const std::string &table_name,
                               const std::string &column_name,
                               const std::string &doc_id_column_name);
-void erase_index_binding_and_owner_schema_locked(
-    const std::string &index_name);
 void rename_index_binding_locked(const std::string &old_index_name,
                                  const std::string &new_index_name);
 void set_index_binding_and_owner_schema_locked(
     const std::string &index_name, const index_binding &binding,
     const std::string &owner_schema);
+void erase_index_binding_and_owner_schema_locked(
+    const std::string &index_name);
 void rename_index_binding_and_owner_schema_locked(
     const std::string &old_index_name, const std::string &new_index_name,
     const std::string &owner_schema);
@@ -321,6 +321,8 @@ bool index_config_matches_for_testing(
 bool bind_commit_truth_generations_for_testing(
     std::vector<vector_index_metadata_store::change_log_row> *rows,
     vector_index::index_service::commit_build_plan *plan);
+bool apply_change_log_rows_locked(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows);
 bool publish_pending_runtime_for_testing(
     uint64_t txn_id,
     const std::vector<vector_index_metadata_store::change_log_row>

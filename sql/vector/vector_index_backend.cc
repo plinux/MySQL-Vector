@@ -896,38 +896,6 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
                         index_consistency_mode::kTransactional, index_name);
 }
 
-std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
-                                       backend_mode mode,
-                                       backend_provider provider,
-                                       index_consistency_mode consistency_mode,
-                                       const std::string &index_name) {
-  if (!backend_provider_supported(provider)) return nullptr;
-
-  (void)consistency_mode;
-  switch (provider) {
-    case backend_provider::kNative:
-      if (mode == backend_mode::kMemory)
-        return std::make_unique<memory_backend>(dimension, metric);
-      return std::make_unique<external_backend>(dimension, metric);
-
-    case backend_provider::kFaiss:
-      return std::make_unique<faiss_backend>(dimension, metric, mode, index_name);
-
-    case backend_provider::kDiskAnn:
-      if (mode == backend_mode::kExternal)
-        return std::make_unique<diskann_backend>(dimension, metric, mode,
-                                                index_name);
-      return nullptr;
-
-    case backend_provider::kHnswlib:
-      if (mode == backend_mode::kMemory)
-        return std::make_unique<hnswlib_backend>(dimension, metric, mode);
-      return nullptr;
-  }
-
-  return nullptr;
-}
-
 const vector_library_status *vector_library_statuses(size_t *count) {
   if (count != nullptr)
     *count = sizeof(k_vector_library_statuses) /
@@ -1005,6 +973,41 @@ bool default_backend_mode_for_provider(backend_provider provider,
       return true;
   }
   return false;
+}
+
+std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
+                                       backend_mode mode,
+                                       backend_provider provider,
+                                       index_consistency_mode consistency_mode,
+                                       const std::string &index_name) {
+  if (!valid_vector_dimension(dimension)) return nullptr;
+  if (!backend_provider_supported(provider)) return nullptr;
+  if (!runtime_provider_accepts_mode(provider, mode)) return nullptr;
+
+  (void)consistency_mode;
+
+  switch (provider) {
+    case backend_provider::kNative:
+      if (mode == backend_mode::kMemory)
+        return std::make_unique<memory_backend>(dimension, metric);
+      return std::make_unique<external_backend>(dimension, metric);
+
+    case backend_provider::kFaiss:
+      return std::make_unique<faiss_backend>(dimension, metric, mode, index_name);
+
+    case backend_provider::kDiskAnn:
+      if (mode == backend_mode::kExternal)
+        return std::make_unique<diskann_backend>(dimension, metric, mode,
+                                                index_name);
+      return nullptr;
+
+    case backend_provider::kHnswlib:
+      if (mode == backend_mode::kMemory)
+        return std::make_unique<hnswlib_backend>(dimension, metric, mode);
+      return nullptr;
+  }
+
+  return nullptr;
 }
 
 bool parse_metric(const std::string &value, metric_type *metric) {
