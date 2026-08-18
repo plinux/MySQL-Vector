@@ -78,7 +78,7 @@ bool eval_uint_arg(Item *arg, ulonglong &value) {
     return false;
   }
 
-  value = arg->val_uint();
+  value = static_cast<ulonglong>(signed_value);
   return true;
 }
 

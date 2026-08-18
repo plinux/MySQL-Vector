@@ -215,6 +215,7 @@ class ItemVectorFuncFixture : public ::testing::Test {
     expect_valid_param_types({a, b, c, d, e});
   }
 
+  vector_gunit::NativeProviderGuard native_provider_guard_;
   Server_initializer initializer;
 };
 
@@ -253,6 +254,21 @@ class NullMarkedIntValueItem final : public Item_int {
     null_value = true;
     return value;
   }
+};
+
+class CountingIntValueItem final : public Item_int {
+ public:
+  CountingIntValueItem(longlong input_value, bool is_unsigned)
+      : Item_int(input_value) {
+    unsigned_flag = is_unsigned;
+  }
+
+  longlong val_int() override {
+    ++evaluation_count;
+    return Item_int::val_int();
+  }
+
+  size_t evaluation_count{0};
 };
 
 class ProcessAccessGuard {
@@ -542,6 +558,19 @@ TEST(ItemVectorFuncTest, FormatVectorIndexInfoRejectsNullBuffers) {
   String number_buf;
   EXPECT_FALSE(format_vector_index_info_json(info, nullptr, &number_buf));
   EXPECT_FALSE(format_vector_index_info_json(info, &out, nullptr));
+}
+
+TEST_F(ItemVectorFuncFixture, EvalUintArgEvaluatesItemOnce) {
+  auto *signed_item = new (thd()->mem_root) CountingIntValueItem(42, false);
+  ulonglong value = 0;
+  EXPECT_TRUE(vector_itemfunc_internal::eval_uint_arg(signed_item, value));
+  EXPECT_EQ(42U, value);
+  EXPECT_EQ(1U, signed_item->evaluation_count);
+
+  auto *unsigned_item = new (thd()->mem_root) CountingIntValueItem(-1, true);
+  EXPECT_TRUE(vector_itemfunc_internal::eval_uint_arg(unsigned_item, value));
+  EXPECT_EQ(std::numeric_limits<ulonglong>::max(), value);
+  EXPECT_EQ(1U, unsigned_item->evaluation_count);
 }
 
 TEST(ItemVectorFuncTest,
@@ -1300,6 +1329,10 @@ TEST_F(ItemVectorFuncFixture,
   const std::string faiss_pq_index = native_index + "_faiss_pq";
   const std::string diskann_index = native_index + "_diskann";
   const bool has_hnswlib_tuning = hnswlib_tuning_supported();
+  const bool has_faiss = vector_index::backend_provider_supported(
+      vector_index::backend_provider::kFaiss);
+  const bool has_diskann = vector_index::backend_provider_supported(
+      vector_index::backend_provider::kDiskAnn);
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug_flag, "+d,vector_item_fail_binlog_write");
@@ -1325,32 +1358,36 @@ TEST_F(ItemVectorFuncFixture,
       EXPECT_FALSE(create_hnsw->null_value);
     }
 
-    auto *create_faiss = new Item_func_vec_index_create(
-        POS(), make_item_list({make_string_item(faiss_index.c_str()),
-                               new Item_int(2), make_string_item("euclidean"),
-                               make_string_item("external"),
-                               make_string_item("faiss")}));
-    fix_item(thd(), create_faiss);
-    EXPECT_EQ(0, create_faiss->val_int());
-    EXPECT_FALSE(create_faiss->null_value);
+    if (has_faiss) {
+      auto *create_faiss = new Item_func_vec_index_create(
+          POS(), make_item_list({make_string_item(faiss_index.c_str()),
+                                 new Item_int(2), make_string_item("euclidean"),
+                                 make_string_item("external"),
+                                 make_string_item("faiss")}));
+      fix_item(thd(), create_faiss);
+      EXPECT_EQ(0, create_faiss->val_int());
+      EXPECT_FALSE(create_faiss->null_value);
 
-    auto *create_faiss_pq = new Item_func_vec_index_create(
-        POS(), make_item_list({make_string_item(faiss_pq_index.c_str()),
-                               new Item_int(4), make_string_item("euclidean"),
-                               make_string_item("external"),
-                               make_string_item("faiss")}));
-    fix_item(thd(), create_faiss_pq);
-    EXPECT_EQ(0, create_faiss_pq->val_int());
-    EXPECT_FALSE(create_faiss_pq->null_value);
+      auto *create_faiss_pq = new Item_func_vec_index_create(
+          POS(), make_item_list({make_string_item(faiss_pq_index.c_str()),
+                                 new Item_int(4), make_string_item("euclidean"),
+                                 make_string_item("external"),
+                                 make_string_item("faiss")}));
+      fix_item(thd(), create_faiss_pq);
+      EXPECT_EQ(0, create_faiss_pq->val_int());
+      EXPECT_FALSE(create_faiss_pq->null_value);
+    }
 
-    auto *create_diskann = new Item_func_vec_index_create(
-        POS(), make_item_list({make_string_item(diskann_index.c_str()),
-                               new Item_int(2), make_string_item("euclidean"),
-                               make_string_item("external"),
-                               make_string_item("diskann")}));
-    fix_item(thd(), create_diskann);
-    EXPECT_EQ(0, create_diskann->val_int());
-    EXPECT_FALSE(create_diskann->null_value);
+    if (has_diskann) {
+      auto *create_diskann = new Item_func_vec_index_create(
+          POS(), make_item_list({make_string_item(diskann_index.c_str()),
+                                 new Item_int(2), make_string_item("euclidean"),
+                                 make_string_item("external"),
+                                 make_string_item("diskann")}));
+      fix_item(thd(), create_diskann);
+      EXPECT_EQ(0, create_diskann->val_int());
+      EXPECT_FALSE(create_diskann->null_value);
+    }
 
     if (has_hnswlib_tuning) {
       auto *set_search_ef = new Item_func_vec_index_set_search_ef(
@@ -1367,40 +1404,47 @@ TEST_F(ItemVectorFuncFixture,
       EXPECT_FALSE(set_hnsw->null_value);
     }
 
-    auto *set_faiss_ivf = new Item_func_vec_index_set_faiss_ivf_params(
-        POS(), make_item_list({make_string_item(faiss_index.c_str()),
-                               new Item_int(2), new Item_int(1)}));
-    fix_item(thd(), set_faiss_ivf);
-    EXPECT_EQ(0, set_faiss_ivf->val_int());
-    EXPECT_FALSE(set_faiss_ivf->null_value);
+    if (has_faiss) {
+      auto *set_faiss_ivf = new Item_func_vec_index_set_faiss_ivf_params(
+          POS(), make_item_list({make_string_item(faiss_index.c_str()),
+                                 new Item_int(2), new Item_int(1)}));
+      fix_item(thd(), set_faiss_ivf);
+      EXPECT_EQ(0, set_faiss_ivf->val_int());
+      EXPECT_FALSE(set_faiss_ivf->null_value);
 
-    auto *set_faiss_ivfpq = new Item_func_vec_index_set_faiss_ivfpq_params(
-        POS(), make_item_list({make_string_item(faiss_pq_index.c_str()),
-                               new Item_int(2), new Item_int(1),
-                               new Item_int(1), new Item_int(1)}));
-    fix_item(thd(), set_faiss_ivfpq);
-    EXPECT_EQ(0, set_faiss_ivfpq->val_int());
-    EXPECT_FALSE(set_faiss_ivfpq->null_value);
+      auto *set_faiss_ivfpq = new Item_func_vec_index_set_faiss_ivfpq_params(
+          POS(), make_item_list({make_string_item(faiss_pq_index.c_str()),
+                                 new Item_int(2), new Item_int(1),
+                                 new Item_int(1), new Item_int(1)}));
+      fix_item(thd(), set_faiss_ivfpq);
+      EXPECT_EQ(0, set_faiss_ivfpq->val_int());
+      EXPECT_FALSE(set_faiss_ivfpq->null_value);
+    }
 
-    auto *set_diskann_build = new Item_func_vec_index_set_diskann_build_params(
-        POS(), make_item_list({make_string_item(diskann_index.c_str()),
-                               new Item_int(48), new Item_int(96)}));
-    fix_item(thd(), set_diskann_build);
-    EXPECT_EQ(0, set_diskann_build->val_int());
-    EXPECT_FALSE(set_diskann_build->null_value);
+    if (has_diskann) {
+      auto *set_diskann_build =
+          new Item_func_vec_index_set_diskann_build_params(
+              POS(), make_item_list({make_string_item(diskann_index.c_str()),
+                                     new Item_int(48), new Item_int(96)}));
+      fix_item(thd(), set_diskann_build);
+      EXPECT_EQ(0, set_diskann_build->val_int());
+      EXPECT_FALSE(set_diskann_build->null_value);
 
-    auto *set_diskann_search =
-        new Item_func_vec_index_set_diskann_search_complexity(
-            POS(), make_string_item(diskann_index.c_str()), new Item_int(80));
-    fix_item(thd(), set_diskann_search);
-    EXPECT_EQ(0, set_diskann_search->val_int());
-    EXPECT_FALSE(set_diskann_search->null_value);
+      auto *set_diskann_search =
+          new Item_func_vec_index_set_diskann_search_complexity(
+              POS(), make_string_item(diskann_index.c_str()), new Item_int(80));
+      fix_item(thd(), set_diskann_search);
+      EXPECT_EQ(0, set_diskann_search->val_int());
+      EXPECT_FALSE(set_diskann_search->null_value);
 
-    auto *set_diskann_pq = new Item_func_vec_index_set_diskann_pq_code_budget_size(
-        POS(), make_string_item(diskann_index.c_str()), new Item_int(1048576));
-    fix_item(thd(), set_diskann_pq);
-    EXPECT_EQ(0, set_diskann_pq->val_int());
-    EXPECT_FALSE(set_diskann_pq->null_value);
+      auto *set_diskann_pq =
+          new Item_func_vec_index_set_diskann_pq_code_budget_size(
+              POS(), make_string_item(diskann_index.c_str()),
+              new Item_int(1048576));
+      fix_item(thd(), set_diskann_pq);
+      EXPECT_EQ(0, set_diskann_pq->val_int());
+      EXPECT_FALSE(set_diskann_pq->null_value);
+    }
 
     auto *rebuild_item = new Item_func_vec_index_rebuild(
         POS(), make_item_list({make_string_item(native_index.c_str())}));
@@ -1440,23 +1484,27 @@ TEST_F(ItemVectorFuncFixture,
       EXPECT_FALSE(drop_hnsw->null_value);
     }
 
-    auto *drop_faiss = new Item_func_vec_index_drop(
-        POS(), make_item_list({make_string_item(faiss_index.c_str())}));
-    fix_item(thd(), drop_faiss);
-    EXPECT_EQ(0, drop_faiss->val_int());
-    EXPECT_FALSE(drop_faiss->null_value);
+    if (has_faiss) {
+      auto *drop_faiss = new Item_func_vec_index_drop(
+          POS(), make_item_list({make_string_item(faiss_index.c_str())}));
+      fix_item(thd(), drop_faiss);
+      EXPECT_EQ(0, drop_faiss->val_int());
+      EXPECT_FALSE(drop_faiss->null_value);
 
-    auto *drop_faiss_pq = new Item_func_vec_index_drop(
-        POS(), make_item_list({make_string_item(faiss_pq_index.c_str())}));
-    fix_item(thd(), drop_faiss_pq);
-    EXPECT_EQ(0, drop_faiss_pq->val_int());
-    EXPECT_FALSE(drop_faiss_pq->null_value);
+      auto *drop_faiss_pq = new Item_func_vec_index_drop(
+          POS(), make_item_list({make_string_item(faiss_pq_index.c_str())}));
+      fix_item(thd(), drop_faiss_pq);
+      EXPECT_EQ(0, drop_faiss_pq->val_int());
+      EXPECT_FALSE(drop_faiss_pq->null_value);
+    }
 
-    auto *drop_diskann = new Item_func_vec_index_drop(
-        POS(), make_item_list({make_string_item(diskann_index.c_str())}));
-    fix_item(thd(), drop_diskann);
-    EXPECT_EQ(0, drop_diskann->val_int());
-    EXPECT_FALSE(drop_diskann->null_value);
+    if (has_diskann) {
+      auto *drop_diskann = new Item_func_vec_index_drop(
+          POS(), make_item_list({make_string_item(diskann_index.c_str())}));
+      fix_item(thd(), drop_diskann);
+      EXPECT_EQ(0, drop_diskann->val_int());
+      EXPECT_FALSE(drop_diskann->null_value);
+    }
   }
 }
 
@@ -2287,8 +2335,12 @@ TEST_F(ItemVectorFuncFixture, ItemTuningItemsRejectUnsupportedBackends) {
   const std::string diskann_index = native_index + "_diskann";
   ASSERT_TRUE(vector_index_registry::create_index(native_index, 2, "euclidean",
                                                  "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::create_index(diskann_index, 2, "euclidean",
-                                                 "external", "diskann"));
+  const bool has_diskann = vector_index::backend_provider_supported(
+      vector_index::backend_provider::kDiskAnn);
+  if (has_diskann) {
+    ASSERT_TRUE(vector_index_registry::create_index(
+        diskann_index, 2, "euclidean", "external", "diskann"));
+  }
 
   auto expect_wrong_arguments_int = [this](Item *item) {
     Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
@@ -2333,12 +2385,14 @@ TEST_F(ItemVectorFuncFixture, ItemTuningItemsRejectUnsupportedBackends) {
   EXPECT_EQ(0, native_serial_mode->val_int());
   EXPECT_FALSE(native_serial_mode->null_value);
 
-  auto *diskann_serial_mode = new Item_func_vec_index_set_diskann_build_mode(
-      POS(), make_string_item(diskann_index.c_str()),
-      make_string_item("serial"));
-  fix_item(thd(), diskann_serial_mode);
-  EXPECT_EQ(1, diskann_serial_mode->val_int());
-  EXPECT_FALSE(diskann_serial_mode->null_value);
+  if (has_diskann) {
+    auto *diskann_serial_mode = new Item_func_vec_index_set_diskann_build_mode(
+        POS(), make_string_item(diskann_index.c_str()),
+        make_string_item("serial"));
+    fix_item(thd(), diskann_serial_mode);
+    EXPECT_EQ(1, diskann_serial_mode->val_int());
+    EXPECT_FALSE(diskann_serial_mode->null_value);
+  }
 }
 
 TEST_F(ItemVectorFuncFixture, VectorBinaryItemsCoverSuccessAndErrorPaths) {

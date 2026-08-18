@@ -1,0 +1,10 @@
+# LOAD VECTOR DATA remains parseable but exposes no vector status without vector index support
+FLUSH STATUS;
+LOAD VECTOR DATA INFILE 'vectors.fbin'
+  INTO VECTOR INDEX idx_vector_unavailable
+FORMAT FBIN;
+ERROR 42000: This version of MySQL doesn't yet support 'LOAD VECTOR DATA'
+SHOW SESSION STATUS
+WHERE Variable_name IN ('Com_explain_other', 'Com_load_vector');
+Variable_name	Value
+Com_explain_other	0

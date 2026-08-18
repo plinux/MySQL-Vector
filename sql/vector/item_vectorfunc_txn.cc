@@ -356,12 +356,12 @@ longlong Item_func_vec_debug_truth_store_set_hex::val_int() {
   std::string artifact_name;
   to_std_string(name, &artifact_name);
 
+  String payload_buf;
+  const String *payload_hex = args[1]->val_str(&payload_buf);
   bool ok = false;
   if (args[1]->null_value) {
     ok = vector_index_truth_store::debug_delete_artifact(artifact_name);
   } else {
-    String payload_buf;
-    const String *payload_hex = args[1]->val_str(&payload_buf);
     if (payload_hex == nullptr) {
       my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
       return error_int();

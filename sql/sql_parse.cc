@@ -949,9 +949,7 @@ void init_sql_command_flags() {
   sql_command_flags[SQLCOM_SHOW_TABLE_STATUS] |= CF_ALLOW_PROTOCOL_PLUGIN;
   sql_command_flags[SQLCOM_SHOW_TRIGGERS] |= CF_ALLOW_PROTOCOL_PLUGIN;
   sql_command_flags[SQLCOM_LOAD] |= CF_ALLOW_PROTOCOL_PLUGIN;
-#ifdef HAVE_VECTOR_INDEX
   sql_command_flags[SQLCOM_LOAD_VECTOR] |= CF_ALLOW_PROTOCOL_PLUGIN;
-#endif
   sql_command_flags[SQLCOM_SET_OPTION] |= CF_ALLOW_PROTOCOL_PLUGIN;
   sql_command_flags[SQLCOM_LOCK_TABLES] |= CF_ALLOW_PROTOCOL_PLUGIN;
   sql_command_flags[SQLCOM_UNLOCK_TABLES] |= CF_ALLOW_PROTOCOL_PLUGIN;
@@ -4778,9 +4776,7 @@ int mysql_execute_command(THD *thd, bool first_level) {
     case SQLCOM_RESTART_SERVER:
     case SQLCOM_CREATE_SRS:
     case SQLCOM_DROP_SRS:
-#ifdef HAVE_VECTOR_INDEX
     case SQLCOM_LOAD_VECTOR:
-#endif
     {
       assert(lex->m_sql_cmd != nullptr);
 

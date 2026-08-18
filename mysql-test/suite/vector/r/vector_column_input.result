@@ -28,4 +28,10 @@ INSERT INTO t_vector_input VALUES (11, 'not-a-vector');
 ERROR HY000: Incorrect vector value: '<binary>' for column 'v' at row 1
 INSERT INTO t_vector_input VALUES (12, x'000102');
 ERROR HY000: Incorrect vector value: '<binary>' for column 'v' at row 1
+INSERT INTO t_vector_input VALUES (13, x'0000C07F0000803F');
+ERROR HY000: Incorrect vector value: '<binary>' for column 'v' at row 1
+INSERT INTO t_vector_input VALUES (14, x'0000807F0000803F');
+ERROR HY000: Incorrect vector value: '<binary>' for column 'v' at row 1
+INSERT INTO t_vector_input VALUES (15, x'000080FF0000803F');
+ERROR HY000: Incorrect vector value: '<binary>' for column 'v' at row 1
 DROP TABLE t_vector_input;

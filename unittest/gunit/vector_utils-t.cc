@@ -25,6 +25,7 @@
 
 #include <cstddef>
 #include <initializer_list>
+#include <limits>
 #include <vector>
 
 #include "my_byteorder.h"
@@ -120,6 +121,24 @@ TEST(VectorUtilsTest, ParseBinaryVectorRejectsMisalignedLength) {
   binary_vector_data rhs({1.0F});
   EXPECT_FALSE(
       vector_utils::check_compatible_vector_inputs(&input, rhs.string(), &dim));
+}
+
+TEST(VectorUtilsTest, ParseBinaryVectorRejectsNonFiniteElements) {
+  const float invalid_values[] = {
+      std::numeric_limits<float>::quiet_NaN(),
+      std::numeric_limits<float>::infinity(),
+      -std::numeric_limits<float>::infinity(),
+  };
+  binary_vector_data valid({1.0F, 2.0F});
+
+  for (const float invalid_value : invalid_values) {
+    binary_vector_data input({1.0F, invalid_value});
+    size_t dim = 0;
+
+    EXPECT_FALSE(vector_utils::parse_binary_vector(input.string(), &dim));
+    EXPECT_FALSE(vector_utils::check_compatible_vector_inputs(
+        input.string(), valid.string(), &dim));
+  }
 }
 
 TEST(VectorUtilsTest, ParseDistanceMetricRecognizesAliases) {

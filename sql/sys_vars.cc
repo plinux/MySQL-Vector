@@ -870,6 +870,16 @@ static Sys_var_long Sys_pfs_events_stages_history_size(
     CMD_LINE(REQUIRED_ARG), VALID_RANGE(-1, 1024), DEFAULT(PFS_AUTOSIZE_VALUE),
     BLOCK_SIZE(1), PFS_TRAILING_PROPERTIES);
 
+static constexpr ulong pfs_sql_statement_class_count() {
+#ifdef HAVE_VECTOR_INDEX
+  return static_cast<ulong>(SQLCOM_END);
+#else
+  /* SQLCOM_LOAD_VECTOR remains reserved for parser-generated code only. */
+  static_assert(SQLCOM_LOAD_VECTOR + 1 == SQLCOM_END);
+  return static_cast<ulong>(SQLCOM_END) - 1;
+#endif
+}
+
 /**
   Variable performance_schema_max_statement_classes.
   The default number of statement classes is the sum of:
@@ -888,7 +898,7 @@ static Sys_var_ulong Sys_pfs_max_statement_classes(
     "Maximum number of statement instruments.",
     READ_ONLY GLOBAL_VAR(pfs_param.m_statement_class_sizing),
     CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, 256),
-    DEFAULT((ulong)SQLCOM_END + (ulong)COM_END + 5 +
+    DEFAULT(pfs_sql_statement_class_count() + (ulong)COM_END + 5 +
             SP_PSI_STATEMENT_INFO_COUNT + CLONE_PSI_STATEMENT_COUNT),
     BLOCK_SIZE(1), PFS_TRAILING_PROPERTIES);
 

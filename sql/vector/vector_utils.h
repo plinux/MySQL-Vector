@@ -50,8 +50,8 @@ bool parse_text_vector(const String *input, std::vector<float> *out);
 
   @param input Binary payload where each element is float32.
   @param dim Output element count.
-  @retval true Payload length is aligned to float32 element size.
-  @retval false Payload length is invalid.
+  @retval true Payload length is aligned and every float32 value is finite.
+  @retval false Payload length is invalid or a value is NaN or infinity.
 */
 bool parse_binary_vector(const String *input, size_t *dim);
 

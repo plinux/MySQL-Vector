@@ -49,11 +49,7 @@ class Sql_cmd_load_vector_index final : public Sql_cmd {
                             bool replace_duplicates, bool rebuild_after_load);
 
   static constexpr enum_sql_command command_code() {
-#ifdef HAVE_VECTOR_INDEX
     return SQLCOM_LOAD_VECTOR;
-#else
-    return SQLCOM_EXPLAIN_OTHER;
-#endif
   }
 
   enum_sql_command sql_command_code() const override { return command_code(); }

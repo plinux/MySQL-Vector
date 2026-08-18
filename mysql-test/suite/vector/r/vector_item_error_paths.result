@@ -5,6 +5,10 @@ SELECT VEC_TOTEXT('abc');
 ERROR HY000: Incorrect arguments to vec_totext
 SELECT VEC_NORMALIZE('abc');
 ERROR HY000: Incorrect arguments to vec_normalize
+SELECT VEC_TOTEXT(x'0000C07F');
+ERROR HY000: Incorrect arguments to vec_totext
+SELECT VEC_DISTANCE_EUCLIDEAN(x'0000807F', VEC_FROMTEXT('[1]'));
+ERROR HY000: Incorrect arguments to vec_distance_euclidean
 SELECT VEC_DOT_PRODUCT(NULL, VEC_FROMTEXT('[1]'));
 VEC_DOT_PRODUCT(NULL, VEC_FROMTEXT('[1]'))
 NULL
@@ -75,6 +79,8 @@ VEC_FROMTEXT('[1,1]'))
 1
 SELECT VEC_INDEX_UPSERT('idx_item_err', 1, 'bad-vector');
 ERROR HY000: Incorrect arguments to vec_index_upsert
+SELECT VEC_INDEX_UPSERT('idx_item_err', 1, x'0000C07F0000803F');
+ERROR HY000: Incorrect arguments to vec_index_upsert
 SELECT VEC_INDEX_ERASE(NULL, 1);
 ERROR HY000: Incorrect arguments to vec_index_erase
 SELECT VEC_INDEX_ERASE('idx_item_err', NULL);
@@ -93,6 +99,8 @@ ERROR HY000: Incorrect arguments to vec_index_search
 SELECT VEC_INDEX_SEARCH('idx_item_err', VEC_FROMTEXT('[1,1]'), -1);
 ERROR HY000: Incorrect arguments to vec_index_search
 SELECT VEC_INDEX_SEARCH('idx_item_err', VEC_FROMTEXT('[1,1]'), 10001);
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT VEC_INDEX_SEARCH('idx_item_err', x'000080FF0000803F', 1);
 ERROR HY000: Incorrect arguments to vec_index_search
 SELECT VEC_INDEX_SEARCH_WITH_DISTANCE(NULL, VEC_FROMTEXT('[1,1]'), 1);
 ERROR HY000: Incorrect arguments to vec_index_search_with_distance

@@ -7109,8 +7109,16 @@ type_conversion_status Field_blob::store(const char *from, size_t length,
     std::vector<char> payload;
     const char *payload_ptr = nullptr;
     size_t payload_len = 0;
+    const size_t expected_dim =
+        field_length / vector_utils::kVectorElemSize;
 
     if (cs == &my_charset_bin && length == field_length) {
+      String input(const_cast<char *>(from), length, &my_charset_bin);
+      size_t input_dim = 0;
+      if (!vector_utils::parse_binary_vector(&input, &input_dim) ||
+          input_dim != expected_dim) {
+        return report_vector_error();
+      }
       payload_ptr = from;
       payload_len = length;
     } else {
@@ -7120,7 +7128,6 @@ type_conversion_status Field_blob::store(const char *from, size_t length,
         return report_vector_error();
       }
 
-      const size_t expected_dim = field_length / vector_utils::kVectorElemSize;
       if (elements.size() != expected_dim) {
         return report_vector_error();
       }

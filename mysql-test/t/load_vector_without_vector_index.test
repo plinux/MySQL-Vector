@@ -1,0 +1,13 @@
+--source include/have_no_vector_index.inc
+
+--echo # LOAD VECTOR DATA remains parseable but exposes no vector status without vector index support
+
+FLUSH STATUS;
+
+--error ER_NOT_SUPPORTED_YET
+LOAD VECTOR DATA INFILE 'vectors.fbin'
+  INTO VECTOR INDEX idx_vector_unavailable
+  FORMAT FBIN;
+
+SHOW SESSION STATUS
+  WHERE Variable_name IN ('Com_explain_other', 'Com_load_vector');

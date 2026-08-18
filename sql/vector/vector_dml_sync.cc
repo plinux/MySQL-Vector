@@ -282,7 +282,7 @@ bool prepare_update_row(TABLE *table, const uchar *old_record,
                       const uchar *new_record, prepared_changes *changes) {
   if (table == nullptr || old_record == nullptr || new_record == nullptr ||
       changes == nullptr) {
-    return false;
+    return true;
   }
   changes->clear();
   if (!has_vector_columns(table)) return false;

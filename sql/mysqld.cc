@@ -4937,8 +4937,13 @@ int init_common_variables() {
     the array, excluding the last element - terminator) must match the number
     of SQLCOM_ constants.
   */
+#ifdef HAVE_VECTOR_INDEX
+  constexpr int com_status_var_count_adjustment = 12;
+#else
+  constexpr int com_status_var_count_adjustment = 11;
+#endif
   static_assert(sizeof(com_status_vars) / sizeof(com_status_vars[0]) - 1 ==
-                    SQLCOM_END + 12,
+                    SQLCOM_END + com_status_var_count_adjustment,
                 "");
 #endif
 
@@ -12930,9 +12935,22 @@ static void init_server_psi_keys(void) {
   mysql_statement_register(category, sql_statement_info, count);
 
   /* Exclude SQLCOM_CLONE as it mutates and is registered as abstract. */
+#ifdef HAVE_VECTOR_INDEX
   count = (int)SQLCOM_END - (int)SQLCOM_CLONE;
   mysql_statement_register(category, &sql_statement_info[(int)SQLCOM_CLONE + 1],
                            count);
+#else
+  /*
+    The parser keeps SQLCOM_LOAD_VECTOR as a compile-time placeholder even
+    when vector indexes are disabled. Do not expose that placeholder as a
+    Performance Schema statement class in an upstream-compatible build.
+  */
+  static_assert(SQLCOM_LOAD_VECTOR + 1 == SQLCOM_END);
+  count = (int)SQLCOM_LOAD_VECTOR - (int)SQLCOM_CLONE - 1;
+  mysql_statement_register(category, &sql_statement_info[(int)SQLCOM_CLONE + 1],
+                           count);
+  mysql_statement_register(category, &sql_statement_info[(int)SQLCOM_END], 1);
+#endif
   category = "abstract";
   mysql_statement_register(category, &sql_statement_info[(int)SQLCOM_CLONE], 1);
 

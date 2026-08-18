@@ -116,7 +116,14 @@ bool parse_text_vector(const String *input, std::vector<float> *out) {
 
 bool parse_binary_vector(const String *input, size_t *dim) {
   if (input->length() % kVectorElemSize != 0) return false;
-  *dim = input->length() / kVectorElemSize;
+
+  const size_t element_count = input->length() / kVectorElemSize;
+  const uchar *ptr = reinterpret_cast<const uchar *>(input->ptr());
+  for (size_t i = 0; i < element_count; ++i) {
+    if (!std::isfinite(float4get(ptr + i * kVectorElemSize))) return false;
+  }
+
+  *dim = element_count;
   return true;
 }
 

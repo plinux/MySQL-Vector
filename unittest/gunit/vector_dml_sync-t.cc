@@ -283,7 +283,7 @@ TEST(VectorDmlSyncTest, PrepareHelpersRejectNullInputs) {
   vector_dml_sync::prepared_changes changes;
   EXPECT_TRUE(vector_dml_sync::prepare_insert_row(nullptr, nullptr, &changes));
   EXPECT_TRUE(vector_dml_sync::prepare_delete_row(nullptr, nullptr, &changes));
-  EXPECT_FALSE(
+  EXPECT_TRUE(
       vector_dml_sync::prepare_update_row(nullptr, nullptr, nullptr, &changes));
 }
 
@@ -307,11 +307,11 @@ TEST_F(VectorDmlSyncFixture, PrepareRowWrappersCoverNullArgumentCombinations) {
       vector_dml_sync::prepare_delete_row(table.get(), nullptr, &changes));
   EXPECT_TRUE(
       vector_dml_sync::prepare_delete_row(table.get(), table->record[0], nullptr));
-  EXPECT_FALSE(vector_dml_sync::prepare_update_row(
-      table.get(), nullptr, table->record[0], &changes));
-  EXPECT_FALSE(vector_dml_sync::prepare_update_row(
+  EXPECT_TRUE(vector_dml_sync::prepare_update_row(table.get(), nullptr,
+                                                  table->record[0], &changes));
+  EXPECT_TRUE(vector_dml_sync::prepare_update_row(
       table.get(), old_record.data(), nullptr, &changes));
-  EXPECT_FALSE(vector_dml_sync::prepare_update_row(
+  EXPECT_TRUE(vector_dml_sync::prepare_update_row(
       table.get(), old_record.data(), table->record[0], nullptr));
 }
 
