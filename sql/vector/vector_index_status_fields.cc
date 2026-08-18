@@ -88,6 +88,9 @@ bool has_build_diagnostics(
   present |= diagnostics.build_invocations != 0;
   present |= diagnostics.concurrent_build_tasks != 0;
   present |= diagnostics.scheduler_cpu_budget != 0;
+  present |= !diagnostics.resource_probe_source.empty();
+  present |= diagnostics.resource_effective_memory != 0;
+  present |= diagnostics.resource_effective_cpu_slots != 0;
   present |= diagnostics.effective_build_threads != 0;
   present |= diagnostics.effective_blas_threads != 0;
   present |= diagnostics.raw_reader_threads != 0;
@@ -174,6 +177,32 @@ void append_build_diagnostics(
               diagnostics.build_invocations);
   append_uint(fields, "backend_build_concurrent_tasks",
               diagnostics.concurrent_build_tasks);
+  append_nullable_string(fields, "backend_build_resource_source",
+                         diagnostics.resource_probe_source);
+  append_uint(fields, "backend_build_resource_configured_memory",
+              diagnostics.resource_configured_memory_budget);
+  append_uint(fields, "backend_build_resource_memory_reserve",
+              diagnostics.resource_memory_reserve);
+  append_uint(fields, "backend_build_resource_memory_limit",
+              diagnostics.resource_memory_limit);
+  append_uint(fields, "backend_build_resource_memory_current",
+              diagnostics.resource_memory_current);
+  append_uint(fields, "backend_build_resource_process_rss",
+              diagnostics.resource_process_rss);
+  append_uint(fields, "backend_build_resource_memory_headroom",
+              diagnostics.resource_memory_headroom);
+  append_uint(fields, "backend_build_resource_reserved_memory",
+              diagnostics.resource_reserved_memory);
+  append_uint(fields, "backend_build_resource_effective_memory",
+              diagnostics.resource_effective_memory);
+  append_uint(fields, "backend_build_resource_effective_cpu_slots",
+              diagnostics.resource_effective_cpu_slots);
+  append_uint(fields, "backend_build_resource_reserved_cpu_slots",
+              diagnostics.resource_reserved_cpu_slots);
+  append_uint(fields, "backend_build_resource_active_builds",
+              diagnostics.resource_active_builds);
+  append_uint(fields, "backend_build_resource_waiting_builds",
+              diagnostics.resource_waiting_builds);
   append_uint(fields, "backend_build_effective_threads",
               diagnostics.effective_build_threads);
   append_uint(fields, "backend_build_effective_blas_threads",

@@ -49,9 +49,24 @@ GLOBAL_GAUGES	Vector_manifest_change_log_checkpoint	<num>
 GLOBAL_GAUGES	Vector_pending_txn_changes	<num>
 GLOBAL_GAUGES	Vector_committed_vector_memory_bytes	<num>
 GLOBAL_GAUGES	Vector_pending_vector_memory_bytes	<num>
+GLOBAL_GAUGES	Vector_build_resource_configured_memory	<num>
+GLOBAL_GAUGES	Vector_build_resource_memory_reserve	<num>
+GLOBAL_GAUGES	Vector_build_resource_memory_limit	<num>
+GLOBAL_GAUGES	Vector_build_resource_memory_current	<num>
+GLOBAL_GAUGES	Vector_build_resource_process_rss	<num>
+GLOBAL_GAUGES	Vector_build_resource_memory_headroom	<num>
+GLOBAL_GAUGES	Vector_build_resource_effective_memory	<num>
+GLOBAL_GAUGES	Vector_build_resource_reserved_memory	<num>
+GLOBAL_GAUGES	Vector_build_resource_effective_cpu_slots	<num>
+GLOBAL_GAUGES	Vector_build_resource_reserved_cpu_slots	<num>
+GLOBAL_GAUGES	Vector_build_resource_active_builds	<num>
+GLOBAL_GAUGES	Vector_build_resource_waiting_builds	<num>
+GLOBAL_GAUGES	Vector_build_resource_last_effective_memory	<num>
+GLOBAL_GAUGES	Vector_build_resource_last_effective_cpu_slots	<num>
 SYNC_PIPELINE	Vector_apply_latency_ms	<num>
 GLOBAL_GAUGES	Vector_truth_store_backend	mysql
 GLOBAL_GAUGES	Vector_truth_store_transactional	<num>
+GLOBAL_GAUGES	Vector_build_resource_source	<source>
 BACKEND_HEALTH	Vector_backend_loaded_indexes	<num>
 BACKEND_HEALTH	Vector_backend_writable_indexes	<num>
 BACKEND_HEALTH	Vector_backend_readonly_indexes	<num>
@@ -215,9 +230,14 @@ VEC_INDEX_CREATE('idx_show_filter', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS')
 1
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name LIKE 'idx_show_filter.%'
-  AND Value = '0';
+  AND Value = '0'
+  AND Variable_name <>
+'idx_show_filter.backend_build_resource_memory_current';
 Section	Variable_name	Value
 BACKEND_HEALTH	idx_show_filter.backend_build_rows	0
+BACKEND_HEALTH	idx_show_filter.backend_build_resource_configured_memory	0
+BACKEND_HEALTH	idx_show_filter.backend_build_resource_memory_limit	0
+BACKEND_HEALTH	idx_show_filter.backend_build_resource_waiting_builds	0
 BACKEND_HEALTH	idx_show_filter.backend_build_raw_reader_threads	0
 BACKEND_HEALTH	idx_show_filter.backend_build_pq_train_threads	0
 BACKEND_HEALTH	idx_show_filter.backend_build_pq_compress_threads	0
@@ -254,6 +274,11 @@ BACKEND_HEALTH	idx_show_filter.external_manifest_generation	0
 BACKEND_HEALTH	idx_show_filter.truth_generation	0
 BACKEND_HEALTH	idx_show_filter.artifact_generation	0
 BACKEND_HEALTH	idx_show_filter.runtime_generation	0
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name =
+'idx_show_filter.backend_build_resource_memory_current';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_show_filter.backend_build_resource_memory_current	<num>
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name = 'idx_show_filter.recover_fallback_count'
   AND Value = '0';

@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "sql/vector/vector_index_limits.h"
+#include "sql/vector/vector_resource_budget.h"
 
 #ifdef HAVE_FAISS
 namespace faiss {
@@ -137,6 +138,19 @@ struct backend_build_diagnostics {
   uint64_t build_invocations{0};
   uint32_t concurrent_build_tasks{0};
   uint32_t scheduler_cpu_budget{0};
+  std::string resource_probe_source;
+  uint64_t resource_configured_memory_budget{0};
+  uint64_t resource_memory_reserve{0};
+  uint64_t resource_memory_limit{0};
+  uint64_t resource_memory_current{0};
+  uint64_t resource_process_rss{0};
+  uint64_t resource_memory_headroom{0};
+  uint64_t resource_reserved_memory{0};
+  uint64_t resource_effective_memory{0};
+  uint32_t resource_effective_cpu_slots{0};
+  uint32_t resource_reserved_cpu_slots{0};
+  uint32_t resource_active_builds{0};
+  uint32_t resource_waiting_builds{0};
   uint32_t effective_build_threads{0};
   uint32_t effective_blas_threads{0};
   uint32_t raw_reader_threads{0};
@@ -651,6 +665,19 @@ class backend {
     return true;
   }
 
+ protected:
+  /** Reserve process-wide resources for one backend build phase. */
+  bool acquire_build_resources(size_t row_count, uint32_t memory_multiplier,
+                               uint64_t fixed_memory,
+                               uint64_t per_build_memory_limit,
+                               uint32_t requested_threads,
+                               build_resource_lease *lease) const;
+
+  /** Add the active lease and process envelope to build diagnostics. */
+  void record_build_resource_diagnostics(
+      const build_resource_lease &lease,
+      backend_build_diagnostics *diagnostics) const;
+
  private:
   mutable std::shared_mutex m_runtime_mutex;
 };
@@ -1021,7 +1048,8 @@ class diskann_backend final : public backend {
   std::unordered_set<uint64_t> m_streaming_removed_doc_ids;
   backend_build_diagnostics m_last_build_diagnostics;
 
-  std::unique_ptr<diskann_native_state> create_native_state() const;
+  std::unique_ptr<diskann_native_state> create_native_state(
+      uint64_t build_memory_size = 0) const;
   bool configure_native_state_for_serving(diskann_native_state *state);
   void install_native_state(std::unique_ptr<diskann_native_state> state,
                             size_t entry_count, bool entries_complete);
@@ -1072,6 +1100,12 @@ class hnswlib_backend final : public backend {
       const std::unordered_map<uint64_t, vector_data> &entries) override;
   bool rebuild_from_committed_entries_from_reader(
       const committed_entry_reader &reader) override;
+  bool rebuild_from_committed_entry_source(
+      const committed_entry_source &source) override;
+  bool load_committed_entries_from_source(
+      const committed_entry_source &source) override;
+  bool recover_committed_entries_from_source(
+      const committed_entry_source &source) override;
   bool rebuild_from_raw_segments(
       const raw_vector_segment_reader &reader) override;
   backend_build_diagnostics build_diagnostics() const override;
@@ -1326,13 +1360,11 @@ bool diskann_vendored_search_config_valid_for_testing(
     std::string *error);
 bool diskann_vendored_batch_search_available_for_testing();
 bool diskann_vendored_allocation_failure_drops_handle_for_testing();
-bool diskann_vendored_load_config_budget_for_testing(size_t row_count,
-                                                     double *build_memory_gb,
-                                                     uint32_t *pq_chunks,
-                                                     uint32_t *cache_nodes);
+bool diskann_vendored_load_config_budget_for_testing(
+    size_t row_count, uint64_t build_memory_size, double *build_memory_gb,
+    uint32_t *pq_chunks, uint32_t *cache_nodes);
 bool diskann_loaded_handle_batch_rejects_null_for_testing();
 double diskann_build_memory_size_gb_for_testing(uint64_t build_memory_size);
-uint64_t diskann_available_build_memory_size_for_testing();
 bool diskann_flatten_memory_budget_allows_for_testing(size_t entry_count,
                                                       size_t dimension,
                                                       uint64_t budget_size);

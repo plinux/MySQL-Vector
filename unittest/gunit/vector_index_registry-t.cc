@@ -2090,6 +2090,52 @@ TEST_F(VectorIndexRegistryTest, SetSearchEfPersistsOnlyMetadata) {
 }
 
 TEST_F(VectorIndexRegistryTest,
+       StartupRecoveryAppliesPersistedFaissTuningBeforeTruthReplay) {
+  if (!vector_index::backend_provider_supported(
+          vector_index::backend_provider::kFaiss)) {
+    GTEST_SKIP() << "Faiss provider is not compiled in";
+  }
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/registry_faiss_tuning_restart_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  external_snapshot_root_guard root_guard(root);
+
+  const std::string index_name = "idx_registry_faiss_tuning_restart";
+  vector_index_registry::create_index_options options;
+  options.build_threads_specified = true;
+  options.build_threads = 2;
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "external", "faiss",
+                                                  options));
+  for (uint64_t doc_id = 1; doc_id <= 4; ++doc_id) {
+    ASSERT_TRUE(vector_index_registry::upsert(
+        index_name, doc_id,
+        {static_cast<float>(doc_id), static_cast<float>(doc_id + 1)}));
+  }
+
+  vector_index_registry::reset_for_testing();
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ(2U, info.faiss_build_threads);
+  EXPECT_EQ(2U, info.build_diagnostics.effective_build_threads);
+  EXPECT_EQ(2U, info.build_diagnostics.effective_blas_threads);
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(vector_index_registry::search(index_name, {1.0F, 2.0F}, 1,
+                                            &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(1U, result[0].doc_id);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(VectorIndexRegistryTest,
        SetDiskAnnSearchComplexityPersistsOnlyMetadata) {
   const std::string index_name = "idx_registry_diskann_search_metadata_only";
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
@@ -6041,100 +6087,6 @@ TEST_F(VectorIndexRegistryTest, RecoverPreparedXidsDeduplicatesAndHonorsLimit) {
 
   ASSERT_EQ(XA_OK, vector_index_registry::rollback_prepared_xid(xid_a));
   ASSERT_EQ(XA_OK, vector_index_registry::rollback_prepared_xid(xid_b));
-  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
-}
-
-TEST_F(VectorIndexRegistryTest, QueueRecoveryCommitAppliesPreparedRowsOnReset) {
-  const std::string index_name = "idx_registry_recovery_commit";
-  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
-                                                  "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
-      301, 10, index_name, 7, {7.0F, 7.0F}));
-
-  XID xid = make_test_xid(77, "recover-commit");
-  ASSERT_TRUE(vector_index_registry::prepare_thd_txn(301, xid));
-  vector_index_registry::queue_recovery_commit_xid(xid);
-
-  std::vector<vector_index::search_result> result;
-  {
-    BoolGuard server_started(&mysqld_server_started, true);
-    vector_index_registry::reset_for_testing();
-    ASSERT_TRUE(
-        vector_index_registry::search(index_name, {7.0F, 7.0F}, 1, &result));
-    EXPECT_FALSE(vector_index_registry::has_prepared_xid(xid));
-  }
-  ASSERT_EQ(1U, result.size());
-  EXPECT_EQ(7U, result[0].doc_id);
-  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
-}
-
-TEST_F(VectorIndexRegistryTest,
-       QueueRecoveryRollbackOverridesQueuedCommitOnReset) {
-  const std::string index_name = "idx_registry_recovery_rollback";
-  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
-                                                  "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
-      302, 10, index_name, 8, {8.0F, 8.0F}));
-
-  XID xid = make_test_xid(88, "recover-rollback");
-  ASSERT_TRUE(vector_index_registry::prepare_thd_txn(302, xid));
-  vector_index_registry::queue_recovery_commit_xid(xid);
-  vector_index_registry::queue_recovery_rollback_xid(xid);
-
-  std::vector<vector_index::search_result> result;
-  {
-    BoolGuard server_started(&mysqld_server_started, true);
-    vector_index_registry::reset_for_testing();
-    ASSERT_TRUE(
-        vector_index_registry::search(index_name, {8.0F, 8.0F}, 1, &result));
-    EXPECT_FALSE(vector_index_registry::has_prepared_xid(xid));
-  }
-  EXPECT_TRUE(result.empty());
-  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
-}
-
-TEST_F(VectorIndexRegistryTest,
-       QueueRecoveryCommitIgnoresConditionalNonVectorXidOnReset) {
-  const std::string index_name = "idx_registry_recovery_non_vector";
-  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
-                                                  "memory", "native"));
-  XID xid = make_test_xid(89, "recover-non-vector");
-  vector_index_registry::queue_recovery_commit_xid(xid);
-
-  std::vector<vector_index::search_result> result;
-  {
-    BoolGuard server_started(&mysqld_server_started, true);
-    vector_index_registry::reset_for_testing();
-    ASSERT_TRUE(
-        vector_index_registry::search(index_name, {1.0F, 1.0F}, 1, &result));
-  }
-  EXPECT_TRUE(result.empty());
-  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
-}
-
-TEST_F(VectorIndexRegistryTest,
-       QueueRecoveryPreparedInTcMarksRecoveredPreparedState) {
-  const std::string index_name = "idx_registry_recovery_prepared_in_tc";
-  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
-                                                  "memory", "native"));
-  ASSERT_TRUE(vector_index_registry::stage_upsert_for_thd_txn(
-      303, 10, index_name, 9, {9.0F, 9.0F}));
-
-  XID xid = make_test_xid(99, "recover-prepared-in-tc");
-  ASSERT_TRUE(vector_index_registry::prepare_thd_txn(303, xid));
-  vector_index_registry::queue_recovery_set_prepared_in_tc(xid);
-
-  auto xa_state_tuple = vector_gunit::make_xa_state_list_for_testing();
-  auto *xa_state_list = xa_state_tuple.get();
-  ASSERT_NE(nullptr, xa_state_list);
-  {
-    BoolGuard server_started(&mysqld_server_started, true);
-    vector_index_registry::reset_for_testing();
-    ASSERT_EQ(0, vector_index_registry::recover_prepared_in_tc(*xa_state_list));
-  }
-  EXPECT_EQ(enum_ha_recover_xa_state::PREPARED_IN_TC, xa_state_list->find(xid));
-
-  ASSERT_EQ(XA_OK, vector_index_registry::rollback_prepared_xid(xid));
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
 }
 

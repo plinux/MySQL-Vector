@@ -83,6 +83,8 @@ using vector_index::detail::remove_if_exists;
 using vector_index::detail::save_external_manifest_generation_to_file;
 
 #ifdef HAVE_FAISS
+constexpr uint32_t k_faiss_build_memory_multiplier = 3;
+constexpr uint64_t k_faiss_build_fixed_memory = 64ULL * 1024ULL * 1024ULL;
 constexpr size_t k_faiss_rebuild_add_batch_size = 16384;
 constexpr size_t k_faiss_raw_block_target_bytes = 64U * 1024U * 1024U;
 
@@ -418,9 +420,16 @@ bool faiss_backend::rebuild_external_faiss_index(
     const std::unordered_map<uint64_t, vector_data> &entries) {
 #ifdef HAVE_FAISS
   DBUG_EXECUTE_IF("vector_backend_fail_faiss_external_rebuild", return false;);
-  const size_t effective_threads =
+  const uint32_t requested_threads = static_cast<uint32_t>(
       vector_index::effective_build_scheduler_threads(entries.size(),
-                                                      m_faiss_build_threads);
+                                                      m_faiss_build_threads));
+  build_resource_lease resource_lease;
+  if (!acquire_build_resources(entries.size(), k_faiss_build_memory_multiplier,
+                               k_faiss_build_fixed_memory, 0,
+                               requested_threads, &resource_lease)) {
+    return false;
+  }
+  const size_t effective_threads = resource_lease.cpu_slots();
   vector_index::scoped_omp_threads thread_scope(effective_threads);
   backend_build_diagnostics phase_diagnostics;
   const size_t total_rows = entries.size();
@@ -474,6 +483,8 @@ bool faiss_backend::rebuild_external_faiss_index(
     m_faiss_entry_count = 0;
     record_build_diagnostics("entries", entries.size(), effective_threads);
     record_build_phase_diagnostics(phase_diagnostics);
+    backend::record_build_resource_diagnostics(resource_lease,
+                                               &m_last_build_diagnostics);
     return true;
   }
   std::vector<faiss::idx_t> batch_ids;
@@ -503,6 +514,8 @@ bool faiss_backend::rebuild_external_faiss_index(
   m_faiss_entry_count = static_cast<size_t>(m_faiss_index->ntotal);
   record_build_diagnostics("entries", entries.size(), effective_threads);
   record_build_phase_diagnostics(phase_diagnostics);
+  backend::record_build_resource_diagnostics(resource_lease,
+                                             &m_last_build_diagnostics);
   return true;
 #else
   (void)entries;
@@ -516,9 +529,17 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
   const committed_entry_reader &reader = source.reader;
   if (!reader) return false;
   DBUG_EXECUTE_IF("vector_backend_fail_faiss_external_rebuild", return false;);
-  const size_t thread_budget =
+  const uint32_t requested_threads = static_cast<uint32_t>(
       vector_index::effective_build_scheduler_thread_budget(
-          m_faiss_build_threads);
+          m_faiss_build_threads));
+  build_resource_lease resource_lease;
+  if (!acquire_build_resources(
+          source.has_exact_row_count ? source.exact_row_count : 0,
+          k_faiss_build_memory_multiplier, k_faiss_build_fixed_memory, 0,
+          requested_threads, &resource_lease)) {
+    return false;
+  }
+  const size_t thread_budget = resource_lease.cpu_slots();
   vector_index::scoped_omp_threads thread_scope(thread_budget);
   backend_build_diagnostics phase_diagnostics;
 
@@ -568,9 +589,10 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
     m_faiss_entry_count = static_cast<size_t>(m_faiss_index->ntotal);
     if (m_faiss_entry_count != total_rows) return restore_previous();
     record_build_diagnostics("reader", total_rows,
-                             vector_index::effective_build_scheduler_threads(
-                                 total_rows, m_faiss_build_threads));
+                             resource_lease.cpu_slots());
     record_build_phase_diagnostics(phase_diagnostics);
+    backend::record_build_resource_diagnostics(resource_lease,
+                                               &m_last_build_diagnostics);
     return true;
   }
 
@@ -690,9 +712,10 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
   m_faiss_entry_count = static_cast<size_t>(m_faiss_index->ntotal);
   if (m_faiss_entry_count != total_rows) return false;
   record_build_diagnostics("reader", total_rows,
-                           vector_index::effective_build_scheduler_threads(
-                               total_rows, m_faiss_build_threads));
+                           resource_lease.cpu_slots());
   record_build_phase_diagnostics(phase_diagnostics);
+  backend::record_build_resource_diagnostics(resource_lease,
+                                             &m_last_build_diagnostics);
   return true;
 #else
   (void)source;
@@ -704,9 +727,16 @@ bool faiss_backend::rebuild_external_faiss_index_from_raw_segments(
     const std::vector<raw_vector_segment> &segments, size_t total_rows) {
 #ifdef HAVE_FAISS
   DBUG_EXECUTE_IF("vector_backend_fail_faiss_external_rebuild", return false;);
-  const size_t thread_budget =
+  const uint32_t requested_threads = static_cast<uint32_t>(
       vector_index::effective_build_scheduler_thread_budget(
-          m_faiss_build_threads);
+          m_faiss_build_threads));
+  build_resource_lease resource_lease;
+  if (!acquire_build_resources(total_rows, k_faiss_build_memory_multiplier,
+                               k_faiss_build_fixed_memory, 0,
+                               requested_threads, &resource_lease)) {
+    return false;
+  }
+  const size_t thread_budget = resource_lease.cpu_slots();
   vector_index::scoped_omp_threads thread_scope(thread_budget);
   backend_build_diagnostics phase_diagnostics;
   const size_t block_rows = faiss_raw_block_rows(m_dimension, total_rows);
@@ -895,10 +925,11 @@ bool faiss_backend::rebuild_external_faiss_index_from_raw_segments(
   m_faiss_entry_count = static_cast<size_t>(m_faiss_index->ntotal);
   if (m_faiss_entry_count != total_rows) return false;
   record_build_diagnostics("raw_blocks", total_rows,
-                           vector_index::effective_build_scheduler_threads(
-                               total_rows, m_faiss_build_threads),
+                           resource_lease.cpu_slots(),
                            segments.size());
   record_build_phase_diagnostics(phase_diagnostics);
+  backend::record_build_resource_diagnostics(resource_lease,
+                                             &m_last_build_diagnostics);
   return true;
 #else
   (void)segments;
@@ -1470,9 +1501,17 @@ bool faiss_backend::load_committed_entries(
     const std::unordered_map<uint64_t, vector_data> &entries) {
   if (m_mode == backend_mode::kMemory) {
 #ifdef HAVE_FAISS
-    const size_t effective_threads =
+    const uint32_t requested_threads = static_cast<uint32_t>(
         vector_index::effective_build_scheduler_threads(entries.size(),
-                                                        m_faiss_build_threads);
+                                                        m_faiss_build_threads));
+    build_resource_lease resource_lease;
+    if (!acquire_build_resources(
+            entries.size(), k_faiss_build_memory_multiplier,
+            k_faiss_build_fixed_memory, 0, requested_threads,
+            &resource_lease)) {
+      return false;
+    }
+    const size_t effective_threads = resource_lease.cpu_slots();
     vector_index::scoped_omp_threads thread_scope(effective_threads);
     m_faiss_index.reset();
     if (!initialize_faiss_index()) return false;
@@ -1481,6 +1520,8 @@ bool faiss_backend::load_committed_entries(
     }
     record_build_diagnostics("memory_entries", entries.size(),
                              effective_threads);
+    backend::record_build_resource_diagnostics(resource_lease,
+                                               &m_last_build_diagnostics);
     return true;
 #else
     if (!backend::load_committed_entries(entries)) return false;

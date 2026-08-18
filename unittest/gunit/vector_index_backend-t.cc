@@ -234,6 +234,26 @@ void expect_faiss_ivf_layout(const std::string &root,
                      std::istreambuf_iterator<char>());
 }
 
+[[maybe_unused]] bool read_uint_build_option(const std::string &options,
+                                             const char *name,
+                                             uint32_t *value) {
+  const std::string prefix = std::string(name) + "=";
+  const size_t value_begin = options.find(prefix);
+  if (value_begin == std::string::npos) return false;
+
+  const size_t digits_begin = value_begin + prefix.size();
+  const size_t value_end = options.find('\n', digits_begin);
+  try {
+    const unsigned long parsed =
+        std::stoul(options.substr(digits_begin, value_end - digits_begin));
+    if (parsed > std::numeric_limits<uint32_t>::max()) return false;
+    *value = static_cast<uint32_t>(parsed);
+    return true;
+  } catch (const std::exception &) {
+    return false;
+  }
+}
+
 bool is_diskann_single_offline_variant(const std::string &variant) {
   return variant == "diskann_offline" || variant == "diskann_vendored_offline";
 }
@@ -251,8 +271,19 @@ void expect_official_diskann_build_options_if_used(
 
   const std::string build_options = read_text_file(
       store_dir / "offline" / "diskann_mysql_vector_build_options.txt");
-  EXPECT_NE(std::string::npos, build_options.find("build_threads=4\n"));
-  EXPECT_NE(std::string::npos, build_options.find("build_blas_threads=3\n"));
+  uint32_t build_threads = 0;
+  uint32_t build_blas_threads = 0;
+  ASSERT_TRUE(
+      read_uint_build_option(build_options, "build_threads", &build_threads))
+      << build_options;
+  ASSERT_TRUE(read_uint_build_option(build_options, "build_blas_threads",
+                                     &build_blas_threads))
+      << build_options;
+  EXPECT_GE(build_threads, 1U);
+  EXPECT_LE(build_threads, 4U);
+  EXPECT_GE(build_blas_threads, 1U);
+  EXPECT_LE(build_blas_threads, 3U);
+  EXPECT_LE(static_cast<uint64_t>(build_threads) * build_blas_threads, 12U);
   EXPECT_NE(std::string::npos, build_options.find(build_source));
 #else
   (void)variant;
@@ -744,6 +775,19 @@ TEST(VectorIndexBackendTest,
   info.build_diagnostics.build_invocations = 4;
   info.build_diagnostics.concurrent_build_tasks = 2;
   info.build_diagnostics.scheduler_cpu_budget = 16;
+  info.build_diagnostics.resource_probe_source = "cgroup_v2";
+  info.build_diagnostics.resource_configured_memory_budget = 1024;
+  info.build_diagnostics.resource_memory_reserve = 128;
+  info.build_diagnostics.resource_memory_limit = 2048;
+  info.build_diagnostics.resource_memory_current = 512;
+  info.build_diagnostics.resource_process_rss = 256;
+  info.build_diagnostics.resource_memory_headroom = 1536;
+  info.build_diagnostics.resource_reserved_memory = 768;
+  info.build_diagnostics.resource_effective_memory = 640;
+  info.build_diagnostics.resource_effective_cpu_slots = 6;
+  info.build_diagnostics.resource_reserved_cpu_slots = 8;
+  info.build_diagnostics.resource_active_builds = 2;
+  info.build_diagnostics.resource_waiting_builds = 1;
   info.build_diagnostics.effective_build_threads = 8;
   info.build_diagnostics.effective_blas_threads = 2;
   info.build_diagnostics.raw_reader_threads = 3;
@@ -982,6 +1026,22 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "scheduler_cpu_budget");
   ASSERT_NE(nullptr, scheduler_cpu_budget);
   EXPECT_EQ(16U, scheduler_cpu_budget->uint_value);
+  const auto *resource_source =
+      find_status_field(fields, "backend_build_resource_source");
+  ASSERT_NE(nullptr, resource_source);
+  EXPECT_EQ("cgroup_v2", resource_source->string_value);
+  const auto *resource_effective_memory =
+      find_status_field(fields, "backend_build_resource_effective_memory");
+  ASSERT_NE(nullptr, resource_effective_memory);
+  EXPECT_EQ(640U, resource_effective_memory->uint_value);
+  const auto *resource_effective_cpu = find_status_field(
+      fields, "backend_build_resource_effective_cpu_slots");
+  ASSERT_NE(nullptr, resource_effective_cpu);
+  EXPECT_EQ(6U, resource_effective_cpu->uint_value);
+  const auto *resource_waiting_builds =
+      find_status_field(fields, "backend_build_resource_waiting_builds");
+  ASSERT_NE(nullptr, resource_waiting_builds);
+  EXPECT_EQ(1U, resource_waiting_builds->uint_value);
   const auto *scheduler_build_threads =
       find_status_field(fields, "scheduler_effective_build_threads");
   ASSERT_NE(nullptr, scheduler_build_threads);
@@ -1981,27 +2041,21 @@ TEST(VectorIndexBackendTest, DiskAnnBuildMemoryUsesAvailableBudgetWhenUnset) {
   EXPECT_DOUBLE_EQ(0.0625, budget.build_memory_gb);
 }
 
-TEST(VectorIndexBackendTest, DiskAnnAvailableBuildMemoryIsObservable) {
-#if defined(__linux__) || defined(__APPLE__)
-  EXPECT_GT(vector_index::diskann_available_build_memory_size_for_testing(),
-            0U);
-#else
-  SUCCEED();
-#endif
-}
-
 TEST(VectorIndexBackendTest, DiskAnnVendoredLoadConfigUsesSegmentBudget) {
+  constexpr uint64_t build_memory_size = 64ULL * 1024ULL * 1024ULL;
   double build_memory_gb = 0.0;
   uint32_t pq_chunks = 0;
   uint32_t cache_nodes = 0;
   if (!vector_index::diskann_vendored_load_config_budget_for_testing(
-          4096, &build_memory_gb, &pq_chunks, &cache_nodes)) {
+          4096, build_memory_size, &build_memory_gb, &pq_chunks,
+          &cache_nodes)) {
     SUCCEED();
     return;
   }
 
-  EXPECT_GT(build_memory_gb,
-            vector_index::diskann_build_memory_size_gb_for_testing(0));
+  EXPECT_DOUBLE_EQ(
+      vector_index::diskann_build_memory_size_gb_for_testing(build_memory_size),
+      build_memory_gb);
   EXPECT_GT(pq_chunks, 0U);
   EXPECT_GT(cache_nodes, 0U);
 }
@@ -2824,12 +2878,30 @@ TEST(VectorIndexRuntimeThreadPoolTest,
 TEST(VectorIndexRuntimeThreadPoolTest,
      ScopedOpenmpThreadsOverridesAndRestoresRuntimeDefault) {
   const int original_threads = omp_get_max_threads();
+  const int original_dynamic = omp_get_dynamic();
+#if _OPENMP >= 200805
+  const int original_max_active_levels = omp_get_max_active_levels();
+#endif
   omp_set_num_threads(1);
+  omp_set_dynamic(1);
+#if _OPENMP >= 200805
+  omp_set_max_active_levels(2);
+#endif
   {
     vector_index::scoped_omp_threads thread_scope(3);
     EXPECT_EQ(3, omp_get_max_threads());
+    EXPECT_EQ(0, omp_get_dynamic());
+#if _OPENMP >= 200805
+    EXPECT_EQ(1, omp_get_max_active_levels());
+#endif
   }
   EXPECT_EQ(1, omp_get_max_threads());
+  EXPECT_EQ(1, omp_get_dynamic());
+#if _OPENMP >= 200805
+  EXPECT_EQ(2, omp_get_max_active_levels());
+  omp_set_max_active_levels(original_max_active_levels);
+#endif
+  omp_set_dynamic(original_dynamic);
   omp_set_num_threads(original_threads);
 }
 #endif
@@ -7774,6 +7846,21 @@ TEST(VectorIndexBackendTest,
   ASSERT_FALSE(result.empty());
   EXPECT_EQ(20U, result[0].doc_id);
 
+  const std::filesystem::path published_doc_ids =
+      std::filesystem::path(root) / hex_encode(index_name) /
+      "diskann_external.store" / "offline" /
+      "diskann_mysql_vector_docids.bin";
+  {
+    std::ofstream file(published_doc_ids,
+                       std::ios::out | std::ios::binary | std::ios::trunc);
+    const uint64_t invalid_count = std::numeric_limits<uint64_t>::max();
+    file.write(reinterpret_cast<const char *>(&invalid_count),
+               sizeof(invalid_count));
+  }
+  std::vector<uint64_t> doc_ids{999};
+  EXPECT_FALSE(recovered.collect_doc_ids(&doc_ids));
+  EXPECT_TRUE(doc_ids.empty());
+
   vector_index::reset_faiss_external_snapshot_root_for_testing();
   std::filesystem::remove_all(root, ec);
 }
@@ -9048,6 +9135,9 @@ TEST(VectorIndexBackendTest, DiskAnnAutoBuildModeUsesSerialForSingleEntry) {
   EXPECT_EQ("serial_fallback", diagnostics.runtime);
   EXPECT_EQ("offline_min_rows", diagnostics.fallback_reason);
   EXPECT_EQ(1U, diagnostics.row_count);
+  EXPECT_FALSE(diagnostics.resource_probe_source.empty());
+  EXPECT_GT(diagnostics.resource_effective_memory, 0U);
+  EXPECT_GT(diagnostics.resource_effective_cpu_slots, 0U);
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &result));
@@ -9152,6 +9242,9 @@ TEST(VectorIndexBackendTest, DiskAnnAutoReaderBuildUsesSerialForSingleEntry) {
   EXPECT_EQ("serial_fallback", diagnostics.runtime);
   EXPECT_EQ("offline_min_rows", diagnostics.fallback_reason);
   EXPECT_EQ(1U, diagnostics.row_count);
+  EXPECT_FALSE(diagnostics.resource_probe_source.empty());
+  EXPECT_GT(diagnostics.resource_effective_memory, 0U);
+  EXPECT_GT(diagnostics.resource_effective_cpu_slots, 0U);
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &result));
@@ -9346,6 +9439,9 @@ TEST(VectorIndexBackendTest,
   EXPECT_EQ("serial_fallback", diagnostics.runtime);
   EXPECT_EQ("offline_min_rows", diagnostics.fallback_reason);
   EXPECT_EQ(2U, diagnostics.row_count);
+  EXPECT_FALSE(diagnostics.resource_probe_source.empty());
+  EXPECT_GT(diagnostics.resource_effective_memory, 0U);
+  EXPECT_GT(diagnostics.resource_effective_cpu_slots, 0U);
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &result));

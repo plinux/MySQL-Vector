@@ -148,6 +148,7 @@
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_status_fields.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_resource_budget.h"
 #include "sql/vector/vector_status.h"
 #endif
 #include "sql_string.h"
@@ -1042,6 +1043,8 @@ bool send_show_vector_status(
 
   vector_status::snapshot snapshot;
   vector_status::read_snapshot(&snapshot);
+  const vector_index::build_resource_snapshot build_resources =
+      vector_index::global_resource_budget_manager().snapshot();
 
   const Vector_status_row rows[] = {
       {"Vector_index_create_requests", Vector_status_section::kGlobalCounters,
@@ -1162,6 +1165,45 @@ bool send_show_vector_status(
       {"Vector_pending_vector_memory_bytes",
        Vector_status_section::kGlobalGauges,
        vector_index_registry::total_pending_vector_memory_bytes()},
+      {"Vector_build_resource_configured_memory",
+       Vector_status_section::kGlobalGauges,
+       build_resources.configured_memory_budget},
+      {"Vector_build_resource_memory_reserve",
+       Vector_status_section::kGlobalGauges, build_resources.memory_reserve},
+      {"Vector_build_resource_memory_limit",
+       Vector_status_section::kGlobalGauges,
+       build_resources.probe.memory_limit},
+      {"Vector_build_resource_memory_current",
+       Vector_status_section::kGlobalGauges,
+       build_resources.probe.memory_current},
+      {"Vector_build_resource_process_rss",
+       Vector_status_section::kGlobalGauges,
+       build_resources.probe.process_rss},
+      {"Vector_build_resource_memory_headroom",
+       Vector_status_section::kGlobalGauges,
+       build_resources.probe.memory_headroom},
+      {"Vector_build_resource_effective_memory",
+       Vector_status_section::kGlobalGauges,
+       build_resources.effective_memory_budget},
+      {"Vector_build_resource_reserved_memory",
+       Vector_status_section::kGlobalGauges,
+       build_resources.reserved_memory},
+      {"Vector_build_resource_effective_cpu_slots",
+       Vector_status_section::kGlobalGauges,
+       build_resources.effective_cpu_slots},
+      {"Vector_build_resource_reserved_cpu_slots",
+       Vector_status_section::kGlobalGauges,
+       build_resources.reserved_cpu_slots},
+      {"Vector_build_resource_active_builds",
+       Vector_status_section::kGlobalGauges, build_resources.active_builds},
+      {"Vector_build_resource_waiting_builds",
+       Vector_status_section::kGlobalGauges, build_resources.waiting_builds},
+      {"Vector_build_resource_last_effective_memory",
+       Vector_status_section::kGlobalGauges,
+       build_resources.last_effective_memory},
+      {"Vector_build_resource_last_effective_cpu_slots",
+       Vector_status_section::kGlobalGauges,
+       build_resources.last_effective_cpu_slots},
       {"Vector_apply_latency_ms", Vector_status_section::kSyncPipeline,
        snapshot.apply_latency_ms},
   };
@@ -1192,14 +1234,16 @@ bool send_show_vector_status(
   }
 
   if (for_index_name.empty()) {
-    const std::pair<const char *, std::string> truth_store_rows[] = {
+    const std::pair<const char *, std::string> string_gauge_rows[] = {
         {"Vector_truth_store_backend",
          vector_index_truth_store::active_backend_name()},
         {"Vector_truth_store_transactional",
          vector_index_truth_store::active_backend_transactional() ? "1" : "0"},
+        {"Vector_build_resource_source",
+         vector_index::resource_probe_source_name(build_resources.probe.source)},
     };
 
-    for (const auto &row : truth_store_rows) {
+    for (const auto &row : string_gauge_rows) {
       if (!vector_status_matches_wild(wild, row.first)) continue;
       if (where_predicates != nullptr &&
           !vector_status_matches_where(

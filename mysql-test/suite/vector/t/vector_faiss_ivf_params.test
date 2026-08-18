@@ -24,6 +24,9 @@ WHERE Section = 'BACKEND_HEALTH'
 
 --source suite/vector/include/vector_normalize_lifecycle_build_timing.inc
 SELECT VEC_INDEX_INFO('idx_faiss_ivf');
+SET @ivf_generation_before_nprobe =
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf'),
+    '$.external_manifest_generation'));
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_faiss_ivf.backend_variant';
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
@@ -31,6 +34,15 @@ SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_faiss_ivf.faiss_nprobe';
 SELECT VEC_INDEX_SEARCH('idx_faiss_ivf', VEC_FROMTEXT('[1,1]'), 1);
+
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf', 2, 2);
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf'), '$.faiss_nprobe')
+  AS faiss_nprobe_after_runtime_update;
+SELECT @ivf_generation_before_nprobe =
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf'),
+    '$.external_manifest_generation')) AS runtime_update_kept_generation;
+
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf', 1, 1);
 
 --source include/restart_mysqld.inc
 

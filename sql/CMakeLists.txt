@@ -660,6 +660,7 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_simd_distance.cc
     vector/vector_build_pipeline_policy.cc
     vector/vector_index_build_options.cc
+    vector/vector_resource_budget.cc
     vector/vector_index_ddl_formatter.cc
     vector/vector_index_diagnostics.cc
     vector/vector_index_identity.cc
@@ -718,6 +719,7 @@ IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
     vector/vector_index_registry_lifecycle.cc
     vector/vector_index_registry_txn.cc
     vector/vector_index_runtime_thread_pool.cc
+    vector/vector_resource_budget.cc
     vector/vector_mapped_search.cc
     vector/vector_index_service.cc
     vector/vector_index_truth_store.cc

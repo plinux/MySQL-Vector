@@ -1,0 +1,57 @@
+--source include/have_vector_index.inc
+
+--let $vector_big_test_fixture=$MYSQLTEST_VARDIR/tmp/vector_big_test_memory
+--let $vector_big_test_proc_root=$vector_big_test_fixture/proc
+--let $vector_big_test_cgroup_root=$vector_big_test_fixture/cgroup
+
+--exec rm -rf $vector_big_test_fixture
+--exec mkdir -p $vector_big_test_proc_root/self $vector_big_test_cgroup_root/test.slice
+--write_file $vector_big_test_proc_root/meminfo
+MemTotal:       8388608 kB
+MemAvailable:   4194304 kB
+EOF
+--write_file $vector_big_test_proc_root/self/cgroup
+0::/test.slice
+EOF
+--write_file $vector_big_test_cgroup_root/test.slice/memory.max
+2147483648
+EOF
+--write_file $vector_big_test_cgroup_root/test.slice/memory.current
+536870912
+EOF
+--let $vector_big_test_estimated_peak_kib=1048576
+--source suite/vector/include/vector_big_test_memory_detect.inc
+--echo v2_detected=$vector_big_test_memory_detected
+--echo v2_sufficient=$vector_big_test_memory_sufficient
+--echo v2_available_kib=$vector_big_test_available_kib
+--echo v2_required_kib=$vector_big_test_required_kib
+
+--exec rm -rf $vector_big_test_fixture
+--exec mkdir -p $vector_big_test_proc_root/self $vector_big_test_cgroup_root/memory/legacy
+--write_file $vector_big_test_proc_root/meminfo
+MemTotal:       8388608 kB
+MemAvailable:   4194304 kB
+EOF
+--write_file $vector_big_test_proc_root/self/cgroup
+5:memory:/legacy
+EOF
+--write_file $vector_big_test_cgroup_root/memory/legacy/memory.limit_in_bytes
+1073741824
+EOF
+--write_file $vector_big_test_cgroup_root/memory/legacy/memory.usage_in_bytes
+536870912
+EOF
+--let $vector_big_test_estimated_peak_kib=524288
+--source suite/vector/include/vector_big_test_memory_detect.inc
+--echo v1_detected=$vector_big_test_memory_detected
+--echo v1_sufficient=$vector_big_test_memory_sufficient
+--echo v1_available_kib=$vector_big_test_available_kib
+--echo v1_required_kib=$vector_big_test_required_kib
+
+--remove_file $vector_big_test_cgroup_root/memory/legacy/memory.limit_in_bytes
+--source suite/vector/include/vector_big_test_memory_detect.inc
+--echo missing_detected=$vector_big_test_memory_detected
+--echo missing_sufficient=$vector_big_test_memory_sufficient
+--echo missing_available_kib=$vector_big_test_available_kib
+
+--exec rm -rf $vector_big_test_fixture

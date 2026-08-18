@@ -71,6 +71,8 @@ extern ulong opt_vector_index_consistency_mode;
 extern ulonglong opt_vector_entry_cache_size;
 extern ulonglong opt_vector_pending_cache_size;
 extern ulonglong opt_vector_build_memory_size;
+extern ulonglong opt_vector_build_memory_reserve_size;
+extern ulong opt_vector_build_resource_wait_timeout;
 extern ulonglong opt_vector_diskann_build_memory_size;
 extern ulonglong opt_vector_diskann_raw_segment_size;
 extern ulonglong opt_vector_faiss_train_size;

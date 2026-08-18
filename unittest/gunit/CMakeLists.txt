@@ -319,6 +319,7 @@ IF(HAVE_VECTOR_INDEX)
     vector_diskann_scheduler
     vector_elkan_kmeans
     vector_pq_centroid_scan
+    vector_resource_budget
     vector_simd_distance
     vector_index_backend
     vector_index_diagnostics

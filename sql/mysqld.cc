@@ -877,6 +877,7 @@ MySQL clients support the protocol:
 #ifdef HAVE_VECTOR_INDEX
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_resource_budget.h"
 #include "sql/vector/vector_status.h"
 #endif
 #include "sql/xa.h"
@@ -9966,6 +9967,56 @@ static int show_vector_truth_store_transactional(THD *, SHOW_VAR *var,
       vector_index_truth_store::active_backend_transactional() ? 1 : 0, var, buf);
 }
 
+static int show_vector_build_resource_source(THD *, SHOW_VAR *var, char *buf) {
+  const vector_index::build_resource_snapshot resources =
+      vector_index::global_resource_budget_manager().snapshot();
+  var->type = SHOW_CHAR;
+  var->value = buf;
+  snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE, "%s",
+           vector_index::resource_probe_source_name(resources.probe.source));
+  return 0;
+}
+
+#define DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(func_name, expression)     \
+  static int show_vector_build_resource_##func_name(THD *, SHOW_VAR *var,   \
+                                                     char *buf) {            \
+    const vector_index::build_resource_snapshot resources =                \
+        vector_index::global_resource_budget_manager().snapshot();          \
+    return show_vector_status_value(static_cast<uint64_t>(expression), var, \
+                                    buf);                                    \
+  }
+
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(
+    configured_memory, resources.configured_memory_budget)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(memory_reserve,
+                                         resources.memory_reserve)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(memory_limit,
+                                         resources.probe.memory_limit)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(memory_current,
+                                         resources.probe.memory_current)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(process_rss,
+                                         resources.probe.process_rss)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(memory_headroom,
+                                         resources.probe.memory_headroom)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(effective_memory,
+                                         resources.effective_memory_budget)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(reserved_memory,
+                                         resources.reserved_memory)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(effective_cpu_slots,
+                                         resources.effective_cpu_slots)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(reserved_cpu_slots,
+                                         resources.reserved_cpu_slots)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(active_builds,
+                                         resources.active_builds)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(waiting_builds,
+                                         resources.waiting_builds)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(last_effective_memory,
+                                         resources.last_effective_memory)
+DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC(
+    last_effective_cpu_slots, resources.last_effective_cpu_slots)
+
+#undef DEFINE_VECTOR_BUILD_RESOURCE_STATUS_FUNC
+
 DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_loaded_indexes,
                                   backend_loaded_indexes)
 DEFINE_VECTOR_SUMMARY_STATUS_FUNC(backend_writable_indexes,
@@ -10488,6 +10539,50 @@ SHOW_VAR status_vars[] = {
      SHOW_SCOPE_GLOBAL},
     {"Vector_pending_vector_memory_bytes",
      (char *)&show_vector_pending_vector_memory_bytes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_source",
+     (char *)&show_vector_build_resource_source, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_configured_memory",
+     (char *)&show_vector_build_resource_configured_memory, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_memory_reserve",
+     (char *)&show_vector_build_resource_memory_reserve, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_memory_limit",
+     (char *)&show_vector_build_resource_memory_limit, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_memory_current",
+     (char *)&show_vector_build_resource_memory_current, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_process_rss",
+     (char *)&show_vector_build_resource_process_rss, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_memory_headroom",
+     (char *)&show_vector_build_resource_memory_headroom, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_effective_memory",
+     (char *)&show_vector_build_resource_effective_memory, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_reserved_memory",
+     (char *)&show_vector_build_resource_reserved_memory, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_effective_cpu_slots",
+     (char *)&show_vector_build_resource_effective_cpu_slots, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_reserved_cpu_slots",
+     (char *)&show_vector_build_resource_reserved_cpu_slots, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_active_builds",
+     (char *)&show_vector_build_resource_active_builds, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_waiting_builds",
+     (char *)&show_vector_build_resource_waiting_builds, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_last_effective_memory",
+     (char *)&show_vector_build_resource_last_effective_memory, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Vector_build_resource_last_effective_cpu_slots",
+     (char *)&show_vector_build_resource_last_effective_cpu_slots, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
     {"Vector_backend_loaded_indexes",
      (char *)&show_vector_backend_loaded_indexes, SHOW_FUNC, SHOW_SCOPE_GLOBAL},

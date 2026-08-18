@@ -9,6 +9,7 @@
 SELECT @@global.vector_entry_cache_size;
 SELECT @@global.vector_pending_cache_size;
 SELECT @@global.vector_build_memory_size;
+SELECT @@global.vector_build_memory_reserve_size;
 SELECT @@global.vector_build_pipeline_min_size;
 SELECT @@global.vector_build_segment_target_size;
 SELECT @@global.vector_diskann_build_memory_size;
@@ -27,6 +28,7 @@ WHERE VARIABLE_NAME IN (
   'vector_entry_cache_size',
   'vector_pending_cache_size',
   'vector_build_memory_size',
+  'vector_build_memory_reserve_size',
   'vector_build_pipeline_min_size',
   'vector_build_segment_target_size',
   'vector_diskann_build_memory_size',
@@ -47,6 +49,7 @@ SELECT vector_entry_cache_size;
 SET GLOBAL vector_entry_cache_size=1048576;
 SET GLOBAL vector_pending_cache_size=2097152;
 SET GLOBAL vector_build_memory_size=3145728;
+SET GLOBAL vector_build_memory_reserve_size=4194304;
 SET GLOBAL vector_build_pipeline_min_size=4194304;
 SET GLOBAL vector_build_segment_target_size=5242880;
 SET GLOBAL vector_diskann_build_memory_size=6291456;
@@ -59,6 +62,7 @@ SET GLOBAL vector_hnsw_index_memory_size=11534336;
 SELECT @@global.vector_entry_cache_size;
 SELECT @@global.vector_pending_cache_size;
 SELECT @@global.vector_build_memory_size;
+SELECT @@global.vector_build_memory_reserve_size;
 SELECT @@global.vector_build_pipeline_min_size;
 SELECT @@global.vector_build_segment_target_size;
 SELECT @@global.vector_diskann_build_memory_size;
@@ -68,6 +72,20 @@ SELECT @@global.vector_diskann_raw_segment_size;
 SELECT @@global.vector_faiss_train_size;
 SELECT @@global.vector_hnsw_index_memory_size;
 
+--echo # vector_pending_cache_size accepts 0 as unlimited pending payload budget.
+SET GLOBAL vector_pending_cache_size=0;
+SELECT @@global.vector_pending_cache_size;
+
+--echo # vector_diskann_build_memory_size accepts 0 as auto platform build memory budget.
+SET GLOBAL vector_diskann_build_memory_size=0;
+SELECT @@global.vector_diskann_build_memory_size;
+
+--echo # vector build root budget and reserve both accept 0.
+SET GLOBAL vector_build_memory_size=0;
+SET GLOBAL vector_build_memory_reserve_size=0;
+SELECT @@global.vector_build_memory_size;
+SELECT @@global.vector_build_memory_reserve_size;
+
 --echo # Online SET uses numeric byte values; negative values are rejected.
 --Error ER_WRONG_VALUE_FOR_VAR
 SET GLOBAL vector_entry_cache_size=-1;
@@ -75,9 +93,13 @@ SET GLOBAL vector_entry_cache_size=-1;
 --Error ER_WRONG_VALUE_FOR_VAR
 SET GLOBAL vector_pending_cache_size=-1;
 
+--Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_build_memory_reserve_size=-1;
+
 SET GLOBAL vector_entry_cache_size=DEFAULT;
 SET GLOBAL vector_pending_cache_size=DEFAULT;
 SET GLOBAL vector_build_memory_size=DEFAULT;
+SET GLOBAL vector_build_memory_reserve_size=DEFAULT;
 SET GLOBAL vector_build_pipeline_min_size=DEFAULT;
 SET GLOBAL vector_build_segment_target_size=DEFAULT;
 SET GLOBAL vector_diskann_build_memory_size=DEFAULT;
@@ -91,6 +113,7 @@ SET GLOBAL vector_hnsw_index_memory_size=DEFAULT;
 SELECT @@global.vector_entry_cache_size;
 SELECT @@global.vector_pending_cache_size;
 SELECT @@global.vector_build_memory_size;
+SELECT @@global.vector_build_memory_reserve_size;
 SELECT @@global.vector_build_pipeline_min_size;
 SELECT @@global.vector_build_segment_target_size;
 SELECT @@global.vector_diskann_build_memory_size;

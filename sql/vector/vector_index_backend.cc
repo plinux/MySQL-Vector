@@ -24,6 +24,7 @@
 #include "sql/vector/vector_index_backend.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cerrno>
 #include <cctype>
 #include <cmath>
@@ -41,6 +42,8 @@
 #include <utility>
 
 #include "sql/vector/vector_index_build_options.h"
+#include "sql/current_thd.h"
+#include "sql/sql_class.h"
 
 #ifdef HAVE_FAISS
 #include <faiss/IndexFlat.h>
@@ -411,6 +414,31 @@ namespace vector_index {
 
 namespace {
 
+uint64_t saturated_build_memory_estimate(size_t row_count, size_t dimension,
+                                         uint32_t multiplier,
+                                         uint64_t fixed_memory) {
+  constexpr uint64_t kFloatBytes = sizeof(float);
+  const uint64_t rows = static_cast<uint64_t>(row_count);
+  const uint64_t dimensions = static_cast<uint64_t>(dimension);
+  if (rows != 0 && dimensions > std::numeric_limits<uint64_t>::max() / rows) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  uint64_t payload = rows * dimensions;
+  if (payload > std::numeric_limits<uint64_t>::max() / kFloatBytes) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  payload *= kFloatBytes;
+  if (multiplier != 0 &&
+      payload > std::numeric_limits<uint64_t>::max() / multiplier) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  payload *= multiplier;
+  if (payload > std::numeric_limits<uint64_t>::max() - fixed_memory) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return payload + fixed_memory;
+}
+
 constexpr vector_library_status k_vector_library_statuses[] = {
 #ifdef HAVE_FAISS
     {"faiss", true, false, false, "Faiss backend is compiled in"},
@@ -502,6 +530,60 @@ bool collect_full_rerank_candidates(
 }
 
 }  // namespace
+
+bool backend::acquire_build_resources(
+    size_t row_count, uint32_t memory_multiplier, uint64_t fixed_memory,
+    uint64_t per_build_memory_limit, uint32_t requested_threads,
+    build_resource_lease *lease) const {
+  if (lease == nullptr) return false;
+  uint64_t memory_request = per_build_memory_limit;
+  if (row_count != 0) {
+    memory_request = saturated_build_memory_estimate(
+        row_count, dimension(), memory_multiplier, fixed_memory);
+  }
+  if (row_count != 0 && per_build_memory_limit != 0) {
+    memory_request = std::min(memory_request, per_build_memory_limit);
+  }
+
+  constexpr uint64_t k_milliseconds_per_second = 1000;
+  constexpr uint64_t k_max_timeout_seconds =
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) /
+      k_milliseconds_per_second;
+  const uint64_t timeout_seconds = std::min<uint64_t>(
+      opt_vector_build_resource_wait_timeout, k_max_timeout_seconds);
+  const resource_wait_options wait_options{
+      [thd = current_thd] {
+        return connection_events_loop_aborted() ||
+               (thd != nullptr && thd->killed != THD::NOT_KILLED);
+      },
+      std::chrono::milliseconds(timeout_seconds *
+                                k_milliseconds_per_second)};
+  return global_resource_budget_manager().acquire(
+      {memory_request, requested_threads}, lease, wait_options);
+}
+
+void backend::record_build_resource_diagnostics(
+    const build_resource_lease &lease,
+    backend_build_diagnostics *diagnostics) const {
+  if (diagnostics == nullptr || !lease) return;
+  const build_resource_snapshot resources =
+      global_resource_budget_manager().snapshot();
+  diagnostics->resource_probe_source =
+      resource_probe_source_name(resources.probe.source);
+  diagnostics->resource_configured_memory_budget =
+      resources.configured_memory_budget;
+  diagnostics->resource_memory_reserve = resources.memory_reserve;
+  diagnostics->resource_memory_limit = resources.probe.memory_limit;
+  diagnostics->resource_memory_current = resources.probe.memory_current;
+  diagnostics->resource_process_rss = resources.probe.process_rss;
+  diagnostics->resource_memory_headroom = resources.probe.memory_headroom;
+  diagnostics->resource_reserved_memory = resources.reserved_memory;
+  diagnostics->resource_effective_memory = lease.memory_bytes();
+  diagnostics->resource_effective_cpu_slots = lease.cpu_slots();
+  diagnostics->resource_reserved_cpu_slots = resources.reserved_cpu_slots;
+  diagnostics->resource_active_builds = resources.active_builds;
+  diagnostics->resource_waiting_builds = resources.waiting_builds;
+}
 
 bool backend::load_committed_entries(
     const std::unordered_map<uint64_t, vector_data> &entries) {

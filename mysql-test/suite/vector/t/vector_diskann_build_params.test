@@ -33,9 +33,19 @@ SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
   '$.backend_build_runtime')) AS backend_build_runtime;
 SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
   '$.backend_build_input_source')) AS backend_build_input_source;
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.backend_build_resource_source')) IN
+  ('cgroup_v2', 'cgroup_v1', 'host') AS resource_source_known;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.backend_build_resource_effective_memory') > 0
+  AS effective_memory_positive;
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.backend_build_resource_effective_cpu_slots') > 0
+  AS effective_cpu_slots_positive;
 
 --source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_diskann_params');
+--source suite/vector/include/vector_normalize_build_resources.inc
 SHOW VECTOR STATUS
 WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name LIKE 'idx_diskann_params.backend_build_%';

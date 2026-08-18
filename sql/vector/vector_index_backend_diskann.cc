@@ -45,12 +45,6 @@
 #include <unordered_map>
 #include <vector>
 
-#if defined(__linux__)
-#include <unistd.h>
-#elif defined(__APPLE__)
-#include <sys/sysctl.h>
-#endif
-
 #include "my_dbug.h"
 #include "sql/vector/vector_diskann_garnet_abi.h"
 #include "sql/vector/vector_diskann_generation_store.h"
@@ -91,6 +85,46 @@ constexpr uint32_t kDiskAnnMaxDegree =
 constexpr double kBytesPerGiB = 1024.0 * 1024.0 * 1024.0;
 #endif
 constexpr size_t kDiskAnnMinimumOfflineBuildRows = 4;
+constexpr uint32_t kDiskAnnBuildMemoryMultiplier = 4;
+constexpr uint64_t kDiskAnnBuildFixedMemory = 1024ULL * 1024ULL * 1024ULL;
+
+class scoped_diskann_thread_budget {
+ public:
+  scoped_diskann_thread_budget(uint32_t *build_threads,
+                               uint32_t effective_build_threads,
+                               uint32_t *blas_threads,
+                               uint32_t effective_blas_threads)
+      : m_build_threads(build_threads),
+        m_previous_build_threads(build_threads == nullptr ? 0 : *build_threads),
+        m_blas_threads(blas_threads),
+        m_previous_blas_threads(blas_threads == nullptr ? 0 : *blas_threads) {
+    if (m_build_threads != nullptr) *m_build_threads = effective_build_threads;
+    if (m_blas_threads != nullptr) *m_blas_threads = effective_blas_threads;
+  }
+
+  ~scoped_diskann_thread_budget() {
+    if (m_build_threads != nullptr) {
+      *m_build_threads = m_previous_build_threads;
+    }
+    if (m_blas_threads != nullptr) *m_blas_threads = m_previous_blas_threads;
+  }
+
+ private:
+  uint32_t *m_build_threads;
+  uint32_t m_previous_build_threads;
+  uint32_t *m_blas_threads;
+  uint32_t m_previous_blas_threads;
+};
+
+uint32_t requested_diskann_cpu_slots(uint32_t build_threads,
+                                     uint32_t blas_threads) {
+  const uint64_t effective_build_threads =
+      vector_index::effective_build_scheduler_thread_budget(build_threads);
+  const uint64_t effective_blas_threads = std::max<uint32_t>(1, blas_threads);
+  return static_cast<uint32_t>(std::min<uint64_t>(
+      effective_build_threads * effective_blas_threads,
+      std::numeric_limits<uint32_t>::max()));
+}
 constexpr const char *kDiskAnnRawManifestHeader =
     "mysql-vector-diskann-raw-manifest-v1";
 constexpr const char *kDiskAnnOfflineBuildSymbol =
@@ -772,31 +806,6 @@ double diskann_build_memory_size_gb(uint64_t build_memory_size) {
 }
 #endif
 
-uint64_t available_diskann_build_memory_size() {
-#if defined(__linux__) && defined(_SC_AVPHYS_PAGES) && defined(_SC_PAGESIZE)
-  const long pages = sysconf(_SC_AVPHYS_PAGES);
-  const long page_size = sysconf(_SC_PAGESIZE);
-  if (pages <= 0 || page_size <= 0) return 0;
-
-  const uint64_t page_count = static_cast<uint64_t>(pages);
-  const uint64_t bytes_per_page = static_cast<uint64_t>(page_size);
-  if (page_count >
-      std::numeric_limits<uint64_t>::max() / bytes_per_page) {
-    return std::numeric_limits<uint64_t>::max();
-  }
-  return page_count * bytes_per_page;
-#elif defined(__APPLE__)
-  uint64_t memory_size = 0;
-  size_t length = sizeof(memory_size);
-  if (sysctlbyname("hw.memsize", &memory_size, &length, nullptr, 0) != 0) {
-    return 0;
-  }
-  return memory_size;
-#else
-  return 0;
-#endif
-}
-
 template <typename T>
 bool write_binary_value(std::ofstream &file, T value) {
   file.write(reinterpret_cast<const char *>(&value), sizeof(value));
@@ -884,7 +893,7 @@ class diskann_native_state {
           vector_index::k_default_diskann_pq_code_budget_ratio,
       double search_cache_ratio = 0.0, uint32_t disk_pq_dims = 0,
       bool accelerate_build = false, bool shuffle_build = false,
-      bool use_bfs_cache = false)
+      bool use_bfs_cache = false, uint64_t build_memory_size = 0)
       : m_dimension(dimension),
         m_metric(metric),
         m_index_name(index_name),
@@ -907,7 +916,8 @@ class diskann_native_state {
         m_shuffle_build(shuffle_build),
         m_use_bfs_cache(use_bfs_cache),
         m_search_cache_size(search_cache_size),
-        m_search_cache_ratio(search_cache_ratio) {}
+        m_search_cache_ratio(search_cache_ratio),
+        m_build_memory_size(build_memory_size) {}
 
   ~diskann_native_state() {
     std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
@@ -1319,7 +1329,8 @@ class diskann_native_state {
     return true;
   }
 
-  bool collect_doc_ids(std::vector<uint64_t> *doc_ids) const {
+  bool collect_doc_ids(size_t expected_entry_count,
+                       std::vector<uint64_t> *doc_ids) const {
     if (doc_ids == nullptr) return false;
     std::shared_lock<std::shared_mutex> guard(m_lifecycle_mutex);
     doc_ids->clear();
@@ -1328,21 +1339,40 @@ class diskann_native_state {
                        std::ios::in | std::ios::binary);
     if (!file.is_open()) return false;
 
+    file.seekg(0, std::ios::end);
+    const std::streamoff file_size = file.tellg();
+    if (file_size < 0) return false;
+    file.seekg(0, std::ios::beg);
+
     uint64_t count = 0;
     if (!read_binary_value(file, &count) ||
-        count > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        count != static_cast<uint64_t>(expected_entry_count) ||
+        count > (std::numeric_limits<uint64_t>::max() - sizeof(count)) /
+                    sizeof(uint64_t)) {
       return false;
     }
-    doc_ids->assign(static_cast<size_t>(count), 0);
+    const uint64_t expected_size =
+        sizeof(count) + count * sizeof(uint64_t);
+    if (static_cast<uint64_t>(file_size) != expected_size) return false;
+
+    std::vector<uint64_t> loaded_doc_ids;
+    if (count > static_cast<uint64_t>(loaded_doc_ids.max_size())) return false;
     if (count == 0) return true;
     if (count > static_cast<uint64_t>(
                     std::numeric_limits<std::streamsize>::max() /
                     sizeof(uint64_t))) {
       return false;
     }
-    file.read(reinterpret_cast<char *>(doc_ids->data()),
+    try {
+      loaded_doc_ids.resize(static_cast<size_t>(count));
+    } catch (const std::bad_alloc &) {
+      return false;
+    }
+    file.read(reinterpret_cast<char *>(loaded_doc_ids.data()),
               static_cast<std::streamsize>(count * sizeof(uint64_t)));
-    return file.good();
+    if (!file.good()) return false;
+    *doc_ids = std::move(loaded_doc_ids);
+    return true;
   }
 
   bool search_batch(const std::vector<vector_data> &queries, size_t begin,
@@ -1432,7 +1462,7 @@ class diskann_native_state {
   }
 
   bool set_search_beamwidth(uint32_t search_beamwidth) {
-    if (search_beamwidth == 0) return false;
+    if (!valid_diskann_search_beamwidth(search_beamwidth)) return false;
     std::unique_lock<std::shared_mutex> guard(m_lifecycle_mutex);
     m_search_beamwidth = search_beamwidth;
     return true;
@@ -3817,8 +3847,8 @@ class diskann_native_state {
     input.max_degree = m_max_degree;
     input.search_cache_size = m_search_cache_size;
     input.search_cache_ratio = m_search_cache_ratio;
-    input.build_memory_size = opt_vector_diskann_build_memory_size;
-    input.available_build_memory_size = available_diskann_build_memory_size();
+    input.build_memory_size = m_build_memory_size;
+    input.available_build_memory_size = m_build_memory_size;
     return vector_index::make_diskann_segment_budget(input, budget);
   }
 
@@ -3858,8 +3888,7 @@ class diskann_native_state {
     config.build_blas_threads = m_build_blas_threads;
     config.build_memory_gb =
         has_budget ? budget.build_memory_gb
-                   : diskann_build_memory_size_gb(
-                         opt_vector_diskann_build_memory_size);
+                   : diskann_build_memory_size_gb(m_build_memory_size);
     config.pq_chunks = has_budget ? budget.pq_chunks : 1;
     config.cache_nodes = has_budget ? budget.cache_nodes : m_cache_nodes;
     config.search_cache_size = m_search_cache_size;
@@ -4617,6 +4646,7 @@ class diskann_native_state {
   bool m_use_bfs_cache{false};
   uint64_t m_search_cache_size{0};
   double m_search_cache_ratio{0.0};
+  uint64_t m_build_memory_size{0};
   mutable uint32_t m_loaded_cache_nodes{0};
   diskann_runtime_variant m_runtime_variant{diskann_runtime_variant::kNone};
   bool m_defer_artifact_publication{false};
@@ -4679,8 +4709,8 @@ void diskann_backend::clear_build_diagnostics() {
   m_last_build_diagnostics = {};
 }
 
-std::unique_ptr<diskann_native_state> diskann_backend::create_native_state()
-    const {
+std::unique_ptr<diskann_native_state> diskann_backend::create_native_state(
+    uint64_t build_memory_size) const {
   auto state = std::make_unique<diskann_native_state>(
       m_dimension, m_metric, m_index_name, m_diskann_build_complexity,
       m_diskann_max_degree, m_diskann_build_threads,
@@ -4690,7 +4720,7 @@ std::unique_ptr<diskann_native_state> diskann_backend::create_native_state()
       m_diskann_search_cache_size, m_diskann_pq_code_budget_ratio,
       m_diskann_search_cache_ratio, m_diskann_disk_pq_dims,
       m_diskann_accelerate_build, m_diskann_shuffle_build,
-      m_diskann_use_bfs_cache);
+      m_diskann_use_bfs_cache, build_memory_size);
   if (m_defer_artifact_publication) state->defer_artifact_publication();
   return state;
 }
@@ -4753,7 +4783,7 @@ bool diskann_backend::prepare_streaming_doc_id_tracking() {
   if (!m_native_runtime_enabled || m_native_state == nullptr) return false;
 
   std::vector<uint64_t> doc_ids;
-  if (!m_native_state->collect_doc_ids(&doc_ids)) return false;
+  if (!m_native_state->collect_doc_ids(m_entry_count, &doc_ids)) return false;
   std::sort(doc_ids.begin(), doc_ids.end());
   if (doc_ids.size() != m_entry_count ||
       std::adjacent_find(doc_ids.begin(), doc_ids.end()) != doc_ids.end()) {
@@ -5048,8 +5078,25 @@ bool diskann_backend::supports_in_place_mutations() const {
 
 bool diskann_backend::rebuild_from_committed_entries_from_reader(
     const committed_entry_reader &reader) {
-  if (m_mode != backend_mode::kExternal) return false;
-  auto rebuilt = create_native_state();
+  if (m_mode != backend_mode::kExternal || !reader) return false;
+  build_resource_lease resource_lease;
+  if (!acquire_build_resources(
+          0, kDiskAnnBuildMemoryMultiplier, kDiskAnnBuildFixedMemory,
+          opt_vector_diskann_build_memory_size,
+          requested_diskann_cpu_slots(m_diskann_build_threads,
+                                      m_diskann_build_blas_threads),
+          &resource_lease)) {
+    return false;
+  }
+  const uint32_t effective_blas_threads = std::min(
+      std::max<uint32_t>(1, m_diskann_build_blas_threads),
+      resource_lease.cpu_slots());
+  const uint32_t effective_build_threads = std::max<uint32_t>(
+      1, resource_lease.cpu_slots() / effective_blas_threads);
+  scoped_diskann_thread_budget thread_budget(
+      &m_diskann_build_threads, effective_build_threads,
+      &m_diskann_build_blas_threads, effective_blas_threads);
+  auto rebuilt = create_native_state(resource_lease.memory_bytes());
 
   size_t rebuilt_entry_count = 0;
   bool materialized_fallback_allowed = false;
@@ -5061,8 +5108,11 @@ bool diskann_backend::rebuild_from_committed_entries_from_reader(
   if (!rebuild_ok) {
     if (!materialized_fallback_allowed) {
       m_last_build_diagnostics = rebuilt->build_diagnostics();
+      backend::record_build_resource_diagnostics(resource_lease,
+                                                 &m_last_build_diagnostics);
       return false;
     }
+    resource_lease.reset();
     return backend::rebuild_from_committed_entries_from_reader(reader);
   }
 
@@ -5072,22 +5122,44 @@ bool diskann_backend::rebuild_from_committed_entries_from_reader(
       if (!configure_native_state_for_serving(rebuilt.get())) return false;
       m_entries.clear();
       install_native_state(std::move(rebuilt), 0, false);
+      backend::record_build_resource_diagnostics(resource_lease,
+                                                 &m_last_build_diagnostics);
       return true;
     }
     rebuilt.reset();
+    resource_lease.reset();
     return activate_empty_mutable_sidecar();
   }
 
   if (!configure_native_state_for_serving(rebuilt.get())) return false;
   m_entries.clear();
   install_native_state(std::move(rebuilt), rebuilt_entry_count, false);
+  backend::record_build_resource_diagnostics(resource_lease,
+                                             &m_last_build_diagnostics);
   return true;
 }
 
 bool diskann_backend::rebuild_from_raw_segments(
     const raw_vector_segment_reader &reader) {
-  if (m_mode != backend_mode::kExternal) return false;
-  auto rebuilt = create_native_state();
+  if (m_mode != backend_mode::kExternal || !reader) return false;
+  build_resource_lease resource_lease;
+  if (!acquire_build_resources(
+          0, kDiskAnnBuildMemoryMultiplier, kDiskAnnBuildFixedMemory,
+          opt_vector_diskann_build_memory_size,
+          requested_diskann_cpu_slots(m_diskann_build_threads,
+                                      m_diskann_build_blas_threads),
+          &resource_lease)) {
+    return false;
+  }
+  const uint32_t effective_blas_threads = std::min(
+      std::max<uint32_t>(1, m_diskann_build_blas_threads),
+      resource_lease.cpu_slots());
+  const uint32_t effective_build_threads = std::max<uint32_t>(
+      1, resource_lease.cpu_slots() / effective_blas_threads);
+  scoped_diskann_thread_budget thread_budget(
+      &m_diskann_build_threads, effective_build_threads,
+      &m_diskann_build_blas_threads, effective_blas_threads);
+  auto rebuilt = create_native_state(resource_lease.memory_bytes());
 
   size_t rebuilt_entry_count = 0;
   bool materialized_fallback_allowed = false;
@@ -5099,8 +5171,11 @@ bool diskann_backend::rebuild_from_raw_segments(
   if (!rebuild_ok) {
     if (!materialized_fallback_allowed) {
       m_last_build_diagnostics = rebuilt->build_diagnostics();
+      backend::record_build_resource_diagnostics(resource_lease,
+                                                 &m_last_build_diagnostics);
       return false;
     }
+    resource_lease.reset();
     return backend::rebuild_from_raw_segments(reader);
   }
 
@@ -5110,33 +5185,59 @@ bool diskann_backend::rebuild_from_raw_segments(
       if (!configure_native_state_for_serving(rebuilt.get())) return false;
       m_entries.clear();
       install_native_state(std::move(rebuilt), 0, false);
+      backend::record_build_resource_diagnostics(resource_lease,
+                                                 &m_last_build_diagnostics);
       return true;
     }
     rebuilt.reset();
+    resource_lease.reset();
     return activate_empty_mutable_sidecar();
   }
 
   if (!configure_native_state_for_serving(rebuilt.get())) return false;
   m_entries.clear();
   install_native_state(std::move(rebuilt), rebuilt_entry_count, false);
+  backend::record_build_resource_diagnostics(resource_lease,
+                                             &m_last_build_diagnostics);
   return true;
 }
 
 bool diskann_backend::rebuild_from_committed_entries(
     const std::unordered_map<uint64_t, vector_data> &entries) {
   if (m_mode != backend_mode::kExternal) return false;
+  if (entries.empty() && !m_defer_artifact_publication) {
+    return activate_empty_mutable_sidecar();
+  }
+  build_resource_lease resource_lease;
+  if (!acquire_build_resources(
+          entries.size(), kDiskAnnBuildMemoryMultiplier,
+          kDiskAnnBuildFixedMemory, opt_vector_diskann_build_memory_size,
+          requested_diskann_cpu_slots(m_diskann_build_threads,
+                                      m_diskann_build_blas_threads),
+          &resource_lease)) {
+    return false;
+  }
+  const uint32_t effective_blas_threads = std::min(
+      std::max<uint32_t>(1, m_diskann_build_blas_threads),
+      resource_lease.cpu_slots());
+  const uint32_t effective_build_threads = std::max<uint32_t>(
+      1, resource_lease.cpu_slots() / effective_blas_threads);
+  scoped_diskann_thread_budget thread_budget(
+      &m_diskann_build_threads, effective_build_threads,
+      &m_diskann_build_blas_threads, effective_blas_threads);
   if (entries.empty()) {
-    if (!m_defer_artifact_publication) return activate_empty_mutable_sidecar();
-    auto rebuilt = create_native_state();
+    auto rebuilt = create_native_state(resource_lease.memory_bytes());
     if (!rebuilt->stage_empty_artifact() ||
         !configure_native_state_for_serving(rebuilt.get())) {
       return false;
     }
     m_entries.clear();
     install_native_state(std::move(rebuilt), 0, false);
+    backend::record_build_resource_diagnostics(resource_lease,
+                                               &m_last_build_diagnostics);
     return true;
   }
-  auto rebuilt = create_native_state();
+  auto rebuilt = create_native_state(resource_lease.memory_bytes());
   bool rebuild_ok = rebuilt->rebuild_from_entries(entries, m_diskann_build_mode);
   bool rebuild_failure_injected = false;
   DBUG_EXECUTE_IF("vector_backend_fail_diskann_native_rebuild",
@@ -5144,6 +5245,8 @@ bool diskann_backend::rebuild_from_committed_entries(
   if (!rebuild_ok) {
     if (m_diskann_build_mode != diskann_build_mode::kAuto) {
       m_last_build_diagnostics = rebuilt->build_diagnostics();
+      backend::record_build_resource_diagnostics(resource_lease,
+                                                 &m_last_build_diagnostics);
       return false;
     }
     const bool report_native_rebuild_failure =
@@ -5151,6 +5254,10 @@ bool diskann_backend::rebuild_from_committed_entries(
         (rebuilt->supported() &&
          rebuilt->build_diagnostics().fallback_reason.empty());
     const bool sidecar_compatible = diskann_sidecar_supports_entries(entries);
+    m_last_build_diagnostics = rebuilt->build_diagnostics();
+    backend::record_build_resource_diagnostics(resource_lease,
+                                               &m_last_build_diagnostics);
+    resource_lease.reset();
     if (sidecar_compatible) {
       if (!m_external_adapter.load_committed_entries(entries)) return false;
     } else if (!diskann_entries_match_dimension(entries, m_dimension)) {
@@ -5163,7 +5270,6 @@ bool diskann_backend::rebuild_from_committed_entries(
     reset_streaming_doc_id_tracking();
     m_external_adapter_active = sidecar_compatible;
     m_native_state = std::move(rebuilt);
-    capture_native_build_diagnostics();
     if (report_native_rebuild_failure) {
       m_last_build_diagnostics.fallback_reason =
           "native_rebuild_failed_sidecar_fallback";
@@ -5174,6 +5280,8 @@ bool diskann_backend::rebuild_from_committed_entries(
   if (!configure_native_state_for_serving(rebuilt.get())) return false;
   m_entries = entries;
   install_native_state(std::move(rebuilt), entries.size(), true);
+  backend::record_build_resource_diagnostics(resource_lease,
+                                             &m_last_build_diagnostics);
   return true;
 }
 
@@ -5222,8 +5330,12 @@ bool diskann_backend::collect_doc_ids(std::vector<uint64_t> *doc_ids) const {
     return true;
   }
   if (!m_native_runtime_enabled || m_native_state == nullptr ||
-      !m_native_state->collect_doc_ids(doc_ids)) {
+      (!m_streaming_doc_ids_loaded &&
+       !m_native_state->collect_doc_ids(m_entry_count, doc_ids))) {
     return false;
+  }
+  if (m_streaming_doc_ids_loaded) {
+    *doc_ids = m_streaming_base_doc_ids;
   }
   doc_ids->erase(
       std::remove_if(doc_ids->begin(), doc_ids->end(),
@@ -5939,10 +6051,9 @@ bool diskann_vendored_allocation_failure_drops_handle_for_testing() {
 #endif
 }
 
-bool diskann_vendored_load_config_budget_for_testing(size_t row_count,
-                                                     double *build_memory_gb,
-                                                     uint32_t *pq_chunks,
-                                                     uint32_t *cache_nodes) {
+bool diskann_vendored_load_config_budget_for_testing(
+    size_t row_count, uint64_t build_memory_size, double *build_memory_gb,
+    uint32_t *pq_chunks, uint32_t *cache_nodes) {
 #ifdef MYSQL_VECTOR_DISKANN_VENDORED_STATIC_LINKED
   constexpr uint32_t offline_search_threads =
       vector_index::k_default_diskann_offline_search_threads;
@@ -5951,11 +6062,13 @@ bool diskann_vendored_load_config_budget_for_testing(size_t row_count,
       kDiskAnnBuildComplexity, kDiskAnnMaxDegree, 4, 1,
       offline_search_threads, 0, 0,
       vector_index::k_default_diskann_search_beamwidth, 0, 0,
-      vector_index::k_default_diskann_pq_code_budget_ratio, 0.1);
+      vector_index::k_default_diskann_pq_code_budget_ratio, 0.1, 0, false,
+      false, false, build_memory_size);
   return state.vendored_load_config_budget_for_testing(
       row_count, build_memory_gb, pq_chunks, cache_nodes);
 #else
   (void)row_count;
+  (void)build_memory_size;
   (void)build_memory_gb;
   (void)pq_chunks;
   (void)cache_nodes;
@@ -5975,10 +6088,6 @@ bool diskann_loaded_handle_batch_rejects_null_for_testing() {
 
 double diskann_build_memory_size_gb_for_testing(uint64_t build_memory_size) {
   return diskann_build_memory_size_gb(build_memory_size);
-}
-
-uint64_t diskann_available_build_memory_size_for_testing() {
-  return available_diskann_build_memory_size();
 }
 
 bool diskann_flatten_memory_budget_allows_for_testing(size_t entry_count,

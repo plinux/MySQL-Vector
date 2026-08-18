@@ -6893,11 +6893,27 @@ static Sys_var_ulonglong Sys_vector_pending_cache_size(
 
 static Sys_var_ulonglong Sys_vector_build_memory_size(
     "vector_build_memory_size",
-    "Generic vector index build scratch memory budget in bytes. Use 0 for no "
-    "MySQL-layer build buffer limit.",
+    "Process-wide vector index build memory budget in bytes. Use 0 to derive "
+    "the budget from the current cgroup or host resource envelope.",
     GLOBAL_VAR(opt_vector_build_memory_size), CMD_LINE(REQUIRED_ARG),
-    VALID_RANGE(0, max_mem_sz), DEFAULT(VECTOR_1_GB), BLOCK_SIZE(1),
+    VALID_RANGE(0, max_mem_sz), DEFAULT(0), BLOCK_SIZE(1),
     NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulonglong Sys_vector_build_memory_reserve_size(
+    "vector_build_memory_reserve_size",
+    "Memory in bytes reserved outside the process-wide vector build budget. "
+    "Automatic and explicit build budgets are both clipped by this reserve.",
+    GLOBAL_VAR(opt_vector_build_memory_reserve_size), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, max_mem_sz), DEFAULT(VECTOR_256_MB), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_vector_size));
+
+static Sys_var_ulong Sys_vector_build_resource_wait_timeout(
+    "vector_build_resource_wait_timeout",
+    "Timeout in seconds while waiting for vector build resources. Use 0 for "
+    "an interruptible infinite wait.",
+    GLOBAL_VAR(opt_vector_build_resource_wait_timeout), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, ULONG_MAX), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG);
 
 static Sys_var_ulonglong Sys_vector_diskann_build_memory_size(
     "vector_diskann_build_memory_size",
@@ -7012,8 +7028,7 @@ static bool check_vector_diskann_search_beamwidth(sys_var *self, THD *,
   }
 
   const ulonglong value = var->value->val_uint();
-  if (value >= 1 &&
-      value <= vector_index::k_max_diskann_search_beamwidth) {
+  if (vector_index::valid_diskann_search_beamwidth(value)) {
     return false;
   }
 

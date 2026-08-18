@@ -11,6 +11,9 @@ SELECT @@global.vector_pending_cache_size;
 SELECT @@global.vector_build_memory_size;
 @@global.vector_build_memory_size
 3221225472
+SELECT @@global.vector_build_memory_reserve_size;
+@@global.vector_build_memory_reserve_size
+4194304
 SELECT @@global.vector_diskann_build_memory_size;
 @@global.vector_diskann_build_memory_size
 4194304

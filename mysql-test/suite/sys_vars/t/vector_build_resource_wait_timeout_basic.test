@@ -1,0 +1,38 @@
+--source include/have_vector_index.inc
+
+--echo #
+--echo # Variable name : vector_build_resource_wait_timeout
+--echo # Scope         : Global dynamic
+--echo #
+
+--echo # Global default and visibility.
+SELECT @@global.vector_build_resource_wait_timeout;
+SHOW GLOBAL VARIABLES LIKE 'vector_build_resource_wait_timeout';
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME='vector_build_resource_wait_timeout';
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.vector_build_resource_wait_timeout;
+
+--echo # Runtime and persisted changes are allowed.
+SET GLOBAL vector_build_resource_wait_timeout=60;
+SELECT @@global.vector_build_resource_wait_timeout;
+SET PERSIST vector_build_resource_wait_timeout=30;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+  FROM performance_schema.persisted_variables
+  WHERE VARIABLE_NAME='vector_build_resource_wait_timeout';
+RESET PERSIST IF EXISTS vector_build_resource_wait_timeout;
+
+--echo # Zero restores interruptible infinite waiting; unsigned values follow
+--echo # normal MySQL clipping semantics.
+SET GLOBAL vector_build_resource_wait_timeout=0;
+SELECT @@global.vector_build_resource_wait_timeout;
+SET GLOBAL vector_build_resource_wait_timeout=-1;
+SHOW WARNINGS;
+SELECT @@global.vector_build_resource_wait_timeout;
+
+SET GLOBAL vector_build_resource_wait_timeout=DEFAULT;
+SELECT @@global.vector_build_resource_wait_timeout;
+
+--echo # End of tests.

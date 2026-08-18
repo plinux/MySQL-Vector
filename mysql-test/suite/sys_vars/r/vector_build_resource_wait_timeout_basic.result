@@ -1,0 +1,50 @@
+#
+# Variable name : vector_build_resource_wait_timeout
+# Scope         : Global dynamic
+#
+# Global default and visibility.
+SELECT @@global.vector_build_resource_wait_timeout;
+@@global.vector_build_resource_wait_timeout
+0
+SHOW GLOBAL VARIABLES LIKE 'vector_build_resource_wait_timeout';
+Variable_name	Value
+vector_build_resource_wait_timeout	0
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='vector_build_resource_wait_timeout';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_build_resource_wait_timeout	0
+SELECT @@session.vector_build_resource_wait_timeout;
+ERROR HY000: Variable 'vector_build_resource_wait_timeout' is a GLOBAL variable
+# Runtime and persisted changes are allowed.
+SET GLOBAL vector_build_resource_wait_timeout=60;
+SELECT @@global.vector_build_resource_wait_timeout;
+@@global.vector_build_resource_wait_timeout
+60
+SET PERSIST vector_build_resource_wait_timeout=30;
+SELECT VARIABLE_NAME, VARIABLE_VALUE
+FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME='vector_build_resource_wait_timeout';
+VARIABLE_NAME	VARIABLE_VALUE
+vector_build_resource_wait_timeout	30
+RESET PERSIST IF EXISTS vector_build_resource_wait_timeout;
+# Zero restores interruptible infinite waiting; unsigned values follow
+# normal MySQL clipping semantics.
+SET GLOBAL vector_build_resource_wait_timeout=0;
+SELECT @@global.vector_build_resource_wait_timeout;
+@@global.vector_build_resource_wait_timeout
+0
+SET GLOBAL vector_build_resource_wait_timeout=-1;
+Warnings:
+Warning	1292	Truncated incorrect vector_build_resource_wait_timeout value: '-1'
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1292	Truncated incorrect vector_build_resource_wait_timeout value: '-1'
+SELECT @@global.vector_build_resource_wait_timeout;
+@@global.vector_build_resource_wait_timeout
+0
+SET GLOBAL vector_build_resource_wait_timeout=DEFAULT;
+SELECT @@global.vector_build_resource_wait_timeout;
+@@global.vector_build_resource_wait_timeout
+0
+# End of tests.

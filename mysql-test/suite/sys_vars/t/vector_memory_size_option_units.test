@@ -8,6 +8,7 @@
 SELECT @@global.vector_entry_cache_size;
 SELECT @@global.vector_pending_cache_size;
 SELECT @@global.vector_build_memory_size;
+SELECT @@global.vector_build_memory_reserve_size;
 SELECT @@global.vector_diskann_build_memory_size;
 SELECT @@global.vector_diskann_raw_segment_size;
 SELECT @@global.vector_faiss_train_size;

@@ -5737,18 +5737,32 @@ bool index_service::recover_index(const std::string &index_name) {
   return true;
 }
 
-bool index_service::set_search_ef(const std::string &index_name,
-                                  uint32_t search_ef) {
+bool index_service::apply_backend_config_mutation(
+    const std::string &index_name, bool require_no_pending_changes,
+    const std::function<bool(backend *, index_config *)> &mutation) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   if (!all_true(config_it != m_index_configs.end(),
                 index_it != m_indexes.end())) {
     return false;
   }
+  if (require_no_pending_changes &&
+      pending_changes_contain_index(m_pending_changes, index_name)) {
+    return false;
+  }
+
   return apply_backend_config_exclusively(
       index_it->second, [&](backend *runtime) {
+        return mutation(runtime, &config_it->second);
+      });
+}
+
+bool index_service::set_search_ef(const std::string &index_name,
+                                  uint32_t search_ef) {
+  return apply_backend_config_mutation(
+      index_name, false, [&](backend *runtime, index_config *config) {
         if (!runtime->set_search_ef(search_ef)) return false;
-        sync_search_config_from_backend(*runtime, &config_it->second);
+        sync_search_config_from_backend(*runtime, config);
         return true;
       });
 }
@@ -5786,18 +5800,10 @@ bool index_service::set_hnsw_build_params(const std::string &index_name,
 
 bool index_service::set_hnsw_build_threads(const std::string &index_name,
                                            uint32_t hnsw_build_threads) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  if (pending_changes_contain_index(m_pending_changes, index_name))
-    return false;
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, true, [&](backend *runtime, index_config *config) {
         if (!runtime->set_hnsw_build_threads(hnsw_build_threads)) return false;
-        sync_hnsw_config_from_backend(*runtime, &config_it->second);
+        sync_hnsw_config_from_backend(*runtime, config);
         return true;
       });
 }
@@ -5903,20 +5909,11 @@ bool index_service::set_faiss_ivf_pq_params(const std::string &index_name,
 
 bool index_service::set_faiss_build_threads(const std::string &index_name,
                                             uint32_t faiss_build_threads) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  if (pending_changes_contain_index(m_pending_changes, index_name))
-    return false;
-
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, true, [&](backend *runtime, index_config *config) {
         if (!runtime->set_faiss_build_threads(faiss_build_threads))
           return false;
-        sync_faiss_config_from_backend(*runtime, &config_it->second);
+        sync_faiss_config_from_backend(*runtime, config);
         return true;
       });
 }
@@ -5927,46 +5924,28 @@ bool index_service::set_diskann_build_params(const std::string &index_name,
                                              uint32_t diskann_build_threads) {
   if (diskann_max_degree == 0 || diskann_build_complexity == 0) return false;
 
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  if (pending_changes_contain_index(m_pending_changes, index_name))
-    return false;
-
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, true, [&](backend *runtime, index_config *config) {
         if (!runtime->set_diskann_build_params(diskann_max_degree,
                                                diskann_build_complexity,
                                                diskann_build_threads)) {
           return false;
         }
-        sync_diskann_build_config_from_backend(*runtime, &config_it->second);
-        sync_search_config_from_backend(*runtime, &config_it->second);
-        sync_hnsw_config_from_backend(*runtime, &config_it->second);
+        sync_diskann_build_config_from_backend(*runtime, config);
+        sync_search_config_from_backend(*runtime, config);
+        sync_hnsw_config_from_backend(*runtime, config);
         return true;
       });
 }
 
 bool index_service::set_diskann_build_threads(const std::string &index_name,
                                               uint32_t diskann_build_threads) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  if (pending_changes_contain_index(m_pending_changes, index_name))
-    return false;
-
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, true, [&](backend *runtime, index_config *config) {
         if (!runtime->set_diskann_build_threads(diskann_build_threads)) {
           return false;
         }
-        sync_diskann_build_config_from_backend(*runtime, &config_it->second);
+        sync_diskann_build_config_from_backend(*runtime, config);
         return true;
       });
 }
@@ -5999,19 +5978,13 @@ bool index_service::set_diskann_build_mode(
 
 bool index_service::set_diskann_search_complexity(
     const std::string &index_name, uint32_t diskann_search_complexity) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, false, [&](backend *runtime, index_config *config) {
         if (!runtime->set_diskann_search_complexity(
                 diskann_search_complexity)) {
           return false;
         }
-        config_it->second.diskann_search_complexity =
+        config->diskann_search_complexity =
             runtime->diskann_search_complexity();
         return true;
       });
@@ -6019,18 +5992,12 @@ bool index_service::set_diskann_search_complexity(
 
 bool index_service::set_diskann_search_beamwidth(
     const std::string &index_name, uint32_t diskann_search_beamwidth) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, false, [&](backend *runtime, index_config *config) {
         if (!runtime->set_diskann_search_beamwidth(diskann_search_beamwidth)) {
           return false;
         }
-        config_it->second.diskann_search_beamwidth =
+        config->diskann_search_beamwidth =
             runtime->diskann_search_beamwidth();
         return true;
       });
@@ -6038,21 +6005,13 @@ bool index_service::set_diskann_search_beamwidth(
 
 bool index_service::set_diskann_pq_code_budget_size(
     const std::string &index_name, uint64_t diskann_pq_code_budget_size) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  if (pending_changes_contain_index(m_pending_changes, index_name))
-    return false;
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, true, [&](backend *runtime, index_config *config) {
         if (!runtime->set_diskann_pq_code_budget_size(
                 diskann_pq_code_budget_size)) {
           return false;
         }
-        config_it->second.diskann_pq_code_budget_size =
+        config->diskann_pq_code_budget_size =
             runtime->diskann_pq_code_budget_size();
         return true;
       });
@@ -6060,41 +6019,24 @@ bool index_service::set_diskann_pq_code_budget_size(
 
 bool index_service::set_diskann_disk_pq_dims(const std::string &index_name,
                                              uint32_t diskann_disk_pq_dims) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  if (pending_changes_contain_index(m_pending_changes, index_name))
-    return false;
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, true, [&](backend *runtime, index_config *config) {
         if (!runtime->set_diskann_disk_pq_dims(diskann_disk_pq_dims)) {
           return false;
         }
-        config_it->second.diskann_disk_pq_dims =
-            runtime->diskann_disk_pq_dims();
+        config->diskann_disk_pq_dims = runtime->diskann_disk_pq_dims();
         return true;
       });
 }
 
 bool index_service::set_diskann_accelerate_build(
     const std::string &index_name, bool diskann_accelerate_build) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  if (pending_changes_contain_index(m_pending_changes, index_name))
-    return false;
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, true, [&](backend *runtime, index_config *config) {
         if (!runtime->set_diskann_accelerate_build(diskann_accelerate_build)) {
           return false;
         }
-        config_it->second.diskann_accelerate_build =
+        config->diskann_accelerate_build =
             runtime->diskann_accelerate_build();
         return true;
       });
@@ -6102,42 +6044,24 @@ bool index_service::set_diskann_accelerate_build(
 
 bool index_service::set_diskann_shuffle_build(const std::string &index_name,
                                               bool diskann_shuffle_build) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  if (pending_changes_contain_index(m_pending_changes, index_name))
-    return false;
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, true, [&](backend *runtime, index_config *config) {
         if (!runtime->set_diskann_shuffle_build(diskann_shuffle_build)) {
           return false;
         }
-        config_it->second.diskann_shuffle_build =
-            runtime->diskann_shuffle_build();
+        config->diskann_shuffle_build = runtime->diskann_shuffle_build();
         return true;
       });
 }
 
 bool index_service::set_diskann_use_bfs_cache(const std::string &index_name,
                                               bool diskann_use_bfs_cache) {
-  auto config_it = m_index_configs.find(index_name);
-  auto index_it = m_indexes.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end())) {
-    return false;
-  }
-  if (pending_changes_contain_index(m_pending_changes, index_name))
-    return false;
-  return apply_backend_config_exclusively(
-      index_it->second, [&](backend *runtime) {
+  return apply_backend_config_mutation(
+      index_name, true, [&](backend *runtime, index_config *config) {
         if (!runtime->set_diskann_use_bfs_cache(diskann_use_bfs_cache)) {
           return false;
         }
-        config_it->second.diskann_use_bfs_cache =
-            runtime->diskann_use_bfs_cache();
+        config->diskann_use_bfs_cache = runtime->diskann_use_bfs_cache();
         return true;
       });
 }

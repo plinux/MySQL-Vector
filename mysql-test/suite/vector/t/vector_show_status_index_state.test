@@ -17,9 +17,14 @@ SHOW VECTOR STATUS FOR INDEX idx_mem
   WHERE Variable_name LIKE '%.index_identity'
      OR Variable_name LIKE '%.%generation';
 SHOW VECTOR STATUS LIKE 'idx_ext.metric';
+--source suite/vector/include/vector_normalize_resource_threads.inc
 SHOW VECTOR STATUS FOR INDEX idx_ext
   WHERE Variable_name NOT LIKE '%.index_identity'
-    AND Variable_name NOT LIKE '%.%generation';
+    AND Variable_name NOT LIKE '%.%generation'
+    AND Variable_name NOT LIKE '%.backend_build_resource_%';
+--source suite/vector/include/vector_normalize_build_resources.inc
+SHOW VECTOR STATUS FOR INDEX idx_ext
+  WHERE Variable_name LIKE '%.backend_build_resource_%';
 --source suite/vector/include/vector_normalize_status_generations.inc
 SHOW VECTOR STATUS FOR INDEX idx_ext
   WHERE Variable_name LIKE '%.index_identity'

@@ -66,6 +66,7 @@ SELECT VEC_INDEX_LIST();
 RENAME TABLE t_vector_ddl_rename TO t_vector_ddl_renamed;
 SELECT VEC_INDEX_LIST();
 SELECT VEC_INDEX_SEARCH('test.t_vector_ddl_renamed.v', VEC_FROMTEXT('[5,5]'), 1);
+--source suite/vector/include/vector_normalize_resource_threads.inc
 SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
   WHERE Variable_name != 'test.t_vector_ddl_renamed.v.apply_latency_ms'
   AND Variable_name NOT LIKE
@@ -73,7 +74,11 @@ SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
   AND Variable_name NOT LIKE
       'test.t_vector_ddl_renamed.v.diskann_segment_build_%_ms'
   AND Variable_name NOT LIKE '%.index_identity'
-  AND Variable_name NOT LIKE '%.%generation';
+  AND Variable_name NOT LIKE '%.%generation'
+  AND Variable_name NOT LIKE '%.backend_build_resource_%';
+--source suite/vector/include/vector_normalize_build_resources.inc
+SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
+  WHERE Variable_name LIKE '%.backend_build_resource_%';
 --source suite/vector/include/vector_normalize_status_generations.inc
 SHOW VECTOR STATUS FOR INDEX 'test.t_vector_ddl_renamed.v'
   WHERE Variable_name LIKE '%.index_identity'

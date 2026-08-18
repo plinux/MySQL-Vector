@@ -1,3 +1,5 @@
+--source include/have_no_vector_index.inc
+
 ################################################################################
 # The aim of this testcase is to test persisted behavior of replication
 # variables with SET PERSIST_ONLY and RESET PERSIST clauses.

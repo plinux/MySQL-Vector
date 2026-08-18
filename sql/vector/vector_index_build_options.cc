@@ -79,7 +79,9 @@ ulong opt_vector_index_consistency_mode =
     static_cast<ulong>(vector_index::index_consistency_mode::kTransactional);
 ulonglong opt_vector_entry_cache_size = 256ULL * 1024ULL * 1024ULL;
 ulonglong opt_vector_pending_cache_size = 64ULL * 1024ULL * 1024ULL;
-ulonglong opt_vector_build_memory_size = 1024ULL * 1024ULL * 1024ULL;
+ulonglong opt_vector_build_memory_size = 0;
+ulonglong opt_vector_build_memory_reserve_size = 256ULL * 1024ULL * 1024ULL;
+ulong opt_vector_build_resource_wait_timeout = 0;
 ulonglong opt_vector_diskann_build_memory_size =
     1024ULL * 1024ULL * 1024ULL;
 ulonglong opt_vector_diskann_raw_segment_size = 256ULL * 1024ULL * 1024ULL;

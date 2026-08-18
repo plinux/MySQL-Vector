@@ -1228,37 +1228,36 @@ bool apply_index_tuning_locked(const std::string &index_name,
   return true;
 }
 
-bool reapply_metadata_tuning_locked(
-    const std::vector<vector_index_metadata_store::metadata_row> &rows) {
-  for (const auto &row : rows) {
-    vector_index_registry::index_info info;
-    info.provider = vector_index::backend_provider_to_string(row.provider);
-    info.search_ef = row.search_ef;
-    info.hnsw_m = row.hnsw_m;
-    info.hnsw_ef_construction = row.hnsw_ef_construction;
-    info.hnsw_build_threads = row.hnsw_build_threads;
-    info.faiss_nlist = row.faiss_nlist;
-    info.faiss_nprobe = row.faiss_nprobe;
-    info.faiss_pq_m = row.faiss_pq_m;
-    info.faiss_pq_bits = row.faiss_pq_bits;
-    info.faiss_build_threads = row.faiss_build_threads;
-    info.diskann_max_degree = row.diskann_max_degree;
-    info.diskann_build_complexity = row.diskann_build_complexity;
-    info.diskann_build_threads = row.diskann_build_threads;
-    info.diskann_build_mode_value = row.diskann_build_mode_value;
-    info.diskann_build_mode_specified = row.diskann_build_mode_specified;
-    info.diskann_search_complexity = row.diskann_search_complexity;
-    info.diskann_search_beamwidth = row.diskann_search_beamwidth;
-    info.diskann_pq_code_budget_size = row.diskann_pq_code_budget_size;
-    info.diskann_disk_pq_dims = row.diskann_disk_pq_dims;
-    info.diskann_accelerate_build = row.diskann_accelerate_build;
-    info.diskann_shuffle_build = row.diskann_shuffle_build;
-    info.diskann_use_bfs_cache = row.diskann_use_bfs_cache;
-    if (!apply_index_tuning_locked(row.index_name, info)) {
-      return false;
-    }
-  }
-  return true;
+vector_index::index_service::index_config config_from_metadata_row(
+    const vector_index_metadata_store::metadata_row &row) {
+  vector_index::index_service::index_config config;
+  config.dimension = row.dimension;
+  config.metric = row.metric;
+  config.mode = row.mode;
+  config.provider = row.provider;
+  config.consistency_mode = row.consistency_mode;
+  config.search_ef = row.search_ef;
+  config.hnsw_m = row.hnsw_m;
+  config.hnsw_ef_construction = row.hnsw_ef_construction;
+  config.hnsw_build_threads = row.hnsw_build_threads;
+  config.faiss_nlist = row.faiss_nlist;
+  config.faiss_nprobe = row.faiss_nprobe;
+  config.faiss_pq_m = row.faiss_pq_m;
+  config.faiss_pq_bits = row.faiss_pq_bits;
+  config.faiss_build_threads = row.faiss_build_threads;
+  config.diskann_max_degree = row.diskann_max_degree;
+  config.diskann_build_complexity = row.diskann_build_complexity;
+  config.diskann_build_threads = row.diskann_build_threads;
+  config.diskann_build_mode_value = row.diskann_build_mode_value;
+  config.diskann_build_mode_specified = row.diskann_build_mode_specified;
+  config.diskann_search_complexity = row.diskann_search_complexity;
+  config.diskann_search_beamwidth = row.diskann_search_beamwidth;
+  config.diskann_pq_code_budget_size = row.diskann_pq_code_budget_size;
+  config.diskann_disk_pq_dims = row.diskann_disk_pq_dims;
+  config.diskann_accelerate_build = row.diskann_accelerate_build;
+  config.diskann_shuffle_build = row.diskann_shuffle_build;
+  config.diskann_use_bfs_cache = row.diskann_use_bfs_cache;
+  return config;
 }
 
 void assign_config_to_metadata_row(
@@ -1415,12 +1414,8 @@ bool apply_metadata_rows_locked(
   g_index_owner_schemas.clear();
   for (const auto &row : rows) {
     if (row.owner_schema.empty()) return false;
-    vector_index::index_service::index_config config;
-    config.dimension = row.dimension;
-    config.metric = row.metric;
-    config.mode = row.mode;
-    config.provider = row.provider;
-    config.consistency_mode = row.consistency_mode;
+    const vector_index::index_service::index_config config =
+        config_from_metadata_row(row);
     if (!g_index_service.register_index(row.index_name, config)) {
       return false;
     }
@@ -1967,12 +1962,6 @@ bool ensure_metadata_available_locked() {
       g_next_change_log_sequence = row.sequence + 1;
     }
   }
-  if (!reapply_metadata_tuning_locked(rows)) {
-    return fail_stop_truth_artifact_locked(
-        truth_store, "metadata", "metadata_tuning_restore_failed",
-        g_manifest_metadata_checkpoint);
-  }
-
   std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows;
   if (!truth_store->load_prepared(&prepared_rows)) {
     vector_status::record_metadata_load_failure();
@@ -2607,8 +2596,6 @@ bool restore_runtime_state_locked(
   for (const std::string &index_name : lagging_index_names) {
     if (!g_index_service.rebuild_index(index_name)) return false;
   }
-  if (!reapply_metadata_tuning_locked(metadata_rows)) return false;
-
   g_manifest_metadata_checkpoint = metadata_rows.size();
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
   if (!snapshot_committed_rows_locked(&committed_rows)) return false;

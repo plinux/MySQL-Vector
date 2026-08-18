@@ -752,6 +752,9 @@ class index_service {
   static void remove_pending_change_spills(
       const std::vector<pending_change> &changes, size_t first_change);
   void clear_pending_state(uint64_t txn_id);
+  bool apply_backend_config_mutation(
+      const std::string &index_name, bool require_no_pending_changes,
+      const std::function<bool(backend *, index_config *)> &mutation);
 
   bool register_index_impl(const std::string &index_name, index_config config,
                            std::unique_ptr<backend> backend);

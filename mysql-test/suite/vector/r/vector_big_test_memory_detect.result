@@ -1,0 +1,11 @@
+v2_detected=1
+v2_sufficient=1
+v2_available_kib=1572864
+v2_required_kib=1310720
+v1_detected=1
+v1_sufficient=0
+v1_available_kib=524288
+v1_required_kib=655360
+missing_detected=0
+missing_sufficient=0
+missing_available_kib=0

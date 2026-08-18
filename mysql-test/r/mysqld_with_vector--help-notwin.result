@@ -1631,16 +1631,64 @@ The following options may be given as the first argument:
  Turns on additional validation of authentication plugins
  assigned to user accounts. 
  (Defaults to on; use --skip-validate-user-plugins to disable.)
+ --vector-batch-search-threads[=#] 
+ Default worker count for vector batch search across all
+ backends. Use 0 for automatic hardware-thread based
+ sizing.
+ --vector-build-memory-reserve-size=# 
+ Memory in bytes reserved outside the process-wide vector
+ build budget. Automatic and explicit build budgets are
+ both clipped by this reserve.
+ --vector-build-memory-size=# 
+ Process-wide vector index build memory budget in bytes.
+ Use 0 to derive the budget from the current cgroup or
+ host resource envelope.
+ --vector-build-pipeline-max-tasks=# 
+ Maximum concurrent segment build tasks for one vector
+ index rebuild.
+ --vector-build-pipeline-min-rows=# 
+ Row-count threshold that makes AUTO vector build pipeline
+ choose the segmented path. Use 0 to disable this trigger.
+ --vector-build-pipeline-min-size=# 
+ Vector payload byte threshold that makes AUTO vector
+ build pipeline choose the segmented path. Use 0 to
+ disable this trigger.
+ --vector-build-pipeline-mode=name 
+ Vector build pipeline selector. AUTO chooses segmented
+ build for large inputs, DIRECT forces the short
+ single-backend path, and SEGMENTED forces the segment
+ task pipeline.
+ --vector-build-pipeline-progress-interval=# 
+ Minimum interval in seconds between vector build pipeline
+ progress updates.
+ --vector-build-segment-max-rows=# 
+ Maximum row count for one vector build raw segment.
+ --vector-build-segment-target-size=# 
+ Target vector payload bytes for one vector build raw
+ segment.
  --vector-default-library=name 
  Default vector library used when CREATE VECTOR INDEX or
  VEC_INDEX_CREATE() omits the provider. Empty means no
  default provider is available.
- --vector-build-memory-size=# 
- Generic vector index build scratch memory budget in
- bytes. Use 0 for no MySQL-layer build buffer limit.
+ --vector-diskann-accelerate-build 
+ Allow DiskANN offline build to use accelerated build
+ paths when the linked adapter supports them.
+ --vector-diskann-build-blas-threads[=#] 
+ PQ and numeric library worker count used inside DiskANN
+ offline build. Use 0 to leave inner PQ and
+ numeric-library thread selection unchanged.
+ --vector-diskann-build-complexity=# 
+ Default DiskANN build complexity for new vector indexes.
  --vector-diskann-build-memory-size=# 
- DiskANN offline build memory budget in bytes. The backend
- maps this budget to DiskANN's build-time memory limit.
+ DiskANN offline build memory budget in bytes. Use 0 to
+ derive the budget from currently available build memory
+ when the platform exposes it; otherwise the backend falls
+ back to the segment payload size.
+ --vector-diskann-build-mode=name 
+ Default build mode for DiskANN vector indexes without an
+ explicit index-level build mode. AUTO tries offline build
+ first when available, then serial insert through the
+ official DiskANN API.
  --vector-diskann-build-threads[=#] 
  Default worker count for DiskANN vector index bulk build
  and rebuild. Use 0 for automatic hardware-thread based
@@ -1683,6 +1731,52 @@ The following options may be given as the first argument:
  --vector-diskann-raw-segment-size=# 
  Maximum DiskANN offline raw segment size in bytes before
  the vector builder rolls over to another segment.
+ --vector-diskann-search-beamwidth=# 
+ DiskANN offline adapter search beamwidth. Higher values
+ expand more graph frontier nodes per search step and can
+ improve recall at extra CPU and I/O cost.
+ --vector-diskann-search-cache-ratio=# 
+ DiskANN native runtime search-cache budget ratio relative
+ to raw vector bytes when vector_diskann_search_cache_size
+ is 0.
+ --vector-diskann-search-cache-size=# 
+ DiskANN native runtime search-cache budget in bytes. Use
+ 0 to derive the budget from
+ vector_diskann_search_cache_ratio.
+ --vector-diskann-search-complexity=# 
+ Default DiskANN query-time search list size for new
+ vector indexes.
+ --vector-diskann-search-io-limit=# 
+ DiskANN offline adapter search I/O operation limit used
+ when loading a disk index. Use 0 for no MySQL-imposed
+ limit.
+ --vector-diskann-search-profile=name 
+ DiskANN segmented search profile. MANUAL uses the
+ explicit DiskANN search complexity, FAST favors lower
+ search cost, BALANCED targets a middle recall/throughput
+ tradeoff, and HIGH_RECALL favors larger search lists.
+ --vector-diskann-search-threads[=#] 
+ DiskANN override for vector batch search worker count.
+ Use 0 to inherit vector_batch_search_threads.
+ --vector-diskann-segment-profile=name 
+ DiskANN standalone raw-segment profile. MANUAL uses the
+ explicit vector build segment variables, THROUGHPUT
+ favors larger segments, BALANCED uses a middle segment
+ size, and HIGH_RECALL favors smaller high-dimensional
+ segments.
+ --vector-diskann-segmented-serving 
+ Allow DiskANN raw-only standalone/offline builds to keep
+ one serving backend per raw segment and fan out search
+ across segments. Disable this only for single-index
+ diagnostic fallback builds.
+ (Defaults to on; use --skip-vector-diskann-segmented-serving to disable.)
+ --vector-diskann-shuffle-build 
+ Allow DiskANN offline build to shuffle build input
+ batches when the linked adapter supports it.
+ --vector-diskann-use-bfs-cache 
+ Force DiskANN offline load to use BFS cache. DiskANN
+ offline load also uses BFS cache automatically when
+ search cache nodes are configured.
  --vector-entry-cache-size=# 
  SQL-layer committed vector cache budget in bytes. Use 0
  to disable committed vector payload caching and read from
@@ -1690,6 +1784,14 @@ The following options may be given as the first argument:
  --vector-faiss-build-threads[=#] 
  Default OpenMP worker count for FAISS vector index build
  and rebuild. Use 0 for FAISS/OpenMP automatic sizing.
+ --vector-faiss-keep-loaded 
+ Keep FAISS external serving indexes loaded after snapshot
+ writes. Disable only for diagnostics that need to
+ exercise snapshot fallback search.
+ (Defaults to on; use --skip-vector-faiss-keep-loaded to disable.)
+ --vector-faiss-search-threads[=#] 
+ FAISS override for vector batch search worker count. Use
+ 0 to inherit vector_batch_search_threads.
  --vector-faiss-train-size=# 
  FAISS IVF/PQ training sample budget in bytes. Use 0 to
  train from the full vector set.
@@ -1700,9 +1802,29 @@ The following options may be given as the first argument:
  --vector-hnsw-index-memory-size=# 
  Estimated hnswlib native index memory limit in bytes. Use
  0 to disable the pre-build memory estimate limit.
+ --vector-hnsw-search-threads[=#] 
+ hnswlib override for vector batch search worker count.
+ Use 0 to inherit vector_batch_search_threads.
+ --vector-index-consistency-mode=name 
+ Default consistency mode for new named vector indexes.
+ TRANSACTIONAL uses the MySQL truth-store and transaction
+ path. STANDALONE builds an independent non-transactional
+ vector index and does not persist vector payload rows in
+ the truth-store.
+ --vector-lazy-external-runtime 
+ Unload external vector serving runtime after build or
+ recovery and reload it lazily on the next search.
  --vector-pending-cache-size=# 
  Total in-memory budget in bytes for uncommitted vector
  payloads before transaction-local spill files are used.
+ Use 0 for no MySQL-layer pending payload limit.
+ --vector-search-batch-count=# 
+ Maximum query vector count accepted by
+ VEC_INDEX_SEARCH_BATCH().
+ --vector-search-batch-result-count=# 
+ Maximum result slot count accepted by
+ VEC_INDEX_SEARCH_BATCH(), computed as query_count *
+ top_k.
  -v, --verbose       Used with --help option for detailed help.
  -V, --version       Output version information and exit.
  --wait-timeout=#    The number of seconds the server waits for activity on a
@@ -2002,7 +2124,7 @@ performance-schema-max-socket-classes 10
 performance-schema-max-socket-instances -1
 performance-schema-max-sql-text-length 1024
 performance-schema-max-stage-classes 175
-performance-schema-max-statement-classes 219
+performance-schema-max-statement-classes 220
 performance-schema-max-statement-stack 10
 performance-schema-max-table-handles -1
 performance-schema-max-table-instances -1
@@ -2146,9 +2268,22 @@ updatable-views-with-limit YES
 upgrade AUTO
 validate-config FALSE
 validate-user-plugins TRUE
-vector-build-memory-size 1073741824
-vector-default-library hnsw
+vector-batch-search-threads 32
+vector-build-memory-reserve-size 268435456
+vector-build-memory-size 0
+vector-build-pipeline-max-tasks 1
+vector-build-pipeline-min-rows 1048576
+vector-build-pipeline-min-size 4294967296
+vector-build-pipeline-mode auto
+vector-build-pipeline-progress-interval 10
+vector-build-segment-max-rows 18446744073709551615
+vector-build-segment-target-size 2147483648
+vector-default-library ####
+vector-diskann-accelerate-build FALSE
+vector-diskann-build-blas-threads 1
+vector-diskann-build-complexity 64
 vector-diskann-build-memory-size 1073741824
+vector-diskann-build-mode auto
 vector-diskann-build-threads 0
 vector-diskann-cache-nodes 0
 vector-diskann-disk-pq-dims 0
@@ -2159,12 +2294,30 @@ vector-diskann-pq-code-budget-ratio 0.125
 vector-diskann-pq-code-budget-size 0
 vector-diskann-pq-runtime native_auto
 vector-diskann-raw-segment-size 268435456
+vector-diskann-search-beamwidth 16
+vector-diskann-search-cache-ratio 0.1
+vector-diskann-search-cache-size 0
+vector-diskann-search-complexity 64
+vector-diskann-search-io-limit 0
+vector-diskann-search-profile manual
+vector-diskann-search-threads 0
+vector-diskann-segment-profile manual
+vector-diskann-segmented-serving TRUE
+vector-diskann-shuffle-build FALSE
+vector-diskann-use-bfs-cache FALSE
 vector-entry-cache-size 268435456
 vector-faiss-build-threads 0
+vector-faiss-keep-loaded TRUE
+vector-faiss-search-threads 0
 vector-faiss-train-size 0
 vector-hnsw-build-threads 0
 vector-hnsw-index-memory-size 0
+vector-hnsw-search-threads 0
+vector-index-consistency-mode transactional
+vector-lazy-external-runtime FALSE
 vector-pending-cache-size 67108864
+vector-search-batch-count 1024
+vector-search-batch-result-count 65536
 verbose TRUE
 wait-timeout 28800
 windowing-use-high-precision TRUE

@@ -7,7 +7,7 @@
 
 --let $truth_store_backend= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_backend'", Value, 1)
 --let $truth_store_transactional= query_get_value("SHOW GLOBAL STATUS LIKE 'Vector_truth_store_transactional'", Value, 1)
---replace_regex /[0-9]+/<num>/
+--replace_regex /cgroup_v[12]|host/<source>/ /[0-9]+/<num>/
 SHOW VECTOR STATUS;
 --replace_regex /[0-9]+/<num>/
 SHOW VECTOR STATUS LIKE 'Vector_pending%';
@@ -85,7 +85,13 @@ SHOW GLOBAL STATUS LIKE 'Vector_backend_%';
 SELECT VEC_INDEX_CREATE('idx_show_filter', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name LIKE 'idx_show_filter.%'
-  AND Value = '0';
+  AND Value = '0'
+  AND Variable_name <>
+      'idx_show_filter.backend_build_resource_memory_current';
+--replace_regex /[0-9]+/<num>/
+SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name =
+      'idx_show_filter.backend_build_resource_memory_current';
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'
   AND Variable_name = 'idx_show_filter.recover_fallback_count'
   AND Value = '0';

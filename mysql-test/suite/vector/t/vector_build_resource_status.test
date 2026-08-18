@@ -1,0 +1,10 @@
+--source include/have_vector_index.inc
+
+--echo # Process-wide vector build resource status is registered.
+SELECT VARIABLE_NAME
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME LIKE 'Vector_build_resource_%'
+ORDER BY VARIABLE_NAME;
+
+--replace_regex /cgroup_v[12]|host/<source>/ /[0-9]+/<value>/
+SHOW VECTOR STATUS LIKE 'Vector_build_resource_%';

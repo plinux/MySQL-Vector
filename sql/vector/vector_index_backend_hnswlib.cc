@@ -56,6 +56,24 @@ using vector_index::saturated_mul_size;
 
 constexpr size_t k_max_hnsw_build_threads = vector_index::k_max_build_threads;
 constexpr size_t k_hnsw_build_chunk_rows = 4096;
+constexpr uint32_t k_hnsw_build_memory_multiplier = 4;
+constexpr uint64_t k_hnsw_build_fixed_memory = 64ULL * 1024ULL * 1024ULL;
+
+class scoped_thread_budget {
+ public:
+  scoped_thread_budget(uint32_t *target, uint32_t value)
+      : m_target(target), m_previous(target == nullptr ? 0 : *target) {
+    if (m_target != nullptr) *m_target = value;
+  }
+
+  ~scoped_thread_budget() {
+    if (m_target != nullptr) *m_target = m_previous;
+  }
+
+ private:
+  uint32_t *m_target;
+  uint32_t m_previous;
+};
 
 size_t read_build_threads(size_t entry_count, uint32_t configured_threads) {
   return vector_index::effective_build_scheduler_threads(entry_count,
@@ -998,29 +1016,78 @@ bool hnswlib_backend::rebuild_from_committed_entries(
     clear_build_diagnostics();
     return entries.empty();
   }
+  const uint32_t requested_threads = static_cast<uint32_t>(
+      read_build_threads(std::max<size_t>(1, entries.size()),
+                         m_hnsw_build_threads));
+  build_resource_lease resource_lease;
+  if (!acquire_build_resources(entries.size(), k_hnsw_build_memory_multiplier,
+                               k_hnsw_build_fixed_memory, 0,
+                               requested_threads, &resource_lease)) {
+    clear_build_diagnostics();
+    return false;
+  }
+  scoped_thread_budget thread_budget(&m_hnsw_build_threads,
+                                     resource_lease.cpu_slots());
   if (!native_available()) {
     if (!rebuild_memory_fallback_from_entries(entries)) return false;
     record_build_diagnostics("entries", entries.size(), 1);
+    backend::record_build_resource_diagnostics(resource_lease,
+                                               &m_last_build_diagnostics);
     return true;
   }
   if (!rebuild_native_from_entries(entries)) return false;
   record_build_diagnostics("entries", entries.size(),
                            read_build_threads(entries.size(),
                                               m_hnsw_build_threads));
+  backend::record_build_resource_diagnostics(resource_lease,
+                                             &m_last_build_diagnostics);
   return true;
 }
 
 bool hnswlib_backend::rebuild_from_committed_entries_from_reader(
     const committed_entry_reader &reader) {
-  if (m_mode != backend_mode::kMemory) {
+  return rebuild_from_committed_entry_source({reader, 0, false});
+}
+
+bool hnswlib_backend::load_committed_entries_from_source(
+    const committed_entry_source &source) {
+  return rebuild_from_committed_entry_source(source);
+}
+
+bool hnswlib_backend::recover_committed_entries_from_source(
+    const committed_entry_source &source) {
+  if (!recover()) return false;
+  return rebuild_from_committed_entry_source(source);
+}
+
+bool hnswlib_backend::rebuild_from_committed_entry_source(
+    const committed_entry_source &source) {
+  if (m_mode != backend_mode::kMemory || !source.reader) {
     clear_build_diagnostics();
     return false;
   }
+  const uint32_t requested_threads = static_cast<uint32_t>(
+      source.has_exact_row_count
+          ? read_build_threads(std::max<size_t>(1, source.exact_row_count),
+                               m_hnsw_build_threads)
+          : effective_build_scheduler_thread_budget(m_hnsw_build_threads));
+  build_resource_lease resource_lease;
+  if (!acquire_build_resources(
+          source.has_exact_row_count ? source.exact_row_count : 0,
+          k_hnsw_build_memory_multiplier, k_hnsw_build_fixed_memory, 0,
+          requested_threads, &resource_lease)) {
+    clear_build_diagnostics();
+    return false;
+  }
+  scoped_thread_budget thread_budget(&m_hnsw_build_threads,
+                                     resource_lease.cpu_slots());
   std::unique_ptr<memory_backend> rebuilt_fallback;
   std::unique_ptr<hnswlib_native_state> rebuilt_native;
   size_t entry_count = 0;
-  if (!build_state_from_reader(reader, &rebuilt_fallback, &rebuilt_native,
-                               &entry_count)) {
+  if (!build_state_from_reader(source.reader, &rebuilt_fallback,
+                               &rebuilt_native, &entry_count) ||
+      (source.has_exact_row_count &&
+       entry_count != source.exact_row_count)) {
     return false;
   }
   const bool used_native = rebuilt_native != nullptr;
@@ -1029,6 +1096,8 @@ bool hnswlib_backend::rebuild_from_committed_entries_from_reader(
   record_build_diagnostics(
       "reader", entry_count,
       used_native ? read_build_threads(entry_count, m_hnsw_build_threads) : 1);
+  backend::record_build_resource_diagnostics(resource_lease,
+                                             &m_last_build_diagnostics);
   return true;
 }
 
@@ -1062,6 +1131,19 @@ bool hnswlib_backend::rebuild_from_raw_segments(
     return false;
   }
 
+  const uint32_t requested_threads = static_cast<uint32_t>(
+      read_build_threads(std::max<size_t>(1, total_rows),
+                         m_hnsw_build_threads));
+  build_resource_lease resource_lease;
+  if (!acquire_build_resources(total_rows, k_hnsw_build_memory_multiplier,
+                               k_hnsw_build_fixed_memory, 0,
+                               requested_threads, &resource_lease)) {
+    clear_build_diagnostics();
+    return false;
+  }
+  scoped_thread_budget thread_budget(&m_hnsw_build_threads,
+                                     resource_lease.cpu_slots());
+
   std::unique_ptr<hnswlib_native_state> rebuilt_native;
   size_t entry_count = 0;
   if (!build_state_from_raw_segments(segments, total_rows, &rebuilt_native,
@@ -1075,6 +1157,8 @@ bool hnswlib_backend::rebuild_from_raw_segments(
       "raw_blocks", entry_count,
       read_build_threads(entry_count, m_hnsw_build_threads), segments.size(),
       segments.empty() ? 0 : 1);
+  backend::record_build_resource_diagnostics(resource_lease,
+                                             &m_last_build_diagnostics);
   return true;
 }
 

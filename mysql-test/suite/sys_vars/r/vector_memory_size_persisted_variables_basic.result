@@ -9,6 +9,7 @@ WHERE VARIABLE_NAME IN (
 'vector_entry_cache_size',
 'vector_pending_cache_size',
 'vector_build_memory_size',
+'vector_build_memory_reserve_size',
 'vector_build_pipeline_min_size',
 'vector_build_segment_target_size',
 'vector_diskann_build_memory_size',
@@ -19,6 +20,7 @@ WHERE VARIABLE_NAME IN (
 'vector_hnsw_index_memory_size')
 ORDER BY VARIABLE_NAME;
 VARIABLE_NAME
+vector_build_memory_reserve_size
 vector_build_memory_size
 vector_build_pipeline_min_size
 vector_build_segment_target_size
@@ -36,6 +38,7 @@ include/assert.inc [Expect vector size variables not to be persisted before SET 
 SET PERSIST vector_entry_cache_size=1048576;
 SET PERSIST vector_pending_cache_size=2097152;
 SET PERSIST vector_build_memory_size=3145728;
+SET PERSIST vector_build_memory_reserve_size=4194304;
 SET PERSIST vector_build_pipeline_min_size=4194304;
 SET PERSIST vector_build_segment_target_size=5242880;
 SET PERSIST vector_diskann_build_memory_size=6291456;
@@ -51,6 +54,7 @@ WHERE VARIABLE_NAME IN (
 'vector_entry_cache_size',
 'vector_pending_cache_size',
 'vector_build_memory_size',
+'vector_build_memory_reserve_size',
 'vector_build_pipeline_min_size',
 'vector_build_segment_target_size',
 'vector_diskann_build_memory_size',
@@ -61,6 +65,7 @@ WHERE VARIABLE_NAME IN (
 'vector_hnsw_index_memory_size')
 ORDER BY VARIABLE_NAME;
 VARIABLE_NAME	VARIABLE_VALUE
+vector_build_memory_reserve_size	4194304
 vector_build_memory_size	3145728
 vector_build_pipeline_min_size	4194304
 vector_build_segment_target_size	5242880
@@ -85,6 +90,7 @@ WHERE vi.VARIABLE_NAME IN (
 'vector_entry_cache_size',
 'vector_pending_cache_size',
 'vector_build_memory_size',
+'vector_build_memory_reserve_size',
 'vector_build_pipeline_min_size',
 'vector_build_segment_target_size',
 'vector_diskann_build_memory_size',
@@ -95,6 +101,7 @@ WHERE vi.VARIABLE_NAME IN (
 'vector_hnsw_index_memory_size')
 ORDER BY vi.VARIABLE_NAME;
 VARIABLE_NAME	VARIABLE_SOURCE	VARIABLE_VALUE	VARIABLE_VALUE
+vector_build_memory_reserve_size	PERSISTED	4194304	4194304
 vector_build_memory_size	PERSISTED	3145728	3145728
 vector_build_pipeline_min_size	PERSISTED	4194304	4194304
 vector_build_segment_target_size	PERSISTED	5242880	5242880
@@ -110,6 +117,7 @@ vector_pending_cache_size	PERSISTED	2097152	2097152
 RESET PERSIST IF EXISTS vector_entry_cache_size;
 RESET PERSIST IF EXISTS vector_pending_cache_size;
 RESET PERSIST IF EXISTS vector_build_memory_size;
+RESET PERSIST IF EXISTS vector_build_memory_reserve_size;
 RESET PERSIST IF EXISTS vector_build_pipeline_min_size;
 RESET PERSIST IF EXISTS vector_build_segment_target_size;
 RESET PERSIST IF EXISTS vector_diskann_build_memory_size;

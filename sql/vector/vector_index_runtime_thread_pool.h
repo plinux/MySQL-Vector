@@ -116,6 +116,8 @@ class scoped_omp_threads {
 
  private:
   int m_previous_threads{0};
+  int m_previous_dynamic{0};
+  int m_previous_max_active_levels{1};
   bool m_active{false};
 };
 

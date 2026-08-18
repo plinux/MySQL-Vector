@@ -635,6 +635,14 @@ scoped_omp_threads::scoped_omp_threads(size_t thread_count) {
       std::min<size_t>(thread_count,
                        static_cast<size_t>(std::numeric_limits<int>::max()));
   m_previous_threads = omp_get_max_threads();
+  m_previous_dynamic = omp_get_dynamic();
+#if _OPENMP >= 200805
+  m_previous_max_active_levels = omp_get_max_active_levels();
+#endif
+  omp_set_dynamic(0);
+#if _OPENMP >= 200805
+  omp_set_max_active_levels(1);
+#endif
   omp_set_num_threads(static_cast<int>(limited));
   m_active = true;
 #else
@@ -644,7 +652,13 @@ scoped_omp_threads::scoped_omp_threads(size_t thread_count) {
 
 scoped_omp_threads::~scoped_omp_threads() {
 #ifdef _OPENMP
-  if (m_active) omp_set_num_threads(m_previous_threads);
+  if (m_active) {
+    omp_set_num_threads(m_previous_threads);
+#if _OPENMP >= 200805
+    omp_set_max_active_levels(m_previous_max_active_levels);
+#endif
+    omp_set_dynamic(m_previous_dynamic);
+  }
 #endif
 }
 
