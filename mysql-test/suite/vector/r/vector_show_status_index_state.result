@@ -158,6 +158,13 @@ BACKEND_HEALTH	idx_ext.backend_build_cache_nodes	0
 BACKEND_HEALTH	idx_ext.backend_build_manifest_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_offline_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_load_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_reader_count_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_training_copy_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_train_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_add_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_persist_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_training_rows	0
+BACKEND_HEALTH	idx_ext.backend_build_reader_passes	1
 BACKEND_HEALTH	idx_ext.backend_build_fallback_reason	
 BACKEND_HEALTH	idx_ext.scheduler_path	faiss_scheduler
 BACKEND_HEALTH	idx_ext.scheduler_segment_count	1
@@ -272,6 +279,13 @@ BACKEND_HEALTH	idx_ext.backend_build_cache_nodes	0
 BACKEND_HEALTH	idx_ext.backend_build_manifest_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_offline_ms	0
 BACKEND_HEALTH	idx_ext.backend_build_load_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_reader_count_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_training_copy_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_train_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_add_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_persist_ms	0
+BACKEND_HEALTH	idx_ext.backend_build_training_rows	0
+BACKEND_HEALTH	idx_ext.backend_build_reader_passes	1
 BACKEND_HEALTH	idx_ext.backend_build_fallback_reason	
 BACKEND_HEALTH	idx_ext.scheduler_path	faiss_scheduler
 BACKEND_HEALTH	idx_ext.scheduler_segment_count	1

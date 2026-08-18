@@ -330,6 +330,16 @@ class backend {
       const committed_entry_reader &reader);
 
   /**
+    Load serving state from committed entries with optional exact cardinality.
+
+    Backends may use the exact row count to admit build resources before the
+    reader performs any I/O. The default implementation delegates to the
+    reader API.
+  */
+  virtual bool load_committed_entries_from_source(
+      const committed_entry_source &source);
+
+  /**
     Rebuild serving state from committed entries snapshot.
 
     Default behavior reuses load_committed_entries(). Backends that distinguish
@@ -419,6 +429,16 @@ class backend {
   */
   virtual bool recover_committed_entries_from_reader(
       const committed_entry_reader &reader);
+
+  /**
+    Recover serving state from committed entries with optional cardinality.
+
+    The default implementation preserves recover-then-load ordering while
+    allowing load_committed_entries_from_source() overrides to perform early
+    resource admission.
+  */
+  virtual bool recover_committed_entries_from_source(
+      const committed_entry_source &source);
 
   /**
     Whether the last recover() call had to use a fallback path.
@@ -648,8 +668,16 @@ class faiss_backend final : public backend {
       const override;
   bool load_committed_entries(
       const std::unordered_map<uint64_t, vector_data> &entries) override;
+  bool load_committed_entries_from_source(
+      const committed_entry_source &source) override;
+  bool recover_committed_entries_from_source(
+      const committed_entry_source &source) override;
   bool rebuild_from_committed_entries_from_reader(
       const committed_entry_reader &reader) override;
+  bool rebuild_from_committed_entry_source(
+      const committed_entry_source &source) override;
+  bool rebuild_from_raw_segments(
+      const raw_vector_segment_reader &reader) override;
   bool recover() override;
   bool last_recover_used_fallback() const override {
     return m_last_recover_used_fallback != 0;
@@ -733,15 +761,24 @@ class faiss_backend final : public backend {
   bool m_keep_loaded_external_index{true};
   backend_build_diagnostics m_last_build_diagnostics;
 
-  bool initialize_faiss_index(bool use_ivfpq = true);
+  bool initialize_faiss_index(bool use_ivfpq = true,
+                              uint32_t effective_nlist = 0);
   bool train_faiss_ivf_index(const std::vector<float> &training_data,
                              size_t training_rows, uint64_t *train_ms);
+  bool prepare_faiss_index_for_recovery();
   void record_build_diagnostics(const char *input_source, size_t row_count,
-                                size_t effective_threads);
+                                size_t effective_threads,
+                                size_t segment_count = 1);
+  void record_build_phase_diagnostics(
+      const backend_build_diagnostics &diagnostics);
   bool rebuild_external_faiss_index(
       const std::unordered_map<uint64_t, vector_data> &entries);
   bool rebuild_external_faiss_index_from_reader(
-      const committed_entry_reader &reader);
+      const committed_entry_source &source);
+  bool rebuild_external_faiss_index_from_raw_segments(
+      const std::vector<raw_vector_segment> &segments, size_t total_rows);
+  void configure_rebuild_candidate(faiss_backend *candidate) const;
+  bool persist_and_install_rebuild_candidate(faiss_backend *candidate);
   bool apply_faiss_mutation(uint64_t doc_id, const vector_data *vector);
   bool search_with_faiss(const vector_data &query, size_t top_k,
                        std::vector<search_result> *results) const;

@@ -154,6 +154,88 @@ TEST(VectorLoadFileTest, ReadsFbinRowsWithExplicitDocids) {
   EXPECT_EQ((std::vector<float>{4.0F, 5.0F, 6.0F}), rows[1]);
 }
 
+TEST(VectorLoadFileTest, ReadsFbinRowsInContiguousBlocks) {
+  temp_directory tmp;
+  const std::string fbin_path = tmp.path("vectors.fbin");
+  const std::string docid_path = tmp.path("docids.u64");
+  write_fbin_file(
+      fbin_path, 5, 2,
+      {1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F, 7.0F, 8.0F, 9.0F, 10.0F});
+  write_docid_file(docid_path, {10, 20, 30, 40, 50});
+
+  vector_index::vector_load_file_info info;
+  std::string error;
+  std::vector<size_t> block_sizes;
+  std::vector<uint64_t> docids;
+  std::vector<float> values;
+
+  const bool ok = vector_index::read_fbin_vector_blocks(
+      fbin_path, docid_path, 2, 2, &info, &error,
+      [&](const uint64_t *block_docids, const float *block_values,
+          size_t row_count, size_t dimension) {
+        block_sizes.push_back(row_count);
+        docids.insert(docids.end(), block_docids, block_docids + row_count);
+        values.insert(values.end(), block_values,
+                      block_values + row_count * dimension);
+        return true;
+      });
+
+  EXPECT_TRUE(ok) << error;
+  EXPECT_EQ(5U, info.row_count);
+  EXPECT_EQ(2U, info.dimension);
+  EXPECT_EQ((std::vector<size_t>{2, 2, 1}), block_sizes);
+  EXPECT_EQ((std::vector<uint64_t>{10, 20, 30, 40, 50}), docids);
+  EXPECT_EQ((std::vector<float>{1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F, 7.0F, 8.0F,
+                                9.0F, 10.0F}),
+            values);
+}
+
+TEST(VectorLoadFileTest, BlockReaderGeneratesSequentialDocids) {
+  temp_directory tmp;
+  const std::string fbin_path = tmp.path("vectors.fbin");
+  write_fbin_file(fbin_path, 3, 2, {1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F});
+
+  std::string error;
+  std::vector<uint64_t> docids;
+  ASSERT_TRUE(vector_index::read_fbin_vector_blocks(
+      fbin_path, "", 2, 2, nullptr, &error,
+      [&](const uint64_t *block_docids,
+          const float *block_values [[maybe_unused]], size_t row_count,
+          size_t dimension) {
+        EXPECT_EQ(2U, dimension);
+        docids.insert(docids.end(), block_docids, block_docids + row_count);
+        return true;
+      }))
+      << error;
+  EXPECT_EQ((std::vector<uint64_t>{0, 1, 2}), docids);
+}
+
+TEST(VectorLoadFileTest, BlockReaderRejectsInvalidArgumentsAndVisitorStop) {
+  temp_directory tmp;
+  const std::string fbin_path = tmp.path("vectors.fbin");
+  write_fbin_file(fbin_path, 2, 2, {1.0F, 2.0F, 3.0F, 4.0F});
+
+  std::string error;
+  EXPECT_FALSE(vector_index::read_fbin_vector_blocks(
+      fbin_path, "", 2, 0, nullptr, &error,
+      [](const uint64_t *, const float *, size_t, size_t) { return true; }));
+  EXPECT_TRUE(has_error_text(error, "block rows")) << error;
+
+  EXPECT_FALSE(vector_index::read_fbin_vector_blocks(fbin_path, "", 2, 1,
+                                                     nullptr, &error, {}));
+  EXPECT_TRUE(has_error_text(error, "visitor is required")) << error;
+
+  size_t visits = 0;
+  EXPECT_FALSE(vector_index::read_fbin_vector_blocks(
+      fbin_path, "", 2, 1, nullptr, &error,
+      [&](const uint64_t *, const float *, size_t, size_t) {
+        ++visits;
+        return false;
+      }));
+  EXPECT_EQ(1U, visits);
+  EXPECT_TRUE(has_error_text(error, "visitor stopped")) << error;
+}
+
 TEST(VectorLoadFileTest, ReadsFbinFileInfoWithoutVisitingRows) {
   temp_directory tmp;
   const std::string fbin_path = tmp.path("vectors.fbin");

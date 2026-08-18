@@ -520,6 +520,11 @@ bool backend::load_committed_entries_from_reader(
   return load_committed_entries(entries);
 }
 
+bool backend::load_committed_entries_from_source(
+    const committed_entry_source &source) {
+  return load_committed_entries_from_reader(source.reader);
+}
+
 bool backend::rebuild_from_committed_entries_from_reader(
     const committed_entry_reader &reader) {
   std::unordered_map<uint64_t, vector_data> entries;
@@ -537,26 +542,44 @@ bool backend::rebuild_from_raw_segments(
     const raw_vector_segment_reader &reader) {
   if (!reader) return false;
 
+  std::vector<raw_vector_segment> segments;
+  size_t total_rows = 0;
+  if (!reader(
+          [this, &segments, &total_rows](const raw_vector_segment &segment) {
+            if (segment.dimension != dimension() ||
+                segment.row_count >
+                    std::numeric_limits<size_t>::max() - total_rows) {
+              return false;
+            }
+            total_rows += segment.row_count;
+            segments.push_back(segment);
+            return true;
+          })) {
+    return false;
+  }
+
   const committed_entry_reader entry_reader =
-      [this, &reader](const committed_entry_visitor &visitor) {
-        return reader([this, &visitor](const raw_vector_segment &segment) {
+      [this, segments](const committed_entry_visitor &visitor) {
+        for (const raw_vector_segment &segment : segments) {
           if (segment.dimension != dimension()) return false;
           vector_load_file_info info;
           std::string error;
-          return read_fbin_vectors(
-                     segment.vector_path, segment.docid_path, dimension(),
-                     &info, &error,
-                     [&visitor](uint64_t doc_id, const float *values,
-                                size_t row_dimension) {
-                       return visitor(
-                           doc_id,
-                           vector_data(values, values + row_dimension));
-                     }) &&
-                 info.row_count == segment.row_count &&
-                 info.dimension == segment.dimension;
-        });
+          if (!read_fbin_vectors(
+                  segment.vector_path, segment.docid_path, dimension(), &info,
+                  &error,
+                  [&visitor](uint64_t doc_id, const float *values,
+                             size_t row_dimension) {
+                    return visitor(doc_id,
+                                   vector_data(values, values + row_dimension));
+                  }) ||
+              info.row_count != segment.row_count ||
+              info.dimension != segment.dimension) {
+            return false;
+          }
+        }
+        return true;
       };
-  return rebuild_from_committed_entries_from_reader(entry_reader);
+  return rebuild_from_committed_entry_source({entry_reader, total_rows, true});
 }
 
 bool backend::build_segment_from_raw(const segment_build_input &input,
@@ -596,6 +619,11 @@ bool backend::recover_committed_entries_from_reader(
   if (!read_committed_entries(reader, &entries)) return false;
 
   return recover_committed_entries(entries);
+}
+
+bool backend::recover_committed_entries_from_source(
+    const committed_entry_source &source) {
+  return recover_committed_entries_from_reader(source.reader);
 }
 
 bool backend::search_batch(

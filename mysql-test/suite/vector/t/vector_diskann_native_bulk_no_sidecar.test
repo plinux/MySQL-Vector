@@ -48,6 +48,7 @@ if ($manifest_present)
 
 SELECT VEC_INDEX_UPSERT('idx_diskann_native_bulk', 4, VEC_FROMTEXT('[0,1]'));
 SELECT VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[0,1]'), 1);
+SELECT VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 1);
 SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
     '$.external_manifest_present') AS external_manifest_present,
   JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),

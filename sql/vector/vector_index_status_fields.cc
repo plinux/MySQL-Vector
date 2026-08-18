@@ -126,6 +126,13 @@ bool has_build_diagnostics(
   present |= diagnostics.manifest_ms != 0;
   present |= diagnostics.offline_build_ms != 0;
   present |= diagnostics.load_ms != 0;
+  present |= diagnostics.reader_count_ms != 0;
+  present |= diagnostics.training_copy_ms != 0;
+  present |= diagnostics.train_ms != 0;
+  present |= diagnostics.add_ms != 0;
+  present |= diagnostics.persist_ms != 0;
+  present |= diagnostics.training_rows != 0;
+  present |= diagnostics.reader_passes != 0;
   present |= !diagnostics.native_pq_runtime_selected_path.empty();
   present |= diagnostics.native_pq_runtime_elapsed_ms != 0;
   present |= diagnostics.native_pq_runtime_raw_reader_ms != 0;
@@ -189,6 +196,19 @@ void append_build_diagnostics(
   append_uint(fields, "backend_build_offline_ms",
               diagnostics.offline_build_ms);
   append_uint(fields, "backend_build_load_ms", diagnostics.load_ms);
+  if (diagnostics.runtime == "faiss_scheduler") {
+    append_uint(fields, "backend_build_reader_count_ms",
+                diagnostics.reader_count_ms);
+    append_uint(fields, "backend_build_training_copy_ms",
+                diagnostics.training_copy_ms);
+    append_uint(fields, "backend_build_train_ms", diagnostics.train_ms);
+    append_uint(fields, "backend_build_add_ms", diagnostics.add_ms);
+    append_uint(fields, "backend_build_persist_ms", diagnostics.persist_ms);
+    append_uint(fields, "backend_build_training_rows",
+                diagnostics.training_rows);
+    append_uint(fields, "backend_build_reader_passes",
+                diagnostics.reader_passes);
+  }
   if (diskann_provider && !diagnostics.diskann_pq_runtime.empty()) {
     append_nullable_string(fields, "diskann_pq_runtime",
                            diagnostics.diskann_pq_runtime);

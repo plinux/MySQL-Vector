@@ -4,14 +4,25 @@
 --echo # WL#vector-v1: configure FAISS IVF params through SQL functions
 --echo #
 
+SET GLOBAL vector_lazy_external_runtime=OFF;
+
 SELECT VEC_INDEX_CREATE('idx_faiss_ivf', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
 SELECT VEC_INDEX_UPSERT('idx_faiss_ivf', 1, VEC_FROMTEXT('[1,1]'));
 SELECT VEC_INDEX_UPSERT('idx_faiss_ivf', 9, VEC_FROMTEXT('[9,9]'));
 
 SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf', 2, 1);
+SELECT VEC_INDEX_REBUILD('idx_faiss_ivf');
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf'),
+         '$.backend_build_reader_passes') AS faiss_reader_passes,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf'),
+         '$.backend_build_training_rows') AS faiss_training_rows;
 
---replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
---source suite/vector/include/vector_normalize_lifecycle.inc
+--replace_column 3 <value>
+SHOW VECTOR STATUS FOR INDEX idx_faiss_ivf
+WHERE Section = 'BACKEND_HEALTH'
+  AND Variable_name LIKE 'idx_faiss_ivf.backend_build_reader_%';
+
+--source suite/vector/include/vector_normalize_lifecycle_build_timing.inc
 SELECT VEC_INDEX_INFO('idx_faiss_ivf');
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_faiss_ivf.backend_variant';
@@ -23,8 +34,7 @@ SELECT VEC_INDEX_SEARCH('idx_faiss_ivf', VEC_FROMTEXT('[1,1]'), 1);
 
 --source include/restart_mysqld.inc
 
---replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
---source suite/vector/include/vector_normalize_lifecycle.inc
+--source suite/vector/include/vector_normalize_lifecycle_build_timing.inc
 SELECT VEC_INDEX_INFO('idx_faiss_ivf');
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_faiss_ivf.backend_variant';
@@ -35,3 +45,4 @@ SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
 SELECT VEC_INDEX_SEARCH('idx_faiss_ivf', VEC_FROMTEXT('[1,1]'), 1);
 
 SELECT VEC_INDEX_DROP('idx_faiss_ivf');
+SET GLOBAL vector_lazy_external_runtime=DEFAULT;

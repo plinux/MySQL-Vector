@@ -262,6 +262,13 @@ void merge_segment_build_diagnostics(
   aggregate->manifest_ms += source.manifest_ms;
   aggregate->offline_build_ms += source.offline_build_ms;
   aggregate->load_ms += source.load_ms;
+  aggregate->reader_count_ms += source.reader_count_ms;
+  aggregate->training_copy_ms += source.training_copy_ms;
+  aggregate->train_ms += source.train_ms;
+  aggregate->add_ms += source.add_ms;
+  aggregate->persist_ms += source.persist_ms;
+  aggregate->training_rows += source.training_rows;
+  aggregate->reader_passes += source.reader_passes;
   merge_diagnostic_string(source.diskann_pq_runtime,
                           &aggregate->diskann_pq_runtime);
   merge_diagnostic_string(source.native_pq_runtime_selected_path,
@@ -2735,27 +2742,33 @@ committed_entry_reader make_committed_entry_reader(
   };
 }
 
+committed_entry_source make_committed_entry_source(
+    const vector_entry_store &entry_store, const std::string &index_name) {
+  return {make_committed_entry_reader(entry_store, index_name),
+          entry_store.entry_count(index_name), true};
+}
+
 bool load_backend_from_store(const vector_entry_store &entry_store,
                              const std::string &index_name, backend *target) {
   return target != nullptr &&
-         target->load_committed_entries_from_reader(
-             make_committed_entry_reader(entry_store, index_name));
+         target->load_committed_entries_from_source(
+             make_committed_entry_source(entry_store, index_name));
 }
 
 bool rebuild_backend_from_store(const vector_entry_store &entry_store,
                                 const std::string &index_name,
                                 backend *target) {
   return target != nullptr &&
-         target->rebuild_from_committed_entries_from_reader(
-             make_committed_entry_reader(entry_store, index_name));
+         target->rebuild_from_committed_entry_source(
+             make_committed_entry_source(entry_store, index_name));
 }
 
 bool recover_backend_from_store(const vector_entry_store &entry_store,
                                 const std::string &index_name,
                                 backend *target) {
   return target != nullptr &&
-         target->recover_committed_entries_from_reader(
-             make_committed_entry_reader(entry_store, index_name));
+         target->recover_committed_entries_from_source(
+             make_committed_entry_source(entry_store, index_name));
 }
 
 bool rebuild_backend_from_source(const vector_entry_store &entry_store,

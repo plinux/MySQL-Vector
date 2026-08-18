@@ -50,13 +50,14 @@
 #endif
 
 #include "my_dbug.h"
-#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
+#include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_diagnostics.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_runtime_config.h"
 #include "sql/vector/vector_index_runtime_thread_pool.h"
+#include "sql/vector/vector_load_file.h"
 #include "sql/vector/vector_status.h"
 
 namespace {
@@ -83,6 +84,7 @@ using vector_index::detail::save_external_manifest_generation_to_file;
 
 #ifdef HAVE_FAISS
 constexpr size_t k_faiss_rebuild_add_batch_size = 16384;
+constexpr size_t k_faiss_raw_block_target_bytes = 64U * 1024U * 1024U;
 
 size_t faiss_training_sample_count(size_t total_rows, size_t dimension,
                                    ulonglong train_size,
@@ -98,6 +100,78 @@ size_t faiss_training_sample_count(size_t total_rows, size_t dimension,
   size_t sample_rows = static_cast<size_t>(train_size / row_bytes);
   sample_rows = std::max(sample_rows, min_required_rows);
   return std::min(sample_rows, total_rows);
+}
+
+size_t faiss_ivf_training_sample_count(size_t total_rows, size_t dimension,
+                                       ulonglong train_size,
+                                       uint32_t configured_nlist) {
+  if (configured_nlist == 0 || total_rows == 0) return 0;
+  const size_t min_training_rows =
+      std::max<size_t>(1, std::min<size_t>(configured_nlist, total_rows));
+  return faiss_training_sample_count(total_rows, dimension, train_size,
+                                     min_training_rows);
+}
+
+uint32_t faiss_effective_nlist(uint32_t configured_nlist,
+                               size_t training_rows) {
+  if (configured_nlist == 0 || training_rows == 0) return configured_nlist;
+  return static_cast<uint32_t>(
+      std::max<size_t>(1, std::min<size_t>(configured_nlist, training_rows)));
+}
+
+bool faiss_full_materialization_budget_allows(size_t total_rows,
+                                              size_t dimension) {
+  if (opt_vector_entry_cache_size == 0) return true;
+  if (dimension == 0 ||
+      total_rows > std::numeric_limits<size_t>::max() / dimension) {
+    return false;
+  }
+  const size_t value_count = total_rows * dimension;
+  if (value_count > std::numeric_limits<size_t>::max() / sizeof(float))
+    return false;
+  const size_t vector_bytes = value_count * sizeof(float);
+  if (total_rows > std::numeric_limits<size_t>::max() / sizeof(faiss::idx_t))
+    return false;
+  const size_t id_bytes = total_rows * sizeof(faiss::idx_t);
+  if (vector_bytes > std::numeric_limits<size_t>::max() - id_bytes)
+    return false;
+  return vector_bytes + id_bytes <= opt_vector_entry_cache_size;
+}
+
+size_t faiss_raw_block_rows(size_t dimension, size_t total_rows) {
+  if (dimension == 0 || total_rows == 0) return 1;
+  if (dimension > (std::numeric_limits<size_t>::max() - sizeof(faiss::idx_t)) /
+                      sizeof(float)) {
+    return 1;
+  }
+  const size_t row_bytes = dimension * sizeof(float) + sizeof(faiss::idx_t);
+  size_t target_bytes = k_faiss_raw_block_target_bytes;
+  if (opt_vector_entry_cache_size != 0) {
+    const size_t cache_bytes = static_cast<size_t>(std::min<ulonglong>(
+        opt_vector_entry_cache_size,
+        static_cast<ulonglong>(std::numeric_limits<size_t>::max())));
+    target_bytes = std::min(target_bytes, cache_bytes);
+  }
+  return std::max<size_t>(
+      1, std::min(total_rows, std::max<size_t>(1, target_bytes / row_bytes)));
+}
+
+bool normalize_faiss_rows(vector_index::metric_type metric, size_t dimension,
+                          float *values, size_t row_count) {
+  if (metric != vector_index::metric_type::kCosine) return true;
+  for (size_t row = 0; row < row_count; ++row) {
+    float *row_values = values + row * dimension;
+    double norm = 0.0;
+    for (size_t column = 0; column < dimension; ++column) {
+      norm += static_cast<double>(row_values[column]) * row_values[column];
+    }
+    if (norm <= 0.0) return false;
+    const float inv_norm = static_cast<float>(1.0 / std::sqrt(norm));
+    for (size_t column = 0; column < dimension; ++column) {
+      row_values[column] *= inv_norm;
+    }
+  }
+  return true;
 }
 
 #endif
@@ -178,18 +252,20 @@ vector_data faiss_backend::normalize_for_faiss(const vector_data &vector) const 
   return normalized;
 }
 
-bool faiss_backend::initialize_faiss_index(bool use_ivfpq) {
+bool faiss_backend::initialize_faiss_index(bool use_ivfpq,
+                                           uint32_t effective_nlist) {
 #ifdef HAVE_FAISS
   if (m_faiss_index) return true;
   try {
     std::unique_ptr<faiss::Index> base_index;
     if (m_mode == backend_mode::kExternal) {
-      const faiss::MetricType metric_type =
-          m_metric == metric_type::kEuclidean ? faiss::METRIC_L2
-                                              : faiss::METRIC_INNER_PRODUCT;
+      const faiss::MetricType metric_type = m_metric == metric_type::kEuclidean
+                                                ? faiss::METRIC_L2
+                                                : faiss::METRIC_INNER_PRODUCT;
       if (m_faiss_nlist != 0) {
-        const uint32_t effective_nlist =
-            std::max<uint32_t>(1, m_faiss_nlist);
+        const uint32_t index_nlist = effective_nlist == 0
+                                         ? std::max<uint32_t>(1, m_faiss_nlist)
+                                         : effective_nlist;
         std::unique_ptr<faiss::Index> quantizer;
         if (m_metric == metric_type::kEuclidean) {
           quantizer = std::make_unique<faiss::IndexFlatL2>(
@@ -201,7 +277,7 @@ bool faiss_backend::initialize_faiss_index(bool use_ivfpq) {
         if (use_ivfpq && m_faiss_pq_m != 0 && m_faiss_pq_bits != 0) {
           auto ivfpq_index = std::make_unique<faiss::IndexIVFPQ>(
               quantizer.get(), static_cast<faiss::idx_t>(m_dimension),
-              static_cast<faiss::idx_t>(effective_nlist),
+              static_cast<faiss::idx_t>(index_nlist),
               static_cast<size_t>(m_faiss_pq_m),
               static_cast<size_t>(m_faiss_pq_bits), metric_type);
           ivfpq_index->own_fields = true;
@@ -212,7 +288,7 @@ bool faiss_backend::initialize_faiss_index(bool use_ivfpq) {
         } else {
           auto ivf_index = std::make_unique<faiss::IndexIVFFlat>(
               quantizer.get(), static_cast<faiss::idx_t>(m_dimension),
-              static_cast<faiss::idx_t>(effective_nlist), metric_type);
+              static_cast<faiss::idx_t>(index_nlist), metric_type);
           ivf_index->own_fields = true;
           (void)quantizer.release();
           ivf_index->nprobe = std::max<faiss::idx_t>(
@@ -248,6 +324,26 @@ bool faiss_backend::initialize_faiss_index(bool use_ivfpq) {
   }
 #else
   (void)use_ivfpq;
+  (void)effective_nlist;
+  return false;
+#endif
+}
+
+bool faiss_backend::prepare_faiss_index_for_recovery() {
+#ifdef HAVE_FAISS
+  auto *id_map = dynamic_cast<faiss::IndexIDMap2 *>(m_faiss_index.get());
+  if (id_map == nullptr) return false;
+  auto *ivf = dynamic_cast<faiss::IndexIVF *>(id_map->index);
+  if (ivf == nullptr) return true;
+  try {
+    // IndexIDMap2 stores external document IDs while IVF stores sequential
+    // internal IDs. Persist the reverse location map needed by reconstruct().
+    ivf->make_direct_map();
+  } catch (...) {
+    return false;
+  }
+  return true;
+#else
   return false;
 #endif
 }
@@ -283,7 +379,8 @@ bool faiss_backend::train_faiss_ivf_index(
 
 void faiss_backend::record_build_diagnostics(const char *input_source,
                                              size_t row_count,
-                                             size_t effective_threads) {
+                                             size_t effective_threads,
+                                             size_t segment_count) {
   m_last_build_diagnostics = {};
   m_last_build_diagnostics.runtime =
 #ifdef HAVE_FAISS
@@ -294,7 +391,7 @@ void faiss_backend::record_build_diagnostics(const char *input_source,
   m_last_build_diagnostics.input_source =
       input_source == nullptr ? "" : input_source;
   m_last_build_diagnostics.row_count = row_count;
-  m_last_build_diagnostics.segment_count = 1;
+  m_last_build_diagnostics.segment_count = segment_count;
   m_last_build_diagnostics.build_invocations = 1;
   m_last_build_diagnostics.concurrent_build_tasks = 1;
   const size_t threads = std::max<size_t>(1, effective_threads);
@@ -306,6 +403,17 @@ void faiss_backend::record_build_diagnostics(const char *input_source,
       static_cast<uint32_t>(threads);
 }
 
+void faiss_backend::record_build_phase_diagnostics(
+    const backend_build_diagnostics &diagnostics) {
+  m_last_build_diagnostics.reader_count_ms = diagnostics.reader_count_ms;
+  m_last_build_diagnostics.training_copy_ms = diagnostics.training_copy_ms;
+  m_last_build_diagnostics.train_ms = diagnostics.train_ms;
+  m_last_build_diagnostics.add_ms = diagnostics.add_ms;
+  m_last_build_diagnostics.persist_ms = diagnostics.persist_ms;
+  m_last_build_diagnostics.training_rows = diagnostics.training_rows;
+  m_last_build_diagnostics.reader_passes = diagnostics.reader_passes;
+}
+
 bool faiss_backend::rebuild_external_faiss_index(
     const std::unordered_map<uint64_t, vector_data> &entries) {
 #ifdef HAVE_FAISS
@@ -314,6 +422,12 @@ bool faiss_backend::rebuild_external_faiss_index(
       vector_index::effective_build_scheduler_threads(entries.size(),
                                                       m_faiss_build_threads);
   vector_index::scoped_omp_threads thread_scope(effective_threads);
+  backend_build_diagnostics phase_diagnostics;
+  const size_t total_rows = entries.size();
+  const size_t sample_rows = faiss_ivf_training_sample_count(
+      total_rows, m_dimension, opt_vector_faiss_train_size, m_faiss_nlist);
+  const uint32_t effective_nlist =
+      faiss_effective_nlist(m_faiss_nlist, sample_rows);
   m_faiss_index.reset();
   const bool pq_requested = m_faiss_pq_m != 0 && m_faiss_pq_bits != 0;
   const bool pq_trainable =
@@ -321,22 +435,10 @@ bool faiss_backend::rebuild_external_faiss_index(
       entries.size() >=
           (static_cast<size_t>(1)
            << std::min<uint32_t>(m_faiss_pq_bits, 20U));
-  if (!initialize_faiss_index(pq_trainable)) return false;
+  if (!initialize_faiss_index(pq_trainable, effective_nlist)) return false;
   m_faiss_last_training_count = 0;
-  if (m_faiss_nlist != 0 && !entries.empty()) {
-    const size_t total_rows = entries.size();
-    const size_t min_training_rows =
-        std::max<size_t>(1, std::min<size_t>(m_faiss_nlist, total_rows));
-    const size_t sample_rows =
-        faiss_training_sample_count(total_rows, m_dimension,
-                                    opt_vector_faiss_train_size,
-                                    min_training_rows);
-    const faiss::idx_t training_count =
-        static_cast<faiss::idx_t>(sample_rows);
-    const faiss::idx_t effective_nlist =
-        std::max<faiss::idx_t>(1, std::min<faiss::idx_t>(
-                                      static_cast<faiss::idx_t>(m_faiss_nlist),
-                                      training_count));
+  if (m_faiss_nlist != 0 && total_rows != 0) {
+    const auto training_copy_start = vector_index_diagnostics::now();
     std::vector<float> training_data;
     training_data.reserve(sample_rows * m_dimension);
     std::vector<uint64_t> training_doc_ids;
@@ -359,20 +461,19 @@ bool faiss_backend::rebuild_external_faiss_index(
       training_data.insert(training_data.end(), prepared.begin(),
                            prepared.end());
     }
+    phase_diagnostics.training_copy_ms =
+        vector_index_diagnostics::elapsed_ms(training_copy_start);
+    phase_diagnostics.training_rows = sample_rows;
     m_faiss_last_training_count = sample_rows;
-    auto *id_map = dynamic_cast<faiss::IndexIDMap2 *>(m_faiss_index.get());
-    if (id_map == nullptr) return false;
-    auto *ivf = dynamic_cast<faiss::IndexIVF *>(id_map->index);
-    if (ivf == nullptr) return false;
-    ivf->nlist = effective_nlist;
-    uint64_t train_ms = 0;
-    if (!train_faiss_ivf_index(training_data, sample_rows, &train_ms)) {
+    if (!train_faiss_ivf_index(training_data, sample_rows,
+                               &phase_diagnostics.train_ms)) {
       return false;
     }
   }
   if (entries.empty()) {
     m_faiss_entry_count = 0;
     record_build_diagnostics("entries", entries.size(), effective_threads);
+    record_build_phase_diagnostics(phase_diagnostics);
     return true;
   }
   std::vector<faiss::idx_t> batch_ids;
@@ -381,6 +482,7 @@ bool faiss_backend::rebuild_external_faiss_index(
   batch_data.reserve(std::min(entries.size(), k_faiss_rebuild_add_batch_size) *
                      m_dimension);
 
+  const auto add_start = vector_index_diagnostics::now();
   for (const auto &entry : entries) {
     faiss::idx_t id = 0;
     if (!doc_id_to_faiss_id(entry.first, &id)) return false;
@@ -396,8 +498,11 @@ bool faiss_backend::rebuild_external_faiss_index(
   }
   if (!flush_faiss_batch(m_faiss_index.get(), &batch_ids, &batch_data))
     return false;
+  if (!prepare_faiss_index_for_recovery()) return false;
+  phase_diagnostics.add_ms = vector_index_diagnostics::elapsed_ms(add_start);
   m_faiss_entry_count = static_cast<size_t>(m_faiss_index->ntotal);
   record_build_diagnostics("entries", entries.size(), effective_threads);
+  record_build_phase_diagnostics(phase_diagnostics);
   return true;
 #else
   (void)entries;
@@ -406,14 +511,16 @@ bool faiss_backend::rebuild_external_faiss_index(
 }
 
 bool faiss_backend::rebuild_external_faiss_index_from_reader(
-    const committed_entry_reader &reader) {
+    const committed_entry_source &source) {
 #ifdef HAVE_FAISS
+  const committed_entry_reader &reader = source.reader;
   if (!reader) return false;
   DBUG_EXECUTE_IF("vector_backend_fail_faiss_external_rebuild", return false;);
   const size_t thread_budget =
       vector_index::effective_build_scheduler_thread_budget(
           m_faiss_build_threads);
   vector_index::scoped_omp_threads thread_scope(thread_budget);
+  backend_build_diagnostics phase_diagnostics;
 
   if (m_faiss_nlist == 0) {
     std::unique_ptr<faiss::Index> previous_index = std::move(m_faiss_index);
@@ -436,6 +543,8 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
     batch_data.reserve(k_faiss_rebuild_add_batch_size * m_dimension);
 
     size_t total_rows = 0;
+    const auto add_start = vector_index_diagnostics::now();
+    phase_diagnostics.reader_passes = 1;
     if (!reader([this, &batch_ids, &batch_data, &total_rows](
                     uint64_t doc_id, const vector_data &vector) {
           faiss::idx_t id = 0;
@@ -454,28 +563,42 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
         !flush_faiss_batch(m_faiss_index.get(), &batch_ids, &batch_data)) {
       return restore_previous();
     }
+    phase_diagnostics.add_ms = vector_index_diagnostics::elapsed_ms(add_start);
 
     m_faiss_entry_count = static_cast<size_t>(m_faiss_index->ntotal);
     if (m_faiss_entry_count != total_rows) return restore_previous();
     record_build_diagnostics("reader", total_rows,
                              vector_index::effective_build_scheduler_threads(
                                  total_rows, m_faiss_build_threads));
+    record_build_phase_diagnostics(phase_diagnostics);
     return true;
   }
 
-  size_t total_rows = 0;
-  if (!reader([this, &total_rows](uint64_t doc_id,
-                                  const vector_data &vector) {
-        faiss::idx_t id = 0;
-        if (!doc_id_to_faiss_id(doc_id, &id) ||
-            !check_dimension(vector, m_dimension)) {
-          return false;
-        }
-        ++total_rows;
-        return true;
-      })) {
-    return false;
+  size_t total_rows = source.exact_row_count;
+  if (!source.has_exact_row_count) {
+    total_rows = 0;
+    const auto count_start = vector_index_diagnostics::now();
+    ++phase_diagnostics.reader_passes;
+    if (!reader(
+            [this, &total_rows](uint64_t doc_id, const vector_data &vector) {
+              faiss::idx_t id = 0;
+              if (!doc_id_to_faiss_id(doc_id, &id) ||
+                  !check_dimension(vector, m_dimension)) {
+                return false;
+              }
+              ++total_rows;
+              return true;
+            })) {
+      return false;
+    }
+    phase_diagnostics.reader_count_ms =
+        vector_index_diagnostics::elapsed_ms(count_start);
   }
+
+  const size_t sample_rows = faiss_ivf_training_sample_count(
+      total_rows, m_dimension, opt_vector_faiss_train_size, m_faiss_nlist);
+  const uint32_t effective_nlist =
+      faiss_effective_nlist(m_faiss_nlist, sample_rows);
 
   m_faiss_index.reset();
   const bool pq_requested = m_faiss_pq_m != 0 && m_faiss_pq_bits != 0;
@@ -484,16 +607,10 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
       total_rows >=
           (static_cast<size_t>(1)
            << std::min<uint32_t>(m_faiss_pq_bits, 20U));
-  if (!initialize_faiss_index(pq_trainable)) return false;
+  if (!initialize_faiss_index(pq_trainable, effective_nlist)) return false;
   m_faiss_last_training_count = 0;
 
   if (m_faiss_nlist != 0 && total_rows != 0) {
-    const size_t min_training_rows =
-        std::max<size_t>(1, std::min<size_t>(m_faiss_nlist, total_rows));
-    const size_t sample_rows =
-        faiss_training_sample_count(total_rows, m_dimension,
-                                    opt_vector_faiss_train_size,
-                                    min_training_rows);
     std::vector<float> training_data;
     training_data.reserve(sample_rows * m_dimension);
     size_t sampled_rows = 0;
@@ -503,6 +620,8 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
                                          &next_sample_position)) {
       return false;
     }
+    const auto training_copy_start = vector_index_diagnostics::now();
+    ++phase_diagnostics.reader_passes;
     if (!reader([this, total_rows, sample_rows, &training_data, &sampled_rows,
                  &row_index, &next_sample_position](
                     uint64_t doc_id [[maybe_unused]],
@@ -530,19 +649,12 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
         sampled_rows != sample_rows) {
       return false;
     }
+    phase_diagnostics.training_copy_ms =
+        vector_index_diagnostics::elapsed_ms(training_copy_start);
+    phase_diagnostics.training_rows = sample_rows;
 
-    auto *id_map = dynamic_cast<faiss::IndexIDMap2 *>(m_faiss_index.get());
-    if (id_map == nullptr) return false;
-    auto *ivf = dynamic_cast<faiss::IndexIVF *>(id_map->index);
-    if (ivf == nullptr) return false;
-
-    const faiss::idx_t effective_nlist =
-        std::max<faiss::idx_t>(1, std::min<faiss::idx_t>(
-                                      static_cast<faiss::idx_t>(m_faiss_nlist),
-                                      static_cast<faiss::idx_t>(sample_rows)));
-    ivf->nlist = effective_nlist;
-    uint64_t train_ms = 0;
-    if (!train_faiss_ivf_index(training_data, sample_rows, &train_ms)) {
+    if (!train_faiss_ivf_index(training_data, sample_rows,
+                               &phase_diagnostics.train_ms)) {
       return false;
     }
     m_faiss_last_training_count = sample_rows;
@@ -554,6 +666,8 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
   batch_data.reserve(std::min(total_rows, k_faiss_rebuild_add_batch_size) *
                      m_dimension);
 
+  const auto add_start = vector_index_diagnostics::now();
+  ++phase_diagnostics.reader_passes;
   if (!reader([this, &batch_ids,
                &batch_data](uint64_t doc_id, const vector_data &vector) {
         faiss::idx_t id = 0;
@@ -570,15 +684,225 @@ bool faiss_backend::rebuild_external_faiss_index_from_reader(
       !flush_faiss_batch(m_faiss_index.get(), &batch_ids, &batch_data)) {
     return false;
   }
+  if (!prepare_faiss_index_for_recovery()) return false;
+  phase_diagnostics.add_ms = vector_index_diagnostics::elapsed_ms(add_start);
 
   m_faiss_entry_count = static_cast<size_t>(m_faiss_index->ntotal);
   if (m_faiss_entry_count != total_rows) return false;
   record_build_diagnostics("reader", total_rows,
                            vector_index::effective_build_scheduler_threads(
                                total_rows, m_faiss_build_threads));
+  record_build_phase_diagnostics(phase_diagnostics);
   return true;
 #else
-  (void)reader;
+  (void)source;
+  return false;
+#endif
+}
+
+bool faiss_backend::rebuild_external_faiss_index_from_raw_segments(
+    const std::vector<raw_vector_segment> &segments, size_t total_rows) {
+#ifdef HAVE_FAISS
+  DBUG_EXECUTE_IF("vector_backend_fail_faiss_external_rebuild", return false;);
+  const size_t thread_budget =
+      vector_index::effective_build_scheduler_thread_budget(
+          m_faiss_build_threads);
+  vector_index::scoped_omp_threads thread_scope(thread_budget);
+  backend_build_diagnostics phase_diagnostics;
+  const size_t block_rows = faiss_raw_block_rows(m_dimension, total_rows);
+
+  const auto visit_blocks =
+      [this, &segments,
+       block_rows](const vector_load_block_visitor &visitor) -> bool {
+    for (const raw_vector_segment &segment : segments) {
+      vector_load_file_info info;
+      std::string error;
+      if (!read_fbin_vector_blocks(segment.vector_path, segment.docid_path,
+                                   m_dimension, block_rows, &info, &error,
+                                   visitor) ||
+          info.row_count != segment.row_count ||
+          info.dimension != segment.dimension) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const size_t sample_rows = faiss_ivf_training_sample_count(
+      total_rows, m_dimension, opt_vector_faiss_train_size, m_faiss_nlist);
+  const uint32_t effective_nlist =
+      faiss_effective_nlist(m_faiss_nlist, sample_rows);
+
+  m_faiss_index.reset();
+  const bool pq_requested = m_faiss_pq_m != 0 && m_faiss_pq_bits != 0;
+  const bool pq_trainable =
+      !pq_requested ||
+      total_rows >=
+          (static_cast<size_t>(1) << std::min<uint32_t>(m_faiss_pq_bits, 20U));
+  if (!initialize_faiss_index(pq_trainable, effective_nlist)) return false;
+  m_faiss_last_training_count = 0;
+
+  const bool reuse_full_input =
+      m_faiss_nlist != 0 && sample_rows == total_rows &&
+      faiss_full_materialization_budget_allows(total_rows, m_dimension);
+
+  const auto train_index = [this, &phase_diagnostics](
+                               const std::vector<float> &training_data,
+                               size_t training_rows) {
+    if (training_rows == 0) return true;
+    if (!train_faiss_ivf_index(training_data, training_rows,
+                               &phase_diagnostics.train_ms)) {
+      return false;
+    }
+    phase_diagnostics.training_rows = training_rows;
+    m_faiss_last_training_count = training_rows;
+    return true;
+  };
+
+  std::vector<float> full_data;
+  std::vector<faiss::idx_t> full_ids;
+  if (reuse_full_input) {
+    if (total_rows > std::numeric_limits<size_t>::max() / m_dimension)
+      return false;
+    full_data.reserve(total_rows * m_dimension);
+    full_ids.reserve(total_rows);
+    const auto copy_start = vector_index_diagnostics::now();
+    ++phase_diagnostics.reader_passes;
+    if (!visit_blocks([this, &full_data, &full_ids](
+                          const uint64_t *doc_ids, const float *values,
+                          size_t row_count, size_t dimension) {
+          const size_t value_offset = full_data.size();
+          full_data.insert(full_data.end(), values,
+                           values + row_count * dimension);
+          if (!normalize_faiss_rows(m_metric, dimension,
+                                    full_data.data() + value_offset,
+                                    row_count)) {
+            return false;
+          }
+          for (size_t row = 0; row < row_count; ++row) {
+            faiss::idx_t id = 0;
+            if (!doc_id_to_faiss_id(doc_ids[row], &id)) return false;
+            full_ids.push_back(id);
+          }
+          return true;
+        }) ||
+        full_ids.size() != total_rows ||
+        full_data.size() != total_rows * m_dimension) {
+      return false;
+    }
+    phase_diagnostics.training_copy_ms =
+        vector_index_diagnostics::elapsed_ms(copy_start);
+    if (!train_index(full_data, total_rows)) return false;
+  } else if (m_faiss_nlist != 0 && total_rows != 0) {
+    std::vector<float> training_data;
+    if (sample_rows > std::numeric_limits<size_t>::max() / m_dimension)
+      return false;
+    training_data.reserve(sample_rows * m_dimension);
+    size_t sampled_rows = 0;
+    size_t row_index = 0;
+    size_t next_sample_position = 0;
+    if (!runtime_uniform_sample_position(0, total_rows, sample_rows,
+                                         &next_sample_position)) {
+      return false;
+    }
+    const auto copy_start = vector_index_diagnostics::now();
+    ++phase_diagnostics.reader_passes;
+    if (!visit_blocks([this, total_rows, sample_rows, &training_data,
+                       &sampled_rows, &row_index, &next_sample_position](
+                          const uint64_t *doc_ids [[maybe_unused]],
+                          const float *values, size_t row_count,
+                          size_t dimension) {
+          for (size_t row = 0; row < row_count; ++row) {
+            const size_t current_position = row_index++;
+            if (sampled_rows >= sample_rows ||
+                current_position != next_sample_position) {
+              continue;
+            }
+            const size_t value_offset = training_data.size();
+            training_data.insert(training_data.end(), values + row * dimension,
+                                 values + (row + 1) * dimension);
+            if (!normalize_faiss_rows(m_metric, dimension,
+                                      training_data.data() + value_offset, 1)) {
+              return false;
+            }
+            ++sampled_rows;
+            if (sampled_rows < sample_rows &&
+                !runtime_uniform_sample_position(sampled_rows, total_rows,
+                                                 sample_rows,
+                                                 &next_sample_position)) {
+              return false;
+            }
+          }
+          return true;
+        }) ||
+        sampled_rows != sample_rows) {
+      return false;
+    }
+    phase_diagnostics.training_copy_ms =
+        vector_index_diagnostics::elapsed_ms(copy_start);
+    if (!train_index(training_data, sample_rows)) return false;
+  }
+
+  const auto add_start = vector_index_diagnostics::now();
+  if (reuse_full_input) {
+    for (size_t begin = 0; begin < total_rows;
+         begin += k_faiss_rebuild_add_batch_size) {
+      const size_t rows =
+          std::min(k_faiss_rebuild_add_batch_size, total_rows - begin);
+      try {
+        m_faiss_index->add_with_ids(static_cast<faiss::idx_t>(rows),
+                                    full_data.data() + begin * m_dimension,
+                                    full_ids.data() + begin);
+      } catch (...) {
+        return false;
+      }
+    }
+  } else {
+    std::vector<faiss::idx_t> block_ids;
+    std::vector<float> normalized_values;
+    ++phase_diagnostics.reader_passes;
+    if (!visit_blocks([this, &block_ids, &normalized_values](
+                          const uint64_t *doc_ids, const float *values,
+                          size_t row_count, size_t dimension) {
+          block_ids.resize(row_count);
+          for (size_t row = 0; row < row_count; ++row) {
+            if (!doc_id_to_faiss_id(doc_ids[row], &block_ids[row]))
+              return false;
+          }
+          const float *add_values = values;
+          if (m_metric == metric_type::kCosine) {
+            normalized_values.assign(values, values + row_count * dimension);
+            if (!normalize_faiss_rows(m_metric, dimension,
+                                      normalized_values.data(), row_count)) {
+              return false;
+            }
+            add_values = normalized_values.data();
+          }
+          try {
+            m_faiss_index->add_with_ids(static_cast<faiss::idx_t>(row_count),
+                                        add_values, block_ids.data());
+          } catch (...) {
+            return false;
+          }
+          return true;
+        })) {
+      return false;
+    }
+  }
+  if (!prepare_faiss_index_for_recovery()) return false;
+  phase_diagnostics.add_ms = vector_index_diagnostics::elapsed_ms(add_start);
+
+  m_faiss_entry_count = static_cast<size_t>(m_faiss_index->ntotal);
+  if (m_faiss_entry_count != total_rows) return false;
+  record_build_diagnostics("raw_blocks", total_rows,
+                           vector_index::effective_build_scheduler_threads(
+                               total_rows, m_faiss_build_threads),
+                           segments.size());
+  record_build_phase_diagnostics(phase_diagnostics);
+  return true;
+#else
+  (void)segments;
+  (void)total_rows;
   return false;
 #endif
 }
@@ -1183,7 +1507,10 @@ bool faiss_backend::load_committed_entries(
   if (!rebuild_external_faiss_index(entries)) return false;
 #endif
   m_external_snapshot_entries = entries;
+  const auto persist_start = vector_index_diagnostics::now();
   if (!persist_external_snapshot()) return false;
+  m_last_build_diagnostics.persist_ms =
+      vector_index_diagnostics::elapsed_ms(persist_start);
   maybe_clear_external_snapshot_entries();
   return true;
 }
@@ -1194,17 +1521,117 @@ backend_build_diagnostics faiss_backend::build_diagnostics() const {
 
 bool faiss_backend::rebuild_from_committed_entries_from_reader(
     const committed_entry_reader &reader) {
+  return rebuild_from_committed_entry_source({reader, 0, false});
+}
+
+bool faiss_backend::load_committed_entries_from_source(
+    const committed_entry_source &source) {
+  return rebuild_from_committed_entry_source(source);
+}
+
+bool faiss_backend::recover_committed_entries_from_source(
+    const committed_entry_source &source) {
+  if (!recover()) return false;
+  return rebuild_from_committed_entry_source(source);
+}
+
+void faiss_backend::configure_rebuild_candidate(
+    faiss_backend *candidate) const {
+  if (candidate == nullptr) return;
+  candidate->m_search_ef = m_search_ef;
+  candidate->m_hnsw_m = m_hnsw_m;
+  candidate->m_hnsw_ef_construction = m_hnsw_ef_construction;
+  candidate->m_faiss_nlist = m_faiss_nlist;
+  candidate->m_faiss_nprobe = m_faiss_nprobe;
+  candidate->m_faiss_pq_m = m_faiss_pq_m;
+  candidate->m_faiss_pq_bits = m_faiss_pq_bits;
+  candidate->m_faiss_build_threads = m_faiss_build_threads;
+  candidate->m_keep_loaded_external_index = m_keep_loaded_external_index;
+#ifdef HAVE_FAISS
+  candidate->m_faiss_index.reset();
+#endif
+}
+
+bool faiss_backend::persist_and_install_rebuild_candidate(
+    faiss_backend *candidate) {
+  if (candidate == nullptr) return false;
+  const auto persist_start = vector_index_diagnostics::now();
+  if (!candidate->persist_external_snapshot()) return false;
+  candidate->m_last_build_diagnostics.persist_ms =
+      vector_index_diagnostics::elapsed_ms(persist_start);
+
+#ifdef HAVE_FAISS
+  m_faiss_index = std::move(candidate->m_faiss_index);
+#endif
+  m_faiss_entry_count = candidate->m_faiss_entry_count;
+  m_faiss_last_training_count = candidate->m_faiss_last_training_count;
+  m_last_build_diagnostics = std::move(candidate->m_last_build_diagnostics);
+  m_external_snapshot_entries =
+      std::move(candidate->m_external_snapshot_entries);
+  m_external_manifest_present = candidate->m_external_manifest_present;
+  m_external_manifest_generation = candidate->m_external_manifest_generation;
+  return true;
+}
+
+bool faiss_backend::rebuild_from_committed_entry_source(
+    const committed_entry_source &source) {
   if (m_mode == backend_mode::kMemory) {
-    return backend::rebuild_from_committed_entries_from_reader(reader);
+#ifdef HAVE_FAISS
+    return rebuild_external_faiss_index_from_reader(source);
+#else
+    return backend::rebuild_from_committed_entry_source(source);
+#endif
   }
 #ifdef HAVE_FAISS
-  if (!rebuild_external_faiss_index_from_reader(reader)) return false;
-  m_external_snapshot_entries.clear();
-  if (!persist_external_snapshot()) return false;
-  maybe_clear_external_snapshot_entries();
-  return true;
+  faiss_backend candidate(m_dimension, m_metric, m_mode, m_index_name,
+                          m_sidecar_profile);
+  configure_rebuild_candidate(&candidate);
+  if (!candidate.rebuild_external_faiss_index_from_reader(source)) return false;
+  return persist_and_install_rebuild_candidate(&candidate);
 #else
-  return backend::rebuild_from_committed_entries_from_reader(reader);
+  return backend::rebuild_from_committed_entry_source(source);
+#endif
+}
+
+bool faiss_backend::rebuild_from_raw_segments(
+    const raw_vector_segment_reader &reader) {
+  if (m_mode == backend_mode::kMemory) {
+    return backend::rebuild_from_raw_segments(reader);
+  }
+#ifdef HAVE_FAISS
+  if (!reader) return false;
+  std::vector<raw_vector_segment> segments;
+  size_t total_rows = 0;
+  if (!reader([this, &segments,
+               &total_rows](const raw_vector_segment &segment) {
+        if (segment.dimension != m_dimension ||
+            segment.row_count > std::numeric_limits<size_t>::max() - total_rows)
+          return false;
+        vector_load_file_info info;
+        std::string error;
+        if (!read_fbin_file_info(segment.vector_path, m_dimension, &info,
+                                 &error) ||
+            info.row_count != segment.row_count ||
+            info.dimension != segment.dimension) {
+          return false;
+        }
+        total_rows += segment.row_count;
+        segments.push_back(segment);
+        return true;
+      })) {
+    return false;
+  }
+
+  faiss_backend candidate(m_dimension, m_metric, m_mode, m_index_name,
+                          m_sidecar_profile);
+  configure_rebuild_candidate(&candidate);
+  if (!candidate.rebuild_external_faiss_index_from_raw_segments(segments,
+                                                                total_rows)) {
+    return false;
+  }
+  return persist_and_install_rebuild_candidate(&candidate);
+#else
+  return backend::rebuild_from_raw_segments(reader);
 #endif
 }
 

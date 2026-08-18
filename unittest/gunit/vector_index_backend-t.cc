@@ -46,6 +46,7 @@
 #include <faiss/IndexIDMap.h>
 #include <faiss/IndexIVFFlat.h>
 #include <faiss/IndexIVFPQ.h>
+#include <faiss/invlists/InvertedLists.h>
 #include <faiss/index_io.h>
 #endif
 
@@ -152,6 +153,27 @@ const vector_index_status_fields::field_value *find_status_field(
     const std::string &root) {
   return find_manifest_file(root, "diskann_external.manifest.v1");
 }
+
+#ifdef HAVE_FAISS
+void expect_faiss_ivf_layout(const std::string &root,
+                             size_t expected_nlist) {
+  const std::string manifest_path = find_faiss_manifest_file(root);
+  ASSERT_FALSE(manifest_path.empty());
+  const std::string snapshot_path = find_faiss_snapshot_file(
+      std::filesystem::path(manifest_path).parent_path().string());
+  ASSERT_FALSE(snapshot_path.empty());
+
+  std::unique_ptr<faiss::Index> index(faiss::read_index(snapshot_path.c_str()));
+  auto *id_map = dynamic_cast<faiss::IndexIDMap2 *>(index.get());
+  ASSERT_NE(nullptr, id_map);
+  auto *ivf = dynamic_cast<faiss::IndexIVF *>(id_map->index);
+  ASSERT_NE(nullptr, ivf);
+  ASSERT_NE(nullptr, ivf->invlists);
+  EXPECT_EQ(expected_nlist, static_cast<size_t>(ivf->nlist));
+  EXPECT_EQ(expected_nlist, ivf->invlists->nlist);
+  EXPECT_NE(faiss::DirectMap::NoMap, ivf->direct_map.type);
+}
+#endif
 
 [[maybe_unused]] char hex_digit(unsigned value) {
   return static_cast<char>((value < 10U) ? ('0' + value)
@@ -569,11 +591,21 @@ TEST(VectorIndexBackendTest, BackendDefaultMethodsCoverReaderAndTuningGuards) {
         bad_segment.row_count = 3;
         return visitor(bad_segment);
       }));
-  backend.upserted_entries.clear();
-  EXPECT_TRUE(backend.rebuild_from_raw_segments(
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
       [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        vector_index::raw_vector_segment huge_segment = segment;
+        huge_segment.row_count = std::numeric_limits<size_t>::max();
+        return visitor(huge_segment) && visitor(segment);
+      }));
+  backend.upserted_entries.clear();
+  size_t segment_reader_calls = 0;
+  EXPECT_TRUE(backend.rebuild_from_raw_segments(
+      [&segment, &segment_reader_calls](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        ++segment_reader_calls;
         return visitor(segment);
       }));
+  EXPECT_EQ(1U, segment_reader_calls);
   ASSERT_EQ(2U, backend.upserted_entries.size());
   EXPECT_EQ((vector_index::vector_data{5.0F, 0.0F}),
             backend.upserted_entries.at(5));
@@ -1099,6 +1131,45 @@ TEST(VectorIndexBackendTest, DiskAnnSearchAdviceCoversTuningBranches) {
       diagnostics, 10, diagnostics.search_result_budget);
   EXPECT_EQ("not_applicable", advice.advice);
   EXPECT_EQ("not_segmented_diskann_search", advice.reason);
+}
+
+TEST(VectorIndexBackendTest, FaissBuildPhaseDiagnosticsAppearInStatusFields) {
+  vector_index_registry::index_info info;
+  info.provider = "faiss";
+  info.build_diagnostics.runtime = "faiss_scheduler";
+  info.build_diagnostics.input_source = "reader";
+  info.build_diagnostics.reader_count_ms = 11;
+  info.build_diagnostics.training_copy_ms = 12;
+  info.build_diagnostics.train_ms = 13;
+  info.build_diagnostics.add_ms = 14;
+  info.build_diagnostics.persist_ms = 15;
+  info.build_diagnostics.training_rows = 16;
+  info.build_diagnostics.reader_passes = 3;
+
+  const std::pair<const char *, uint64_t> expected_fields[] = {
+      {"backend_build_reader_count_ms", 11},
+      {"backend_build_training_copy_ms", 12},
+      {"backend_build_train_ms", 13},
+      {"backend_build_add_ms", 14},
+      {"backend_build_persist_ms", 15},
+      {"backend_build_training_rows", 16},
+      {"backend_build_reader_passes", 3}};
+  const auto verify_fields = [&expected_fields](
+                                 const vector_index_status_fields::field_values
+                                     &fields) {
+    for (const auto &[name, expected] : expected_fields) {
+      const auto *field = find_status_field(fields, name);
+      ASSERT_NE(nullptr, field) << name;
+      EXPECT_EQ(expected, field->uint_value) << name;
+    }
+  };
+
+  vector_index_status_fields::field_values fields;
+  vector_index_status_fields::collect_info_fields(info, &fields);
+  verify_fields(fields);
+  fields.clear();
+  vector_index_status_fields::collect_backend_health_fields(info, &fields);
+  verify_fields(fields);
 }
 
 TEST(VectorIndexBackendTest,
@@ -3475,6 +3546,18 @@ TEST(VectorIndexBackendTest, FaissSearchBatchCoversGuardAndEdgePaths) {
   ASSERT_EQ(1U, batch_results[1].size());
   EXPECT_EQ(1U, batch_results[0][0].doc_id);
   EXPECT_EQ(2U, batch_results[1][0].doc_id);
+
+  ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}}, 4, &batch_results));
+  ASSERT_EQ(1U, batch_results.size());
+  EXPECT_EQ(2U, batch_results[0].size());
+
+  vector_index::faiss_backend cosine_backend(
+      2, vector_index::metric_type::kCosine,
+      vector_index::backend_mode::kMemory);
+  EXPECT_FALSE(cosine_backend.upsert(1, {0.0F, 0.0F}));
+  ASSERT_TRUE(cosine_backend.upsert(1, {1.0F, 0.0F}));
+  EXPECT_FALSE(
+      cosine_backend.search_batch({{0.0F, 0.0F}}, 1, &batch_results));
 }
 
 TEST(VectorIndexBackendTest,
@@ -3569,6 +3652,8 @@ TEST(VectorIndexBackendTest, FaissExternalKeepsSnapshotWhenNativeIndexIsReleased
 
   EXPECT_EQ(2U, backend.external_snapshot_entries().size());
   EXPECT_EQ(2U, backend.entry_count());
+  EXPECT_TRUE(backend.set_search_ef(96));
+  EXPECT_EQ(96U, backend.search_ef());
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(backend.search({1.0F, 0.0F}, 1, &result));
@@ -3691,6 +3776,124 @@ TEST(VectorIndexBackendTest, FaissExternalIvfTrainingHonorsTrainSizeBudget) {
 }
 
 TEST(VectorIndexBackendTest,
+     FaissExternalIvfMapRebuildPersistsConsistentEffectiveNlist) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss IVF persistence requires HAVE_FAISS";
+#else
+  const ScopedTempDirectory root("vector_faiss_ivf_map_nlist");
+  ASSERT_TRUE(root.valid()) << root.error();
+  vector_index::set_faiss_external_snapshot_root_for_testing(
+      root.path().string());
+
+  const std::unordered_map<uint64_t, vector_index::vector_data> rows{
+      {1, {1.0F, 1.0F}}, {2, {2.0F, 2.0F}}};
+  {
+    vector_index::faiss_backend writer(
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, "idx_faiss_ivf_map_nlist");
+    ASSERT_TRUE(writer.set_faiss_ivf_params(8, 1));
+    ASSERT_TRUE(writer.load_committed_entries(rows));
+    EXPECT_EQ(rows.size(), writer.entry_count());
+    expect_faiss_ivf_layout(root.path().string(), rows.size());
+  }
+
+  vector_index::faiss_backend reader(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_ivf_map_nlist");
+  ASSERT_TRUE(reader.recover());
+  EXPECT_FALSE(reader.last_recover_used_fallback());
+  EXPECT_EQ(rows.size(), reader.faiss_nlist());
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(reader.search({1.0F, 1.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(1U, results[0].doc_id);
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+#endif
+}
+
+TEST(VectorIndexBackendTest,
+     FaissExternalIvfReaderRebuildPersistsConsistentEffectiveNlist) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss IVF persistence requires HAVE_FAISS";
+#else
+  const ScopedTempDirectory root("vector_faiss_ivf_reader_nlist");
+  ASSERT_TRUE(root.valid()) << root.error();
+  vector_index::set_faiss_external_snapshot_root_for_testing(
+      root.path().string());
+
+  const std::vector<std::pair<uint64_t, vector_index::vector_data>> rows{
+      {1, {1.0F, 1.0F}}, {2, {2.0F, 2.0F}}};
+  {
+    vector_index::faiss_backend writer(
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, "idx_faiss_ivf_reader_nlist");
+    ASSERT_TRUE(writer.set_faiss_ivf_params(8, 1));
+    ASSERT_TRUE(writer.rebuild_from_committed_entry_source(
+        {[&rows](const vector_index::committed_entry_visitor &visitor) {
+           for (const auto &row : rows) {
+             if (!visitor(row.first, row.second)) return false;
+           }
+           return true;
+         },
+         rows.size(), true}));
+    EXPECT_EQ(rows.size(), writer.entry_count());
+    expect_faiss_ivf_layout(root.path().string(), rows.size());
+  }
+
+  vector_index::faiss_backend reader(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_ivf_reader_nlist");
+  ASSERT_TRUE(reader.recover());
+  EXPECT_FALSE(reader.last_recover_used_fallback());
+  EXPECT_EQ(rows.size(), reader.entry_count());
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+#endif
+}
+
+TEST(VectorIndexBackendTest,
+     FaissExternalIvfRawRebuildPersistsConsistentEffectiveNlist) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss IVF persistence requires HAVE_FAISS";
+#else
+  const ScopedTempDirectory root("vector_faiss_ivf_raw_nlist");
+  ASSERT_TRUE(root.valid()) << root.error();
+  vector_index::set_faiss_external_snapshot_root_for_testing(
+      root.path().string());
+
+  const std::string vector_path = (root.path() / "vectors.fbin").string();
+  const std::string docid_path = (root.path() / "docids.u64").string();
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 1.0F, 2.0F, 2.0F});
+  write_raw_docid_file(docid_path, {1, 2});
+  const vector_index::raw_vector_segment segment{vector_path, docid_path, 2,
+                                                 2,           0,          1};
+
+  {
+    vector_index::faiss_backend writer(
+        2, vector_index::metric_type::kEuclidean,
+        vector_index::backend_mode::kExternal, "idx_faiss_ivf_raw_nlist");
+    ASSERT_TRUE(writer.set_faiss_ivf_params(8, 1));
+    ASSERT_TRUE(writer.rebuild_from_raw_segments(
+        [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+          return visitor(segment);
+        }));
+    EXPECT_EQ(2U, writer.entry_count());
+    expect_faiss_ivf_layout(root.path().string(), 2);
+  }
+
+  vector_index::faiss_backend reader(
+      2, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_ivf_raw_nlist");
+  ASSERT_TRUE(reader.recover());
+  EXPECT_FALSE(reader.last_recover_used_fallback());
+  EXPECT_EQ(2U, reader.entry_count());
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+#endif
+}
+
+TEST(VectorIndexBackendTest,
      FaissExternalReaderRebuildCoversSamplingAndInvalidReaders) {
 #ifndef HAVE_FAISS
   GTEST_SKIP() << "Faiss reader rebuild requires HAVE_FAISS";
@@ -3714,15 +3917,22 @@ TEST(VectorIndexBackendTest,
       {2, {2.0F, 2.0F}},
       {3, {3.0F, 3.0F}},
       {4, {4.0F, 4.0F}}};
+  size_t reader_calls = 0;
   ASSERT_TRUE(backend.rebuild_from_committed_entries_from_reader(
-      [&rows](const vector_index::committed_entry_visitor &visitor) {
+      [&rows, &reader_calls](
+          const vector_index::committed_entry_visitor &visitor) {
+        ++reader_calls;
         for (const auto &row : rows) {
           if (!visitor(row.first, row.second)) return false;
         }
         return true;
       }));
+  EXPECT_EQ(3U, reader_calls);
   EXPECT_EQ(2U, backend.faiss_last_training_count_for_testing());
   EXPECT_EQ(rows.size(), backend.entry_count());
+  const auto diagnostics = backend.build_diagnostics();
+  EXPECT_EQ(3U, diagnostics.reader_passes);
+  EXPECT_EQ(2U, diagnostics.training_rows);
 
   std::vector<std::vector<vector_index::search_result>> batch_results;
   ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {4.0F, 4.0F}}, 1,
@@ -3770,6 +3980,11 @@ TEST(VectorIndexBackendTest,
   EXPECT_GE(diagnostics.effective_blas_threads, 1U);
   EXPECT_EQ(0U, diagnostics.pq_chunks);
   EXPECT_EQ(0U, diagnostics.cache_nodes);
+  EXPECT_EQ(1U, diagnostics.reader_passes);
+  EXPECT_EQ(0U, diagnostics.training_rows);
+  EXPECT_EQ(0U, diagnostics.reader_count_ms);
+  EXPECT_EQ(0U, diagnostics.training_copy_ms);
+  EXPECT_EQ(0U, diagnostics.train_ms);
 
   std::vector<std::vector<vector_index::search_result>> batch_results;
   ASSERT_TRUE(backend.search_batch({{1.0F, 1.0F}, {3.0F, 3.0F}}, 1,
@@ -3794,6 +4009,500 @@ TEST(VectorIndexBackendTest,
 #endif
 }
 
+TEST(VectorIndexBackendTest,
+     FaissExternalReaderSourceSkipsCountAndRollsBackBadHint) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss reader rebuild requires HAVE_FAISS";
+#else
+  BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, false);
+  UlonglongGuard guard(&opt_vector_faiss_train_size, 2U * 2U * sizeof(float));
+  const std::string root =
+      std::string(testing::TempDir()) + "/vector_faiss_reader_hint_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_index::set_faiss_external_snapshot_root_for_testing(root);
+
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_reader_hint");
+  ASSERT_TRUE(backend.set_faiss_ivf_params(2, 1));
+
+  const std::vector<std::pair<uint64_t, vector_index::vector_data>> rows{
+      {1, {1.0F, 1.0F}},
+      {2, {2.0F, 2.0F}},
+      {3, {3.0F, 3.0F}},
+      {4, {4.0F, 4.0F}}};
+  const std::unordered_map<uint64_t, vector_index::vector_data> initial_rows(
+      rows.begin(), rows.end());
+  ASSERT_TRUE(backend.rebuild_from_committed_entries(initial_rows));
+  ASSERT_EQ(rows.size(), backend.external_snapshot_entries().size());
+
+  size_t reader_calls = 0;
+  const vector_index::committed_entry_source source{
+      [&rows,
+       &reader_calls](const vector_index::committed_entry_visitor &visitor) {
+        ++reader_calls;
+        for (const auto &row : rows) {
+          if (!visitor(row.first, row.second)) return false;
+        }
+        return true;
+      },
+      rows.size(), true};
+  const vector_index::committed_entry_source bad_source{
+      [](const vector_index::committed_entry_visitor &visitor) {
+        return visitor(10, {10.0F, 10.0F}) && visitor(20, {20.0F, 20.0F}) &&
+               visitor(30, {30.0F, 30.0F});
+      },
+      rows.size(), true};
+  EXPECT_FALSE(backend.rebuild_from_committed_entry_source(bad_source));
+  EXPECT_EQ(rows.size(), backend.entry_count());
+  EXPECT_EQ(rows.size(), backend.external_snapshot_entries().size());
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(1U, results[0].doc_id);
+
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_persist_faiss_index_file");
+    EXPECT_FALSE(backend.rebuild_from_committed_entry_source(source));
+  }
+  EXPECT_EQ(rows.size(), backend.external_snapshot_entries().size());
+  ASSERT_TRUE(backend.search({1.0F, 1.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(1U, results[0].doc_id);
+
+  ASSERT_TRUE(backend.rebuild_from_committed_entry_source(source));
+  EXPECT_EQ(4U, reader_calls);
+  EXPECT_EQ(2U, backend.build_diagnostics().reader_passes);
+  EXPECT_EQ(0U, backend.build_diagnostics().reader_count_ms);
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+#endif
+}
+
+TEST(VectorIndexBackendTest,
+     FaissExternalReaderSourceCoversEmptyAndIvfPqBuilds) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss reader rebuild requires HAVE_FAISS";
+#else
+  vector_index::faiss_backend empty_backend(
+      4, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_reader_empty");
+  ASSERT_TRUE(empty_backend.set_faiss_ivf_params(2, 1));
+  size_t empty_reader_calls = 0;
+  ASSERT_TRUE(empty_backend.rebuild_from_committed_entry_source(
+      {[&empty_reader_calls](const vector_index::committed_entry_visitor &) {
+         ++empty_reader_calls;
+         return true;
+       },
+       0, true}));
+  EXPECT_EQ(1U, empty_reader_calls);
+  EXPECT_EQ(1U, empty_backend.build_diagnostics().reader_passes);
+  EXPECT_EQ(0U, empty_backend.entry_count());
+
+  vector_index::faiss_backend pq_backend(
+      4, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_reader_ivfpq");
+  ASSERT_TRUE(pq_backend.set_faiss_ivf_pq_params(2, 1, 1, 1));
+  const std::vector<std::pair<uint64_t, vector_index::vector_data>> rows{
+      {1, {1.0F, 0.0F, 0.0F, 0.0F}},
+      {2, {0.0F, 1.0F, 0.0F, 0.0F}},
+      {3, {0.0F, 0.0F, 1.0F, 0.0F}},
+      {4, {0.0F, 0.0F, 0.0F, 1.0F}}};
+  size_t pq_reader_calls = 0;
+  ASSERT_TRUE(pq_backend.rebuild_from_committed_entry_source(
+      {[&rows, &pq_reader_calls](
+           const vector_index::committed_entry_visitor &visitor) {
+         ++pq_reader_calls;
+         for (const auto &row : rows) {
+           if (!visitor(row.first, row.second)) return false;
+         }
+         return true;
+       },
+       rows.size(), true}));
+  EXPECT_EQ(2U, pq_reader_calls);
+  EXPECT_EQ(2U, pq_backend.build_diagnostics().reader_passes);
+  EXPECT_EQ(rows.size(), pq_backend.entry_count());
+#endif
+}
+
+TEST(VectorIndexBackendTest,
+     FaissExternalRawBlocksReuseFullTrainingInputAndPreserveServingState) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss raw block rebuild requires HAVE_FAISS";
+#else
+  BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, true);
+  UlonglongGuard training_guard(&opt_vector_faiss_train_size, 0);
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 1024 * 1024);
+  const ScopedTempDirectory root("vector_faiss_raw_full");
+  ASSERT_TRUE(root.valid()) << root.error();
+  vector_index::set_faiss_external_snapshot_root_for_testing(
+      root.path().string());
+
+  const std::string vector_path_1 = (root.path() / "vectors-1.fbin").string();
+  const std::string docid_path_1 = (root.path() / "docids-1.u64").string();
+  const std::string vector_path_2 = (root.path() / "vectors-2.fbin").string();
+  const std::string docid_path_2 = (root.path() / "docids-2.u64").string();
+  write_raw_fbin_file(vector_path_1, 2, 2, {1.0F, 0.0F, 0.0F, 1.0F});
+  write_raw_docid_file(docid_path_1, {10, 20});
+  write_raw_fbin_file(vector_path_2, 2, 2, {2.0F, 0.0F, 0.0F, 2.0F});
+  write_raw_docid_file(docid_path_2, {30, 40});
+  const vector_index::raw_vector_segment segment_1{
+      vector_path_1, docid_path_1, 2, 2, 0, 1};
+  const vector_index::raw_vector_segment segment_2{
+      vector_path_2, docid_path_2, 2, 2, 0, 2};
+
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kCosine,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_raw_full");
+  ASSERT_TRUE(backend.set_faiss_ivf_params(2, 2));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(nullptr));
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [](const vector_index::raw_vector_segment_visitor &) { return false; }));
+  vector_index::raw_vector_segment wrong_dimension = segment_1;
+  wrong_dimension.dimension = 3;
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&wrong_dimension](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(wrong_dimension);
+      }));
+  vector_index::raw_vector_segment missing_segment = segment_1;
+  missing_segment.vector_path = (root.path() / "missing.fbin").string();
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&missing_segment](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(missing_segment);
+      }));
+  vector_index::raw_vector_segment overflow_segment = segment_2;
+  overflow_segment.row_count = std::numeric_limits<size_t>::max();
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&segment_1, &overflow_segment](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment_1) && visitor(overflow_segment);
+      }));
+  ASSERT_TRUE(backend.rebuild_from_raw_segments(
+      [&segment_1,
+       &segment_2](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment_1) && visitor(segment_2);
+      }));
+
+  const auto diagnostics = backend.build_diagnostics();
+  EXPECT_EQ("faiss_scheduler", diagnostics.runtime);
+  EXPECT_EQ("raw_blocks", diagnostics.input_source);
+  EXPECT_EQ(4U, diagnostics.row_count);
+  EXPECT_EQ(2U, diagnostics.segment_count);
+  EXPECT_EQ(1U, diagnostics.reader_passes);
+  EXPECT_EQ(4U, diagnostics.training_rows);
+  EXPECT_EQ(4U, backend.faiss_last_training_count_for_testing());
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search({2.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_TRUE(results[0].doc_id == 10U || results[0].doc_id == 30U);
+
+  vector_index::raw_vector_segment bad_segment = segment_2;
+  bad_segment.row_count = 3;
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&bad_segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(bad_segment);
+      }));
+  EXPECT_EQ(4U, backend.entry_count());
+  ASSERT_TRUE(backend.search({2.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_TRUE(results[0].doc_id == 10U || results[0].doc_id == 30U);
+
+  const std::string invalid_id_vectors =
+      (root.path() / "invalid-id.fbin").string();
+  const std::string invalid_id_docids =
+      (root.path() / "invalid-id.u64").string();
+  write_raw_fbin_file(invalid_id_vectors, 1, 2, {1.0F, 1.0F});
+  write_raw_docid_file(invalid_id_docids,
+                       {std::numeric_limits<uint64_t>::max()});
+  const vector_index::raw_vector_segment invalid_id_segment{
+      invalid_id_vectors, invalid_id_docids, 1, 2, 0, 3};
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&invalid_id_segment](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(invalid_id_segment);
+      }));
+
+  const std::string zero_vectors = (root.path() / "zero.fbin").string();
+  const std::string zero_docids = (root.path() / "zero.u64").string();
+  write_raw_fbin_file(zero_vectors, 1, 2, {0.0F, 0.0F});
+  write_raw_docid_file(zero_docids, {50});
+  const vector_index::raw_vector_segment zero_segment{zero_vectors,
+                                                       zero_docids, 1, 2, 0,
+                                                       4};
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&zero_segment](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(zero_segment);
+      }));
+
+  const std::string replaced_vectors =
+      (root.path() / "replaced-vectors.fbin").string();
+  const std::string replaced_docids =
+      (root.path() / "replaced-docids.u64").string();
+  write_raw_fbin_file(replaced_vectors, 2, 2,
+                      {5.0F, 0.0F, 6.0F, 0.0F});
+  write_raw_docid_file(replaced_docids, {60, 70});
+  const vector_index::raw_vector_segment replaced_segment{
+      replaced_vectors, replaced_docids, 2, 2, 0, 5};
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&replaced_segment, &replaced_vectors, &replaced_docids](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        const bool accepted = visitor(replaced_segment);
+        write_raw_fbin_file(replaced_vectors, 1, 2, {5.0F, 0.0F});
+        write_raw_docid_file(replaced_docids, {60});
+        return accepted;
+      }));
+
+  EXPECT_EQ(4U, backend.entry_count());
+  ASSERT_TRUE(backend.search({2.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_TRUE(results[0].doc_id == 10U || results[0].doc_id == 30U);
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+#endif
+}
+
+TEST(VectorIndexBackendTest,
+     FaissExternalRawBlocksKeepTwoPassSamplingSemantics) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss raw block rebuild requires HAVE_FAISS";
+#else
+  BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, true);
+  UlonglongGuard training_guard(&opt_vector_faiss_train_size,
+                                2U * 2U * sizeof(float));
+  const ScopedTempDirectory root("vector_faiss_raw_sampled");
+  ASSERT_TRUE(root.valid()) << root.error();
+  vector_index::set_faiss_external_snapshot_root_for_testing(
+      root.path().string());
+
+  const std::string vector_path = (root.path() / "vectors.fbin").string();
+  const std::string docid_path = (root.path() / "docids.u64").string();
+  write_raw_fbin_file(vector_path, 4, 2,
+                      {1.0F, 1.0F, 2.0F, 2.0F, 3.0F, 3.0F, 4.0F, 4.0F});
+  write_raw_docid_file(docid_path, {1, 2, 3, 4});
+  const vector_index::raw_vector_segment segment{vector_path, docid_path, 4,
+                                                 2,           0,          1};
+
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_raw_sampled");
+  ASSERT_TRUE(backend.set_faiss_ivf_params(2, 1));
+  ASSERT_TRUE(backend.rebuild_from_raw_segments(
+      [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment);
+      }));
+
+  const auto diagnostics = backend.build_diagnostics();
+  EXPECT_EQ("raw_blocks", diagnostics.input_source);
+  EXPECT_EQ(1U, diagnostics.segment_count);
+  EXPECT_EQ(2U, diagnostics.reader_passes);
+  EXPECT_EQ(2U, diagnostics.training_rows);
+  EXPECT_EQ(2U, backend.faiss_last_training_count_for_testing());
+  EXPECT_EQ(4U, backend.entry_count());
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+#endif
+}
+
+TEST(VectorIndexBackendTest,
+     FaissExternalRawBlocksBuildIvfPqWithBoundedMaterialization) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss raw block rebuild requires HAVE_FAISS";
+#else
+  BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, true);
+  UlonglongGuard training_guard(&opt_vector_faiss_train_size, 0);
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 1);
+  const ScopedTempDirectory root("vector_faiss_raw_ivfpq");
+  ASSERT_TRUE(root.valid()) << root.error();
+  vector_index::set_faiss_external_snapshot_root_for_testing(
+      root.path().string());
+
+  const std::string vector_path = (root.path() / "vectors.fbin").string();
+  const std::string docid_path = (root.path() / "docids.u64").string();
+  write_raw_fbin_file(vector_path, 4, 4,
+                      {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+                       0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F});
+  write_raw_docid_file(docid_path, {1, 2, 3, 4});
+  const vector_index::raw_vector_segment segment{vector_path, docid_path, 4,
+                                                  4,           0,          1};
+  const vector_index::raw_vector_segment_reader reader =
+      [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment);
+      };
+
+  vector_index::faiss_backend backend(4, vector_index::metric_type::kCosine,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_raw_ivfpq");
+  ASSERT_TRUE(backend.set_faiss_ivf_pq_params(2, 2, 1, 1));
+  ASSERT_TRUE(backend.rebuild_from_raw_segments(reader));
+  EXPECT_EQ(4U, backend.entry_count());
+  EXPECT_EQ(4U, backend.faiss_last_training_count_for_testing());
+  EXPECT_EQ(2U, backend.build_diagnostics().reader_passes);
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search({1.0F, 0.0F, 0.0F, 0.0F}, 2, &results));
+  EXPECT_FALSE(results.empty());
+
+  vector_index::faiss_backend non_trainable(
+      4, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal, "idx_faiss_raw_ivfpq_small");
+  ASSERT_TRUE(non_trainable.set_faiss_ivf_pq_params(2, 1, 1, 8));
+  ASSERT_TRUE(non_trainable.rebuild_from_raw_segments(reader));
+  EXPECT_EQ(4U, non_trainable.entry_count());
+
+  const std::string invalid_id_vectors =
+      (root.path() / "invalid-id.fbin").string();
+  const std::string invalid_id_docids =
+      (root.path() / "invalid-id.u64").string();
+  write_raw_fbin_file(invalid_id_vectors, 1, 4,
+                      {1.0F, 0.0F, 0.0F, 0.0F});
+  write_raw_docid_file(invalid_id_docids,
+                       {std::numeric_limits<uint64_t>::max()});
+  const vector_index::raw_vector_segment invalid_id_segment{
+      invalid_id_vectors, invalid_id_docids, 1, 4, 0, 2};
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&invalid_id_segment](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(invalid_id_segment);
+      }));
+
+  const std::string zero_vectors = (root.path() / "zero.fbin").string();
+  const std::string zero_docids = (root.path() / "zero.u64").string();
+  write_raw_fbin_file(zero_vectors, 1, 4, {0.0F, 0.0F, 0.0F, 0.0F});
+  write_raw_docid_file(zero_docids, {5});
+  const vector_index::raw_vector_segment zero_segment{zero_vectors,
+                                                       zero_docids, 1, 4, 0,
+                                                       3};
+  EXPECT_FALSE(backend.rebuild_from_raw_segments(
+      [&zero_segment](
+          const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(zero_segment);
+      }));
+  EXPECT_EQ(4U, backend.entry_count());
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+#endif
+}
+
+TEST(VectorIndexBackendTest,
+     FaissExternalRawBlocksHandleEmptyInputWithUnlimitedCache) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss raw block rebuild requires HAVE_FAISS";
+#else
+  BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, true);
+  UlonglongGuard training_guard(&opt_vector_faiss_train_size, 1024);
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  const ScopedTempDirectory root("vector_faiss_raw_empty");
+  ASSERT_TRUE(root.valid()) << root.error();
+  vector_index::set_faiss_external_snapshot_root_for_testing(
+      root.path().string());
+
+  vector_index::faiss_backend backend(4, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_raw_empty");
+  ASSERT_TRUE(backend.set_faiss_ivf_params(2, 1));
+  size_t reader_calls = 0;
+  ASSERT_TRUE(backend.rebuild_from_raw_segments(
+      [&reader_calls](const vector_index::raw_vector_segment_visitor &) {
+        ++reader_calls;
+        return true;
+      }));
+
+  EXPECT_EQ(1U, reader_calls);
+  EXPECT_EQ(0U, backend.entry_count());
+  EXPECT_EQ(0U, backend.faiss_last_training_count_for_testing());
+  const auto diagnostics = backend.build_diagnostics();
+  EXPECT_EQ("raw_blocks", diagnostics.input_source);
+  EXPECT_EQ(0U, diagnostics.row_count);
+  EXPECT_EQ(0U, diagnostics.segment_count);
+  EXPECT_EQ(1U, diagnostics.reader_passes);
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+#endif
+}
+
+TEST(VectorIndexBackendTest, FaissMemoryRawBlocksUseGenericRebuildPath) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss raw block rebuild requires HAVE_FAISS";
+#else
+  const ScopedTempDirectory root("vector_faiss_raw_memory");
+  ASSERT_TRUE(root.valid()) << root.error();
+  const std::string vector_path = (root.path() / "vectors.fbin").string();
+  const std::string docid_path = (root.path() / "docids.u64").string();
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 2.0F, 0.0F});
+  write_raw_docid_file(docid_path, {10, 20});
+  const vector_index::raw_vector_segment segment{vector_path, docid_path, 2,
+                                                  2,           0,          1};
+
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kMemory);
+  ASSERT_TRUE(backend.rebuild_from_raw_segments(
+      [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment);
+      }));
+  EXPECT_EQ(2U, backend.entry_count());
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search({2.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(20U, results[0].doc_id);
+#endif
+}
+
+TEST(VectorIndexBackendTest,
+     FaissExternalRawBlocksBuildHnswWithoutTrainingPass) {
+#ifndef HAVE_FAISS
+  GTEST_SKIP() << "Faiss raw block rebuild requires HAVE_FAISS";
+#else
+  BoolGuard keep_loaded_guard(&opt_vector_faiss_keep_loaded, true);
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  const ScopedTempDirectory root("vector_faiss_raw_hnsw");
+  ASSERT_TRUE(root.valid()) << root.error();
+  vector_index::set_faiss_external_snapshot_root_for_testing(
+      root.path().string());
+
+  const std::string vector_path = (root.path() / "vectors.fbin").string();
+  const std::string docid_path = (root.path() / "docids.u64").string();
+  write_raw_fbin_file(vector_path, 3, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F});
+  write_raw_docid_file(docid_path, {10, 20, 30});
+  const vector_index::raw_vector_segment segment{vector_path, docid_path, 3,
+                                                  2,           0,          1};
+
+  vector_index::faiss_backend backend(2, vector_index::metric_type::kEuclidean,
+                                      vector_index::backend_mode::kExternal,
+                                      "idx_faiss_raw_hnsw");
+  ASSERT_TRUE(backend.rebuild_from_raw_segments(
+      [&segment](const vector_index::raw_vector_segment_visitor &visitor) {
+        return visitor(segment);
+      }));
+
+  EXPECT_EQ("hnsw", backend.backend_variant());
+  EXPECT_EQ(3U, backend.entry_count());
+  EXPECT_EQ(0U, backend.faiss_last_training_count_for_testing());
+  const auto diagnostics = backend.build_diagnostics();
+  EXPECT_EQ("raw_blocks", diagnostics.input_source);
+  EXPECT_EQ(1U, diagnostics.reader_passes);
+  EXPECT_EQ(0U, diagnostics.training_rows);
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search({3.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(30U, results[0].doc_id);
+
+  vector_index::reset_faiss_external_snapshot_root_for_testing();
+#endif
+}
+
 TEST(VectorIndexBackendTest, FaissExternalIvfPqParamsCanBeConfigured) {
   vector_index::faiss_backend backend(4, vector_index::metric_type::kEuclidean,
                                      vector_index::backend_mode::kExternal,
@@ -3805,6 +4514,12 @@ TEST(VectorIndexBackendTest, FaissExternalIvfPqParamsCanBeConfigured) {
 
   EXPECT_TRUE(backend.set_faiss_ivf_pq_params(2, 1, 1, 1));
   EXPECT_EQ("ivf_pq", backend.backend_variant());
+  EXPECT_TRUE(backend.set_faiss_ivf_pq_params(2, 2, 1, 1));
+  EXPECT_EQ(2U, backend.faiss_nprobe());
+  EXPECT_TRUE(backend.set_faiss_ivf_pq_params(2, 2, 1, 2));
+  EXPECT_EQ(2U, backend.faiss_pq_bits());
+  EXPECT_TRUE(backend.set_faiss_ivf_params(2, 2));
+  EXPECT_EQ("ivf_flat", backend.backend_variant());
 }
 
 TEST(VectorIndexBackendTest,
@@ -6141,10 +6856,11 @@ TEST(VectorIndexBackendTest,
   std::filesystem::remove_all(root, ec);
 }
 
-TEST(VectorIndexBackendTest,
-     FaissExternalEraseLastEntryKeepsEmptyGenerationWhenCleanupIsInjected) {
-  const std::string root =
-      std::string(testing::TempDir()) + "/vector_faiss_erase_last_cleanup_fail_t";
+TEST(
+    VectorIndexBackendTest,
+    FaissExternalEraseLastEntryKeepsEmptyGenerationWhenCleanupIsInjected) {
+  const std::string root = std::string(testing::TempDir()) +
+                           "/vector_faiss_erase_last_cleanup_fail_t";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
@@ -6157,7 +6873,8 @@ TEST(VectorIndexBackendTest,
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_remove_generated_snapshots");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_backend_fail_remove_generated_snapshots");
     EXPECT_TRUE(backend.erase(1));
   }
 
@@ -6343,7 +7060,8 @@ TEST(VectorIndexBackendTest,
   ASSERT_TRUE(backend.upsert(1, {1.0F, 1.0F}));
 
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_backend_fail_remove_dir_if_empty");
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_backend_fail_remove_dir_if_empty");
     EXPECT_TRUE(backend.erase(1));
   }
 

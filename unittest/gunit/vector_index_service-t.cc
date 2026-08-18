@@ -5577,6 +5577,16 @@ TEST(VectorIndexServiceTest, SetFaissIvfParamsRebuildsCommittedEntries) {
   ASSERT_TRUE(service.commit(700));
 
   ASSERT_TRUE(service.set_faiss_ivf_params("idx_faiss_ivf", 2, 1));
+  ASSERT_TRUE(service.rebuild_index("idx_faiss_ivf"));
+  vector_index::index_service::index_config config;
+  vector_index::backend_build_diagnostics diagnostics;
+  ASSERT_TRUE(service.describe_index("idx_faiss_ivf", &config, nullptr, nullptr,
+                                     nullptr, nullptr, nullptr, nullptr,
+                                     nullptr, nullptr, nullptr, nullptr,
+                                     nullptr, nullptr, &diagnostics));
+  EXPECT_EQ("reader", diagnostics.input_source);
+  EXPECT_EQ(2U, diagnostics.reader_passes);
+  EXPECT_EQ(2U, diagnostics.training_rows);
   ASSERT_TRUE(service.search("idx_faiss_ivf", {1.0F, 1.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(1U, result[0].doc_id);

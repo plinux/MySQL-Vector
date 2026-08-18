@@ -567,13 +567,37 @@ bool validate_backend_plan_locked(const lifecycle_backend_plan &plan) {
   return validate_backend_plan_against_state_locked(plan, current_state);
 }
 
+bool rebuild_backend_from_entry_snapshot(
+    vector_index::backend *target,
+    const vector_index::index_service::committed_entries &entries) {
+  if (target == nullptr) return false;
+
+  /*
+    Only FAISS consumes the exact cardinality hint introduced for its IVF
+    training passes. Other providers retain their complete-snapshot rebuild
+    semantics instead of being redirected through provider-specific readers.
+  */
+  if (target->provider() != vector_index::backend_provider::kFaiss) {
+    return target->rebuild_from_committed_entries(entries);
+  }
+
+  const vector_index::committed_entry_reader reader =
+      [&entries](const vector_index::committed_entry_visitor &visitor) {
+        for (const auto &entry : entries) {
+          if (!visitor(entry.first, entry.second)) return false;
+        }
+        return true;
+      };
+  return target->rebuild_from_committed_entry_source(
+      {reader, entries.size(), true});
+}
+
 std::unique_ptr<vector_index::backend> build_rebuilt_backend(
     const lifecycle_backend_plan &plan) {
   if (uses_standalone_source(plan)) return nullptr;
   std::unique_ptr<vector_index::backend> rebuilt =
       build_backend_from_config(plan.index_name, plan.config);
-  if (rebuilt == nullptr ||
-      !rebuilt->rebuild_from_committed_entries(plan.entries)) {
+  if (!rebuild_backend_from_entry_snapshot(rebuilt.get(), plan.entries)) {
     return nullptr;
   }
   return rebuilt;
@@ -1467,7 +1491,7 @@ bool replace_committed_entries(
 
   std::unique_ptr<vector_index::backend> rebuilt =
       build_backend_from_config(index_name, config);
-  if (rebuilt == nullptr || !rebuilt->rebuild_from_committed_entries(entries)) {
+  if (!rebuild_backend_from_entry_snapshot(rebuilt.get(), entries)) {
     return false;
   }
 
@@ -1480,8 +1504,8 @@ bool replace_committed_entries(
     vector_status::record_truth_store_persist_failure();
     std::unique_ptr<vector_index::backend> rollback_backend =
         build_backend_from_config(index_name, config);
-    if (rollback_backend == nullptr ||
-        !rollback_backend->rebuild_from_committed_entries(before_entries) ||
+    if (!rebuild_backend_from_entry_snapshot(rollback_backend.get(),
+                                             before_entries) ||
         !g_index_service.install_rebuilt_index(index_name, before_entries,
                                                std::move(rollback_backend))) {
       return false;
