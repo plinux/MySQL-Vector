@@ -24,24 +24,13 @@
 #include "sql/vector/vector_index_observability.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cstddef>
-#include <cstring>
 #include <string>
+
+#include "sql/vector/vector_ascii.h"
 
 namespace vector_index_observability {
 namespace {
-
-bool ascii_equal_ignore_case(const std::string &lhs, const char *rhs) {
-  const size_t rhs_len = std::strlen(rhs);
-  if (lhs.size() != rhs_len) return false;
-  for (size_t i = 0; i < rhs_len; ++i) {
-    const auto left = static_cast<unsigned char>(lhs[i]);
-    const auto right = static_cast<unsigned char>(rhs[i]);
-    if (std::tolower(left) != std::tolower(right)) return false;
-  }
-  return true;
-}
 
 vector_search_advice make_search_advice(const char *advice,
                                         const char *reason,
@@ -67,19 +56,23 @@ uint64_t pending_apply_count(const vector_index_registry::index_info &info) {
 }
 
 uint64_t rebuild_progress(const vector_index_registry::index_info &info) {
-  if (ascii_equal_ignore_case(info.lifecycle_state, "ready")) return 100;
-  if (ascii_equal_ignore_case(info.lifecycle_state, "rebuilding")) return 50;
+  if (vector_ascii::equal_ignore_case(info.lifecycle_state, "ready"))
+    return 100;
+  if (vector_ascii::equal_ignore_case(info.lifecycle_state, "rebuilding"))
+    return 50;
   return 0;
 }
 
 uint64_t recover_progress(const vector_index_registry::index_info &info) {
-  if (ascii_equal_ignore_case(info.lifecycle_state, "ready")) return 100;
-  if (ascii_equal_ignore_case(info.lifecycle_state, "recovering")) return 50;
+  if (vector_ascii::equal_ignore_case(info.lifecycle_state, "ready"))
+    return 100;
+  if (vector_ascii::equal_ignore_case(info.lifecycle_state, "recovering"))
+    return 50;
   return 0;
 }
 
 bool is_loaded(const vector_index_registry::index_info &info) {
-  return !ascii_equal_ignore_case(info.lifecycle_state, "failed");
+  return !vector_ascii::equal_ignore_case(info.lifecycle_state, "failed");
 }
 
 bool is_writable(const vector_index_registry::index_info &info) {
@@ -128,7 +121,8 @@ vector_search_advice derive_diskann_search_advice(
                               suggested_complexity, 0);
   }
 
-  if (!ascii_equal_ignore_case(diagnostics.search_profile, "high_recall") &&
+  if (!vector_ascii::equal_ignore_case(diagnostics.search_profile,
+                                       "high_recall") &&
       diagnostics.search_segment_max_entries >= 100000) {
     return make_search_advice(
         "use_smaller_segments_or_high_recall_profile",

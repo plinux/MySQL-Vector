@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "my_byteorder.h"
+#include "sql/vector/vector_ascii.h"
 #include "sql/vector/vector_utils.h"
 #include "sql_string.h"
 
@@ -57,6 +58,18 @@ class binary_vector_data {
 };
 
 }  // namespace
+
+TEST(VectorUtilsTest, ComparesAsciiTokensWithoutLocaleDependence) {
+  EXPECT_TRUE(vector_ascii::equal_ignore_case("DiskANN", "diskann"));
+  EXPECT_FALSE(vector_ascii::equal_ignore_case("disk", "diskann"));
+  EXPECT_FALSE(vector_ascii::equal_ignore_case("faiss", "hnsw"));
+
+  const char non_ascii_upper[] = {'A', static_cast<char>(0xc0)};
+  const char non_ascii_lower[] = {'a', static_cast<char>(0xe0)};
+  EXPECT_FALSE(vector_ascii::equal_ignore_case(
+      std::string_view(non_ascii_upper, sizeof(non_ascii_upper)),
+      std::string_view(non_ascii_lower, sizeof(non_ascii_lower))));
+}
 
 TEST(VectorUtilsTest, ParseTextVectorSuccess) {
   String input(" [1, -2.5, 3e1] ", &my_charset_latin1);

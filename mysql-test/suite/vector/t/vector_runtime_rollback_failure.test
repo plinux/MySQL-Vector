@@ -1,0 +1,42 @@
+--source include/have_vector_debug_native.inc
+
+--echo #
+--echo # WL#vector-v1: fail stop when transaction runtime rollback is incomplete
+--echo #
+
+SELECT VEC_INDEX_CREATE('idx_runtime_rollback_fail', 2,
+                        'EUCLIDEAN', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_UPSERT('idx_runtime_rollback_fail', 1,
+                        VEC_FROMTEXT('[1,1]'));
+SET @rollback_fail_before = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_runtime_state_rollback_failures');
+
+SET @txn = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_UPSERT('idx_runtime_rollback_fail', @txn, 2,
+                              VEC_FROMTEXT('[2,2]'));
+--disable_query_log
+SET GLOBAL debug =
+  '+d,vector_truth_store_fail_save,vector_service_fail_restore_committed_state';
+--enable_query_log
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_TXN_COMMIT(@txn);
+--disable_query_log
+SET GLOBAL debug =
+  '-d,vector_truth_store_fail_save,vector_service_fail_restore_committed_state';
+--enable_query_log
+
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_LIST();
+SET @rollback_fail_after = (
+  SELECT CAST(VARIABLE_VALUE AS UNSIGNED)
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Vector_runtime_state_rollback_failures');
+SELECT @rollback_fail_after > @rollback_fail_before;
+
+--source include/restart_mysqld.inc
+
+SELECT VEC_INDEX_SEARCH('idx_runtime_rollback_fail',
+                        VEC_FROMTEXT('[2,2]'), 10);
+SELECT VEC_INDEX_DROP('idx_runtime_rollback_fail');

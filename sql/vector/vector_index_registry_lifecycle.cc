@@ -613,6 +613,17 @@ bool refresh_segment_tasks_from_service_locked(const std::string &index_name) {
   return true;
 }
 
+void rollback_standalone_rebuild_locked(
+    vector_index::index_service::standalone_rebuild_plan &rebuild_plan) {
+  if (!g_index_service.rollback_standalone_rebuild(&rebuild_plan)) {
+    vector_status::record_runtime_state_rollback_failure();
+    fail_stop_registry_locked("standalone_rebuild_rollback_failed");
+    return;
+  }
+  replace_segment_task_rows_for_index(
+      rebuild_plan.index_name, rebuild_plan.previous_segment_tasks);
+}
+
 bool snapshot_backend_plan_from_state_locked(
     const std::string &index_name,
     const vector_index::index_service::committed_state &committed_state,
@@ -846,14 +857,6 @@ bool rebuild_standalone_plan(const lifecycle_backend_plan &plan,
     return false;
   }
 
-  runtime_state_snapshot snapshot;
-  if (!capture_runtime_state_locked(&snapshot)) {
-    set_rebuild_error(error, "vector registry could not capture state");
-    if (!g_index_service.discard_standalone_rebuild(&rebuild_plan)) {
-      fail_stop_registry_locked("artifact_generation_discard_failed");
-    }
-    return false;
-  }
   vector_index::diskann_artifact_identity artifact_identity;
   if (!make_diskann_artifact_identity_locked(
           plan.index_name, plan.config, rebuild_plan.target_publication,
@@ -875,26 +878,24 @@ bool rebuild_standalone_plan(const lifecycle_backend_plan &plan,
     if (!g_index_service.discard_standalone_rebuild(&rebuild_plan)) {
       fail_stop_registry_locked("artifact_generation_discard_failed");
     }
-    return rollback_runtime_state_and_fail_locked(snapshot);
+    // The generic runtime snapshot does not contain Standalone source state.
+    // This failed publish left live state untouched, so restoring that
+    // snapshot would only reset source_generation and stale the durable intent.
+    return false;
   }
   if (!refresh_segment_tasks_from_service_locked(plan.index_name)) {
     set_rebuild_error(error, "vector registry could not refresh segment tasks");
-    if (!g_index_service.rollback_standalone_rebuild(&rebuild_plan)) {
-      vector_status::record_runtime_state_rollback_failure();
-      return false;
-    }
-    return rollback_runtime_state_and_fail_locked(snapshot);
+    rollback_standalone_rebuild_locked(rebuild_plan);
+    return false;
   }
+  const manifest_state_snapshot manifest_before =
+      capture_manifest_state_locked();
   if (!persist_registry_state_locked()) {
+    restore_manifest_state_locked(manifest_before);
     vector_status::record_truth_store_persist_failure();
     set_rebuild_error(error, "vector registry could not persist rebuild state");
-    if (!g_index_service.rollback_standalone_rebuild(&rebuild_plan)) {
-      vector_status::record_runtime_state_rollback_failure();
-      return false;
-    }
-    replace_segment_task_rows_for_index(
-        plan.index_name, rebuild_plan.previous_segment_tasks);
-    return rollback_runtime_state_and_fail_locked(snapshot);
+    rollback_standalone_rebuild_locked(rebuild_plan);
+    return false;
   }
 
   if (!g_index_service.finalize_standalone_rebuild(&rebuild_plan)) {
@@ -1584,8 +1585,16 @@ bool rename_indexes_for_table(const std::string &old_db_name,
   applied_pairs.reserve(rename_pairs.size());
   auto rollback_applied_pairs = [&applied_pairs, &old_db_name]() {
     for (auto it = applied_pairs.rbegin(); it != applied_pairs.rend(); ++it) {
-      if (!g_index_service.rename_index(it->second, it->first)) {
+      const vector_index::index_rename_result rename_result =
+          g_index_service.rename_index(it->second, it->first);
+      if (rename_result !=
+          vector_index::index_rename_result::kRenamedDurable) {
         vector_status::record_runtime_state_rollback_failure();
+        fail_stop_registry_locked(
+            rename_result ==
+                    vector_index::index_rename_result::kDurabilityUnknown
+                ? "standalone_rename_rollback_durability_unknown"
+                : "standalone_rename_rollback_failed");
         return false;
       }
       rename_index_binding_and_owner_schema_locked(it->second, it->first,
@@ -1596,7 +1605,15 @@ bool rename_indexes_for_table(const std::string &old_db_name,
   };
 
   for (const auto &pair : rename_pairs) {
-    if (!g_index_service.rename_index(pair.first, pair.second)) {
+    const vector_index::index_rename_result rename_result =
+        g_index_service.rename_index(pair.first, pair.second);
+    if (rename_result !=
+        vector_index::index_rename_result::kRenamedDurable) {
+      if (rename_result ==
+          vector_index::index_rename_result::kDurabilityUnknown) {
+        fail_stop_registry_locked("standalone_rename_durability_unknown");
+        return false;
+      }
       if (!rollback_applied_pairs()) return false;
       return false;
     }
@@ -1745,7 +1762,13 @@ bool rename_index_for_column(const std::string &db_name,
     return false;
   }
 
-  if (!g_index_service.rename_index(old_index_name, new_index_name)) {
+  const vector_index::index_rename_result rename_result =
+      g_index_service.rename_index(old_index_name, new_index_name);
+  if (rename_result != vector_index::index_rename_result::kRenamedDurable) {
+    if (rename_result ==
+        vector_index::index_rename_result::kDurabilityUnknown) {
+      fail_stop_registry_locked("standalone_rename_durability_unknown");
+    }
     return false;
   }
   rename_index_binding_and_owner_schema_locked(old_index_name, new_index_name,
@@ -1758,6 +1781,18 @@ bool rename_index_for_column(const std::string &db_name,
 
   if (!persist_registry_state_locked()) {
     vector_status::record_truth_store_persist_failure();
+    const vector_index::index_rename_result rollback_result =
+        g_index_service.rename_index(new_index_name, old_index_name);
+    if (rollback_result !=
+        vector_index::index_rename_result::kRenamedDurable) {
+      vector_status::record_runtime_state_rollback_failure();
+      fail_stop_registry_locked(
+          rollback_result ==
+                  vector_index::index_rename_result::kDurabilityUnknown
+              ? "standalone_rename_rollback_durability_unknown"
+              : "standalone_rename_rollback_failed");
+      return false;
+    }
     if (!rollback_runtime_state_locked(metadata_before, committed_before,
                                        change_log_before,
                                        lagging_indexes_before)) {
@@ -1899,9 +1934,10 @@ bool detail::load_runtime_for_search(const std::string &index_name) {
 
   vector_status::record_rebuild_request();
   std::unique_ptr<vector_index::backend> rebuilt = build_rebuilt_backend(plan);
-  return rebuilt != nullptr &&
-         publish_rebuilt_runtime(plan, std::move(rebuilt),
-                                 rebuilt_runtime_lifecycle::kPreserve, nullptr);
+  return rebuilt != nullptr && publish_rebuilt_runtime(
+                                   plan, std::move(rebuilt),
+                                   rebuilt_runtime_lifecycle::kPreserve,
+                                   nullptr);
 }
 
 bool rebuild_index(const std::string &index_name, std::string *error) {

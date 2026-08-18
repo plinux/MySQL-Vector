@@ -23,26 +23,14 @@
 
 #include "sql/vector/vector_index_status_fields.h"
 
-#include <cctype>
 #include <cstddef>
-#include <cstring>
 #include <utility>
 
+#include "sql/vector/vector_ascii.h"
 #include "sql/vector/vector_index_observability.h"
 
 namespace vector_index_status_fields {
 namespace {
-
-bool ascii_equal_ignore_case(const std::string &lhs, const char *rhs) {
-  const size_t rhs_len = std::strlen(rhs);
-  if (lhs.size() != rhs_len) return false;
-  for (size_t i = 0; i < rhs_len; ++i) {
-    const auto left = static_cast<unsigned char>(lhs[i]);
-    const auto right = static_cast<unsigned char>(rhs[i]);
-    if (std::tolower(left) != std::tolower(right)) return false;
-  }
-  return true;
-}
 
 void append_string(field_values *fields, const char *name,
                    const std::string &value) {
@@ -545,8 +533,8 @@ void collect_info_fields(const vector_index_registry::index_info &info,
   fields->reserve(80);
 
   append_index_definition_fields(fields, info);
-  append_build_diagnostics(fields,
-                           ascii_equal_ignore_case(info.provider, "diskann"),
+  append_build_diagnostics(fields, vector_ascii::equal_ignore_case(
+                                       info.provider, "diskann"),
                            info.build_diagnostics);
   append_index_tuning_fields(fields, info);
   append_bool(fields, "supports_mutations", info.supports_mutations);
@@ -605,8 +593,8 @@ void collect_backend_health_fields(
 
   append_string(fields, "backend_type", info.provider);
   append_nullable_string(fields, "backend_variant", info.backend_variant);
-  append_build_diagnostics(fields, ascii_equal_ignore_case(info.provider,
-                                                           "diskann"),
+  append_build_diagnostics(fields, vector_ascii::equal_ignore_case(
+                                       info.provider, "diskann"),
                            info.build_diagnostics);
   append_string(fields, "mode", info.mode);
   append_string(fields, "consistency_mode", info.consistency_mode);

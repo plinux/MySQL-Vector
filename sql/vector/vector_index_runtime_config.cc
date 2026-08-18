@@ -23,8 +23,6 @@
 
 #include "sql/vector/vector_index_runtime_config.h"
 
-#include <algorithm>
-
 #include "sql/vector/vector_index_build_options.h"
 
 namespace vector_index {
@@ -82,34 +80,12 @@ bool runtime_provider_accepts_mode(backend_provider provider,
   return false;
 }
 
-bool runtime_common_config_valid(const runtime_common_config &config) {
-  return config.dimension > 0 &&
-         runtime_provider_accepts_mode(config.provider, config.mode);
-}
-
-faiss_runtime_index_kind faiss_runtime_kind_from_params(uint32_t nlist,
-                                                        uint32_t pq_m,
-                                                        uint32_t pq_bits) {
-  if (nlist != 0 && pq_m != 0 && pq_bits != 0) {
-    return faiss_runtime_index_kind::kIvfPq;
-  }
-  if (nlist != 0) return faiss_runtime_index_kind::kIvfFlat;
-  return faiss_runtime_index_kind::kHnsw;
-}
-
 bool valid_faiss_ivf_pq_config(size_t dimension, uint32_t nlist,
                                uint32_t nprobe, uint32_t pq_m,
                                uint32_t pq_bits) {
   return dimension != 0 && nlist != 0 && nprobe != 0 && pq_m != 0 &&
          pq_bits != 0 && pq_bits <= k_max_faiss_pq_bits &&
          dimension % pq_m == 0;
-}
-
-uint32_t resolve_runtime_threads(uint32_t statement_threads,
-                                 uint32_t global_threads) {
-  const uint32_t selected =
-      statement_threads == 0 ? global_threads : statement_threads;
-  return std::min<uint32_t>(selected, k_max_build_threads);
 }
 
 bool runtime_uniform_sample_position(size_t sample_index, size_t total_count,

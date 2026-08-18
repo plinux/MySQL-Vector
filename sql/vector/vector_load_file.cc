@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "my_byteorder.h"
+#include "sql/vector/vector_ascii.h"
 
 namespace vector_index {
 
@@ -232,20 +233,6 @@ std::string trim_copy(const std::string &value) {
   size_t end = value.size();
   while (end > begin && is_space(value[end - 1])) --end;
   return value.substr(begin, end - begin);
-}
-
-bool equals_ascii_no_case(const std::string &lhs, const char *rhs) {
-  size_t rhs_len = 0;
-  for (const char *ptr = rhs; *ptr != '\0'; ++ptr) ++rhs_len;
-  if (lhs.size() != rhs_len) return false;
-  for (size_t idx = 0; idx < lhs.size(); ++idx) {
-    const char lhs_char = static_cast<char>(
-        std::toupper(static_cast<unsigned char>(lhs[idx])));
-    const char rhs_char = static_cast<char>(
-        std::toupper(static_cast<unsigned char>(rhs[idx])));
-    if (lhs_char != rhs_char) return false;
-  }
-  return true;
 }
 
 bool split_csv_record(const std::string &line, std::vector<std::string> *fields,
@@ -560,8 +547,8 @@ bool read_csv_vectors(const std::string &filename, size_t expected_dimension,
     }
 
     if (first_record &&
-        equals_ascii_no_case(trim_copy(fields[0]), "doc_id") &&
-        equals_ascii_no_case(trim_copy(fields[1]), "vector")) {
+        vector_ascii::equal_ignore_case(trim_copy(fields[0]), "doc_id") &&
+        vector_ascii::equal_ignore_case(trim_copy(fields[1]), "vector")) {
       first_record = false;
       continue;
     }

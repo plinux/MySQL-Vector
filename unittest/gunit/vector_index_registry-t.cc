@@ -4323,8 +4323,7 @@ TEST_F(VectorIndexRegistryTest,
     EXPECT_FALSE(vector_index_registry::rebuild_index(index_name));
   }
 
-  EXPECT_EQ(rollback_count_before + 1,
-            vector_status::runtime_state_rollbacks());
+  EXPECT_EQ(rollback_count_before, vector_status::runtime_state_rollbacks());
   EXPECT_EQ(rollback_failure_count_before,
             vector_status::runtime_state_rollback_failures());
 
@@ -4480,6 +4479,118 @@ TEST_F(VectorIndexRegistryTest,
   EXPECT_EQ(8U, result[0].doc_id);
 
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(VectorIndexRegistryTest,
+       StandaloneCompactionRollbackFailureFailStopsRegistry) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib provider is not compiled in";
+  }
+  UlongGuard pipeline_guard(
+      &opt_vector_build_pipeline_mode,
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented));
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  UlonglongGuard segment_rows_guard(&opt_vector_build_segment_max_rows, 1);
+  const std::string root =
+      std::string(testing::TempDir()) + "/registry_compaction_rollback_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  external_snapshot_root_guard root_guard(root);
+
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+  const std::string index_name = "idx_registry_compaction_rollback";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "hnsw", options));
+  for (uint64_t doc_id = 1; doc_id <= 8; ++doc_id) {
+    ASSERT_TRUE(vector_index_registry::upsert(
+        index_name, doc_id, {static_cast<float>(doc_id), 0.0F}));
+  }
+  ASSERT_TRUE(vector_index_registry::rebuild_index(index_name));
+
+  opt_vector_build_segment_max_rows = 4;
+  store_.fail_save_manifest_once = true;
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_standalone_compaction_rollback_failure");
+    EXPECT_FALSE(vector_index_registry::rebuild_index(index_name));
+  }
+  EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
+            vector_index_registry::registry_health());
+  EXPECT_EQ("standalone_rebuild_rollback_failed",
+            vector_index_registry::registry_failure_reason());
+
+  std::vector<vector_index::search_result> result;
+  EXPECT_FALSE(
+      vector_index_registry::search(index_name, {8.0F, 0.0F}, 1, &result));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(VectorIndexRegistryTest,
+       StandaloneCompactionDurabilityUnknownFailStopsRegistry) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib provider is not compiled in";
+  }
+  UlongGuard pipeline_guard(
+      &opt_vector_build_pipeline_mode,
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented));
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  UlonglongGuard segment_rows_guard(&opt_vector_build_segment_max_rows, 1);
+  const std::string root =
+      std::string(testing::TempDir()) + "/registry_compaction_unknown_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  external_snapshot_root_guard root_guard(root);
+
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+  const std::string index_name = "idx_registry_compaction_unknown";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "hnsw", options));
+  for (uint64_t doc_id = 1; doc_id <= 8; ++doc_id) {
+    ASSERT_TRUE(vector_index_registry::upsert(
+        index_name, doc_id, {static_cast<float>(doc_id), 0.0F}));
+  }
+  ASSERT_TRUE(vector_index_registry::rebuild_index(index_name));
+
+  const std::vector<std::string> source_files = regular_files_below(root);
+  ASSERT_FALSE(source_files.empty());
+  opt_vector_build_segment_max_rows = 4;
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_standalone_manifest_after_rename_failure");
+    EXPECT_FALSE(vector_index_registry::rebuild_index(index_name));
+  }
+  EXPECT_EQ(vector_index_registry::registry_health_state::kFailed,
+            vector_index_registry::registry_health());
+  EXPECT_EQ("artifact_generation_discard_failed",
+            vector_index_registry::registry_failure_reason());
+  for (const std::string &path : source_files) {
+    const std::filesystem::path source_path =
+        std::filesystem::path(root) / path;
+    SCOPED_TRACE(source_path.string());
+    EXPECT_TRUE(std::filesystem::exists(source_path));
+  }
+  EXPECT_GT(regular_files_below(root).size(), source_files.size());
+
+  std::vector<vector_index::search_result> result;
+  EXPECT_FALSE(
+      vector_index_registry::search(index_name, {8.0F, 0.0F}, 1, &result));
+
   std::filesystem::remove_all(root, ec);
 }
 

@@ -1,0 +1,56 @@
+#
+# WL#Vector: erase waits for an uncommitted delete-mark rollback
+#
+DROP TABLE IF EXISTS t_vector_delete_mark_locking;
+CREATE TABLE t_vector_delete_mark_locking (
+id BIGINT UNSIGNED PRIMARY KEY,
+v VECTOR(2)
+) ENGINE=InnoDB;
+CREATE VECTOR INDEX ON t_vector_delete_mark_locking(v)
+WITH (2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+INSERT INTO t_vector_delete_mark_locking
+VALUES (1, VEC_FROMTEXT('[1,1]'));
+START TRANSACTION;
+DELETE FROM t_vector_delete_mark_locking WHERE id=1;
+SET @txn_rollback_b = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_ERASE(
+'test.t_vector_delete_mark_locking.v', @txn_rollback_b, 1);
+SET DEBUG_SYNC =
+'vector_truth_store_row_lock_wait SIGNAL rollback_b_waiting';
+SELECT VEC_INDEX_TXN_COMMIT(@txn_rollback_b);
+SET DEBUG_SYNC = 'now WAIT_FOR rollback_b_waiting TIMEOUT 30';
+ROLLBACK;
+SET DEBUG_SYNC = 'RESET';
+SELECT VEC_INDEX_SEARCH(
+'test.t_vector_delete_mark_locking.v', '[1,1]', 1);
+VEC_INDEX_SEARCH(
+'test.t_vector_delete_mark_locking.v', '[1,1]', 1)
+[]
+#
+# WL#Vector: erase waits for an uncommitted delete-mark commit
+#
+UPDATE t_vector_delete_mark_locking
+SET v=VEC_FROMTEXT('[2,2]') WHERE id=1;
+START TRANSACTION;
+DELETE FROM t_vector_delete_mark_locking WHERE id=1;
+SET @txn_commit_b = VEC_INDEX_TXN_BEGIN();
+SELECT VEC_INDEX_STAGE_ERASE(
+'test.t_vector_delete_mark_locking.v', @txn_commit_b, 1);
+SET DEBUG_SYNC = 'vector_truth_store_row_lock_wait SIGNAL commit_b_waiting';
+SELECT VEC_INDEX_TXN_COMMIT(@txn_commit_b);
+SET DEBUG_SYNC = 'now WAIT_FOR commit_b_waiting TIMEOUT 30';
+COMMIT;
+SET DEBUG_SYNC = 'RESET';
+SELECT VEC_INDEX_TXN_PENDING(@txn_commit_b);
+VEC_INDEX_TXN_PENDING(@txn_commit_b)
+0
+SELECT VEC_INDEX_TXN_COMMIT(@txn_commit_b);
+VEC_INDEX_TXN_COMMIT(@txn_commit_b)
+1
+SELECT VEC_INDEX_SEARCH(
+'test.t_vector_delete_mark_locking.v', '[2,2]', 1);
+VEC_INDEX_SEARCH(
+'test.t_vector_delete_mark_locking.v', '[2,2]', 1)
+[]
+DROP VECTOR INDEX ON t_vector_delete_mark_locking(v);
+DROP TABLE t_vector_delete_mark_locking;

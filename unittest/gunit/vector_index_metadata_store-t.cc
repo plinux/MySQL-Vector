@@ -32,6 +32,7 @@
 
 #include "my_io.h"
 #include "sql/mysqld.h"
+#include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_metadata_store.h"
 #include "sql/vector/vector_index_metadata_store_internal.h"
 #include "sql/xa.h"
@@ -496,10 +497,9 @@ TEST_F(MetadataStoreTest, DetailHelpersCoverParserAndArtifactPathEdges) {
   EXPECT_STREQ("erase",
                detail::change_op_to_string(
                    vector_index_metadata_store::change_op::kErase));
-  EXPECT_STREQ(
-      "upsert",
-      detail::change_op_to_string(
-          static_cast<vector_index_metadata_store::change_op>(99)));
+  EXPECT_EQ(nullptr,
+            detail::change_op_to_string(
+                static_cast<vector_index_metadata_store::change_op>(99)));
 
   vector_index_metadata_store::change_op op =
       vector_index_metadata_store::change_op::kErase;
@@ -1641,6 +1641,12 @@ TEST_F(MetadataStoreTest, LoadRejectsInvalidDimensionAndMetricInCurrentRow) {
   }
   {
     std::vector<std::string> fields = current_metadata_fields_for_test();
+    fields[1] = std::to_string(
+        static_cast<uint64_t>(vector_index::k_max_vector_dimension) + 1);
+    EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
+  }
+  {
+    std::vector<std::string> fields = current_metadata_fields_for_test();
     fields[2] = "manhattan";
     EXPECT_FALSE(deserialize_current_metadata_fields_for_test(fields, &loaded));
   }
@@ -2287,6 +2293,10 @@ TEST_F(MetadataStoreTest, SavePreparedRejectsInvalidRows) {
   rows[0].bqual_length = 0;
   rows[0].xid_data = "abc";
   rows[0].txn_id = 0;
+  EXPECT_FALSE(vector_index_metadata_store::save_prepared(rows));
+
+  rows[0].txn_id = 99;
+  rows[0].op = static_cast<vector_index_metadata_store::change_op>(99);
   EXPECT_FALSE(vector_index_metadata_store::save_prepared(rows));
 }
 
@@ -2968,6 +2978,11 @@ TEST_F(MetadataStoreTest, SaveChangeLogRejectsInvalidRows) {
   EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
   bad_rows[0].publication_id = 101;
   bad_rows[0].truth_generation = 0;
+  EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
+
+  bad_rows[0].truth_generation = 101;
+  bad_rows[0].op =
+      static_cast<vector_index_metadata_store::change_op>(99);
   EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
 }
 

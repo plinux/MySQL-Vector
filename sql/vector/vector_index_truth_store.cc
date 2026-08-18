@@ -761,7 +761,7 @@ bool deserialize_quarantine_entries(const std::string &payload,
                                     quarantine_entries *entries) {
   if (entries == nullptr) return false;
   entries->clear();
-  if (payload.empty()) return true;
+  if (payload.empty()) return false;
 
   std::istringstream stream(payload);
   std::string line;

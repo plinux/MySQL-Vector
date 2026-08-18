@@ -23,6 +23,7 @@
 
 #include "sql/vector/vector_index_service.h"
 
+#include <fcntl.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -38,6 +39,7 @@
 #include <utility>
 
 #include "my_dbug.h"
+#include "my_sys.h"
 #include "sql/vector/vector_diskann_generation_store.h"
 #include "sql/vector/vector_diskann_scheduler.h"
 #include "sql/vector/vector_index_backend_common.h"
@@ -115,6 +117,89 @@ bool parse_manifest_size(const std::string &text, size_t *value) {
 void remove_file_if_exists(const std::string &path) {
   std::error_code ignored;
   std::filesystem::remove(path, ignored);
+}
+
+bool sync_path(const std::string &path) {
+#ifdef _WIN32
+  (void)path;
+  return true;
+#else
+  const File fd = my_open(path.c_str(), O_RDONLY, MYF(0));
+  if (fd < 0) return false;
+  const bool synced = my_sync(fd, MYF(0)) == 0;
+  const bool closed = my_close(fd, MYF(0)) == 0;
+  return synced && closed;
+#endif
+}
+
+bool sync_file_and_parent(const std::string &path) {
+  const std::filesystem::path parent =
+      std::filesystem::path(path).parent_path();
+  return !parent.empty() && sync_path(path) && sync_path(parent.string());
+}
+
+bool sync_rename_directories(const std::string &old_directory,
+                             const std::string &new_directory) {
+  std::vector<std::filesystem::path> directories;
+  for (const std::string *directory : {&old_directory, &new_directory}) {
+    const std::filesystem::path parent =
+        std::filesystem::path(*directory).parent_path();
+    if (!parent.empty()) directories.push_back(parent);
+    if (!parent.parent_path().empty()) {
+      directories.push_back(parent.parent_path());
+    }
+  }
+  std::sort(directories.begin(), directories.end());
+  directories.erase(std::unique(directories.begin(), directories.end()),
+                    directories.end());
+
+  for (const std::filesystem::path &directory : directories) {
+    std::error_code ec;
+    if (!std::filesystem::exists(directory, ec)) {
+      if (ec) return false;
+      continue;
+    }
+    if (ec || !sync_path(directory.string())) return false;
+  }
+  return true;
+}
+
+bool sync_standalone_compaction_files(const std::vector<std::string> &paths) {
+  if (paths.empty()) return false;
+  const std::filesystem::path parent =
+      std::filesystem::path(paths.front()).parent_path();
+  if (parent.empty()) return false;
+
+  DBUG_EXECUTE_IF("vector_standalone_compaction_data_sync_failure",
+                  return false;);
+  for (const std::string &path : paths) {
+    if (path.empty() || std::filesystem::path(path).parent_path() != parent ||
+        !sync_path(path)) {
+      return false;
+    }
+  }
+
+  DBUG_EXECUTE_IF("vector_standalone_compaction_parent_sync_failure",
+                  return false;);
+  return sync_path(parent.string());
+}
+
+void remove_replaced_segment_files(
+    const std::vector<std::string> &source_files,
+    const std::vector<std::string> &retained_files) {
+  const std::unordered_set<std::string> retained(retained_files.begin(),
+                                                 retained_files.end());
+  std::unordered_set<std::string> parent_directories;
+  for (const std::string &path : source_files) {
+    if (path.empty() || retained.find(path) != retained.end()) continue;
+    remove_file_if_exists(path);
+    const std::filesystem::path parent =
+        std::filesystem::path(path).parent_path();
+    if (!parent.empty()) parent_directories.insert(parent.string());
+  }
+  for (const std::string &parent : parent_directories) {
+    (void)sync_path(parent);
+  }
 }
 
 bool file_size_as_size(const std::string &path, size_t *bytes) {
@@ -218,6 +303,70 @@ bool vector_payload_bytes(size_t entry_count, size_t dimension, size_t *bytes) {
   }
   *bytes = entry_count * dimension * sizeof(float);
   return true;
+}
+
+bool read_exact_bytes(std::ifstream &file, char *destination, size_t bytes) {
+  if (destination == nullptr ||
+      bytes >
+          static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+    return false;
+  }
+  file.read(destination, static_cast<std::streamsize>(bytes));
+  return file.gcount() == static_cast<std::streamsize>(bytes);
+}
+
+bool skip_exact_bytes(std::ifstream &file, size_t bytes) {
+  if (bytes >
+      static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+    return false;
+  }
+  file.ignore(static_cast<std::streamsize>(bytes));
+  return file.gcount() == static_cast<std::streamsize>(bytes);
+}
+
+template <typename Segment, typename UpsertVisitor, typename EraseVisitor>
+bool replay_standalone_delta_segment(const Segment &segment,
+                                     size_t expected_dimension,
+                                     const UpsertVisitor &upsert_visitor,
+                                     const EraseVisitor &erase_visitor) {
+  std::error_code error;
+  const uintmax_t actual_size = std::filesystem::file_size(segment.path, error);
+  if (error || actual_size != segment.bytes) return false;
+
+  size_t vector_bytes = 0;
+  if (!vector_payload_bytes(1, expected_dimension, &vector_bytes)) return false;
+
+  std::ifstream file(segment.path, std::ios::in | std::ios::binary);
+  if (!file.is_open()) return false;
+  std::string header;
+  if (!std::getline(file, header) || header != kStandaloneSegmentHeader) {
+    return false;
+  }
+
+  uint64_t dimension = 0;
+  uint64_t record_count = 0;
+  if (!read_plain_value(file, dimension) ||
+      !read_plain_value(file, record_count) ||
+      dimension != expected_dimension || record_count != segment.record_count) {
+    return false;
+  }
+
+  for (uint64_t row = 0; row < record_count; ++row) {
+    uint8_t operation = 0;
+    uint64_t doc_id = 0;
+    if (!read_plain_value(file, operation) || !read_plain_value(file, doc_id)) {
+      return false;
+    }
+    if (operation == kStandaloneSegmentUpsert) {
+      if (!upsert_visitor(file, doc_id, vector_bytes)) return false;
+    } else if (operation == kStandaloneSegmentErase) {
+      if (!erase_visitor(doc_id)) return false;
+    } else {
+      return false;
+    }
+  }
+
+  return file.peek() == std::char_traits<char>::eof() && !file.bad();
 }
 
 using raw_segment_path_provider =
@@ -720,36 +869,48 @@ bool standalone_entry_store::register_index(const std::string &index_name,
   return true;
 }
 
-bool standalone_entry_store::drop_index(const std::string &index_name) {
+bool standalone_entry_store::drop_index(const std::string &index_name,
+                                        bool remove_artifacts) {
   const bool existed = m_indexes.erase(index_name) > 0;
-  std::error_code ignored;
-  std::filesystem::remove_all(segment_directory(index_name), ignored);
+  if (remove_artifacts) this->remove_artifacts(index_name);
   return existed;
 }
 
-bool standalone_entry_store::rename_index(const std::string &old_index_name,
-                                          const std::string &new_index_name) {
+void standalone_entry_store::remove_artifacts(
+    const std::string &index_name) const {
+  std::error_code ignored;
+  std::filesystem::remove_all(segment_directory(index_name), ignored);
+}
+
+index_rename_result standalone_entry_store::rename_index(
+    const std::string &old_index_name, const std::string &new_index_name) {
   if (old_index_name.empty() || new_index_name.empty() ||
       m_indexes.find(new_index_name) != m_indexes.end()) {
-    return false;
+    return index_rename_result::kNotRenamed;
   }
   auto state_it = m_indexes.find(old_index_name);
-  if (state_it == m_indexes.end()) return false;
+  if (state_it == m_indexes.end()) return index_rename_result::kNotRenamed;
 
   index_state renamed_state = state_it->second;
+  const auto install_renamed_state = [&]() {
+    m_indexes.erase(state_it);
+    m_indexes.emplace(new_index_name, std::move(renamed_state));
+  };
   const std::string old_directory = segment_directory(old_index_name);
   const std::string new_directory = segment_directory(new_index_name);
   if (!old_directory.empty() && !new_directory.empty()) {
     std::error_code ec;
     const bool old_directory_exists =
         std::filesystem::exists(old_directory, ec);
-    if (ec) return false;
+    if (ec) return index_rename_result::kNotRenamed;
     if (old_directory_exists) {
       std::filesystem::create_directories(
           std::filesystem::path(new_directory).parent_path(), ec);
-      if (ec) return false;
+      if (ec) return index_rename_result::kNotRenamed;
+      DBUG_EXECUTE_IF("vector_standalone_rename_directory_failure",
+                      return index_rename_result::kNotRenamed;);
       std::filesystem::rename(old_directory, new_directory, ec);
-      if (ec) return false;
+      if (ec) return index_rename_result::kNotRenamed;
       for (standalone_segment &segment : renamed_state.segments) {
         if (!segment.path.empty()) {
           segment.path = (std::filesystem::path(new_directory) /
@@ -772,20 +933,55 @@ bool standalone_entry_store::rename_index(const std::string &old_index_name,
     }
   }
 
-  if (!save_manifest(new_index_name, renamed_state)) {
+  manifest_save_result save_result = manifest_save_result::kNotPublished;
+  bool skip_manifest_save = false;
+  DBUG_EXECUTE_IF("vector_standalone_rename_manifest_not_published",
+                  skip_manifest_save = true;);
+  if (!skip_manifest_save) {
+    save_result = save_manifest(new_index_name, renamed_state);
+    DBUG_EXECUTE_IF("vector_standalone_rename_manifest_durability_unknown",
+                    save_result = manifest_save_result::kDurabilityUnknown;);
+  }
+  if (save_result != manifest_save_result::kPublishedDurable) {
+    if (save_result == manifest_save_result::kDurabilityUnknown) {
+      install_renamed_state();
+      return index_rename_result::kDurabilityUnknown;
+    }
     if (!old_directory.empty() && !new_directory.empty()) {
       std::error_code rollback_ec;
       const bool new_directory_exists =
           std::filesystem::exists(new_directory, rollback_ec);
-      if (!rollback_ec && new_directory_exists) {
+      if (rollback_ec) {
+        install_renamed_state();
+        return index_rename_result::kDurabilityUnknown;
+      }
+      if (new_directory_exists) {
+        DBUG_EXECUTE_IF("vector_standalone_rename_rollback_failure", {
+          install_renamed_state();
+          return index_rename_result::kDurabilityUnknown;
+        });
         std::filesystem::rename(new_directory, old_directory, rollback_ec);
+        if (rollback_ec) {
+          install_renamed_state();
+          return index_rename_result::kDurabilityUnknown;
+        }
+        DBUG_EXECUTE_IF(
+            "vector_standalone_rename_rollback_parent_sync_failure",
+            return index_rename_result::kDurabilityUnknown;);
+        if (!sync_rename_directories(new_directory, old_directory)) {
+          return index_rename_result::kDurabilityUnknown;
+        }
       }
     }
-    return false;
+    return index_rename_result::kNotRenamed;
   }
-  m_indexes.erase(state_it);
-  m_indexes.emplace(new_index_name, std::move(renamed_state));
-  return true;
+  install_renamed_state();
+  DBUG_EXECUTE_IF("vector_standalone_rename_parent_sync_failure",
+                  return index_rename_result::kDurabilityUnknown;);
+  if (!sync_rename_directories(old_directory, new_directory)) {
+    return index_rename_result::kDurabilityUnknown;
+  }
+  return index_rename_result::kRenamedDurable;
 }
 
 bool standalone_entry_store::has_index(const std::string &index_name) const {
@@ -902,9 +1098,13 @@ bool standalone_entry_store::bulk_upsert(const std::string &index_name,
   state_it->second.generation = state_it->second.segments.back().generation;
   state_it->second.build_source = build_source_for_state(state_it->second);
 
-  if (!save_manifest(index_name, state_it->second)) {
-    state_it->second = before_bulk;
-    remove_file_if_exists(path);
+  const manifest_save_result save_result =
+      save_manifest(index_name, state_it->second);
+  if (save_result != manifest_save_result::kPublishedDurable) {
+    if (save_result == manifest_save_result::kNotPublished) {
+      state_it->second = before_bulk;
+      remove_file_if_exists(path);
+    }
     return false;
   }
   return true;
@@ -1164,12 +1364,13 @@ bool standalone_entry_store::bulk_upsert_raw_files(
   state_it->second.generation = state_it->second.segments.back().generation;
   state_it->second.build_source = build_source_for_state(state_it->second);
 
-  bool fail_manifest_save = false;
-  DBUG_EXECUTE_IF("vector_standalone_bulk_fail_manifest_save",
-                  fail_manifest_save = true;);
-  if (fail_manifest_save || !save_manifest(index_name, state_it->second)) {
-    rollback_publish();
-    cleanup_created_files();
+  const manifest_save_result save_result =
+      save_manifest(index_name, state_it->second);
+  if (save_result != manifest_save_result::kPublishedDurable) {
+    if (save_result == manifest_save_result::kNotPublished) {
+      rollback_publish();
+      cleanup_created_files();
+    }
     return false;
   }
   return true;
@@ -1353,7 +1554,8 @@ bool standalone_entry_store::write_compacted_raw_segment(
   if (!file_size_as_size(vector_path, &persisted_vector_bytes) ||
       !file_size_as_size(docid_path, &persisted_docid_bytes) ||
       persisted_vector_bytes >
-          std::numeric_limits<size_t>::max() - persisted_docid_bytes) {
+          std::numeric_limits<size_t>::max() - persisted_docid_bytes ||
+      !sync_standalone_compaction_files({vector_path, docid_path})) {
     cleanup_output();
     return false;
   }
@@ -1502,11 +1704,14 @@ bool standalone_entry_store::publish_levelled_compaction(
   next_state.generation = compaction->next_generation;
   next_state.next_segment_id = compaction->next_segment_id;
   next_state.build_source = "raw_segments_compacted";
-  if (!save_manifest(index_name, next_state)) return false;
+  const manifest_save_result save_result = save_manifest(index_name, next_state);
+  if (save_result == manifest_save_result::kNotPublished) return false;
 
   state_it->second = std::move(next_state);
   compaction->published = true;
-  return true;
+  compaction->manifest_durability_unknown =
+      save_result == manifest_save_result::kDurabilityUnknown;
+  return save_result == manifest_save_result::kPublishedDurable;
 }
 
 bool standalone_entry_store::rollback_levelled_compaction(
@@ -1516,6 +1721,9 @@ bool standalone_entry_store::rollback_levelled_compaction(
     discard_levelled_compaction(compaction);
     return true;
   }
+
+  DBUG_EXECUTE_IF("vector_standalone_compaction_rollback_failure",
+                  return false;);
 
   auto state_it = m_indexes.find(index_name);
   if (state_it == m_indexes.end()) return false;
@@ -1527,10 +1735,17 @@ bool standalone_entry_store::rollback_levelled_compaction(
   restored_state.generation = compaction->source_generation;
   restored_state.next_segment_id = compaction->source_next_segment_id;
   restored_state.build_source = compaction->source_build_source;
-  if (!save_manifest(index_name, restored_state)) return false;
+  const manifest_save_result save_result =
+      save_manifest(index_name, restored_state);
+  if (save_result == manifest_save_result::kNotPublished) return false;
 
   state_it->second = std::move(restored_state);
+  if (save_result == manifest_save_result::kDurabilityUnknown) {
+    compaction->manifest_durability_unknown = true;
+    return false;
+  }
   compaction->published = false;
+  compaction->manifest_durability_unknown = false;
   discard_levelled_compaction(compaction);
   return true;
 }
@@ -1542,9 +1757,9 @@ void standalone_entry_store::finalize_levelled_compaction(
     discard_levelled_compaction(compaction);
     return;
   }
-  for (const std::string &path : compaction->replaced_files) {
-    remove_file_if_exists(path);
-  }
+  if (compaction->manifest_durability_unknown) return;
+  remove_replaced_segment_files(compaction->replaced_files,
+                                compaction->created_files);
   compaction->created_files.clear();
   *compaction = raw_segment_compaction{};
 }
@@ -1694,6 +1909,15 @@ bool standalone_entry_store::compact_to_raw_segment(
   if (!load_entries(*state, &entries)) return false;
 
   const index_state before_compact = *state;
+  std::vector<std::string> source_files;
+  for (const standalone_segment &segment : before_compact.segments) {
+    if (segment.kind == standalone_segment_kind::kRawFbin) {
+      source_files.push_back(segment.vector_path);
+      source_files.push_back(segment.docid_path);
+    } else {
+      source_files.push_back(segment.path);
+    }
+  }
   if (entries.empty()) {
     state->segments.clear();
     state->raw_locator_runs.clear();
@@ -1704,10 +1928,14 @@ bool standalone_entry_store::compact_to_raw_segment(
     state->entry_count = 0;
     state->generation = before_compact.generation + 1;
     state->build_source = "memory";
-    if (!save_manifest(index_name, *state)) {
-      *state = before_compact;
+    const manifest_save_result save_result = save_manifest(index_name, *state);
+    if (save_result != manifest_save_result::kPublishedDurable) {
+      if (save_result == manifest_save_result::kNotPublished) {
+        *state = before_compact;
+      }
       return false;
     }
+    remove_replaced_segment_files(source_files, {});
     return true;
   }
 
@@ -1731,6 +1959,10 @@ bool standalone_entry_store::compact_to_raw_segment(
     for (const std::string &path : created_files) remove_file_if_exists(path);
     return false;
   }
+  if (!sync_standalone_compaction_files(created_files)) {
+    for (const std::string &path : created_files) remove_file_if_exists(path);
+    return false;
+  }
   if (!assign_raw_segments(state, raw_segments)) {
     *state = before_compact;
     for (const std::string &path : created_files) remove_file_if_exists(path);
@@ -1746,11 +1978,15 @@ bool standalone_entry_store::compact_to_raw_segment(
   state->next_segment_id += state->segments.size();
   state->build_source = "raw_segments_compacted";
 
-  if (!save_manifest(index_name, *state)) {
-    *state = before_compact;
-    for (const std::string &path : created_files) remove_file_if_exists(path);
+  const manifest_save_result save_result = save_manifest(index_name, *state);
+  if (save_result != manifest_save_result::kPublishedDurable) {
+    if (save_result == manifest_save_result::kNotPublished) {
+      *state = before_compact;
+      for (const std::string &path : created_files) remove_file_if_exists(path);
+    }
     return false;
   }
+  remove_replaced_segment_files(source_files, created_files);
   return true;
 }
 
@@ -1784,7 +2020,10 @@ bool standalone_entry_store::prepare_raw_segments_for_rebuild(
       state_it->second.build_source == "raw_segments_compacted";
   if (!compacted) {
     state_it->second.build_source = build_source_for_state(state_it->second);
-    if (!save_manifest(index_name, state_it->second)) return false;
+    if (save_manifest(index_name, state_it->second) !=
+        manifest_save_result::kPublishedDurable) {
+      return false;
+    }
   }
   return true;
 }
@@ -2034,47 +2273,28 @@ bool standalone_entry_store::find_entries(
       continue;
     }
 
-    std::error_code ec;
-    const uintmax_t actual_size = std::filesystem::file_size(segment.path, ec);
-    if (ec || actual_size != segment.bytes) return false;
+    if (!replay_standalone_delta_segment(
+            segment, state.dimension,
+            [&doc_ids, vectors, dimension = state.dimension](
+                std::ifstream &file, uint64_t doc_id, size_t payload_bytes) {
+              if (doc_ids.find(doc_id) == doc_ids.end()) {
+                return skip_exact_bytes(file, payload_bytes);
+              }
 
-    std::ifstream file(segment.path, std::ios::in | std::ios::binary);
-    if (!file.is_open()) return false;
-    std::string header;
-    if (!std::getline(file, header) || header != kStandaloneSegmentHeader) {
+              vector_data vector(dimension);
+              if (!read_exact_bytes(file,
+                                    reinterpret_cast<char *>(vector.data()),
+                                    payload_bytes)) {
+                return false;
+              }
+              (*vectors)[doc_id] = std::move(vector);
+              return true;
+            },
+            [vectors](uint64_t doc_id) {
+              vectors->erase(doc_id);
+              return true;
+            })) {
       return false;
-    }
-    uint64_t dimension = 0;
-    uint64_t record_count = 0;
-    if (!read_plain_value(file, dimension) ||
-        !read_plain_value(file, record_count) || dimension != state.dimension ||
-        record_count != segment.record_count) {
-      return false;
-    }
-    for (uint64_t i = 0; i < record_count; ++i) {
-      uint8_t op = 0;
-      uint64_t doc_id = 0;
-      if (!read_plain_value(file, op) || !read_plain_value(file, doc_id)) {
-        return false;
-      }
-
-      if (op == kStandaloneSegmentUpsert) {
-        if (doc_ids.find(doc_id) == doc_ids.end()) {
-          file.seekg(static_cast<std::streamoff>(vector_bytes), std::ios::cur);
-          if (!file.good()) return false;
-          continue;
-        }
-
-        vector_data vector(state.dimension);
-        file.read(reinterpret_cast<char *>(vector.data()),
-                  static_cast<std::streamsize>(vector_bytes));
-        if (!file.good()) return false;
-        (*vectors)[doc_id] = std::move(vector);
-      } else if (op == kStandaloneSegmentErase) {
-        vectors->erase(doc_id);
-      } else {
-        return false;
-      }
     }
   }
 
@@ -2204,6 +2424,7 @@ bool standalone_entry_store::flush_index(const std::string &index_name,
   const size_t record_count =
       state->memory_entries.size() + state->memory_erases.size();
   if (record_count == 0) return true;
+  const index_state before_flush = *state;
 
   const std::string path = segment_path(index_name, state->next_segment_id);
   if (path.empty() || !detail::ensure_parent_directory(path)) return false;
@@ -2275,7 +2496,13 @@ bool standalone_entry_store::flush_index(const std::string &index_name,
   state->memory_erases.clear();
   state->memory_bytes = 0;
   state->build_source = build_source_for_state(*state);
-  return save_manifest(index_name, *state);
+  const manifest_save_result save_result = save_manifest(index_name, *state);
+  if (save_result == manifest_save_result::kPublishedDurable) return true;
+  if (save_result == manifest_save_result::kNotPublished) {
+    *state = before_flush;
+    remove_file_if_exists(path);
+  }
+  return false;
 }
 
 bool standalone_entry_store::flush_if_needed(const std::string &index_name,
@@ -2440,13 +2667,9 @@ bool standalone_entry_store::load_manifest(const std::string &index_name,
     return false;
   }
 
-  committed_entries entries;
-  if (!replay_segments(loaded, &entries) ||
-      entries.size() != expected_entry_count) {
+  if (!replay_segment_doc_ids(loaded, &loaded.live_doc_ids) ||
+      loaded.live_doc_ids.size() != expected_entry_count) {
     return false;
-  }
-  for (const auto &entry : entries) {
-    loaded.live_doc_ids.insert(entry.first);
   }
   loaded.entry_count = loaded.live_doc_ids.size();
   if (loaded.build_source.empty()) {
@@ -2461,14 +2684,17 @@ bool standalone_entry_store::load_manifest(const std::string &index_name,
   return true;
 }
 
-bool standalone_entry_store::save_manifest(const std::string &index_name,
-                                           const index_state &state) const {
+standalone_entry_store::manifest_save_result
+standalone_entry_store::save_manifest(const std::string &index_name,
+                                      const index_state &state) const {
   const std::string path = manifest_path(index_name);
-  if (path.empty() || !detail::ensure_parent_directory(path)) return false;
+  if (path.empty() || !detail::ensure_parent_directory(path)) {
+    return manifest_save_result::kNotPublished;
+  }
 
   const std::string tmp_path = path + ".tmp";
   std::ofstream file(tmp_path, std::ios::out | std::ios::trunc);
-  if (!file.is_open()) return false;
+  if (!file.is_open()) return manifest_save_result::kNotPublished;
   file << kStandaloneManifestHeader << '\n'
        << "dimension\t" << state.dimension << '\n'
        << "entry_count\t" << state.entry_count << '\n'
@@ -2497,27 +2723,43 @@ bool standalone_entry_store::save_manifest(const std::string &index_name,
   file.close();
   if (!file) {
     remove_file_if_exists(tmp_path);
-    return false;
+    return manifest_save_result::kNotPublished;
+  }
+  if (!sync_path(tmp_path)) {
+    remove_file_if_exists(tmp_path);
+    return manifest_save_result::kNotPublished;
   }
 
-  std::error_code ec;
-  std::filesystem::rename(tmp_path, path, ec);
-  if (ec) {
-    ec.clear();
-    std::filesystem::remove(path, ec);
-    ec.clear();
-    std::filesystem::rename(tmp_path, path, ec);
-  }
-  if (ec) {
+  DBUG_EXECUTE_IF("vector_standalone_manifest_before_rename_failure", {
     remove_file_if_exists(tmp_path);
-    return false;
+    return manifest_save_result::kNotPublished;
+  });
+  if (my_rename(tmp_path.c_str(), path.c_str(), MYF(0)) != 0) {
+    remove_file_if_exists(tmp_path);
+    return manifest_save_result::kNotPublished;
   }
-  return true;
+
+  DBUG_EXECUTE_IF("vector_standalone_manifest_after_rename_failure",
+                  return manifest_save_result::kDurabilityUnknown;);
+  DBUG_EXECUTE_IF("vector_standalone_manifest_file_sync_failure",
+                  return manifest_save_result::kDurabilityUnknown;);
+  if (!sync_path(path)) return manifest_save_result::kDurabilityUnknown;
+
+  const std::filesystem::path parent =
+      std::filesystem::path(path).parent_path();
+  DBUG_EXECUTE_IF("vector_standalone_manifest_parent_sync_failure",
+                  return manifest_save_result::kDurabilityUnknown;);
+  if (parent.empty() || !sync_path(parent.string())) {
+    return manifest_save_result::kDurabilityUnknown;
+  }
+  return manifest_save_result::kPublishedDurable;
 }
 
 bool standalone_entry_store::replay_segments(const index_state &state,
                                              committed_entries *entries) const {
   if (entries == nullptr) return false;
+  DBUG_EXECUTE_IF("vector_standalone_materialized_replay_failure",
+                  return false;);
   entries->clear();
   for (const standalone_segment &segment : state.segments) {
     if (segment.kind == standalone_segment_kind::kRawFbin) {
@@ -2548,41 +2790,76 @@ bool standalone_entry_store::replay_segments(const index_state &state,
       continue;
     }
 
-    std::error_code ec;
-    const uintmax_t actual_size = std::filesystem::file_size(segment.path, ec);
-    if (ec || actual_size != segment.bytes) return false;
+    if (!replay_standalone_delta_segment(
+            segment, state.dimension,
+            [entries, dimension = state.dimension](
+                std::ifstream &file, uint64_t doc_id, size_t payload_bytes) {
+              vector_data vector(dimension);
+              if (!read_exact_bytes(file,
+                                    reinterpret_cast<char *>(vector.data()),
+                                    payload_bytes)) {
+                return false;
+              }
+              (*entries)[doc_id] = std::move(vector);
+              return true;
+            },
+            [entries](uint64_t doc_id) {
+              entries->erase(doc_id);
+              return true;
+            })) {
+      return false;
+    }
+  }
+  return true;
+}
 
-    std::ifstream file(segment.path, std::ios::in | std::ios::binary);
-    if (!file.is_open()) return false;
-    std::string header;
-    if (!std::getline(file, header) || header != kStandaloneSegmentHeader) {
-      return false;
-    }
-    uint64_t dimension = 0;
-    uint64_t record_count = 0;
-    if (!read_plain_value(file, dimension) ||
-        !read_plain_value(file, record_count) || dimension != state.dimension ||
-        record_count != segment.record_count) {
-      return false;
-    }
-    for (uint64_t i = 0; i < record_count; ++i) {
-      uint8_t op = 0;
-      uint64_t doc_id = 0;
-      if (!read_plain_value(file, op) || !read_plain_value(file, doc_id)) {
+bool standalone_entry_store::replay_segment_doc_ids(
+    const index_state &state,
+    std::unordered_set<uint64_t> *live_doc_ids) const {
+  if (live_doc_ids == nullptr) return false;
+  live_doc_ids->clear();
+
+  for (const standalone_segment &segment : state.segments) {
+    if (segment.dimension != state.dimension) return false;
+    if (segment.kind == standalone_segment_kind::kRawFbin) {
+      size_t vector_bytes = 0;
+      size_t docid_bytes = 0;
+      if (!file_size_as_size(segment.vector_path, &vector_bytes) ||
+          !file_size_as_size(segment.docid_path, &docid_bytes) ||
+          vector_bytes > std::numeric_limits<size_t>::max() - docid_bytes ||
+          vector_bytes + docid_bytes != segment.bytes) {
         return false;
       }
-      if (op == kStandaloneSegmentUpsert) {
-        vector_data vector(state.dimension);
-        file.read(
-            reinterpret_cast<char *>(vector.data()),
-            static_cast<std::streamsize>(state.dimension * sizeof(float)));
-        if (!file.good()) return false;
-        (*entries)[doc_id] = std::move(vector);
-      } else if (op == kStandaloneSegmentErase) {
-        entries->erase(doc_id);
-      } else {
+
+      vector_load_file_info info;
+      std::string error;
+      if (!read_fbin_file_info(segment.vector_path, state.dimension, &info,
+                               &error) ||
+          info.row_count != segment.record_count ||
+          info.dimension != state.dimension ||
+          !read_docid_values(segment.docid_path, segment.record_count, &error,
+                             [live_doc_ids](uint64_t doc_id) {
+                               live_doc_ids->insert(doc_id);
+                               return true;
+                             })) {
         return false;
       }
+      continue;
+    }
+
+    if (!replay_standalone_delta_segment(
+            segment, state.dimension,
+            [live_doc_ids](std::ifstream &file, uint64_t doc_id,
+                           size_t payload_bytes) {
+              if (!skip_exact_bytes(file, payload_bytes)) return false;
+              live_doc_ids->insert(doc_id);
+              return true;
+            },
+            [live_doc_ids](uint64_t doc_id) {
+              live_doc_ids->erase(doc_id);
+              return true;
+            })) {
+      return false;
     }
   }
   return true;
@@ -5032,7 +5309,10 @@ build_pipeline_decision index_service::record_build_pipeline_decision(
 
 bool index_service::register_index(const std::string &index_name,
                                    std::unique_ptr<backend> backend) {
-  if (backend == nullptr || index_name.empty()) return false;
+  if (backend == nullptr || index_name.empty() ||
+      !valid_vector_dimension(backend->dimension())) {
+    return false;
+  }
 
   index_config config;
   config.dimension = backend->dimension();
@@ -5082,7 +5362,7 @@ bool index_service::register_index_impl(const std::string &index_name,
   m_segment_task_rows[index_name] = {};
   if (m_next_index_identity == 0 ||
       m_next_index_identity == std::numeric_limits<uint64_t>::max()) {
-    (void)unregister_index(index_name);
+    (void)unregister_index(index_name, false);
     return false;
   }
   index_publication_state publication;
@@ -5093,7 +5373,7 @@ bool index_service::register_index_impl(const std::string &index_name,
 
 bool index_service::register_index(const std::string &index_name,
                                    const index_config &config) {
-  if (config.dimension == 0) return false;
+  if (!valid_vector_dimension(config.dimension)) return false;
 
   std::unique_ptr<backend> backend =
       build_backend_from_config(index_name, config);
@@ -5145,14 +5425,15 @@ bool index_service::drop_index(const std::string &index_name) {
   return unregister_index(index_name);
 }
 
-bool index_service::unregister_index(const std::string &index_name) {
+bool index_service::unregister_index(const std::string &index_name,
+                                     bool remove_standalone_artifacts) {
   auto index_it = m_indexes.find(index_name);
   if (index_it == m_indexes.end()) return false;
 
   m_indexes.erase(index_it);
   m_index_configs.erase(index_name);
   m_entry_store.drop_index(index_name);
-  m_standalone_store.drop_index(index_name);
+  m_standalone_store.drop_index(index_name, remove_standalone_artifacts);
   m_lifecycle_infos.erase(index_name);
   m_publication_states.erase(index_name);
   m_build_pipeline_snapshots.erase(index_name);
@@ -5162,10 +5443,19 @@ bool index_service::unregister_index(const std::string &index_name) {
   return true;
 }
 
-bool index_service::rename_index(const std::string &old_index_name,
-                                 const std::string &new_index_name) {
-  if (old_index_name.empty() || new_index_name.empty()) return false;
-  if (old_index_name == new_index_name) return true;
+void index_service::remove_standalone_artifacts(
+    const std::string &index_name) const {
+  m_standalone_store.remove_artifacts(index_name);
+}
+
+index_rename_result index_service::rename_index(
+    const std::string &old_index_name, const std::string &new_index_name) {
+  if (old_index_name.empty() || new_index_name.empty()) {
+    return index_rename_result::kNotRenamed;
+  }
+  if (old_index_name == new_index_name) {
+    return index_rename_result::kRenamedDurable;
+  }
 
   auto old_index_it = m_indexes.find(old_index_name);
   auto old_config_it = m_index_configs.find(old_index_name);
@@ -5176,9 +5466,11 @@ bool index_service::rename_index(const std::string &old_index_name,
       !m_entry_store.has_index(old_index_name) ||
       old_lifecycle_it == m_lifecycle_infos.end() ||
       old_publication_it == m_publication_states.end()) {
-    return false;
+    return index_rename_result::kNotRenamed;
   }
-  if (m_indexes.find(new_index_name) != m_indexes.end()) return false;
+  if (m_indexes.find(new_index_name) != m_indexes.end()) {
+    return index_rename_result::kNotRenamed;
+  }
 
   const index_config config = old_config_it->second;
   const lifecycle_info lifecycle = old_lifecycle_it->second;
@@ -5209,15 +5501,27 @@ bool index_service::rename_index(const std::string &old_index_name,
 
   std::unique_ptr<backend> renamed_backend =
       build_backend_from_config(new_index_name, config);
-  if (renamed_backend == nullptr) return false;
+  if (renamed_backend == nullptr) return index_rename_result::kNotRenamed;
   if (!rebuild_backend_from_source(m_entry_store, m_standalone_store,
                                    old_index_name, config,
-                                   renamed_backend.get()))
-    return false;
-  if (!m_entry_store.rename_index(old_index_name, new_index_name)) return false;
-  if (!m_standalone_store.rename_index(old_index_name, new_index_name)) {
-    (void)m_entry_store.rename_index(new_index_name, old_index_name);
-    return false;
+                                   renamed_backend.get())) {
+    return index_rename_result::kNotRenamed;
+  }
+  if (!m_entry_store.rename_index(old_index_name, new_index_name)) {
+    return index_rename_result::kNotRenamed;
+  }
+  const index_rename_result standalone_result =
+      m_standalone_store.rename_index(old_index_name, new_index_name);
+  if (standalone_result == index_rename_result::kNotRenamed) {
+    return m_entry_store.rename_index(new_index_name, old_index_name)
+               ? index_rename_result::kNotRenamed
+               : index_rename_result::kDurabilityUnknown;
+  }
+  if (!m_standalone_store.has_index(new_index_name)) {
+    if (m_standalone_store.has_index(old_index_name)) {
+      (void)m_entry_store.rename_index(new_index_name, old_index_name);
+    }
+    return index_rename_result::kDurabilityUnknown;
   }
 
   m_indexes.erase(old_index_it);
@@ -5243,6 +5547,9 @@ bool index_service::rename_index(const std::string &old_index_name,
     m_last_failed_build_diagnostics.emplace(
         new_index_name, std::move(failed_build_diagnostics));
   }
+  if (m_standalone_rebuilds.erase(old_index_name) > 0) {
+    m_standalone_rebuilds.insert(new_index_name);
+  }
   maybe_unload_runtime(new_index_name);
 
   for (auto &txn_changes : m_pending_changes) {
@@ -5251,7 +5558,7 @@ bool index_service::rename_index(const std::string &old_index_name,
         change.index_name = new_index_name;
     }
   }
-  return true;
+  return standalone_result;
 }
 
 bool index_service::begin_bulk_load(const std::string &index_name) {
@@ -5590,6 +5897,7 @@ bool index_service::discard_standalone_rebuild(standalone_rebuild_plan *plan) {
       !plan->rebuilt_backend->rollback_artifact()) {
     return false;
   }
+  if (plan->compaction.published) return false;
   if (plan->has_failed_build_diagnostics && !plan->index_name.empty()) {
     m_last_failed_build_diagnostics[plan->index_name] =
         plan->failed_build_diagnostics;
@@ -6666,6 +6974,8 @@ bool index_service::restore_committed_state_impl(const committed_state &state,
 }
 
 bool index_service::restore_committed_state(const committed_state &state) {
+  DBUG_EXECUTE_IF("vector_service_fail_restore_committed_state",
+                  return false;);
   return restore_committed_state_impl(state, false);
 }
 

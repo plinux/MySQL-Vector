@@ -296,7 +296,7 @@ const char *change_op_to_string(vector_index_metadata_store::change_op op) {
     case vector_index_metadata_store::change_op::kErase:
       return "erase";
   }
-  return "upsert";
+  return nullptr;
 }
 
 bool parse_change_op(const std::string &text,

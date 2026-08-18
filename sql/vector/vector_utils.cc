@@ -23,7 +23,6 @@
 
 #include "sql/vector/vector_utils.h"
 
-#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -31,6 +30,7 @@
 #include "m_ctype.h"
 #include "my_byteorder.h"
 #include "my_inttypes.h"
+#include "sql/vector/vector_ascii.h"
 #include "sql_string.h"
 
 namespace {
@@ -41,20 +41,6 @@ bool is_ascii_space(char c) {
 
 void skip_spaces(const char *ptr, size_t len, size_t *pos) {
   while (*pos < len && is_ascii_space(ptr[*pos])) (*pos)++;
-}
-
-bool equals_ascii_no_case(const char *ptr, size_t len, const char *literal) {
-  size_t lit_len = 0;
-  for (const char *p = literal; *p != '\0'; ++p) lit_len++;
-  if (len != lit_len) return false;
-  for (size_t i = 0; i < len; ++i) {
-    const char lhs = static_cast<char>(
-        std::toupper(static_cast<unsigned char>(ptr[i])));
-    const char rhs = static_cast<char>(
-        std::toupper(static_cast<unsigned char>(literal[i])));
-    if (lhs != rhs) return false;
-  }
-  return true;
 }
 
 }  // namespace
@@ -149,17 +135,20 @@ bool parse_distance_metric(const String *metric_arg, distance_metric *metric) {
   const size_t len = end - begin;
   const char *token = ptr + begin;
 
-  if (equals_ascii_no_case(token, len, "L2") ||
-      equals_ascii_no_case(token, len, "EUCLIDEAN")) {
+  if (vector_ascii::equal_ignore_case(std::string_view(token, len), "L2") ||
+      vector_ascii::equal_ignore_case(std::string_view(token, len),
+                                      "EUCLIDEAN")) {
     *metric = distance_metric::kEuclidean;
     return true;
   }
-  if (equals_ascii_no_case(token, len, "COSINE")) {
+  if (vector_ascii::equal_ignore_case(std::string_view(token, len),
+                                      "COSINE")) {
     *metric = distance_metric::kCosine;
     return true;
   }
-  if (equals_ascii_no_case(token, len, "IP") ||
-      equals_ascii_no_case(token, len, "INNER_PRODUCT")) {
+  if (vector_ascii::equal_ignore_case(std::string_view(token, len), "IP") ||
+      vector_ascii::equal_ignore_case(std::string_view(token, len),
+                                      "INNER_PRODUCT")) {
     *metric = distance_metric::kInnerProduct;
     return true;
   }

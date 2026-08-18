@@ -43,6 +43,13 @@ namespace vector_index {
 using committed_entries = std::unordered_map<uint64_t, vector_data>;
 using committed_state = std::unordered_map<std::string, committed_entries>;
 
+/** Outcome of renaming an index and its standalone durable state. */
+enum class index_rename_result {
+  kNotRenamed,
+  kRenamedDurable,
+  kDurabilityUnknown
+};
+
 /**
   Bounded committed vector entry cache.
 
@@ -115,6 +122,7 @@ class standalone_entry_store {
   struct raw_segment_compaction {
     bool needed{false};
     bool published{false};
+    bool manifest_durability_unknown{false};
     uint64_t source_generation{0};
     uint64_t source_next_segment_id{0};
     std::string source_build_source;
@@ -127,9 +135,10 @@ class standalone_entry_store {
   };
 
   bool register_index(const std::string &index_name, size_t dimension);
-  bool drop_index(const std::string &index_name);
-  bool rename_index(const std::string &old_index_name,
-                    const std::string &new_index_name);
+  bool drop_index(const std::string &index_name, bool remove_artifacts = true);
+  void remove_artifacts(const std::string &index_name) const;
+  index_rename_result rename_index(const std::string &old_index_name,
+                                   const std::string &new_index_name);
   bool has_index(const std::string &index_name) const;
   bool upsert(const std::string &index_name, uint64_t doc_id,
               const vector_data &vector, size_t cache_budget);
@@ -180,6 +189,11 @@ class standalone_entry_store {
 
  private:
   enum class standalone_segment_kind { kDelta, kRawFbin };
+  enum class manifest_save_result {
+    kNotPublished,
+    kPublishedDurable,
+    kDurabilityUnknown
+  };
 
   struct standalone_segment {
     standalone_segment_kind kind{standalone_segment_kind::kDelta};
@@ -242,10 +256,12 @@ class standalone_entry_store {
   bool can_rebuild_direct_from_raw_segments(const index_state &state) const;
   std::string build_source_for_state(const index_state &state) const;
   bool load_manifest(const std::string &index_name, index_state *state) const;
-  bool save_manifest(const std::string &index_name,
-                     const index_state &state) const;
+  manifest_save_result save_manifest(const std::string &index_name,
+                                     const index_state &state) const;
   bool replay_segments(const index_state &state,
                        committed_entries *entries) const;
+  bool replay_segment_doc_ids(const index_state &state,
+                              std::unordered_set<uint64_t> *live_doc_ids) const;
   bool load_entries(const index_state &state, committed_entries *entries) const;
   std::string segment_directory(const std::string &index_name) const;
   std::string manifest_path(const std::string &index_name) const;
@@ -459,9 +475,11 @@ class index_service {
                                    const std::string &mode,
                                    const std::string &provider);
   bool drop_index(const std::string &index_name);
-  bool unregister_index(const std::string &index_name);
-  bool rename_index(const std::string &old_index_name,
-                    const std::string &new_index_name);
+  bool unregister_index(const std::string &index_name,
+                        bool remove_standalone_artifacts = true);
+  void remove_standalone_artifacts(const std::string &index_name) const;
+  index_rename_result rename_index(const std::string &old_index_name,
+                                   const std::string &new_index_name);
   bool begin_bulk_load(const std::string &index_name);
   bool rebuild_index(const std::string &index_name,
                      std::string *error = nullptr);

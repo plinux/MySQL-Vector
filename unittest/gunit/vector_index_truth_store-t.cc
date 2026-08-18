@@ -156,7 +156,6 @@ TEST(VectorIndexTruthStoreTest, TruthStoreDefaultsCoverNoopAndDeltaFallbacks) {
   EXPECT_FALSE(store.insert_attached_publication_intent(nullptr, {}));
   EXPECT_FALSE(store.load_publication_intents(nullptr));
   EXPECT_FALSE(store.delete_publication_intent("idx", 1));
-  EXPECT_FALSE(store.apply_attached_dml(nullptr, {}));
   EXPECT_TRUE(store.begin_persist());
   EXPECT_TRUE(store.commit_persist());
   store.rollback_persist();
@@ -974,12 +973,16 @@ TEST(VectorIndexTruthStoreTest,
 }
 
 TEST(VectorIndexTruthStoreTest,
-     DeserializeQuarantineEntriesHandlesEmptyAndValidPayloads) {
+     DeserializeQuarantineEntriesRejectsEmptyAndHandlesValidPayloads) {
   namespace detail = vector_index_truth_store::detail;
   std::vector<vector_index_truth_store::quarantine_record> entries(1);
-  EXPECT_TRUE(
+  EXPECT_FALSE(
       vector_index_truth_store::deserialize_quarantine_entries_for_testing(
           "", &entries));
+  EXPECT_TRUE(entries.empty());
+  EXPECT_TRUE(
+      vector_index_truth_store::deserialize_quarantine_entries_for_testing(
+          "mysql-vector-quarantine-v1\n", &entries));
   EXPECT_TRUE(entries.empty());
 
   std::string first_identity;

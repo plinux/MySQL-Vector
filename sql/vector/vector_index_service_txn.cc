@@ -681,7 +681,9 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
         index_plan.publication_before.runtime_generation) {
       return fail("runtime_generation_changed");
     }
-    if (index_plan.target_truth_generation == 0) {
+    if (index_plan.target_truth_generation == 0 &&
+        index_plan.target_truth_generation !=
+            current_publication.truth_generation) {
       return fail("target_truth_generation_zero");
     }
     if (index_plan.target_truth_generation <

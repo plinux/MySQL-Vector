@@ -30,6 +30,8 @@
 #include <utility>
 #include <vector>
 
+#include "sql/vector/vector_index_limits.h"
+
 namespace vector_index_metadata_store::detail {
 
 bool deserialize_metadata_rows_impl(const std::string &payload,
@@ -69,7 +71,10 @@ bool deserialize_metadata_rows_impl(const std::string &payload,
     }
 
     uint64_t dimension = 0;
-    if (!parse_uint64(fields[1], &dimension) || dimension == 0) return false;
+    if (!parse_uint64(fields[1], &dimension) ||
+        !vector_index::valid_vector_dimension(dimension)) {
+      return false;
+    }
     row.dimension = static_cast<size_t>(dimension);
 
     if (!vector_index::parse_metric(fields[2], &row.metric)) return false;
@@ -447,6 +452,7 @@ bool serialize_change_log_rows_impl(const std::vector<change_log_row> &rows,
   std::ostringstream stream;
   stream << kChangeLogHeaderV1 << "\n";
   for (const change_log_row &row : rows) {
+    const char *op = change_op_to_string(row.op);
     if (row.sequence == 0 ||
         row.sequence == std::numeric_limits<uint64_t>::max() ||
         row.index_identity == 0 ||
@@ -455,7 +461,7 @@ bool serialize_change_log_rows_impl(const std::vector<change_log_row> &rows,
         row.publication_id == std::numeric_limits<uint64_t>::max() ||
         row.truth_generation == 0 ||
         row.truth_generation == std::numeric_limits<uint64_t>::max() ||
-        row.index_name.empty()) {
+        row.index_name.empty() || op == nullptr) {
       return false;
     }
     if (row.op == change_op::kErase && !row.vector.empty()) return false;
@@ -467,9 +473,9 @@ bool serialize_change_log_rows_impl(const std::vector<change_log_row> &rows,
 
     stream << row.sequence << "\t" << row.txn_id << "\t"
            << row.index_identity << "\t" << row.publication_id << "\t"
-           << row.truth_generation << "\t" << change_op_to_string(row.op)
-           << "\t" << encode_hex(row.index_name) << "\t" << row.doc_id
-           << "\t" << encode_hex(vector_bytes) << "\n";
+           << row.truth_generation << "\t" << op << "\t"
+           << encode_hex(row.index_name) << "\t" << row.doc_id << "\t"
+           << encode_hex(vector_bytes) << "\n";
   }
   if (!stream) return false;
   *payload = stream.str();
@@ -551,8 +557,9 @@ bool serialize_prepared_rows_impl(const std::vector<prepared_change_row> &rows,
   std::ostringstream stream;
   stream << kPreparedHeaderV1 << "\n";
   for (const prepared_change_row &row : rows) {
+    const char *op = change_op_to_string(row.op);
     if (!valid_prepared_xid(row) || row.txn_id == 0 ||
-        row.index_name.empty()) {
+        row.index_name.empty() || op == nullptr) {
       return false;
     }
     if (row.op == change_op::kErase && !row.vector.empty()) return false;
@@ -567,8 +574,8 @@ bool serialize_prepared_rows_impl(const std::vector<prepared_change_row> &rows,
            << static_cast<uint64_t>(row.bqual_length) << "\t"
            << encode_hex(row.xid_data) << "\t"
            << (row.prepared_in_tc ? "1" : "0") << "\t" << row.txn_id << "\t"
-           << change_op_to_string(row.op) << "\t" << encode_hex(row.index_name)
-           << "\t" << row.doc_id << "\t" << encode_hex(vector_bytes) << "\n";
+           << op << "\t" << encode_hex(row.index_name) << "\t" << row.doc_id
+           << "\t" << encode_hex(vector_bytes) << "\n";
   }
   if (!stream) return false;
   *payload = stream.str();

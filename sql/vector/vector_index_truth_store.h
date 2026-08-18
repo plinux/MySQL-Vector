@@ -188,20 +188,6 @@ class truth_store {
   }
 
   /**
-    Apply projection and changelog rows in one caller-owned transaction.
-
-    This compatibility wrapper remains useful to focused truth-store tests.
-    Production DML stages the projection first and appends publication-bound
-    changelog rows from the transaction before-commit callback.
-  */
-  virtual bool apply_attached_dml(
-      THD *thd,
-      const std::vector<vector_index_metadata_store::change_log_row> &rows) {
-    return apply_attached_committed(thd, rows) &&
-           append_attached_change_log(thd, rows);
-  }
-
-  /**
     Acknowledge one committed intent in an independent transaction.
 
     The default preserves test and nontransactional stores whose delete path

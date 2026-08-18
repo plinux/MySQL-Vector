@@ -718,6 +718,7 @@ class Row_truth_table_buffer {
       innodb_vector_truth_store::Session *session) {
     if (!init(table, 4, 2)) return false;
     std::lock_guard<std::mutex> guard(m_mutex);
+    if (!lock_table_for_write_locked(session)) return false;
     if (!remove_all_locked(session)) return false;
     for (const auto &row : rows) {
       set_replace_string(0, row.index_name);
@@ -725,7 +726,7 @@ class Row_truth_table_buffer {
       set_replace_uint32(2, row.dimension);
       set_replace_string(3, row.vector_payload);
       init_tuple_system_fields(session);
-      if (!insert_replace_tuple_locked(session)) return false;
+      if (!insert_locking_tuple_locked(session)) return false;
     }
     return true;
   }
@@ -736,6 +737,8 @@ class Row_truth_table_buffer {
       innodb_vector_truth_store::Session *session) {
     if (!init(table, 4, 2)) return false;
     std::lock_guard<std::mutex> guard(m_mutex);
+    if (!lock_table_for_write_locked(session)) return false;
+    DEBUG_SYNC_C("vector_truth_store_committed_writer_ready");
     for (const auto &row : rows) {
       if (!remove_committed_key_locked(row.index_name, row.doc_id, session)) {
         return false;
@@ -748,7 +751,7 @@ class Row_truth_table_buffer {
       set_replace_uint32(2, row.dimension);
       set_replace_string(3, row.vector_payload);
       init_tuple_system_fields(session);
-      if (!insert_replace_tuple_locked(session)) return false;
+      if (!insert_locking_tuple_locked(session)) return false;
     }
     return true;
   }
@@ -792,6 +795,7 @@ class Row_truth_table_buffer {
       innodb_vector_truth_store::Session *session) {
     if (!init(table, 10, 1)) return false;
     std::lock_guard<std::mutex> guard(m_mutex);
+    if (!lock_table_for_write_locked(session)) return false;
     if (!remove_all_locked(session)) return false;
     for (const auto &row : rows) {
       set_replace_uint64(0, row.sequence);
@@ -805,7 +809,7 @@ class Row_truth_table_buffer {
       set_replace_uint32(8, row.dimension);
       set_replace_string(9, row.vector_payload);
       init_tuple_system_fields(session);
-      if (!insert_replace_tuple_locked(session)) return false;
+      if (!insert_locking_tuple_locked(session)) return false;
     }
     return true;
   }
@@ -816,6 +820,7 @@ class Row_truth_table_buffer {
       innodb_vector_truth_store::Session *session) {
     if (!init(table, 10, 1)) return false;
     std::lock_guard<std::mutex> guard(m_mutex);
+    if (!lock_table_for_write_locked(session)) return false;
     for (const auto &row : rows) {
       set_replace_uint64(0, row.sequence);
       set_replace_uint64(1, row.txn_id);
@@ -828,7 +833,7 @@ class Row_truth_table_buffer {
       set_replace_uint32(8, row.dimension);
       set_replace_string(9, row.vector_payload);
       init_tuple_system_fields(session);
-      if (!insert_replace_tuple_locked(session)) return false;
+      if (!insert_locking_tuple_locked(session)) return false;
     }
     return true;
   }
@@ -888,6 +893,7 @@ class Row_truth_table_buffer {
       innodb_vector_truth_store::Session *session) {
     if (!init(table, 12, 2)) return false;
     std::lock_guard<std::mutex> guard(m_mutex);
+    if (!lock_table_for_write_locked(session)) return false;
     if (!remove_all_locked(session)) return false;
     for (const auto &row : rows) {
       set_replace_uint64(0, row.txn_id);
@@ -903,7 +909,7 @@ class Row_truth_table_buffer {
       set_replace_uint32(10, row.dimension);
       set_replace_string(11, row.vector_payload);
       init_tuple_system_fields(session);
-      if (!insert_replace_tuple_locked(session)) return false;
+      if (!insert_locking_tuple_locked(session)) return false;
     }
     return true;
   }
@@ -1128,30 +1134,6 @@ class Row_truth_table_buffer {
                                  m_replace_heap);
   }
 
-  bool insert_replace_tuple_locked(
-      innodb_vector_truth_store::Session *session) {
-    ut_ad(session != nullptr);
-    ut_ad(session->thr != nullptr);
-    ut_ad(session->trx != nullptr);
-    dtuple_t *entry = build_replace_entry();
-    static const ulint flags = BTR_NO_LOCKING_FLAG;
-    dberr_t error = row_ins_clust_index_entry_low(
-        flags, BTR_MODIFY_LEAF, m_index, m_index->n_uniq, entry, session->thr,
-        false);
-    if (error == DB_FAIL) {
-      error = row_ins_clust_index_entry_low(
-          flags, BTR_MODIFY_TREE, m_index, m_index->n_uniq, entry, session->thr,
-          false);
-    }
-    if (error != DB_SUCCESS) {
-      ib::error() << "vector truth store row insert failed for table "
-                  << m_index->table->name << " with error " << error;
-    }
-    mem_heap_empty(m_dynamic_heap);
-    mem_heap_empty(m_replace_heap);
-    return error == DB_SUCCESS;
-  }
-
   bool lock_table_for_write_locked(
       innodb_vector_truth_store::Session *session) {
     ut_ad(session != nullptr);
@@ -1163,7 +1145,7 @@ class Row_truth_table_buffer {
         lock_table_for_trx(m_index->table, session->trx, LOCK_IX);
     que_thr_move_to_run_state_for_mysql(session->thr, session->trx);
     if (error != DB_SUCCESS) {
-      ib::error() << "vector publication intent table lock failed for table "
+      ib::error() << "vector truth store table lock failed for table "
                   << m_index->table->name << " with error " << error;
     }
     return error == DB_SUCCESS;
@@ -1184,6 +1166,9 @@ class Row_truth_table_buffer {
       error = row_ins_clust_index_entry(m_index, entry, session->thr, false);
       if (error == DB_SUCCESS) break;
 
+      if (error == DB_LOCK_WAIT) {
+        DEBUG_SYNC_C("vector_truth_store_row_lock_wait");
+      }
       session->trx->error_state = error;
       que_thr_stop_for_mysql(session->thr);
       session->thr->lock_state = QUE_THR_LOCK_ROW;
@@ -1196,7 +1181,7 @@ class Row_truth_table_buffer {
       que_thr_move_to_run_state_for_mysql(session->thr, session->trx);
     }
     if (error != DB_SUCCESS) {
-      ib::error() << "vector publication intent insert failed for table "
+      ib::error() << "vector truth store row insert failed for table "
                   << m_index->table->name << " with error " << error;
     }
     mem_heap_empty(m_dynamic_heap);
@@ -1420,21 +1405,11 @@ class Row_truth_table_buffer {
       const bool found =
           pcur.is_on_user_rec() &&
           !page_rec_is_infimum(pcur.get_rec()) &&
-          !rec_get_deleted_flag(pcur.get_rec(), true) &&
           current_matches_search_key_locked(pcur.get_rec());
       if (!found) {
         pcur.close();
         mtr.commit();
         return true;
-      }
-
-      uint64_t stored_publication_id = 0;
-      if (!read_uint64_field(pcur.get_rec(), 1, &stored_publication_id) ||
-          stored_publication_id != publication_id) {
-        pcur.close();
-        mtr.commit();
-        mem_heap_empty(m_dynamic_heap);
-        return false;
       }
 
       ulint *offsets =
@@ -1443,7 +1418,16 @@ class Row_truth_table_buffer {
       error = lock_clust_rec_modify_check_and_lock(
           0, pcur.get_block(), pcur.get_rec(), m_index, offsets,
           session->thr);
-      if (error == DB_SUCCESS) {
+      bool publication_id_matches = true;
+      if (error == DB_SUCCESS &&
+          !rec_get_deleted_flag(pcur.get_rec(), true)) {
+        uint64_t stored_publication_id = 0;
+        publication_id_matches =
+            read_uint64_field(pcur.get_rec(), 1, &stored_publication_id) &&
+            stored_publication_id == publication_id;
+      }
+      if (error == DB_SUCCESS && publication_id_matches &&
+          !rec_get_deleted_flag(pcur.get_rec(), true)) {
         error = btr_cur_del_mark_set_clust_rec(
             0, btr_cur_get_block(pcur.get_btr_cur()),
             btr_cur_get_rec(pcur.get_btr_cur()), m_index, offsets,
@@ -1453,6 +1437,7 @@ class Row_truth_table_buffer {
       pcur.close();
       mtr.commit();
       mem_heap_empty(m_dynamic_heap);
+      if (!publication_id_matches) return false;
       if (error == DB_SUCCESS) return true;
 
       session->trx->error_state = error;
@@ -1486,45 +1471,62 @@ class Row_truth_table_buffer {
     ut_ad(session != nullptr);
     ut_ad(session->thr != nullptr);
     ut_ad(session->trx != nullptr);
-    btr_pcur_t pcur;
-    mtr_t mtr;
-    dberr_t error = DB_SUCCESS;
-    mtr.start();
-    pcur.open(m_index, 0, m_search_tuple, PAGE_CUR_LE,
-              BTR_MODIFY_TREE | BTR_LATCH_FOR_DELETE, &mtr, UT_LOCATION_HERE);
+    trx_savept_t savepoint = trx_savept_take(session->trx);
+    for (;;) {
+      btr_pcur_t pcur;
+      mtr_t mtr;
+      dberr_t error = DB_SUCCESS;
+      mtr.start();
+      pcur.open(m_index, 0, m_search_tuple, PAGE_CUR_LE,
+                BTR_MODIFY_TREE | BTR_LATCH_FOR_DELETE, &mtr,
+                UT_LOCATION_HERE);
 
-    auto current_matches_search_key = [&]() {
-      if (!pcur.is_on_user_rec() || page_rec_is_infimum(pcur.get_rec())) {
-        return false;
+      const bool found =
+          pcur.is_on_user_rec() && !page_rec_is_infimum(pcur.get_rec()) &&
+          current_matches_search_key_locked(pcur.get_rec());
+      if (!found) {
+        pcur.close();
+        mtr.commit();
+        return true;
       }
-      ulint *offsets = rec_get_offsets(pcur.get_rec(), m_index, nullptr,
-                                       ULINT_UNDEFINED, UT_LOCATION_HERE,
-                                       &m_dynamic_heap);
-      return cmp_dtuple_rec(m_search_tuple, pcur.get_rec(), m_index, offsets) ==
-             0;
-    };
 
-    bool found = current_matches_search_key();
-    while (found && pcur.is_on_user_rec() &&
-           rec_get_deleted_flag(pcur.get_rec(), true)) {
-      found = pcur.move_to_next_user_rec(&mtr) == DB_SUCCESS &&
-              current_matches_search_key();
+      ulint *offsets =
+          rec_get_offsets(pcur.get_rec(), m_index, nullptr, ULINT_UNDEFINED,
+                          UT_LOCATION_HERE, &m_dynamic_heap);
+      error = lock_clust_rec_modify_check_and_lock(
+          0, pcur.get_block(), pcur.get_rec(), m_index, offsets,
+          session->thr);
+      if (error == DB_SUCCESS &&
+          !rec_get_deleted_flag(pcur.get_rec(), true)) {
+        error = btr_cur_del_mark_set_clust_rec(
+            0, btr_cur_get_block(pcur.get_btr_cur()),
+            btr_cur_get_rec(pcur.get_btr_cur()), m_index, offsets,
+            session->thr, m_search_tuple, &mtr);
+      }
+
+      pcur.close();
+      mtr.commit();
+      mem_heap_empty(m_dynamic_heap);
+      if (error == DB_SUCCESS) return true;
+
+      if (error == DB_LOCK_WAIT) {
+        DEBUG_SYNC_C("vector_truth_store_row_lock_wait");
+      }
+      session->trx->error_state = error;
+      que_thr_stop_for_mysql(session->thr);
+      session->thr->lock_state = QUE_THR_LOCK_ROW;
+      const bool retry = row_mysql_handle_errors(
+          &error, session->trx, session->thr, &savepoint);
+      session->thr->lock_state = QUE_THR_LOCK_NOLOCK;
+      if (retry) continue;
+
+      if (!session->thr->is_active) {
+        que_thr_move_to_run_state_for_mysql(session->thr, session->trx);
+      }
+      ib::error() << "vector truth store row delete failed for table "
+                  << m_index->table->name << " with error " << error;
+      return false;
     }
-
-    if (found && pcur.is_on_user_rec()) {
-      ulint *offsets = rec_get_offsets(pcur.get_rec(), m_index, nullptr,
-                                       ULINT_UNDEFINED, UT_LOCATION_HERE,
-                                       &m_dynamic_heap);
-      error = btr_cur_del_mark_set_clust_rec(
-          BTR_NO_LOCKING_FLAG, btr_cur_get_block(pcur.get_btr_cur()),
-          btr_cur_get_rec(pcur.get_btr_cur()), m_index, offsets, session->thr,
-          m_search_tuple, &mtr);
-    }
-
-    pcur.close();
-    mtr.commit();
-    mem_heap_empty(m_dynamic_heap);
-    return error == DB_SUCCESS;
   }
 
   bool current_matches_search_key_locked(const rec_t *rec) {
@@ -1713,8 +1715,8 @@ bool do_save_committed_rows(
   auto *active_session = session_guard.get();
   if (active_session == nullptr) return false;
 
-  const bool ok =
-      g_committed_row_buffer.replace_committed(table, rows, active_session);
+  Row_truth_table_buffer buffer;
+  const bool ok = buffer.replace_committed(table, rows, active_session);
   if (!ok) return false;
   return commit_session_if_owned(session_guard, active_session);
 }
@@ -1729,8 +1731,8 @@ bool do_apply_committed_delta(
   auto *active_session = session_guard.get();
   if (active_session == nullptr) return false;
 
-  const bool ok =
-      g_committed_row_buffer.apply_committed_delta(table, rows, active_session);
+  Row_truth_table_buffer buffer;
+  const bool ok = buffer.apply_committed_delta(table, rows, active_session);
   if (!ok) return false;
   return commit_session_if_owned(session_guard, active_session);
 }
@@ -1754,8 +1756,8 @@ bool do_save_change_log_rows(
   auto *active_session = session_guard.get();
   if (active_session == nullptr) return false;
 
-  const bool ok =
-      g_changelog_row_buffer.replace_change_log(table, rows, active_session);
+  Row_truth_table_buffer buffer;
+  const bool ok = buffer.replace_change_log(table, rows, active_session);
   if (!ok) return false;
   return commit_session_if_owned(session_guard, active_session);
 }
@@ -1770,8 +1772,8 @@ bool do_append_change_log_delta(
   auto *active_session = session_guard.get();
   if (active_session == nullptr) return false;
 
-  const bool ok =
-      g_changelog_row_buffer.append_change_log(table, rows, active_session);
+  Row_truth_table_buffer buffer;
+  const bool ok = buffer.append_change_log(table, rows, active_session);
   if (!ok) return false;
   return commit_session_if_owned(session_guard, active_session);
 }
@@ -1786,8 +1788,9 @@ bool do_erase_change_log_sequences(
   auto *active_session = session_guard.get();
   if (active_session == nullptr) return false;
 
-  const bool ok = g_changelog_row_buffer.erase_change_log_sequences(
-      table, sequences, active_session);
+  Row_truth_table_buffer buffer;
+  const bool ok =
+      buffer.erase_change_log_sequences(table, sequences, active_session);
   if (!ok) return false;
   return commit_session_if_owned(session_guard, active_session);
 }
@@ -1820,8 +1823,8 @@ bool do_save_prepared_rows(
   auto *active_session = session_guard.get();
   if (active_session == nullptr) return false;
 
-  const bool ok =
-      g_prepared_row_buffer.replace_prepared(table, rows, active_session);
+  Row_truth_table_buffer buffer;
+  const bool ok = buffer.replace_prepared(table, rows, active_session);
   if (!ok) return false;
   return commit_session_if_owned(session_guard, active_session);
 }

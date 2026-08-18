@@ -39,6 +39,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <shared_mutex>
 #include <sstream>
 #include <string>
@@ -1260,9 +1261,12 @@ class diskann_native_state {
     if (m_offline_handle != nullptr) return false;
     if (!ensure_open_locked(false)) return false;
     const std::string doc_id_bytes = diskann_doc_id_bytes(doc_id);
-    return m_api->remove(callback_context(), m_index_handle,
-                         reinterpret_cast<const uint8_t *>(doc_id_bytes.data()),
-                         doc_id_bytes.size());
+    const uint64_t failure_generation = callback_failure_generation();
+    const bool removed = m_api->remove(
+        callback_context(), m_index_handle,
+        reinterpret_cast<const uint8_t *>(doc_id_bytes.data()),
+        doc_id_bytes.size());
+    return removed && callback_succeeded_since(failure_generation);
   }
 
   bool supports_mutations() const {
@@ -1301,13 +1305,15 @@ class diskann_native_state {
     std::vector<float> distances(top_k, 0.0F);
     const uint32_t effective_search_complexity =
         std::max(search_complexity, static_cast<uint32_t>(top_k));
+    const uint64_t failure_generation = callback_failure_generation();
     const int32_t count = m_api->search_vector(
         callback_context(), m_index_handle,
         reinterpret_cast<const uint8_t *>(query.data()), query.size(), 0.0F,
         effective_search_complexity, nullptr, 0, 0,
         reinterpret_cast<uint8_t *>(ids_buffer.data()), ids_buffer.size(),
         distances.data(), distances.size(), search_beamwidth, nullptr);
-    if (count < 0 || static_cast<size_t>(count) > top_k) {
+    if (!callback_succeeded_since(failure_generation) || count < 0 ||
+        static_cast<size_t>(count) > top_k) {
       return false;
     }
 
@@ -2354,6 +2360,7 @@ class diskann_native_state {
     }
 
     bool quantization_needed = false;
+    const uint64_t failure_generation = callback_failure_generation();
     const void *index = m_api->create_index_handle(
         callback_context(), static_cast<uint32_t>(m_dimension), 0,
         kDiskAnnNoQuant, diskann_metric_code(m_metric), m_build_complexity,
@@ -2363,7 +2370,8 @@ class diskann_native_state {
         &diskann_native_state::read_modify_write_callback,
         &diskann_native_state::filter_callback,
         &diskann_native_state::log_callback, &quantization_needed);
-    if (index == nullptr || quantization_needed) {
+    if (index == nullptr || quantization_needed ||
+        !callback_succeeded_since(failure_generation)) {
       if (index != nullptr) m_api->drop_index(callback_context(), index);
       return false;
     }
@@ -2374,6 +2382,7 @@ class diskann_native_state {
   bool insert_locked(uint64_t doc_id, const vector_data &vector) {
     if (!ensure_open_locked(false)) return false;
     const std::string doc_id_bytes = diskann_doc_id_bytes(doc_id);
+    const uint64_t failure_generation = callback_failure_generation();
     const uint8_t status = m_api->insert(
         callback_context(), m_index_handle,
         reinterpret_cast<const uint8_t *>(doc_id_bytes.data()),
@@ -2381,7 +2390,7 @@ class diskann_native_state {
         reinterpret_cast<const uint8_t *>(vector.data()), vector.size(), nullptr,
         0);
     // Garnet uses two nonzero statuses for successful insert transitions.
-    return status != 0;
+    return status != 0 && callback_succeeded_since(failure_generation);
   }
 
   bool serial_insert_entries_locked(const ordered_entries &entries) {
@@ -3681,6 +3690,18 @@ class diskann_native_state {
     return reinterpret_cast<diskann_native_state *>(ctx & ~kDiskAnnTermBitmask);
   }
 
+  uint64_t callback_failure_generation() const noexcept {
+    return m_callback_failure_generation.load(std::memory_order_acquire);
+  }
+
+  bool callback_succeeded_since(uint64_t generation) const noexcept {
+    return callback_failure_generation() == generation;
+  }
+
+  void record_callback_failure() noexcept {
+    m_callback_failure_generation.fetch_add(1, std::memory_order_release);
+  }
+
   uint64_t callback_context() const {
     return reinterpret_cast<uint64_t>(const_cast<diskann_native_state *>(this));
   }
@@ -4562,57 +4583,100 @@ class diskann_native_state {
                             uint32_t value_length_hint,
                             const uint8_t *key_data, size_t key_length,
                             diskann_read_data_callback callback,
-                            void *user_data) {
+                            void *user_data) noexcept {
     diskann_native_state *state = from_context(ctx);
-    if (state == nullptr || callback == nullptr) return;
+    if (state == nullptr) return;
     (void)value_length_hint;
-    (void)parse_prefixed_keys(
-        key_data, key_length, key_count,
-        [state, ctx, callback, user_data](uint32_t index, const uint8_t *key,
-                                          size_t length) {
-          std::string value;
-          if (!state->load_value(ctx, key, length, &value)) return true;
-          std::vector<uint64_t> aligned((value.size() + sizeof(uint64_t) - 1) /
-                                        sizeof(uint64_t));
-          if (!value.empty()) {
-            std::memcpy(aligned.data(), value.data(), value.size());
-          }
-          callback(index, user_data,
-                   reinterpret_cast<const uint8_t *>(aligned.data()),
-                   value.size());
-          return true;
-        });
+    try {
+      DBUG_EXECUTE_IF("vector_backend_diskann_read_callback_exception",
+                      throw std::bad_alloc(););
+      if (callback == nullptr ||
+          !parse_prefixed_keys(
+              key_data, key_length, key_count,
+              [state, ctx, callback, user_data](uint32_t index,
+                                                 const uint8_t *key,
+                                                 size_t length) {
+                std::string value;
+                if (!state->load_value(ctx, key, length, &value)) return true;
+                std::vector<uint64_t> aligned(
+                    (value.size() + sizeof(uint64_t) - 1) / sizeof(uint64_t));
+                if (!value.empty()) {
+                  std::memcpy(aligned.data(), value.data(), value.size());
+                }
+                callback(index, user_data,
+                         reinterpret_cast<const uint8_t *>(aligned.data()),
+                         value.size());
+                return true;
+              })) {
+        state->record_callback_failure();
+      }
+    } catch (...) {
+      state->record_callback_failure();
+    }
   }
 
   static bool write_callback(uint64_t ctx, const uint8_t *key, size_t key_length,
-                            const uint8_t *value, size_t value_length) {
+                             const uint8_t *value,
+                             size_t value_length) noexcept {
     diskann_native_state *state = from_context(ctx);
     if (state == nullptr || value == nullptr) return false;
-    return state->save_value(ctx, key, key_length, value, value_length);
+    try {
+      DBUG_EXECUTE_IF("vector_backend_diskann_write_callback_exception",
+                      throw std::bad_alloc(););
+      return state->save_value(ctx, key, key_length, value, value_length);
+    } catch (...) {
+      state->record_callback_failure();
+      return false;
+    }
   }
 
-  static bool delete_callback(uint64_t ctx, const uint8_t *key, size_t key_length) {
+  static bool delete_callback(uint64_t ctx, const uint8_t *key,
+                              size_t key_length) noexcept {
     diskann_native_state *state = from_context(ctx);
     if (state == nullptr) return false;
-    return state->delete_value(ctx, key, key_length);
+    try {
+      DBUG_EXECUTE_IF("vector_backend_diskann_delete_callback_exception",
+                      throw std::bad_alloc(););
+      return state->delete_value(ctx, key, key_length);
+    } catch (...) {
+      state->record_callback_failure();
+      return false;
+    }
   }
 
   static bool read_modify_write_callback(uint64_t ctx, const uint8_t *key,
-                                      size_t key_length, size_t write_length,
-                                      diskann_rmw_data_callback callback,
-                                      void *user_data) {
+                                         size_t key_length,
+                                         size_t write_length,
+                                         diskann_rmw_data_callback callback,
+                                         void *user_data) noexcept {
     diskann_native_state *state = from_context(ctx);
     if (state == nullptr || callback == nullptr) return false;
-    return state->read_modify_write_value(ctx, key, key_length, write_length,
-                                          callback, user_data);
+    try {
+      DBUG_EXECUTE_IF("vector_backend_diskann_rmw_callback_exception",
+                      throw std::bad_alloc(););
+      return state->read_modify_write_value(ctx, key, key_length, write_length,
+                                            callback, user_data);
+    } catch (...) {
+      state->record_callback_failure();
+      return false;
+    }
   }
 
-  static bool filter_callback(uint64_t, const uint8_t *, size_t) {
-    // MySQL applies visibility filtering after DiskANN returns candidates.
-    return true;
+  static bool filter_callback(uint64_t ctx, const uint8_t *, size_t) noexcept {
+    diskann_native_state *state = from_context(ctx);
+    if (state == nullptr) return false;
+    try {
+      DBUG_EXECUTE_IF("vector_backend_diskann_filter_callback_exception",
+                      throw std::bad_alloc(););
+      // MySQL applies visibility filtering after DiskANN returns candidates.
+      return true;
+    } catch (...) {
+      state->record_callback_failure();
+      return false;
+    }
   }
 
-  static void log_callback(uint64_t, const uint8_t *, size_t) {
+  static void log_callback(uint64_t, const uint8_t *, size_t) noexcept {
     // MySQL exposes stable vector diagnostics through its own status surfaces.
   }
 
@@ -4661,6 +4725,7 @@ class diskann_native_state {
   native_store_shards m_build_memory_store;
   std::atomic_bool m_resident_store_active{false};
   native_store_shards m_resident_store;
+  std::atomic<uint64_t> m_callback_failure_generation{0};
 };
 
 diskann_backend::diskann_backend(size_t dimension, metric_type metric, backend_mode mode,

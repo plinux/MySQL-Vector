@@ -217,7 +217,8 @@ int32_t search_neighbors(uint64_t, const void *, const uint8_t *, size_t,
 
 int32_t search_vector(uint64_t, const void *index_ptr,
                       const uint8_t *vector_data, size_t vector_length, float,
-                      uint32_t, const uint8_t *, size_t, size_t,
+                      uint32_t search_complexity, const uint8_t *, size_t,
+                      size_t,
                       uint8_t *output_ids, size_t output_ids_length,
                       float *output_distances, size_t output_capacity,
                       uint32_t beam_width, void *) {
@@ -228,6 +229,9 @@ int32_t search_vector(uint64_t, const void *index_ptr,
       (output_ids == nullptr && output_capacity != 0) ||
       (output_distances == nullptr && output_capacity != 0)) {
     return -1;
+  }
+  if (search_complexity == std::numeric_limits<uint32_t>::max()) {
+    return std::numeric_limits<int32_t>::max();
   }
 
   const auto *query = reinterpret_cast<const float *>(vector_data);

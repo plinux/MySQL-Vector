@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -47,6 +48,43 @@
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_load_file.h"
 #include "unittest/gunit/vector_test_utils.h"
+
+namespace vector_index {
+
+class index_service_test_peer {
+ public:
+  static void erase_runtime(index_service *service,
+                            const std::string &index_name) {
+    service->m_indexes.erase(index_name);
+  }
+
+  static void erase_config(index_service *service,
+                           const std::string &index_name) {
+    service->m_index_configs.erase(index_name);
+  }
+
+  static void drop_truth_store(index_service *service,
+                               const std::string &index_name) {
+    service->m_entry_store.drop_index(index_name);
+  }
+
+  static void drop_standalone_store(index_service *service,
+                                    const std::string &index_name) {
+    service->m_standalone_store.drop_index(index_name);
+  }
+
+  static void erase_lifecycle(index_service *service,
+                              const std::string &index_name) {
+    service->m_lifecycle_infos.erase(index_name);
+  }
+
+  static void erase_publication(index_service *service,
+                                const std::string &index_name) {
+    service->m_publication_states.erase(index_name);
+  }
+};
+
+}  // namespace vector_index
 
 namespace vector_index_service_unittest {
 
@@ -245,6 +283,28 @@ std::string find_standalone_file_with_extension(const std::string &root,
   return "";
 }
 
+std::vector<std::string> find_standalone_files_with_extension(
+    const std::string &root, const std::string &extension) {
+  std::vector<std::string> paths;
+  std::error_code ec;
+  if (!std::filesystem::exists(root, ec) || ec) return paths;
+
+  for (const auto &entry : std::filesystem::recursive_directory_iterator(
+           root, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
+    if (ec) return {};
+    if (!entry.is_regular_file(ec)) {
+      if (ec) return {};
+      continue;
+    }
+    if (entry.path().extension().string() == extension) {
+      paths.push_back(entry.path().string());
+    }
+  }
+  std::sort(paths.begin(), paths.end());
+  return paths;
+}
+
 std::vector<std::string> split_tab_fields(const std::string &line) {
   std::vector<std::string> fields;
   size_t begin = 0;
@@ -378,9 +438,10 @@ struct diskann_serial_test_adapter_installer {
 
 class configurable_backend final : public vector_index::backend {
  public:
-  explicit configurable_backend(vector_index::backend_provider provider)
+  explicit configurable_backend(vector_index::backend_provider provider,
+                                size_t dimension = 2)
       : m_provider(provider),
-        m_storage(2, vector_index::metric_type::kEuclidean) {}
+        m_storage(dimension, vector_index::metric_type::kEuclidean) {}
 
   bool upsert(uint64_t doc_id,
               const vector_index::vector_data &vector) override {
@@ -1000,7 +1061,7 @@ class ArtifactLifecycleProbeBackend final : public vector_index::backend {
       const vector_index::diskann_artifact_identity &identity) override {
     ++prepare_calls;
     prepared_identity = identity;
-    return true;
+    return !m_fail_prepare;
   }
   bool publish_artifact() override {
     ++publish_calls;
@@ -1017,6 +1078,9 @@ class ArtifactLifecycleProbeBackend final : public vector_index::backend {
     return true;
   }
 
+  void set_fail_prepare(bool value) { m_fail_prepare = value; }
+  void set_fail_publish(bool value) { m_fail_publish = value; }
+
   size_t defer_calls{0};
   size_t prepare_calls{0};
   size_t publish_calls{0};
@@ -1026,6 +1090,7 @@ class ArtifactLifecycleProbeBackend final : public vector_index::backend {
 
  private:
   size_t m_entry_count{0};
+  bool m_fail_prepare{false};
   bool m_fail_publish{false};
   bool m_pending{true};
 };
@@ -1440,7 +1505,8 @@ TEST(VectorIndexServiceTest, RenameIndexSameNameIsNoop) {
   ASSERT_TRUE(service.stage_upsert(91, "idx_same", 7, {7.0F, 7.0F}));
   ASSERT_TRUE(service.commit(91));
 
-  ASSERT_TRUE(service.rename_index("idx_same", "idx_same"));
+  ASSERT_EQ(vector_index::index_rename_result::kRenamedDurable,
+            service.rename_index("idx_same", "idx_same"));
   ASSERT_TRUE(service.search("idx_same", {7.0F, 7.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(7U, result[0].doc_id);
@@ -1449,12 +1515,14 @@ TEST(VectorIndexServiceTest, RenameIndexSameNameIsNoop) {
 TEST(VectorIndexServiceTest, RenameIndexRejectsMissingOrExistingTarget) {
   vector_index::index_service service;
 
-  EXPECT_FALSE(service.rename_index("missing", "idx_other"));
+  EXPECT_EQ(vector_index::index_rename_result::kNotRenamed,
+            service.rename_index("missing", "idx_other"));
   ASSERT_TRUE(service.register_index_from_strings("idx_src", 2, "euclidean",
                                                "memory", "native"));
   ASSERT_TRUE(service.register_index_from_strings("idx_dst", 2, "euclidean",
-                                               "memory", "native"));
-  EXPECT_FALSE(service.rename_index("idx_src", "idx_dst"));
+                                                  "memory", "native"));
+  EXPECT_EQ(vector_index::index_rename_result::kNotRenamed,
+            service.rename_index("idx_src", "idx_dst"));
 }
 
 TEST(VectorIndexServiceTest, RenameIndexMovesPendingChangesToNewName) {
@@ -1464,7 +1532,8 @@ TEST(VectorIndexServiceTest, RenameIndexMovesPendingChangesToNewName) {
   ASSERT_TRUE(service.register_index_from_strings("idx_old", 2, "euclidean",
                                                "memory", "native"));
   ASSERT_TRUE(service.stage_upsert(92, "idx_old", 8, {8.0F, 8.0F}));
-  ASSERT_TRUE(service.rename_index("idx_old", "idx_new"));
+  ASSERT_EQ(vector_index::index_rename_result::kRenamedDurable,
+            service.rename_index("idx_old", "idx_new"));
   ASSERT_TRUE(service.commit(92));
 
   ASSERT_TRUE(service.search("idx_new", {8.0F, 8.0F}, 1, &result));
@@ -1826,6 +1895,11 @@ TEST(VectorIndexServiceTest, RegisterIndexRejectsInvalidRawArguments) {
   EXPECT_FALSE(service.register_index(
       "", std::make_unique<vector_index::memory_backend>(
               2, vector_index::metric_type::kEuclidean)));
+  EXPECT_FALSE(service.register_index(
+      "idx_oversized_backend",
+      std::make_unique<configurable_backend>(
+          vector_index::backend_provider::kNative,
+          static_cast<size_t>(vector_index::k_max_vector_dimension) + 1)));
 }
 
 TEST(VectorIndexServiceTest, RegisterIndexRejectsDuplicateAndInvalidConfig) {
@@ -1846,6 +1920,10 @@ TEST(VectorIndexServiceTest, RegisterIndexRejectsDuplicateAndInvalidConfig) {
   config.mode = vector_index::backend_mode::kMemory;
   config.provider = vector_index::backend_provider::kNative;
   EXPECT_FALSE(service.register_index("idx_zero_dim", config));
+
+  config.dimension =
+      static_cast<size_t>(vector_index::k_max_vector_dimension) + 1;
+  EXPECT_FALSE(service.register_index("idx_oversized_dim", config));
 
   config.dimension = 2;
   ASSERT_TRUE(service.register_index("idx_config_duplicate", config));
@@ -3031,8 +3109,9 @@ TEST(VectorIndexServiceTest,
   EXPECT_GT(diagnostics.build_invocations, 0U);
   EXPECT_EQ("debug_forced_post_build_failure", diagnostics.fallback_reason);
 
-  ASSERT_TRUE(service.rename_index("idx_failed_diagnostics",
-                                   "idx_renamed_diagnostics"));
+  ASSERT_EQ(vector_index::index_rename_result::kRenamedDurable,
+            service.rename_index("idx_failed_diagnostics",
+                                 "idx_renamed_diagnostics"));
   EXPECT_FALSE(service.describe_index(
       "idx_failed_diagnostics", &config, nullptr, nullptr, nullptr, nullptr,
       nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
@@ -3220,6 +3299,253 @@ TEST(VectorStandaloneEntryStoreTest,
   ASSERT_TRUE(store.find_entry(index_name, 8, &vector, &found));
   ASSERT_TRUE(found);
   EXPECT_EQ((vector_index::vector_data{8.0F, 0.0F}), vector);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     LevelledCompactionSyncFailureKeepsSourceFiles) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  const std::string root =
+      std::string(testing::TempDir()) + "/levelled_compaction_sync_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 4, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F, 4.0F, 0.0F});
+  write_raw_docid_file(docid_path, {1, 2, 3, 4});
+
+  const std::string index_name = "idx_levelled_sync";
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, vector_path, docid_path,
+                                          4, 2, 1));
+  const std::string manifest = find_manifest_file(root, "manifest.v1");
+  ASSERT_FALSE(manifest.empty());
+  const std::string segment_directory =
+      std::filesystem::path(manifest).parent_path().string();
+  const auto source_fbin =
+      find_standalone_files_with_extension(segment_directory, ".fbin");
+  const auto source_docids =
+      find_standalone_files_with_extension(segment_directory, ".u64");
+  ASSERT_EQ(4U, source_fbin.size());
+  ASSERT_EQ(4U, source_docids.size());
+
+  for (const char *failure_point :
+       {"+d,vector_standalone_compaction_data_sync_failure",
+        "+d,vector_standalone_compaction_parent_sync_failure"}) {
+    vector_index::standalone_entry_store::raw_segment_compaction compaction;
+    {
+      ScopedDebugFlag fail_sync(failure_point);
+      EXPECT_FALSE(store.stage_levelled_compaction(index_name, 4, &compaction));
+    }
+    EXPECT_FALSE(compaction.needed);
+    EXPECT_EQ(4U, store.raw_segment_count(index_name));
+    EXPECT_EQ(source_fbin,
+              find_standalone_files_with_extension(segment_directory, ".fbin"));
+    EXPECT_EQ(source_docids,
+              find_standalone_files_with_extension(segment_directory, ".u64"));
+  }
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     MaterializedCompactionSyncAndCleanupPreserveAtomicity) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  const std::string root =
+      std::string(testing::TempDir()) + "/materialized_compaction_sync_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string index_name = "idx_materialized_sync";
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.upsert(index_name, 1, {1.0F, 0.0F}, 0));
+  const auto source_segments =
+      find_standalone_files_with_extension(root, ".vseg");
+  ASSERT_EQ(1U, source_segments.size());
+
+  for (const char *failure_point :
+       {"+d,vector_standalone_compaction_data_sync_failure",
+        "+d,vector_standalone_compaction_parent_sync_failure"}) {
+    {
+      ScopedDebugFlag fail_sync(failure_point);
+      EXPECT_FALSE(store.prepare_raw_segments_for_rebuild(index_name));
+    }
+    EXPECT_EQ(1U, store.segment_count(index_name));
+    EXPECT_EQ(source_segments,
+              find_standalone_files_with_extension(root, ".vseg"));
+    EXPECT_TRUE(find_standalone_files_with_extension(root, ".fbin").empty());
+    EXPECT_TRUE(find_standalone_files_with_extension(root, ".u64").empty());
+  }
+
+  ASSERT_TRUE(store.prepare_raw_segments_for_rebuild(index_name));
+  EXPECT_TRUE(find_standalone_files_with_extension(root, ".vseg").empty());
+  EXPECT_EQ(1U, find_standalone_files_with_extension(root, ".fbin").size());
+  EXPECT_EQ(1U, find_standalone_files_with_extension(root, ".u64").size());
+
+  vector_index::vector_data vector;
+  bool found = false;
+  ASSERT_TRUE(store.find_entry(index_name, 1, &vector, &found));
+  EXPECT_TRUE(found);
+  EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), vector);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     EmptyMaterializedCompactionRemovesObsoleteDeltaFiles) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/empty_compaction_cleanup_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string index_name = "idx_empty_cleanup";
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.upsert(index_name, 1, {1.0F, 0.0F}, 0));
+  ASSERT_TRUE(store.erase(index_name, 1, 0));
+  ASSERT_EQ(2U, find_standalone_files_with_extension(root, ".vseg").size());
+
+  ASSERT_TRUE(store.prepare_raw_segments_for_rebuild(index_name));
+  EXPECT_EQ(0U, store.entry_count(index_name));
+  EXPECT_EQ(0U, store.segment_count(index_name));
+  EXPECT_TRUE(find_standalone_files_with_extension(root, ".vseg").empty());
+
+  vector_index::standalone_entry_store recovered;
+  ASSERT_TRUE(recovered.register_index(index_name, 2));
+  EXPECT_EQ(0U, recovered.entry_count(index_name));
+  EXPECT_EQ(0U, recovered.segment_count(index_name));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     LevelledCompactionDurabilityFailureKeepsBothFileSets) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  const std::string root =
+      std::string(testing::TempDir()) + "/levelled_compaction_unknown_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 8, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F, 4.0F, 0.0F, 5.0F,
+                       0.0F, 6.0F, 0.0F, 7.0F, 0.0F, 8.0F, 0.0F});
+  write_raw_docid_file(docid_path, {1, 2, 3, 4, 5, 6, 7, 8});
+
+  const std::string index_name = "idx_levelled_unknown";
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, vector_path, docid_path,
+                                          8, 2, 1));
+
+  vector_index::standalone_entry_store::raw_segment_compaction compaction;
+  ASSERT_TRUE(store.stage_levelled_compaction(index_name, 4, &compaction));
+  ASSERT_TRUE(compaction.needed);
+  const std::vector<std::string> source_files = compaction.replaced_files;
+  const std::vector<std::string> staged_files = compaction.created_files;
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_standalone_manifest_after_rename_failure");
+    EXPECT_FALSE(store.publish_levelled_compaction(index_name, &compaction));
+  }
+  EXPECT_TRUE(compaction.published);
+  EXPECT_TRUE(compaction.manifest_durability_unknown);
+  EXPECT_EQ(2U, store.raw_segment_count(index_name));
+
+  store.discard_levelled_compaction(&compaction);
+  store.finalize_levelled_compaction(&compaction);
+  for (const std::string &path : source_files) {
+    EXPECT_TRUE(std::filesystem::exists(path));
+  }
+  for (const std::string &path : staged_files) {
+    EXPECT_TRUE(std::filesystem::exists(path));
+  }
+
+  vector_index::standalone_entry_store reloaded;
+  ASSERT_TRUE(reloaded.register_index(index_name, 2));
+  EXPECT_EQ(2U, reloaded.raw_segment_count(index_name));
+  const auto entries = collect_entries(&reloaded, index_name);
+  ASSERT_EQ(8U, entries.size());
+  EXPECT_EQ((vector_index::vector_data{8.0F, 0.0F}), entries.at(8));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     LevelledCompactionInputFailureRemovesPartialOutput) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/levelled_compaction_input_failure_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 8, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F, 4.0F, 0.0F, 5.0F,
+                       0.0F, 6.0F, 0.0F, 7.0F, 0.0F, 8.0F, 0.0F});
+  write_raw_docid_file(docid_path, {1, 2, 3, 4, 5, 6, 7, 8});
+
+  vector_index::standalone_entry_store store;
+  const std::string index_name = "idx_levelled_input_failure";
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, vector_path, docid_path,
+                                          8, 2, 1));
+  ASSERT_EQ(8U, store.raw_segment_count(index_name));
+
+  const std::string manifest = find_manifest_file(root, "manifest.v1");
+  ASSERT_FALSE(manifest.empty());
+  const std::filesystem::path segment_directory =
+      std::filesystem::path(manifest).parent_path();
+  const std::filesystem::path corrupt_source =
+      segment_directory / "raw-segment-1.fbin";
+  const std::filesystem::path partial_vector =
+      segment_directory / "raw-segment-9.fbin";
+  const std::filesystem::path partial_docids =
+      segment_directory / "raw-segment-9.u64";
+  ASSERT_TRUE(std::filesystem::exists(corrupt_source));
+
+  {
+    std::fstream file(corrupt_source,
+                      std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(file.is_open());
+    const char bad_header_prefix = 'X';
+    file.write(&bad_header_prefix, 1);
+    ASSERT_TRUE(file.good());
+  }
+
+  vector_index::standalone_entry_store::raw_segment_compaction compaction;
+  EXPECT_FALSE(store.stage_levelled_compaction(index_name, 4, &compaction));
+  EXPECT_FALSE(std::filesystem::exists(partial_vector));
+  EXPECT_FALSE(std::filesystem::exists(partial_docids));
+  EXPECT_EQ(8U, store.raw_segment_count(index_name));
+  EXPECT_TRUE(std::filesystem::exists(manifest));
 
   std::filesystem::remove_all(root, ec);
 }
@@ -4387,8 +4713,8 @@ TEST(VectorStandaloneEntryStoreTest,
 
   std::unordered_set<uint64_t> failed_doc_ids{20, 30};
   {
-    VECTOR_SCOPED_DEBUG_FLAG(debug,
-                             "+d,vector_standalone_bulk_fail_manifest_save");
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_standalone_manifest_before_rename_failure");
     EXPECT_FALSE(store.bulk_upsert_raw_files(
         "idx_raw_publish_rollback", second_vector_path, second_docid_path, 2, 2,
         2, &failed_doc_ids));
@@ -4436,6 +4762,81 @@ TEST(VectorStandaloneEntryStoreTest,
             entries_after_retry.at(30));
 
   std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     RawBulkManifestDurabilityFailureKeepsPublishedState) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  const std::array<const char *, 3> failure_points{
+      "vector_standalone_manifest_after_rename_failure",
+      "vector_standalone_manifest_file_sync_failure",
+      "vector_standalone_manifest_parent_sync_failure"};
+
+  for (size_t case_number = 0; case_number < failure_points.size();
+       ++case_number) {
+    SCOPED_TRACE(failure_points[case_number]);
+    const std::string root =
+        std::string(testing::TempDir()) +
+        "/standalone_raw_publish_unknown_t_" + std::to_string(case_number);
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    ASSERT_FALSE(ec);
+    faiss_snapshot_root_guard root_guard(root);
+
+    const std::string first_vector_path = root + "/first.fbin";
+    const std::string first_docid_path = root + "/first.u64";
+    const std::string second_vector_path = root + "/second.fbin";
+    const std::string second_docid_path = root + "/second.u64";
+    write_raw_fbin_file(first_vector_path, 2, 2,
+                        {1.0F, 0.0F, 2.0F, 0.0F});
+    write_raw_docid_file(first_docid_path, {10, 20});
+    write_raw_fbin_file(second_vector_path, 2, 2,
+                        {20.0F, 0.0F, 3.0F, 0.0F});
+    write_raw_docid_file(second_docid_path, {20, 30});
+
+    vector_index::standalone_entry_store store;
+    const std::string index_name =
+        "idx_raw_publish_unknown_" + std::to_string(case_number);
+    ASSERT_TRUE(store.register_index(index_name, 2));
+    std::unordered_set<uint64_t> first_doc_ids{10, 20};
+    ASSERT_TRUE(store.bulk_upsert_raw_files(
+        index_name, first_vector_path, first_docid_path, 2, 2, 2,
+        &first_doc_ids));
+
+    std::unordered_set<uint64_t> second_doc_ids{20, 30};
+    {
+      const std::string debug_flag =
+          std::string("+d,") + failure_points[case_number];
+      VECTOR_SCOPED_DEBUG_FLAG(debug, debug_flag.c_str());
+      EXPECT_FALSE(store.bulk_upsert_raw_files(
+          index_name, second_vector_path, second_docid_path, 2, 2, 2,
+          &second_doc_ids));
+    }
+    EXPECT_TRUE(second_doc_ids.empty());
+    EXPECT_EQ(3U, store.entry_count(index_name));
+    EXPECT_EQ(2U, store.raw_segment_count(index_name));
+
+    const auto published_entries = collect_entries(&store, index_name);
+    ASSERT_EQ(3U, published_entries.size());
+    EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}),
+              published_entries.at(10));
+    EXPECT_EQ((vector_index::vector_data{20.0F, 0.0F}),
+              published_entries.at(20));
+    EXPECT_EQ((vector_index::vector_data{3.0F, 0.0F}),
+              published_entries.at(30));
+
+    vector_index::standalone_entry_store reloaded;
+    ASSERT_TRUE(reloaded.register_index(index_name, 2));
+    EXPECT_EQ(3U, reloaded.entry_count(index_name));
+    EXPECT_EQ(2U, reloaded.raw_segment_count(index_name));
+    const auto reloaded_entries = collect_entries(&reloaded, index_name);
+    EXPECT_EQ(published_entries, reloaded_entries);
+
+    std::filesystem::remove_all(root, ec);
+  }
 }
 
 TEST(VectorStandaloneEntryStoreTest,
@@ -4686,6 +5087,53 @@ TEST(VectorStandaloneEntryStoreTest, RawAndDeltaSegmentsReplayInDocIdOrder) {
   ASSERT_NE(entries.end(), entries.find(20));
   EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), entries.at(10));
   EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}), entries.at(20));
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     ManifestRecoveryReplaysDocIdsWithoutMaterializingVectors) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_docid_recovery_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 2.0F, 0.0F});
+  write_raw_docid_file(docid_path, {10, 20});
+
+  {
+    vector_index::standalone_entry_store store;
+    ASSERT_TRUE(store.register_index("idx_docid_recovery", 2));
+    ASSERT_TRUE(store.bulk_upsert_raw_files("idx_docid_recovery", vector_path,
+                                            docid_path, 2, 2, 2));
+    ASSERT_TRUE(store.upsert("idx_docid_recovery", 30, {3.0F, 0.0F}, 0));
+    ASSERT_TRUE(store.erase("idx_docid_recovery", 10, 0));
+  }
+
+  vector_index::standalone_entry_store recovered;
+  {
+    ScopedDebugFlag reject_materialized_replay(
+        "+d,vector_standalone_materialized_replay_failure");
+    ASSERT_TRUE(recovered.register_index("idx_docid_recovery", 2));
+  }
+  EXPECT_EQ(2U, recovered.entry_count("idx_docid_recovery"));
+
+  vector_index::vector_data vector;
+  bool found = false;
+  ASSERT_TRUE(recovered.find_entry("idx_docid_recovery", 20, &vector, &found));
+  EXPECT_TRUE(found);
+  EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}), vector);
+  ASSERT_TRUE(recovered.find_entry("idx_docid_recovery", 30, &vector, &found));
+  EXPECT_TRUE(found);
+  EXPECT_EQ((vector_index::vector_data{3.0F, 0.0F}), vector);
+
+  std::filesystem::remove_all(root, ec);
 }
 
 TEST(VectorStandaloneEntryStoreTest, FindEntriesReadsRawAndDeltaCandidates) {
@@ -5288,7 +5736,8 @@ TEST(VectorStandaloneEntryStoreTest,
   ASSERT_TRUE(store.register_index("idx_raw_rename", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_rename", vector_path,
                                           docid_path, 2, 2, 2));
-  ASSERT_TRUE(store.rename_index("idx_raw_rename", "idx_raw_moved"));
+  ASSERT_EQ(vector_index::index_rename_result::kRenamedDurable,
+            store.rename_index("idx_raw_rename", "idx_raw_moved"));
   EXPECT_FALSE(store.has_index("idx_raw_rename"));
   EXPECT_TRUE(store.has_index("idx_raw_moved"));
   EXPECT_EQ(1U, store.raw_segment_count("idx_raw_moved"));
@@ -5345,7 +5794,8 @@ TEST(VectorStandaloneEntryStoreTest,
   std::filesystem::create_directory(manifest + ".tmp", ec);
   ASSERT_FALSE(ec);
 
-  EXPECT_FALSE(store.rename_index("idx_rename_rollback", "idx_rename_failed"));
+  EXPECT_EQ(vector_index::index_rename_result::kNotRenamed,
+            store.rename_index("idx_rename_rollback", "idx_rename_failed"));
   EXPECT_TRUE(store.has_index("idx_rename_rollback"));
   EXPECT_FALSE(store.has_index("idx_rename_failed"));
   std::filesystem::remove_all(manifest + ".tmp", ec);
@@ -5361,6 +5811,117 @@ TEST(VectorStandaloneEntryStoreTest,
   ASSERT_TRUE(store.find_entry("idx_rename_rollback", 10, &vector, &found));
   EXPECT_TRUE(found);
   EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), vector);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     RenameReportsDurabilityAndKeepsTheMatchingInMemoryName) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  struct rename_case {
+    const char *debug_flags;
+    vector_index::index_rename_result expected_result;
+    bool renamed;
+  };
+  const std::array<rename_case, 6> cases{{
+      {"+d,vector_standalone_rename_directory_failure",
+       vector_index::index_rename_result::kNotRenamed, false},
+      {"+d,vector_standalone_rename_manifest_not_published",
+       vector_index::index_rename_result::kNotRenamed, false},
+      {"+d,vector_standalone_rename_manifest_durability_unknown",
+       vector_index::index_rename_result::kDurabilityUnknown, true},
+      {"+d,vector_standalone_rename_parent_sync_failure",
+       vector_index::index_rename_result::kDurabilityUnknown, true},
+      {"+d,vector_standalone_rename_manifest_not_published,"
+       "vector_standalone_rename_rollback_failure",
+       vector_index::index_rename_result::kDurabilityUnknown, true},
+      {"+d,vector_standalone_rename_manifest_not_published,"
+       "vector_standalone_rename_rollback_parent_sync_failure",
+       vector_index::index_rename_result::kDurabilityUnknown, false},
+  }};
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_rename_outcomes_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  for (size_t case_number = 0; case_number < cases.size(); ++case_number) {
+    SCOPED_TRACE(cases[case_number].debug_flags);
+    const std::string old_name = "idx_rename_old_" + std::to_string(case_number);
+    const std::string new_name = "idx_rename_new_" + std::to_string(case_number);
+    vector_index::standalone_entry_store store;
+    ASSERT_TRUE(store.register_index(old_name, 2));
+    ASSERT_TRUE(store.upsert(old_name, 10, {1.0F, 0.0F}, 0));
+
+    vector_index::index_rename_result result;
+    {
+      VECTOR_SCOPED_DEBUG_FLAG(debug, cases[case_number].debug_flags);
+      result = store.rename_index(old_name, new_name);
+    }
+    EXPECT_EQ(cases[case_number].expected_result, result);
+    EXPECT_EQ(!cases[case_number].renamed, store.has_index(old_name));
+    EXPECT_EQ(cases[case_number].renamed, store.has_index(new_name));
+
+    const std::string &effective_name =
+        cases[case_number].renamed ? new_name : old_name;
+    vector_index::vector_data vector;
+    bool found = false;
+    ASSERT_TRUE(store.find_entry(effective_name, 10, &vector, &found));
+    ASSERT_TRUE(found);
+    EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), vector);
+
+    vector_index::standalone_entry_store reloaded;
+    ASSERT_TRUE(reloaded.register_index(effective_name, 2));
+    ASSERT_TRUE(reloaded.find_entry(effective_name, 10, &vector, &found));
+    EXPECT_TRUE(found);
+  }
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest,
+     RenameDurabilityUnknownKeepsAllServiceMapsOnOneName) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  const std::string root =
+      std::string(testing::TempDir()) + "/service_rename_unknown_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::index_service service;
+  vector_index::index_service::index_config config;
+  config.dimension = 2;
+  config.metric = vector_index::metric_type::kEuclidean;
+  config.mode = vector_index::backend_mode::kMemory;
+  config.provider = vector_index::backend_provider::kNative;
+  config.consistency_mode =
+      vector_index::index_consistency_mode::kStandalone;
+  ASSERT_TRUE(service.register_index("idx_service_old", config));
+  ASSERT_TRUE(service.direct_upsert("idx_service_old", 7, {7.0F, 0.0F}));
+  ASSERT_TRUE(service.rebuild_index("idx_service_old"));
+
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_standalone_rename_manifest_durability_unknown");
+    EXPECT_EQ(vector_index::index_rename_result::kDurabilityUnknown,
+              service.rename_index("idx_service_old", "idx_service_new"));
+  }
+  EXPECT_FALSE(service.index_exists("idx_service_old"));
+  EXPECT_TRUE(service.index_exists("idx_service_new"));
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(service.search("idx_service_new", {7.0F, 0.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(7U, results.front().doc_id);
 
   std::filesystem::remove_all(root, ec);
 }
@@ -5613,11 +6174,16 @@ TEST(VectorStandaloneEntryStoreTest, SegmentManifestRenameAndReload) {
     EXPECT_EQ(std::vector<uint64_t>({1}), visited_doc_ids);
 
     ASSERT_TRUE(store.register_index("idx_conflict", 2));
-    EXPECT_FALSE(store.rename_index("", "idx_new"));
-    EXPECT_FALSE(store.rename_index("idx_segment", ""));
-    EXPECT_FALSE(store.rename_index("missing", "idx_new"));
-    EXPECT_FALSE(store.rename_index("idx_segment", "idx_conflict"));
-    ASSERT_TRUE(store.rename_index("idx_segment", "idx_moved"));
+    EXPECT_EQ(vector_index::index_rename_result::kNotRenamed,
+              store.rename_index("", "idx_new"));
+    EXPECT_EQ(vector_index::index_rename_result::kNotRenamed,
+              store.rename_index("idx_segment", ""));
+    EXPECT_EQ(vector_index::index_rename_result::kNotRenamed,
+              store.rename_index("missing", "idx_new"));
+    EXPECT_EQ(vector_index::index_rename_result::kNotRenamed,
+              store.rename_index("idx_segment", "idx_conflict"));
+    ASSERT_EQ(vector_index::index_rename_result::kRenamedDurable,
+              store.rename_index("idx_segment", "idx_moved"));
     EXPECT_FALSE(store.has_index("idx_segment"));
     EXPECT_TRUE(store.has_index("idx_moved"));
     ASSERT_TRUE(store.find_entry("idx_moved", 1, &vector, &found));
@@ -6134,6 +6700,20 @@ TEST(VectorStandaloneEntryStoreTest,
   EXPECT_FALSE(
       missing_vector_payload_store.register_index("idx_segment_replay", 2));
 
+  ASSERT_TRUE(rewrite_segment_header(2, 1));
+  {
+    std::ofstream file(segment,
+                       std::ios::out | std::ios::binary | std::ios::app);
+    ASSERT_TRUE(file.is_open());
+    const uint8_t extra_payload = 0;
+    file.write(reinterpret_cast<const char *>(&extra_payload),
+               sizeof(extra_payload));
+    ASSERT_TRUE(file.good());
+  }
+  ASSERT_TRUE(rewrite_manifest_size());
+  vector_index::standalone_entry_store extra_payload_store;
+  EXPECT_FALSE(extra_payload_store.register_index("idx_segment_replay", 2));
+
   std::filesystem::remove_all(root, ec);
 }
 
@@ -6443,6 +7023,164 @@ TEST(VectorIndexServiceTest, InstallAndReplaceCommittedEntriesCoverGuards) {
       "idx_install_entries", &config, nullptr, nullptr, nullptr, nullptr,
       nullptr, nullptr, nullptr, nullptr, &recover_fallback_count));
   EXPECT_EQ(1U, recover_fallback_count);
+}
+
+TEST(VectorIndexServiceTest, InstallRuntimeForSearchPreservesLifecycle) {
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index_from_strings(
+      "idx_cold_runtime", 2, "euclidean", "memory", "native"));
+  ASSERT_TRUE(service.set_lifecycle_info("idx_cold_runtime", "ready", 7, 0, 0,
+                                         3, 17));
+
+  const vector_index::index_service::committed_entries entries{
+      {11, {1.0F, 1.0F}}};
+  auto runtime = std::make_unique<vector_index::memory_backend>(
+      2, vector_index::metric_type::kEuclidean);
+  ASSERT_TRUE(runtime->rebuild_from_committed_entries(entries));
+  ASSERT_TRUE(service.install_runtime_for_search(
+      "idx_cold_runtime", entries, std::move(runtime)));
+
+  std::string lifecycle_state;
+  uint64_t lifecycle_version = 0;
+  uint64_t recover_fallback_count = 0;
+  uint64_t last_recover_fallback_ts = 0;
+  vector_index::index_service::index_config config;
+  ASSERT_TRUE(service.describe_index(
+      "idx_cold_runtime", &config, nullptr, nullptr, nullptr,
+      &lifecycle_state, &lifecycle_version, nullptr, nullptr, nullptr,
+      &recover_fallback_count, &last_recover_fallback_ts));
+  EXPECT_EQ("ready", lifecycle_state);
+  EXPECT_EQ(7U, lifecycle_version);
+  EXPECT_EQ(3U, recover_fallback_count);
+  EXPECT_EQ(17U, last_recover_fallback_ts);
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(service.search("idx_cold_runtime", {1.0F, 1.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(11U, results[0].doc_id);
+}
+
+TEST(VectorIndexServiceTest,
+     InstallRebuiltIndexRollsBackEveryArtifactPublicationFailure) {
+  const vector_index::index_service::committed_entries entries{
+      {7, {7.0F, 7.0F}}};
+  vector_index::diskann_artifact_identity identity;
+  identity.index_identity = 1;
+  identity.config_generation = 1;
+  identity.dimension = 2;
+  identity.provider = "diskann";
+
+  const auto expect_failure =
+      [&](const auto &configure,
+          const vector_index::diskann_artifact_identity *publication_identity) {
+        vector_index::index_service service;
+        ASSERT_TRUE(service.register_index_from_strings(
+            "idx_install_artifact", 2, "euclidean", "memory", "native"));
+        auto backend = std::make_unique<ArtifactLifecycleProbeBackend>();
+        auto *backend_ptr = backend.get();
+        configure(backend_ptr);
+        EXPECT_FALSE(service.install_rebuilt_index("idx_install_artifact",
+                                                   entries, std::move(backend),
+                                                   publication_identity));
+      };
+
+  expect_failure([](auto *) {}, nullptr);
+  expect_failure([](auto *backend) { backend->set_fail_prepare(true); },
+                 &identity);
+  expect_failure([](auto *backend) { backend->set_fail_publish(true); },
+                 &identity);
+}
+
+TEST(VectorIndexServiceTest,
+     ServiceOperationsRejectEachIncompleteRecoveredStateComponent) {
+  const auto register_index = [](vector_index::index_service *service) {
+    ASSERT_TRUE(service->register_index_from_strings(
+        "idx_incomplete", 2, "euclidean", "memory", "native"));
+  };
+
+  {
+    vector_index::index_service service;
+    register_index(&service);
+    vector_index::index_service_test_peer::erase_config(&service,
+                                                        "idx_incomplete");
+    vector_index::index_service::index_config config;
+    EXPECT_FALSE(service.describe_index("idx_incomplete", &config, nullptr,
+                                        nullptr, nullptr));
+    EXPECT_FALSE(
+        service.describe_index_observability("idx_incomplete", nullptr));
+    EXPECT_FALSE(service.set_diskann_build_mode(
+        "idx_incomplete", vector_index::diskann_build_mode::kAuto));
+  }
+
+  {
+    vector_index::index_service service;
+    register_index(&service);
+    vector_index::index_service_test_peer::erase_runtime(&service,
+                                                         "idx_incomplete");
+    vector_index::index_service::index_config config;
+    vector_index::index_service::index_observability_state observability;
+    EXPECT_FALSE(service.describe_index("idx_incomplete", &config, nullptr,
+                                        nullptr, nullptr));
+    EXPECT_FALSE(
+        service.describe_index_observability("idx_incomplete", &observability));
+  }
+
+  {
+    vector_index::index_service service;
+    register_index(&service);
+    vector_index::index_service_test_peer::drop_truth_store(&service,
+                                                            "idx_incomplete");
+    size_t rebuilt_count = 0;
+    size_t recovered_count = 0;
+    EXPECT_FALSE(service.rebuild_all_indexes(&rebuilt_count));
+    EXPECT_FALSE(service.recover_all_indexes(&recovered_count));
+    EXPECT_FALSE(service.install_recovered_index(
+        "idx_incomplete", {},
+        std::make_unique<vector_index::memory_backend>(
+            2, vector_index::metric_type::kEuclidean),
+        false));
+  }
+
+  {
+    vector_index::index_service service;
+    register_index(&service);
+    vector_index::index_service_test_peer::drop_standalone_store(
+        &service, "idx_incomplete");
+    vector_index::index_service::index_observability_state observability;
+    EXPECT_FALSE(
+        service.describe_index_observability("idx_incomplete", &observability));
+    EXPECT_FALSE(service.set_index_consistency_mode(
+        "idx_incomplete", vector_index::index_consistency_mode::kStandalone));
+  }
+
+  {
+    vector_index::index_service service;
+    register_index(&service);
+    vector_index::index_service_test_peer::erase_lifecycle(&service,
+                                                           "idx_incomplete");
+    vector_index::index_service::index_config config;
+    size_t rebuilt_count = 0;
+    size_t recovered_count = 0;
+    EXPECT_FALSE(service.describe_index("idx_incomplete", &config, nullptr,
+                                        nullptr, nullptr));
+    EXPECT_FALSE(service.rebuild_all_indexes(&rebuilt_count));
+    EXPECT_FALSE(service.recover_all_indexes(&recovered_count));
+  }
+
+  {
+    vector_index::index_service service;
+    register_index(&service);
+    vector_index::index_service_test_peer::erase_publication(&service,
+                                                             "idx_incomplete");
+    vector_index::index_service::index_config config;
+    EXPECT_FALSE(service.describe_index("idx_incomplete", &config, nullptr,
+                                        nullptr, nullptr));
+    EXPECT_FALSE(service.install_recovered_index(
+        "idx_incomplete", {},
+        std::make_unique<vector_index::memory_backend>(
+            2, vector_index::metric_type::kEuclidean),
+        false));
+  }
 }
 
 TEST(VectorIndexServiceTest, SetHnswBuildParamsRejectsMissingOrPendingChanges) {
@@ -8268,8 +9006,10 @@ TEST(VectorIndexServiceTest, ServiceApiGuardBranchesRejectInvalidState) {
                                       &entry_count, &committed_entry_count));
   EXPECT_FALSE(service.describe_index("missing", &config, &supports_mutations,
                                       &entry_count, &committed_entry_count));
-  EXPECT_FALSE(service.rename_index("", "idx_new"));
-  EXPECT_FALSE(service.rename_index("idx_old", ""));
+  EXPECT_EQ(vector_index::index_rename_result::kNotRenamed,
+            service.rename_index("", "idx_new"));
+  EXPECT_EQ(vector_index::index_rename_result::kNotRenamed,
+            service.rename_index("idx_old", ""));
   EXPECT_FALSE(service.begin_bulk_load("missing"));
   EXPECT_FALSE(service.restore_index_config("missing", config));
 
@@ -9007,6 +9747,7 @@ TEST(VectorIndexServiceTest,
         "+d,vector_service_fail_commit_entry_store_apply");
     EXPECT_FALSE(service.apply_commit_build_plan(76, &plan));
   }
+  EXPECT_EQ("entry_store_mutation", plan.failure_stage);
   EXPECT_EQ(2U, service.pending_change_count(76));
 
   vector_index::committed_state state;
@@ -9020,6 +9761,14 @@ TEST(VectorIndexServiceTest,
                              &results));
   ASSERT_EQ(1U, results.size());
   EXPECT_EQ(1U, results[0].doc_id);
+
+  {
+    ScopedDebugFlag fail_entry_store_and_restore(
+        "+d,vector_service_fail_commit_entry_store_apply,"
+        "vector_service_fail_commit_backend_restore");
+    EXPECT_FALSE(service.apply_commit_build_plan(76, &plan));
+  }
+  EXPECT_EQ("entry_store_mutation:rollback_incomplete", plan.failure_stage);
 }
 
 TEST(VectorIndexServiceTest,
