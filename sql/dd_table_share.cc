@@ -88,6 +88,9 @@
 #include "sql/strfunc.h"    // lex_cstring_handle
 #include "sql/system_variables.h"
 #include "sql/table.h"
+#ifdef HAVE_VECTOR_INDEX
+#include "sql/vector/vector_index_limits.h"
+#endif
 #include "sql/thd_raii.h"
 #include "typelib.h"
 
@@ -805,6 +808,113 @@ inline void get_auto_flags(const dd::Column &col_obj, uint &auto_flags) {
            (auto_flags & Field::NEXT_NUMBER) != 0));
 }
 
+#ifdef HAVE_VECTOR_INDEX
+struct persisted_vector_column_metadata {
+  bool is_vector{false};
+  uint32_t dimension{0};
+};
+
+static size_t blob_storage_capacity(enum_field_types field_type) {
+  switch (field_type) {
+    case MYSQL_TYPE_TINY_BLOB:
+      return Field::MAX_TINY_BLOB_WIDTH;
+    case MYSQL_TYPE_BLOB:
+      return Field::MAX_SHORT_BLOB_WIDTH;
+    case MYSQL_TYPE_MEDIUM_BLOB:
+      return Field::MAX_MEDIUM_BLOB_WIDTH;
+    case MYSQL_TYPE_LONG_BLOB:
+      return Field::MAX_LONG_BLOB_WIDTH;
+    default:
+      return 0;
+  }
+}
+
+/**
+  Validate and decode the VECTOR options stored with a DD column.
+
+  @param column       Persisted DD column.
+  @param field_type   Physical SQL field type reconstructed from the DD.
+  @param charset      Physical field character set reconstructed from the DD.
+  @param metadata     Decoded vector metadata, or the default non-vector state.
+  @param error        Validation error text when the DD representation is invalid.
+
+  @retval false Metadata is valid.
+  @retval true  Metadata is invalid.
+*/
+static bool read_persisted_vector_column_metadata(
+    const dd::Column &column, enum_field_types field_type,
+    const CHARSET_INFO *charset, persisted_vector_column_metadata *metadata,
+    std::string *error) {
+  const dd::Properties &options = column.options();
+  bool has_vector_flag = options.exists("is_vector");
+  bool has_vector_dimension = options.exists("vector_dim");
+  bool is_vector = false;
+  uint32_t vector_dimension = 0;
+  size_t field_length = column.char_length();
+
+  if (has_vector_flag && options.get("is_vector", &is_vector)) {
+    *error = "Invalid VECTOR column flag.";
+    return true;
+  }
+  if (has_vector_dimension &&
+      options.get("vector_dim", &vector_dimension)) {
+    *error = "Invalid VECTOR column dimension.";
+    return true;
+  }
+
+  DBUG_EXECUTE_IF("vector_dd_column_missing_flag", has_vector_flag = false;);
+  DBUG_EXECUTE_IF("vector_dd_column_missing_dimension",
+                  has_vector_dimension = false;);
+  DBUG_EXECUTE_IF("vector_dd_column_false_flag", is_vector = false;);
+  DBUG_EXECUTE_IF("vector_dd_column_zero_dimension", vector_dimension = 0;);
+  DBUG_EXECUTE_IF(
+      "vector_dd_column_oversized_dimension",
+      vector_dimension = vector_index::k_max_vector_dimension + 1;);
+  DBUG_EXECUTE_IF("vector_dd_column_non_blob",
+                  field_type = MYSQL_TYPE_LONG;);
+  DBUG_EXECUTE_IF("vector_dd_column_non_binary",
+                  charset = system_charset_info;);
+  DBUG_EXECUTE_IF("vector_dd_column_short_storage", field_length = 1;);
+  DBUG_EXECUTE_IF("vector_dd_column_insufficient_blob_type",
+                  field_type = MYSQL_TYPE_TINY_BLOB;
+                  vector_dimension = 64; field_length = 256;);
+
+  if (has_vector_flag != has_vector_dimension) {
+    *error = "Incomplete VECTOR column options.";
+    return true;
+  }
+  if (!has_vector_flag) return false;
+  if (!is_vector) {
+    *error = "Invalid VECTOR column flag.";
+    return true;
+  }
+  if (!vector_index::valid_vector_dimension(vector_dimension)) {
+    *error = "Invalid VECTOR column dimension.";
+    return true;
+  }
+  const size_t storage_capacity = blob_storage_capacity(field_type);
+  if (storage_capacity == 0 || charset != &my_charset_bin) {
+    *error = "VECTOR column is not stored as a binary BLOB.";
+    return true;
+  }
+
+  const size_t required_length =
+      static_cast<size_t>(vector_dimension) * sizeof(float);
+  if (required_length > storage_capacity || field_length > storage_capacity) {
+    *error = "VECTOR column exceeds its physical BLOB capacity.";
+    return true;
+  }
+  if (field_length < required_length) {
+    *error = "VECTOR column storage is shorter than its dimension.";
+    return true;
+  }
+
+  metadata->is_vector = true;
+  metadata->dimension = vector_dimension;
+  return false;
+}
+#endif
+
 static Field *make_field(const dd::Column &col_obj, const CHARSET_INFO *charset,
                          TABLE_SHARE *share, uchar *ptr, uchar *null_pos,
                          size_t null_bit) {
@@ -882,32 +992,11 @@ static Field *make_field(const dd::Column &col_obj, const CHARSET_INFO *charset,
     column_options.get("treat_bit_as_char", &treat_bit_as_char);
   }
 
-#ifndef HAVE_VECTOR_INDEX
   return make_field(*THR_MALLOC, share, ptr, field_length, null_pos, null_bit,
                     field_type, charset, geom_type, auto_flags, interval, name,
                     col_obj.is_nullable(), col_obj.is_zerofill(),
                     col_obj.is_unsigned(), decimals, treat_bit_as_char, 0,
                     col_obj.srs_id(), col_obj.is_array());
-#else
-  Field *field = make_field(*THR_MALLOC, share, ptr, field_length, null_pos,
-                            null_bit, field_type, charset, geom_type,
-                            auto_flags, interval, name, col_obj.is_nullable(),
-                            col_obj.is_zerofill(), col_obj.is_unsigned(),
-                            decimals, treat_bit_as_char, 0, col_obj.srs_id(),
-                            col_obj.is_array());
-  bool is_vector = false;
-  if (column_options.exists("is_vector"))
-    column_options.get("is_vector", &is_vector);
-  uint32 vector_dim = 0;
-  if (column_options.exists("vector_dim"))
-    column_options.get("vector_dim", &vector_dim);
-  if (field != nullptr && is_vector) {
-    static constexpr uint32 kVectorElementSize = sizeof(float);
-    field->set_flag(FIELD_IS_VECTOR);
-    if (vector_dim > 0) field->set_field_length(vector_dim * kVectorElementSize);
-  }
-  return field;
-#endif
 }
 
 /**
@@ -958,6 +1047,18 @@ static bool fill_column_from_dd(THD *thd, TABLE_SHARE *share,
     if (thd->is_error()) return true;
     charset = default_charset_info;
   }
+
+#ifdef HAVE_VECTOR_INDEX
+  persisted_vector_column_metadata vector_metadata;
+  std::string vector_metadata_error;
+  if (read_persisted_vector_column_metadata(
+          *col_obj, field_type, charset, &vector_metadata,
+          &vector_metadata_error)) {
+    my_error(ER_INVALID_DD_OBJECT, MYF(0), share->path.str,
+             vector_metadata_error.c_str());
+    return true;
+  }
+#endif
 
   // Decimals
   if (field_type == MYSQL_TYPE_DECIMAL || field_type == MYSQL_TYPE_NEWDECIMAL)
@@ -1022,6 +1123,12 @@ static bool fill_column_from_dd(THD *thd, TABLE_SHARE *share,
   //
   reg_field =
       make_field(*col_obj, charset, share, rec_pos, null_pos, null_bit_pos);
+#ifdef HAVE_VECTOR_INDEX
+  if (vector_metadata.is_vector) {
+    reg_field->set_flag(FIELD_IS_VECTOR);
+    reg_field->set_field_length(vector_metadata.dimension * sizeof(float));
+  }
+#endif
   reg_field->set_field_index(field_nr);
   reg_field->stored_in_db = true;
 

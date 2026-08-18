@@ -250,7 +250,9 @@ bool deserialize_committed_rows_impl(const std::string &payload,
 
     uint64_t dimension = 0;
     if (!parse_uint64(fields[2], &dimension)) return false;
-    if (dimension > std::numeric_limits<size_t>::max()) return false;
+    if (dimension > std::numeric_limits<size_t>::max() / sizeof(float)) {
+      return false;
+    }
 
     std::string vector_bytes;
     if (!decode_hex(fields[3], &vector_bytes)) return false;

@@ -2060,6 +2060,12 @@ TEST_F(MetadataStoreTest, DeserializeCommittedRejectsInvalidFields) {
       header + index_hex + "\t7\t2\t0\n", &loaded));
   EXPECT_FALSE(vector_index_metadata_store::deserialize_committed_rows(
       header + index_hex + "\t7\t2\t0000803f\n", &loaded));
+  const uint64_t overflowing_dimension =
+      std::numeric_limits<size_t>::max() / sizeof(float) + 1ULL;
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_committed_rows(
+      header + index_hex + "\t7\t" + std::to_string(overflowing_dimension) +
+          "\t\n",
+      &loaded));
 }
 
 TEST_F(MetadataStoreTest, CommittedRowsAcceptZeroDimensionVectors) {

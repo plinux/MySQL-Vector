@@ -1,0 +1,76 @@
+--source include/have_vector_index.inc
+--source include/have_debug.inc
+
+--echo #
+--echo # VECTOR DD column metadata is validated before TABLE_SHARE publication
+--echo #
+
+CREATE TABLE t_vector_dd_metadata (
+  id BIGINT PRIMARY KEY,
+  v VECTOR(3)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_dd_metadata VALUES (1, VEC_FROMTEXT('[1,2,3]'));
+
+--disable_query_log
+--disable_result_log
+
+FLUSH TABLES t_vector_dd_metadata;
+SET SESSION debug='+d,vector_dd_column_missing_flag';
+--error ER_INVALID_DD_OBJECT
+SELECT * FROM t_vector_dd_metadata;
+SET SESSION debug='';
+
+FLUSH TABLES t_vector_dd_metadata;
+SET SESSION debug='+d,vector_dd_column_missing_dimension';
+--error ER_INVALID_DD_OBJECT
+SELECT * FROM t_vector_dd_metadata;
+SET SESSION debug='';
+
+FLUSH TABLES t_vector_dd_metadata;
+SET SESSION debug='+d,vector_dd_column_false_flag';
+--error ER_INVALID_DD_OBJECT
+SELECT * FROM t_vector_dd_metadata;
+SET SESSION debug='';
+
+FLUSH TABLES t_vector_dd_metadata;
+SET SESSION debug='+d,vector_dd_column_zero_dimension';
+--error ER_INVALID_DD_OBJECT
+SELECT * FROM t_vector_dd_metadata;
+SET SESSION debug='';
+
+FLUSH TABLES t_vector_dd_metadata;
+SET SESSION debug='+d,vector_dd_column_oversized_dimension';
+--error ER_INVALID_DD_OBJECT
+SELECT * FROM t_vector_dd_metadata;
+SET SESSION debug='';
+
+FLUSH TABLES t_vector_dd_metadata;
+SET SESSION debug='+d,vector_dd_column_non_blob';
+--error ER_INVALID_DD_OBJECT
+SELECT * FROM t_vector_dd_metadata;
+SET SESSION debug='';
+
+FLUSH TABLES t_vector_dd_metadata;
+SET SESSION debug='+d,vector_dd_column_non_binary';
+--error ER_INVALID_DD_OBJECT
+SELECT * FROM t_vector_dd_metadata;
+SET SESSION debug='';
+
+FLUSH TABLES t_vector_dd_metadata;
+SET SESSION debug='+d,vector_dd_column_short_storage';
+--error ER_INVALID_DD_OBJECT
+SELECT * FROM t_vector_dd_metadata;
+SET SESSION debug='';
+
+FLUSH TABLES t_vector_dd_metadata;
+SET SESSION debug='+d,vector_dd_column_insufficient_blob_type';
+--error ER_INVALID_DD_OBJECT
+SELECT * FROM t_vector_dd_metadata;
+SET SESSION debug='';
+
+--enable_result_log
+--enable_query_log
+
+FLUSH TABLES t_vector_dd_metadata;
+SELECT id, VECTOR_DIM(v), VEC_TOTEXT(v) FROM t_vector_dd_metadata;
+DROP TABLE t_vector_dd_metadata;

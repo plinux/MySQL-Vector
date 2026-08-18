@@ -208,12 +208,14 @@
     mysql.vector_index_truth_committed,
     mysql.vector_index_truth_manifest,
     mysql.vector_index_truth_changelog,
-    mysql.vector_index_truth_prepared and
+    mysql.vector_index_truth_prepared,
+    mysql.vector_index_publication_intents,
     mysql.vector_index_truth_segment_tasks and
     mysql.vector_index_truth_store_quarantine. Before public release,
     committed/changelog/prepared moved from singleton payload artifacts to
-    row-level truth-store tables, while segment_tasks remains a singleton
-    payload artifact.
+    row-level truth-store tables. Publication intents also use row-level
+    records, while metadata, manifest, segment_tasks and quarantine remain
+    singleton payload artifacts.
  */
 namespace dd {
 

@@ -61,6 +61,10 @@ inline constexpr bool valid_optional_diskann_search_beamwidth(
   return beamwidth == 0 || valid_diskann_search_beamwidth(beamwidth);
 }
 
+inline constexpr bool valid_vector_dimension(uint64_t dimension) {
+  return dimension >= 1 && dimension <= k_max_vector_dimension;
+}
+
 inline size_t saturated_add_size(size_t left, size_t right) {
   const size_t max_value = std::numeric_limits<size_t>::max();
   if (right > max_value - left) return max_value;

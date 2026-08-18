@@ -1,0 +1,13 @@
+#
+# VECTOR DD column metadata is validated before TABLE_SHARE publication
+#
+CREATE TABLE t_vector_dd_metadata (
+id BIGINT PRIMARY KEY,
+v VECTOR(3)
+) ENGINE=InnoDB;
+INSERT INTO t_vector_dd_metadata VALUES (1, VEC_FROMTEXT('[1,2,3]'));
+FLUSH TABLES t_vector_dd_metadata;
+SELECT id, VECTOR_DIM(v), VEC_TOTEXT(v) FROM t_vector_dd_metadata;
+id	VECTOR_DIM(v)	VEC_TOTEXT(v)
+1	3	[1,2,3]
+DROP TABLE t_vector_dd_metadata;
