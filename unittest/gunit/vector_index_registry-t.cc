@@ -50,6 +50,7 @@
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_registry_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_load_staging.h"
 #include "sql/vector/vector_statement_publication.h"
 #include "sql/vector/vector_status.h"
 #include "sql_string.h"
@@ -1044,6 +1045,60 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
+       StatementConfigIntentRejectsUnsupportedProviderBeforeCommit) {
+  const std::string index_name = "idx_statement_config_native";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native"));
+
+  const auto validate_config =
+      [&](vector_statement_publication::config_change config,
+          std::vector<uint64_t> values) {
+        vector_statement_publication::operation_payload payload;
+        payload.config = config;
+        payload.unsigned_values = std::move(values);
+        std::string encoded;
+        if (!vector_statement_publication::encode_operation_payload(payload,
+                                                                    &encoded)) {
+          return false;
+        }
+        vector_index_truth_store::publication_intent intent;
+        if (!vector_index_registry::make_statement_publication_intent(
+                vector_index_truth_store::publication_operation::kUpdateConfig,
+                index_name, encoded, &intent)) {
+          return false;
+        }
+        return vector_index_registry::validate_statement_publication_intent(
+            intent);
+      };
+
+  using vector_statement_publication::config_change;
+  EXPECT_FALSE(validate_config(config_change::kSearchEf, {16}));
+  EXPECT_FALSE(validate_config(config_change::kHnswBuildParams, {16, 200}));
+  EXPECT_FALSE(validate_config(config_change::kFaissIvfParams, {2, 1}));
+  EXPECT_FALSE(validate_config(config_change::kFaissIvfPqParams, {2, 1, 2, 8}));
+  EXPECT_FALSE(
+      validate_config(config_change::kDiskannBuildParams, {64, 100, 1}));
+  EXPECT_FALSE(validate_config(config_change::kDiskannSearchComplexity, {100}));
+  EXPECT_FALSE(validate_config(config_change::kDiskannSearchBeamwidth, {16}));
+  EXPECT_FALSE(
+      validate_config(config_change::kDiskannPqCodeBudgetSize, {1048576}));
+  EXPECT_FALSE(validate_config(config_change::kDiskannDiskPqDims, {1}));
+  EXPECT_TRUE(validate_config(config_change::kDiskannDiskPqDims, {0}));
+  EXPECT_FALSE(validate_config(config_change::kDiskannAccelerateBuild, {1}));
+  EXPECT_TRUE(validate_config(config_change::kDiskannAccelerateBuild, {0}));
+  EXPECT_FALSE(validate_config(config_change::kDiskannShuffleBuild, {1}));
+  EXPECT_TRUE(validate_config(config_change::kDiskannShuffleBuild, {0}));
+  EXPECT_FALSE(validate_config(config_change::kDiskannUseBfsCache, {1}));
+  EXPECT_TRUE(validate_config(config_change::kDiskannUseBfsCache, {0}));
+  EXPECT_FALSE(validate_config(
+      config_change::kDiskannBuildMode,
+      {static_cast<uint64_t>(vector_index::diskann_build_mode::kSerial)}));
+  EXPECT_TRUE(validate_config(
+      config_change::kDiskannBuildMode,
+      {static_cast<uint64_t>(vector_index::diskann_build_mode::kAuto)}));
+}
+
+TEST_F(VectorIndexRegistryTest,
        StatementCreateIntentValidatesDefinitionBeforeCommit) {
   std::string encoded;
   vector_index_registry::create_index_options options;
@@ -1288,6 +1343,80 @@ TEST_F(VectorIndexRegistryTest,
   EXPECT_EQ("bulk_loading", info.lifecycle_state);
   EXPECT_GT(next_intent.expected.source_generation,
             intent.expected.source_generation);
+}
+
+TEST_F(VectorIndexRegistryTest,
+       ManagedLoadRecoveryUsesReceiptAfterAcknowledgementFailure) {
+  const std::string root =
+      std::string(DATA_DIR) + "/vector_registry_managed_load";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  external_snapshot_root_guard root_guard(root + "/managed");
+
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+  ASSERT_TRUE(vector_index_registry::create_index("idx_managed_load_recovery",
+                                                  2, "euclidean", "memory",
+                                                  "native", options));
+
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  const std::string source = root + "/source.csv";
+  {
+    std::ofstream file(source, std::ios::trunc);
+    ASSERT_TRUE(file.good());
+    file << "doc_id,vector\n101,\"[1,0]\"\n202,\"[0,1]\"\n";
+    ASSERT_TRUE(file.good());
+  }
+
+  vector_index_truth_store::publication_intent intent;
+  ASSERT_TRUE(vector_index_registry::make_statement_publication_intent(
+      vector_index_truth_store::publication_operation::kBulkLoad,
+      "idx_managed_load_recovery", std::string(), &intent));
+  const vector_index::load_staging_identity identity{intent.index_name,
+                                                     intent.publication_id};
+  vector_index::load_staging_artifact artifact;
+  std::string error;
+  ASSERT_TRUE(vector_index::stage_load_artifact(identity, source, "", "CSV",
+                                                &artifact, &error))
+      << error;
+  vector_statement_publication::operation_payload payload;
+  ASSERT_TRUE(vector_index::make_load_staging_payload(
+      identity, artifact, false, true, 2, "CSV", &payload));
+  ASSERT_TRUE(vector_statement_publication::encode_operation_payload(
+      payload, &intent.payload));
+  store_.publication_intents.push_back(intent);
+  ASSERT_TRUE(std::filesystem::remove(source));
+
+  store_.fail_delete_publication_intent = true;
+  vector_index_registry::schedule_publication_intent_recovery();
+  vector_index_registry::index_info info;
+  EXPECT_FALSE(vector_index_registry::get_index_info(
+      "idx_managed_load_recovery", &info));
+  ASSERT_EQ(1U, store_.publication_intents.size());
+
+  store_.fail_delete_publication_intent = false;
+  std::string retry_failure_stage;
+  EXPECT_TRUE(vector_index_registry::publish_statement_publication_intent(
+      intent, &retry_failure_stage))
+      << retry_failure_stage;
+  vector_index_registry::schedule_publication_intent_recovery();
+  ASSERT_TRUE(vector_index_registry::get_index_info("idx_managed_load_recovery",
+                                                    &info));
+  EXPECT_TRUE(store_.publication_intents.empty());
+  EXPECT_EQ(2U, info.entry_count);
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(vector_index_registry::search("idx_managed_load_recovery",
+                                            {1.0F, 0.0F}, 2, &results));
+  ASSERT_EQ(2U, results.size());
+  EXPECT_EQ(101U, results[0].doc_id);
+
+  vector_index::load_staging_paths paths;
+  EXPECT_FALSE(vector_index::verify_load_artifact(identity, artifact, "CSV",
+                                                  &paths, &error));
+  std::filesystem::remove_all(root, ec);
 }
 
 TEST_F(VectorIndexRegistryTest,
@@ -5936,6 +6065,17 @@ TEST_F(VectorIndexRegistryTest,
   EXPECT_TRUE(vector_index_registry::build_backend_from_config_for_testing(
       "idx_config_faiss_pq", config));
 
+  config.dimension = 3;
+  config.faiss_pq_m = 2;
+  EXPECT_FALSE(vector_index_registry::build_backend_from_config_for_testing(
+      "idx_config_faiss_pq_dimension", config));
+
+  config.dimension = 4;
+  config.faiss_pq_m = 1;
+  config.faiss_pq_bits = vector_index::k_max_faiss_pq_bits + 1;
+  EXPECT_FALSE(vector_index_registry::build_backend_from_config_for_testing(
+      "idx_config_faiss_pq_bits", config));
+
   config =
       make_backend_config(backend_mode::kMemory, backend_provider::kNative);
   config.diskann_max_degree = 32;
@@ -7371,6 +7511,24 @@ TEST_F(VectorIndexRegistryTest,
     row.lifecycle_version = 1;
     row.hnsw_m = 16;
     row.hnsw_ef_construction = 32;
+    EXPECT_FALSE(vector_index_registry::restore_runtime_state_for_testing(
+        {row}, {}, {}, {}));
+  }
+
+  {
+    vector_index_metadata_store::metadata_row row;
+    row.index_name = "idx_bad_faiss_pq_metadata";
+    row.dimension = 6;
+    row.metric = vector_index::metric_type::kEuclidean;
+    row.mode = vector_index::backend_mode::kExternal;
+    row.provider = vector_index::backend_provider::kFaiss;
+    row.owner_schema = "test";
+    row.lifecycle_state = "ready";
+    row.lifecycle_version = 1;
+    row.faiss_nlist = 8;
+    row.faiss_nprobe = 4;
+    row.faiss_pq_m = 4;
+    row.faiss_pq_bits = 8;
     EXPECT_FALSE(vector_index_registry::restore_runtime_state_for_testing(
         {row}, {}, {}, {}));
   }

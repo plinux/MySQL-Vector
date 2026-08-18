@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -41,6 +42,7 @@
 #include "sql/sql_lex.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_load_staging.h"
 #include "sql/vector/vector_statement_publication.h"
 #include "sql/xa.h"
 
@@ -77,6 +79,44 @@ bool context_override_enabled_for_testing = false;
 THD *context_thd_for_testing = nullptr;
 unsigned int context_roles_for_testing = kNoVectorContext;
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
+
+std::vector<vector_index_truth_store::publication_intent>
+erase_publication_state_locked(my_thread_id thread_id) {
+  std::vector<vector_index_truth_store::publication_intent> intents;
+  publication_threads.erase(thread_id);
+  publication_guards.erase(thread_id);
+  const auto statement_it = statement_publications.find(thread_id);
+  if (statement_it != statement_publications.end()) {
+    intents = std::move(statement_it->second.intents);
+    statement_publications.erase(statement_it);
+  }
+  return intents;
+}
+
+void discard_publication_state(my_thread_id thread_id) {
+  std::vector<vector_index_truth_store::publication_intent> intents;
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    intents = erase_publication_state_locked(thread_id);
+  }
+  vector_index::discard_load_staging_intents(intents);
+}
+
+unsigned int vector_context_roles_from_token(const void *context) {
+  if (context == &vector_trx_participant_token) return kTransactionParticipant;
+  if (context == &vector_explicit_txn_token) return kExplicitTxnOwner;
+  if (context == &vector_combined_txn_token)
+    return kTransactionParticipant | kExplicitTxnOwner;
+  return kNoVectorContext;
+}
+
+void *vector_context_token_for_roles(unsigned int roles) {
+  if (roles == kTransactionParticipant) return &vector_trx_participant_token;
+  if (roles == kExplicitTxnOwner) return &vector_explicit_txn_token;
+  if (roles == (kTransactionParticipant | kExplicitTxnOwner))
+    return &vector_combined_txn_token;
+  return nullptr;
+}
 
 uint64_t vector_thd_id(const THD *thd) {
   return thd == nullptr ? 0 : static_cast<uint64_t>(thd->thread_id());
@@ -260,8 +300,9 @@ int vector_trx_commit(handlerton *, THD *thd, bool all) {
 
 int vector_trx_rollback(handlerton *, THD *thd, bool all) {
   if (!has_vector_trx_context(thd)) return 0;
+  const bool real_scope = is_real_vector_scope(thd, all);
   bool ok = false;
-  if (is_real_vector_scope(thd, all)) {
+  if (real_scope) {
     ok = vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
   } else {
     ok = in_multi_stmt_vector_trx(thd)
@@ -269,13 +310,10 @@ int vector_trx_rollback(handlerton *, THD *thd, bool all) {
                    vector_thd_id(thd), vector_stmt_id(thd))
              : vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
   }
-  if (ok && is_real_vector_scope(thd, all)) {
-    {
-      std::lock_guard<std::mutex> guard(publication_mutex);
-      publication_threads.erase(thd->thread_id());
-      publication_guards.erase(thd->thread_id());
-      statement_publications.erase(thd->thread_id());
-    }
+  if (real_scope) {
+    discard_publication_state(thd->thread_id());
+  }
+  if (ok && real_scope) {
     clear_vector_trx_context(thd);
   }
   return ok ? 0 : HA_ERR_INTERNAL_ERROR;
@@ -283,12 +321,7 @@ int vector_trx_rollback(handlerton *, THD *thd, bool all) {
 
 int vector_trx_close_connection(handlerton *, THD *thd) {
   if (thd != nullptr) {
-    {
-      std::lock_guard<std::mutex> guard(publication_mutex);
-      publication_threads.erase(thd->thread_id());
-      publication_guards.erase(thd->thread_id());
-      statement_publications.erase(thd->thread_id());
-    }
+    discard_publication_state(thd->thread_id());
     (void)vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
     (void)vector_index_registry::rollback_explicit_txns_for_thd(thd);
     clear_all_vector_context(thd);
@@ -369,12 +402,7 @@ void vector_trx_before_rollback(void *arg) {
   auto *param = static_cast<Trans_param *>(arg);
   if (param == nullptr || (param->flags & TRANS_IS_REAL_TRANS) == 0) return;
 
-  {
-    std::lock_guard<std::mutex> guard(publication_mutex);
-    publication_threads.erase(param->thread_id);
-    publication_guards.erase(param->thread_id);
-    statement_publications.erase(param->thread_id);
-  }
+  discard_publication_state(param->thread_id);
   (void)vector_index_registry::rollback_thd_txn(
       static_cast<uint64_t>(param->thread_id));
 }
@@ -453,12 +481,20 @@ int vector_trx_deinit(void *) {
       observer_registered = false;
     }
   }
+  std::vector<vector_index_truth_store::publication_intent> staged_intents;
   {
     std::lock_guard<std::mutex> guard(publication_mutex);
     publication_threads.clear();
     publication_guards.clear();
+    for (auto &entry : statement_publications) {
+      auto &intents = entry.second.intents;
+      staged_intents.insert(staged_intents.end(),
+                            std::make_move_iterator(intents.begin()),
+                            std::make_move_iterator(intents.end()));
+    }
     statement_publications.clear();
   }
+  vector_index::discard_load_staging_intents(staged_intents);
   vector_trx_hton = nullptr;
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
   context_thd_for_testing = nullptr;

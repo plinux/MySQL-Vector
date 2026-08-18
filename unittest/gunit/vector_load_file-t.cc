@@ -31,7 +31,9 @@
 #include <utility>
 #include <vector>
 
+#include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_load_file.h"
+#include "sql/vector/vector_load_staging.h"
 
 namespace vector_load_file_unittest {
 
@@ -59,6 +61,20 @@ class temp_directory {
 
  private:
   std::filesystem::path m_path;
+};
+
+class vector_root_guard {
+ public:
+  explicit vector_root_guard(const std::string &root) {
+    vector_index::set_faiss_external_snapshot_root_for_testing(root);
+  }
+
+  ~vector_root_guard() {
+    vector_index::reset_faiss_external_snapshot_root_for_testing();
+  }
+
+  vector_root_guard(const vector_root_guard &) = delete;
+  vector_root_guard &operator=(const vector_root_guard &) = delete;
 };
 
 template <typename T>
@@ -124,6 +140,285 @@ bool read_csv_rows(const std::string &path, size_t expected_dimension,
 }
 
 }  // namespace
+
+TEST(VectorLoadFileTest,
+     ManagedStagingSurvivesSourceRemovalAndRoundTripsPayload) {
+  temp_directory tmp;
+  vector_root_guard root_guard(tmp.path("managed-root"));
+  const std::string fbin_path = tmp.path("source.fbin");
+  const std::string docid_path = tmp.path("source.u64");
+  write_fbin_file(fbin_path, 2, 2, {1.0F, 2.0F, 3.0F, 4.0F});
+  write_docid_file(docid_path, {11, 22});
+
+  const vector_index::load_staging_identity identity{"idx/staged", 41};
+  vector_index::load_staging_artifact artifact;
+  std::string error;
+  ASSERT_TRUE(vector_index::stage_load_artifact(identity, fbin_path, docid_path,
+                                                "FBIN", &artifact, &error))
+      << error;
+
+  vector_statement_publication::operation_payload payload;
+  ASSERT_TRUE(vector_index::make_load_staging_payload(
+      identity, artifact, true, true, 2, "FBIN", &payload));
+  vector_index::load_staging_artifact decoded;
+  bool replace_duplicates = false;
+  bool rebuild_after_load = false;
+  size_t dimension = 0;
+  std::string format;
+  ASSERT_TRUE(vector_index::parse_load_staging_payload(
+      identity, payload, &decoded, &replace_duplicates, &rebuild_after_load,
+      &dimension, &format));
+  EXPECT_EQ(artifact.identity, decoded.identity);
+  EXPECT_TRUE(replace_duplicates);
+  EXPECT_TRUE(rebuild_after_load);
+  EXPECT_EQ(2U, dimension);
+  EXPECT_EQ("FBIN", format);
+
+  ASSERT_TRUE(std::filesystem::remove(fbin_path));
+  ASSERT_TRUE(std::filesystem::remove(docid_path));
+  vector_index::load_staging_paths paths;
+  ASSERT_TRUE(vector_index::verify_load_artifact(identity, decoded, format,
+                                                 &paths, &error))
+      << error;
+  std::vector<uint64_t> docids;
+  ASSERT_TRUE(vector_index::read_fbin_vectors(
+      paths.vector_filename, paths.docid_filename, 2, nullptr, &error,
+      [&docids](uint64_t doc_id, const float *, size_t) {
+        docids.push_back(doc_id);
+        return true;
+      }))
+      << error;
+  EXPECT_EQ((std::vector<uint64_t>{11, 22}), docids);
+
+  EXPECT_TRUE(vector_index::remove_load_staging_artifact(identity));
+}
+
+TEST(VectorLoadFileTest, ManagedStagingDetectsTamperingAndCleansOrphans) {
+  temp_directory tmp;
+  vector_root_guard root_guard(tmp.path("managed-root"));
+  const std::string csv_path = tmp.path("source.csv");
+  write_text_file(csv_path,
+                  "doc_id,vector\n10,\"[1.0,2.0]\"\n20,\"[3.0,4.0]\"\n");
+
+  const vector_index::load_staging_identity active_identity{"idx_active", 51};
+  vector_index::load_staging_artifact active_artifact;
+  std::string error;
+  ASSERT_TRUE(vector_index::stage_load_artifact(
+      active_identity, csv_path, "", "CSV", &active_artifact, &error))
+      << error;
+  vector_index::load_staging_paths active_paths;
+  ASSERT_TRUE(vector_index::verify_load_artifact(
+      active_identity, active_artifact, "CSV", &active_paths, &error))
+      << error;
+
+  // An orphan sweep must not remove input owned by an uncommitted statement.
+  ASSERT_TRUE(vector_index::cleanup_orphaned_load_staging_artifacts({}));
+  EXPECT_TRUE(std::filesystem::exists(active_paths.vector_filename));
+
+  append_byte(active_paths.vector_filename);
+  EXPECT_FALSE(vector_index::verify_load_artifact(
+      active_identity, active_artifact, "CSV", &active_paths, &error));
+  EXPECT_TRUE(has_error_text(error, "mismatch")) << error;
+
+  vector_index_truth_store::publication_intent intent;
+  intent.index_name = active_identity.index_name;
+  intent.publication_id = active_identity.publication_id;
+  intent.operation = vector_index_truth_store::publication_operation::kBulkLoad;
+  ASSERT_TRUE(vector_index::cleanup_orphaned_load_staging_artifacts({intent}));
+  EXPECT_TRUE(std::filesystem::exists(active_paths.vector_filename));
+  ASSERT_TRUE(vector_index::cleanup_orphaned_load_staging_artifacts({}));
+  EXPECT_TRUE(std::filesystem::exists(active_paths.vector_filename));
+  ASSERT_TRUE(vector_index::remove_load_staging_artifact(active_identity));
+  EXPECT_FALSE(std::filesystem::exists(active_paths.vector_filename));
+}
+
+TEST(VectorLoadFileTest,
+     ManagedStagingRejectsInvalidArgumentsPayloadsAndOwnershipConflicts) {
+  temp_directory tmp;
+  vector_root_guard root_guard(tmp.path("managed-root"));
+  const std::string csv_path = tmp.path("source.csv");
+  const std::string docid_path = tmp.path("source.u64");
+  write_text_file(csv_path, "doc_id,vector\n1,\"[1.0,2.0]\"\n");
+  write_docid_file(docid_path, {1});
+
+  const vector_index::load_staging_identity identity{"idx_invalid", 61};
+  vector_index::load_staging_artifact artifact;
+  std::string error;
+  EXPECT_FALSE(vector_index::stage_load_artifact(identity, csv_path, "", "CSV",
+                                                 nullptr, &error));
+  EXPECT_FALSE(vector_index::stage_load_artifact(
+      {"", identity.publication_id}, csv_path, "", "CSV", &artifact, &error));
+  EXPECT_FALSE(vector_index::stage_load_artifact(
+      {identity.index_name, 0}, csv_path, "", "CSV", &artifact, &error));
+  EXPECT_FALSE(vector_index::stage_load_artifact(identity, csv_path, "", "BAD",
+                                                 &artifact, &error));
+  EXPECT_FALSE(vector_index::stage_load_artifact(identity, "", "", "CSV",
+                                                 &artifact, &error));
+  EXPECT_FALSE(vector_index::stage_load_artifact(identity, csv_path, docid_path,
+                                                 "CSV", &artifact, &error));
+  EXPECT_FALSE(vector_index::stage_load_artifact({"idx_missing", 62},
+                                                 tmp.path("missing.csv"), "",
+                                                 "CSV", &artifact, &error));
+
+  ASSERT_TRUE(vector_index::stage_load_artifact(identity, csv_path, "", "CSV",
+                                                &artifact, &error))
+      << error;
+  vector_index::load_staging_artifact duplicate_artifact;
+  EXPECT_FALSE(vector_index::stage_load_artifact(identity, csv_path, "", "CSV",
+                                                 &duplicate_artifact, &error));
+  EXPECT_TRUE(has_error_text(error, "already active")) << error;
+
+  vector_index::load_staging_paths paths;
+  EXPECT_FALSE(vector_index::verify_load_artifact(identity, artifact, "CSV",
+                                                  nullptr, &error));
+  auto wrong_identity_artifact = artifact;
+  wrong_identity_artifact.identity = "wrong";
+  EXPECT_FALSE(vector_index::verify_load_artifact(
+      identity, wrong_identity_artifact, "CSV", &paths, &error));
+  EXPECT_FALSE(vector_index::verify_load_artifact(identity, artifact, "BAD",
+                                                  &paths, &error));
+
+  vector_statement_publication::operation_payload payload;
+  EXPECT_FALSE(vector_index::make_load_staging_payload(
+      identity, artifact, false, false, 2, "CSV", nullptr));
+  EXPECT_FALSE(vector_index::make_load_staging_payload(
+      identity, artifact, false, false, 0, "CSV", &payload));
+  EXPECT_FALSE(vector_index::make_load_staging_payload(
+      identity, artifact, false, false, 2, "BAD", &payload));
+  EXPECT_FALSE(vector_index::make_load_staging_payload(
+      {"other", identity.publication_id}, artifact, false, false, 2, "CSV",
+      &payload));
+  auto invalid_artifact = artifact;
+  invalid_artifact.has_docids = true;
+  EXPECT_FALSE(vector_index::make_load_staging_payload(
+      identity, invalid_artifact, false, false, 2, "CSV", &payload));
+  invalid_artifact = artifact;
+  invalid_artifact.docid_size = 1;
+  EXPECT_FALSE(vector_index::make_load_staging_payload(
+      identity, invalid_artifact, false, false, 2, "CSV", &payload));
+
+  ASSERT_TRUE(vector_index::make_load_staging_payload(
+      identity, artifact, true, true, 2, "CSV", &payload));
+  const auto expect_parse_failure = [&](const auto &mutate) {
+    auto invalid_payload = payload;
+    mutate(&invalid_payload);
+    EXPECT_FALSE(vector_index::parse_load_staging_payload(
+        identity, invalid_payload, nullptr, nullptr, nullptr, nullptr,
+        nullptr));
+  };
+  expect_parse_failure([](auto *value) { value->unsigned_values.pop_back(); });
+  expect_parse_failure([](auto *value) { value->string_values.pop_back(); });
+  expect_parse_failure([](auto *value) { value->binary_value = "unexpected"; });
+  expect_parse_failure([](auto *value) { value->unsigned_values[0] = 0; });
+  expect_parse_failure([](auto *value) { value->unsigned_values[1] = 2; });
+  expect_parse_failure([](auto *value) { value->unsigned_values[2] = 2; });
+  expect_parse_failure([](auto *value) { value->unsigned_values[3] = 0; });
+  expect_parse_failure([](auto *value) { value->unsigned_values[6] = 2; });
+  expect_parse_failure([](auto *value) { value->string_values[0] = "wrong"; });
+  expect_parse_failure([](auto *value) { value->string_values[1] = "BAD"; });
+  expect_parse_failure([](auto *value) { value->unsigned_values[6] = 1; });
+  expect_parse_failure([](auto *value) { value->unsigned_values[7] = 1; });
+  EXPECT_TRUE(vector_index::parse_load_staging_payload(
+      identity, payload, nullptr, nullptr, nullptr, nullptr, nullptr));
+
+  vector_index_truth_store::publication_intent non_bulk_intent;
+  EXPECT_TRUE(
+      vector_index::remove_managed_load_staging_artifact(non_bulk_intent));
+  auto malformed_bulk_intent = non_bulk_intent;
+  malformed_bulk_intent.operation =
+      vector_index_truth_store::publication_operation::kBulkLoad;
+  malformed_bulk_intent.index_name = identity.index_name;
+  malformed_bulk_intent.publication_id = identity.publication_id;
+  malformed_bulk_intent.payload = "bad";
+  EXPECT_FALSE(vector_index::remove_managed_load_staging_artifact(
+      malformed_bulk_intent));
+  vector_statement_publication::operation_payload batch_payload;
+  batch_payload.unsigned_values = {1};
+  ASSERT_TRUE(vector_statement_publication::encode_operation_payload(
+      batch_payload, &malformed_bulk_intent.payload));
+  EXPECT_TRUE(vector_index::remove_managed_load_staging_artifact(
+      malformed_bulk_intent));
+
+  EXPECT_FALSE(vector_index::remove_load_staging_artifact({"", 0}));
+  EXPECT_TRUE(vector_index::remove_load_staging_artifact(identity));
+}
+
+TEST(VectorLoadFileTest,
+     ManagedStagingValidatesRootPublicationAndOrphanDirectoryShape) {
+  temp_directory tmp;
+  const std::string vector_root = tmp.path("managed-root");
+  const std::string staging_root = vector_root + "/load_staging";
+  vector_root_guard root_guard(vector_root);
+  const std::string csv_path = tmp.path("source.csv");
+  write_text_file(csv_path, "doc_id,vector\n1,\"[1.0,2.0]\"\n");
+  const vector_index::load_staging_identity identity{"idx_root", 71};
+  vector_index::load_staging_artifact artifact;
+  std::string error;
+
+  std::filesystem::create_directories(vector_root);
+  write_text_file(staging_root, "not-a-directory");
+  EXPECT_FALSE(vector_index::stage_load_artifact(identity, csv_path, "", "CSV",
+                                                 &artifact, &error));
+  EXPECT_TRUE(has_error_text(error, "directory")) << error;
+  ASSERT_TRUE(std::filesystem::remove(staging_root));
+
+  ASSERT_TRUE(vector_index::stage_load_artifact(identity, csv_path, "", "CSV",
+                                                &artifact, &error))
+      << error;
+  vector_index::load_staging_paths paths;
+  ASSERT_TRUE(vector_index::verify_load_artifact(identity, artifact, "CSV",
+                                                 &paths, &error));
+  const std::string artifact_directory =
+      std::filesystem::path(paths.vector_filename).parent_path().string();
+  ASSERT_TRUE(vector_index::remove_load_staging_artifact(identity));
+
+  std::filesystem::create_directories(artifact_directory);
+  EXPECT_FALSE(vector_index::stage_load_artifact(identity, csv_path, "", "CSV",
+                                                 &artifact, &error));
+  std::filesystem::remove_all(artifact_directory);
+  std::filesystem::create_directories(artifact_directory + ".tmp");
+  EXPECT_FALSE(vector_index::stage_load_artifact(identity, csv_path, "", "CSV",
+                                                 &artifact, &error));
+  std::filesystem::remove_all(artifact_directory + ".tmp");
+
+  const std::string source_directory = tmp.path("source-directory");
+  std::filesystem::create_directories(source_directory);
+  EXPECT_FALSE(vector_index::stage_load_artifact({"idx_source_directory", 72},
+                                                 source_directory, "", "CSV",
+                                                 &artifact, &error));
+  EXPECT_TRUE(has_error_text(error, "regular file")) << error;
+
+  const std::string fbin_path = tmp.path("source.fbin");
+  write_fbin_file(fbin_path, 1, 2, {1.0F, 2.0F});
+  EXPECT_FALSE(vector_index::stage_load_artifact(
+      {"idx_missing_docids", 73}, fbin_path, tmp.path("missing.u64"), "FBIN",
+      &artifact, &error));
+
+  std::filesystem::remove_all(staging_root);
+  EXPECT_TRUE(vector_index::cleanup_orphaned_load_staging_artifacts({}));
+  std::filesystem::create_directories(staging_root);
+  const std::vector<std::string> invalid_names = {"x",   "-1",    "abc-",
+                                                  "g-1", "abc-x", "abc-1.bad"};
+  for (const auto &name : invalid_names) {
+    const std::string path = staging_root + "/" + name;
+    std::filesystem::create_directories(path);
+    EXPECT_FALSE(vector_index::cleanup_orphaned_load_staging_artifacts({}));
+    std::filesystem::remove_all(path);
+  }
+
+  const std::string orphan = staging_root + "/abc-1";
+  std::filesystem::create_directories(orphan);
+  write_text_file(orphan + "/payload", "orphan");
+  EXPECT_TRUE(vector_index::cleanup_orphaned_load_staging_artifacts({}));
+  EXPECT_FALSE(std::filesystem::exists(orphan));
+  const std::string temporary_orphan = staging_root + "/abc-2.tmp";
+  std::filesystem::create_directories(temporary_orphan);
+  EXPECT_TRUE(vector_index::cleanup_orphaned_load_staging_artifacts({}));
+  EXPECT_FALSE(std::filesystem::exists(temporary_orphan));
+
+  write_text_file(staging_root + "/abc-3", "not-a-directory");
+  EXPECT_FALSE(vector_index::cleanup_orphaned_load_staging_artifacts({}));
+}
 
 TEST(VectorLoadFileTest, ReadsFbinRowsWithExplicitDocids) {
   temp_directory tmp;

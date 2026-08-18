@@ -33,6 +33,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "my_byteorder.h"
@@ -46,6 +47,7 @@
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_load_file.h"
+#include "sql/vector/vector_load_staging.h"
 #include "sql/vector/vector_mapped_search.h"
 #include "sql/vector/vector_statement_publication.h"
 #include "sql/vector/vector_status.h"
@@ -62,6 +64,7 @@ std::atomic<uint64_t> g_publication_recovery_completed{0};
 std::mutex g_publication_recovery_mutex;
 thread_local bool g_publication_recovery_active{false};
 thread_local size_t g_publication_read_scope_depth{0};
+constexpr uint64_t k_batch_load_payload = 1;
 
 enum create_unsigned_field : size_t {
   kCreateDimension = 0,
@@ -413,6 +416,27 @@ bool decode_statement_payload(
   return false;
 }
 
+bool statement_operation_has_payload(
+    vector_index_truth_store::publication_operation operation) {
+  using vector_index_truth_store::publication_operation;
+  switch (operation) {
+    case publication_operation::kStandaloneUpsert:
+    case publication_operation::kStandaloneErase:
+    case publication_operation::kBulkLoad:
+    case publication_operation::kCreateIndex:
+    case publication_operation::kUpdateConfig:
+      return true;
+    case publication_operation::kTransactionalDml:
+    case publication_operation::kDropIndex:
+    case publication_operation::kRebuildIndex:
+    case publication_operation::kRecoverIndex:
+    case publication_operation::kBeginBulkLoad:
+    case publication_operation::kBulkBuildIndex:
+      return false;
+  }
+  return false;
+}
+
 bool apply_config_statement(
     const vector_index_truth_store::publication_intent &intent,
     const vector_statement_publication::operation_payload &payload) {
@@ -550,7 +574,9 @@ bool config_statement_payload_valid(
     case config_change::kFaissIvfParams:
       return values.size() == 2 && all_fit_uint32();
     case config_change::kFaissIvfPqParams:
-      return values.size() == 4 && all_fit_uint32();
+      return values.size() == 4 && values[0] != 0 && values[1] != 0 &&
+             values[2] != 0 && values[3] != 0 &&
+             values[3] <= vector_index::k_max_faiss_pq_bits && all_fit_uint32();
     case config_change::kDiskannBuildParams:
       return values.size() == 3 && values[0] != 0 && values[1] != 0 &&
              all_fit_uint32();
@@ -642,12 +668,10 @@ bool config_statement_requires_quiescent_index(
   return true;
 }
 
-bool decode_batch_reader(
+bool batch_payload_valid(
     const vector_statement_publication::operation_payload &payload,
-    vector_index::index_service::bulk_load_reader *reader,
-    vector_index::index_service::bulk_load_options *options) {
-  if (reader == nullptr || options == nullptr ||
-      payload.unsigned_values.size() != 4 ||
+    size_t *row_count, size_t *dimension) {
+  if (payload.unsigned_values.size() != 4 ||
       payload.unsigned_values[0] != 1 ||
       payload.unsigned_values[1] == 0 ||
       payload.unsigned_values[2] == 0 || payload.string_values.size() != 1) {
@@ -659,22 +683,38 @@ bool decode_batch_reader(
       dimension_value > std::numeric_limits<size_t>::max()) {
     return false;
   }
-  const size_t row_count = static_cast<size_t>(row_count_value);
-  const size_t dimension = static_cast<size_t>(dimension_value);
-  if (row_count > std::numeric_limits<size_t>::max() / sizeof(uint64_t) ||
-      row_count > std::numeric_limits<size_t>::max() / dimension ||
-      row_count * dimension >
-          std::numeric_limits<size_t>::max() / sizeof(float)) {
+  const size_t parsed_row_count = static_cast<size_t>(row_count_value);
+  const size_t parsed_dimension = static_cast<size_t>(dimension_value);
+  if (parsed_row_count >
+          std::numeric_limits<size_t>::max() / sizeof(uint64_t) ||
+      parsed_row_count >
+          std::numeric_limits<size_t>::max() / parsed_dimension ||
+      parsed_row_count * parsed_dimension >
+          std::numeric_limits<size_t>::max() / sizeof(float) ||
+      payload.string_values[0].size() !=
+          parsed_row_count * sizeof(uint64_t) ||
+      payload.binary_value.size() !=
+          parsed_row_count * parsed_dimension * sizeof(float)) {
     return false;
   }
-  const std::string &docids = payload.string_values[0];
-  if (docids.size() != row_count * sizeof(uint64_t) ||
-      payload.binary_value.size() != row_count * dimension * sizeof(float)) {
+  if (row_count != nullptr) *row_count = parsed_row_count;
+  if (dimension != nullptr) *dimension = parsed_dimension;
+  return true;
+}
+
+bool decode_batch_reader(
+    vector_statement_publication::operation_payload payload,
+    vector_index::index_service::bulk_load_reader *reader,
+    vector_index::index_service::bulk_load_options *options) {
+  size_t row_count = 0;
+  size_t dimension = 0;
+  if (reader == nullptr || options == nullptr ||
+      !batch_payload_valid(payload, &row_count, &dimension)) {
     return false;
   }
 
-  const std::string vectors = payload.binary_value;
-  *reader = [docids, vectors, row_count, dimension](
+  *reader = [docids = std::move(payload.string_values[0]),
+             vectors = std::move(payload.binary_value), row_count, dimension](
                 const vector_index::index_service::bulk_load_visitor &visitor,
                 std::string *error) {
     vector_index::vector_data row(dimension);
@@ -706,13 +746,13 @@ bool decode_batch_reader(
 
 bool apply_bulk_load_statement(
     const vector_index_truth_store::publication_intent &intent,
-    const vector_statement_publication::operation_payload &payload,
+    vector_statement_publication::operation_payload payload,
     std::string *failure_stage) {
   if (payload.unsigned_values.empty()) return false;
-  if (payload.unsigned_values[0] == 1) {
+  if (payload.unsigned_values[0] == k_batch_load_payload) {
     vector_index::index_service::bulk_load_reader reader;
     vector_index::index_service::bulk_load_options options;
-    if (!decode_batch_reader(payload, &reader, &options)) {
+    if (!decode_batch_reader(std::move(payload), &reader, &options)) {
       set_publication_failure(failure_stage, "decode_batch_payload");
       return false;
     }
@@ -725,30 +765,45 @@ bool apply_bulk_load_statement(
     }
     return true;
   }
-  if (payload.unsigned_values[0] != 2 ||
-      payload.unsigned_values.size() != 4 ||
-      payload.string_values.size() != 3) {
+  const vector_index::load_staging_identity identity{intent.index_name,
+                                                     intent.publication_id};
+  vector_index::load_staging_artifact artifact;
+  bool replace_duplicates = false;
+  bool rebuild_after_load = false;
+  std::string format;
+  if (!vector_index::parse_load_staging_payload(
+          identity, payload, &artifact, &replace_duplicates,
+          &rebuild_after_load, nullptr, &format)) {
     set_publication_failure(failure_stage, "decode_load_payload");
     return false;
   }
 
-  vector_index::index_service::bulk_load_options options;
-  options.replace_duplicates = payload.unsigned_values[1] != 0;
-  options.rebuild_after_load = payload.unsigned_values[2] != 0;
-  options.source_format = payload.string_values[2];
-  const std::string &vector_filename = payload.string_values[0];
-  const std::string &docid_filename = payload.string_values[1];
+  vector_index::load_staging_paths paths;
   std::string error;
+  if (!vector_index::verify_load_artifact(identity, artifact, format, &paths,
+                                          &error)) {
+    set_publication_failure(
+        failure_stage, error.empty() ? "verify_load_staging_artifact" : error);
+    return false;
+  }
+
+  vector_index::index_service::bulk_load_options options;
+  options.replace_duplicates = replace_duplicates;
+  options.rebuild_after_load = rebuild_after_load;
+  options.source_format = format;
+  const vector_index::standalone_load_receipt receipt{
+      intent.publication_id, artifact.identity, artifact.vector_checksum,
+      artifact.docid_checksum};
   if (options.source_format == "FBIN") {
     uint64_t loaded_rows = 0;
-    if (bulk_upsert_from_raw_files(intent.index_name, vector_filename,
-                                   docid_filename, options, &loaded_rows,
-                                   &error)) {
+    if (bulk_upsert_from_raw_files(intent.index_name, paths.vector_filename,
+                                   paths.docid_filename, options, &loaded_rows,
+                                   &error, &receipt)) {
       return true;
     }
   } else if (options.source_format == "CSV") {
     const vector_index::index_service::bulk_load_reader reader =
-        [vector_filename](
+        [vector_filename = std::move(paths.vector_filename)](
             const vector_index::index_service::bulk_load_visitor &visitor,
             std::string *reader_error) {
           return vector_index::read_csv_vectors(
@@ -758,7 +813,8 @@ bool apply_bulk_load_statement(
                 return visitor(doc_id, values, dimension);
               });
         };
-    if (bulk_upsert_from_reader(intent.index_name, reader, options, &error)) {
+    if (bulk_upsert_from_reader(intent.index_name, reader, options, &error,
+                                &receipt)) {
       return true;
     }
   }
@@ -903,13 +959,8 @@ bool validate_statement_operation_locked(
     const vector_index_truth_store::publication_intent &intent) {
   using vector_index_truth_store::publication_operation;
   vector_statement_publication::operation_payload payload;
-  const bool needs_payload =
-      intent.operation == publication_operation::kStandaloneUpsert ||
-      intent.operation == publication_operation::kStandaloneErase ||
-      intent.operation == publication_operation::kBulkLoad ||
-      intent.operation == publication_operation::kCreateIndex ||
-      intent.operation == publication_operation::kUpdateConfig;
-  if (needs_payload && !decode_statement_payload(intent, &payload, nullptr)) {
+  if (statement_operation_has_payload(intent.operation) &&
+      !decode_statement_payload(intent, &payload, nullptr)) {
     return false;
   }
 
@@ -956,25 +1007,34 @@ bool validate_statement_operation_locked(
           has_pending_changes || payload.unsigned_values.empty()) {
         return false;
       }
-      if (payload.unsigned_values[0] == 1) {
-        vector_index::index_service::bulk_load_reader reader;
-        vector_index::index_service::bulk_load_options options;
-        return decode_batch_reader(payload, &reader, &options) &&
-               payload.unsigned_values[2] == config.dimension;
+      if (payload.unsigned_values[0] == k_batch_load_payload) {
+        size_t dimension = 0;
+        return batch_payload_valid(payload, nullptr, &dimension) &&
+               dimension == config.dimension;
       }
-      return payload.unsigned_values[0] == 2 &&
-             payload.unsigned_values.size() == 4 &&
-             payload.unsigned_values[1] <= 1 &&
-             payload.unsigned_values[2] <= 1 &&
-             payload.unsigned_values[3] == config.dimension &&
-             payload.string_values.size() == 3 &&
-             (payload.string_values[2] == "FBIN" ||
-              payload.string_values[2] == "CSV");
+      {
+        size_t dimension = 0;
+        return vector_index::parse_load_staging_payload(
+                   {intent.index_name, intent.publication_id}, payload, nullptr,
+                   nullptr, nullptr, &dimension, nullptr) &&
+               dimension == config.dimension;
+      }
     case publication_operation::kUpdateConfig:
-      return config_statement_payload_valid(payload) &&
-             config_statement_supported(config, payload) &&
-             (!config_statement_requires_quiescent_index(payload.config) ||
-              !has_pending_changes);
+      if (!config_statement_payload_valid(payload) ||
+          !config_statement_supported(config, payload) ||
+          (config_statement_requires_quiescent_index(payload.config) &&
+           has_pending_changes)) {
+        return false;
+      }
+      if (payload.config ==
+          vector_statement_publication::config_change::kFaissIvfPqParams) {
+        const auto &values = payload.unsigned_values;
+        return vector_index::valid_faiss_ivf_pq_config(
+            config.dimension, static_cast<uint32_t>(values[0]),
+            static_cast<uint32_t>(values[1]), static_cast<uint32_t>(values[2]),
+            static_cast<uint32_t>(values[3]));
+      }
+      return true;
     case publication_operation::kRebuildIndex:
     case publication_operation::kRecoverIndex:
     case publication_operation::kBeginBulkLoad:
@@ -994,13 +1054,7 @@ bool apply_statement_operation(
     std::string *failure_stage) {
   using vector_index_truth_store::publication_operation;
   vector_statement_publication::operation_payload payload;
-  const bool needs_payload =
-      intent.operation == publication_operation::kStandaloneUpsert ||
-      intent.operation == publication_operation::kStandaloneErase ||
-      intent.operation == publication_operation::kBulkLoad ||
-      intent.operation == publication_operation::kCreateIndex ||
-      intent.operation == publication_operation::kUpdateConfig;
-  if (needs_payload &&
+  if (statement_operation_has_payload(intent.operation) &&
       !decode_statement_payload(intent, &payload, failure_stage)) {
     return false;
   }
@@ -1019,7 +1073,8 @@ bool apply_statement_operation(
            erase(intent.index_name, payload.unsigned_values[0]);
       break;
     case publication_operation::kBulkLoad:
-      return apply_bulk_load_statement(intent, payload, failure_stage);
+      return apply_bulk_load_statement(intent, std::move(payload),
+                                       failure_stage);
     case publication_operation::kCreateIndex:
       ok = apply_create_statement(intent, payload);
       break;
@@ -1071,8 +1126,29 @@ bool statement_operation_applied(
              config_statement_applied(intent, payload);
     case publication_operation::kStandaloneUpsert:
     case publication_operation::kStandaloneErase:
-    case publication_operation::kBulkLoad:
       return token_advanced_from(intent.expected, current);
+    case publication_operation::kBulkLoad: {
+      if (!decode_statement_payload(intent, &payload, failure_stage) ||
+          payload.unsigned_values.empty()) {
+        return false;
+      }
+      if (payload.unsigned_values[0] == k_batch_load_payload) {
+        return token_advanced_from(intent.expected, current);
+      }
+      vector_index::load_staging_artifact artifact;
+      if (!vector_index::parse_load_staging_payload(
+              {intent.index_name, intent.publication_id}, payload, &artifact,
+              nullptr, nullptr, nullptr, nullptr)) {
+        return false;
+      }
+      const vector_index::standalone_load_receipt receipt{
+          intent.publication_id, artifact.identity, artifact.vector_checksum,
+          artifact.docid_checksum};
+      std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+      return ensure_metadata_loaded_locked() &&
+             g_index_service.standalone_load_receipt_matches(intent.index_name,
+                                                             receipt);
+    }
     case publication_operation::kBeginBulkLoad: {
       index_info info;
       return get_index_info(intent.index_name, &info) &&
@@ -1344,6 +1420,11 @@ bool recover_durable_publication_intents(std::string *failure_stage) {
   std::vector<vector_index_truth_store::publication_intent> intents;
   if (!truth_store->load_publication_intents(&intents)) {
     set_publication_failure(failure_stage, "load_publication_intents");
+    return false;
+  }
+  if (!vector_index::cleanup_orphaned_load_staging_artifacts(intents)) {
+    set_publication_failure(failure_stage,
+                            "cleanup_orphaned_load_staging_artifacts");
     return false;
   }
   if (intents.empty()) return true;
@@ -3428,6 +3509,11 @@ bool publish_statement_publication_intent(
       return false;
     }
   }
+  if (intent.operation ==
+          vector_index_truth_store::publication_operation::kBulkLoad &&
+      statement_operation_applied(intent, current, failure_stage)) {
+    return true;
+  }
 
   if (!apply_statement_operation(intent, failure_stage)) return false;
 
@@ -3461,6 +3547,13 @@ bool acknowledge_statement_publication_intent(
           intent.index_name, intent.publication_id)) {
     set_publication_failure(failure_stage,
                             "delete_statement_publication_intent");
+    return false;
+  }
+  if (intent.operation ==
+      vector_index_truth_store::publication_operation::kBulkLoad &&
+      !vector_index::remove_managed_load_staging_artifact(intent)) {
+    set_publication_failure(failure_stage, "remove_load_staging_artifact");
+    request_publication_intent_recovery();
     return false;
   }
   if (intent.operation ==

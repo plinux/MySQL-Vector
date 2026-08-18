@@ -42,6 +42,7 @@
 #include "sql/vector/vector_diskann_generation_store.h"
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_build_options.h"
+#include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_runtime_thread_pool.h"
 #include "sql/vector/vector_index_service.h"
 #include "sql/vector/vector_index_service_internal.h"
@@ -7321,13 +7322,20 @@ TEST(VectorIndexServiceTest,
 
 TEST(VectorIndexServiceTest, SetFaissIvfPqParamsRejectsZeroArguments) {
   vector_index::index_service service;
-  ASSERT_TRUE(service.register_index_from_strings("idx_faiss_pq_zero", 4,
-                                               "euclidean", "external",
-                                               "faiss"));
-  EXPECT_FALSE(service.set_faiss_ivf_pq_params("idx_faiss_pq_zero", 0, 4, 8, 8));
-  EXPECT_FALSE(service.set_faiss_ivf_pq_params("idx_faiss_pq_zero", 16, 0, 8, 8));
-  EXPECT_FALSE(service.set_faiss_ivf_pq_params("idx_faiss_pq_zero", 16, 4, 0, 8));
-  EXPECT_FALSE(service.set_faiss_ivf_pq_params("idx_faiss_pq_zero", 16, 4, 8, 0));
+  ASSERT_TRUE(service.register_index_from_strings(
+      "idx_faiss_pq_zero", 4, "euclidean", "external", "faiss"));
+  EXPECT_FALSE(
+      service.set_faiss_ivf_pq_params("idx_faiss_pq_zero", 0, 4, 8, 8));
+  EXPECT_FALSE(
+      service.set_faiss_ivf_pq_params("idx_faiss_pq_zero", 16, 0, 8, 8));
+  EXPECT_FALSE(
+      service.set_faiss_ivf_pq_params("idx_faiss_pq_zero", 16, 4, 0, 8));
+  EXPECT_FALSE(
+      service.set_faiss_ivf_pq_params("idx_faiss_pq_zero", 16, 4, 8, 0));
+  EXPECT_FALSE(
+      service.set_faiss_ivf_pq_params("idx_faiss_pq_zero", 16, 4, 3, 8));
+  EXPECT_FALSE(service.set_faiss_ivf_pq_params(
+      "idx_faiss_pq_zero", 16, 4, 4, vector_index::k_max_faiss_pq_bits + 1));
 }
 
 TEST(VectorIndexServiceTest,
@@ -8990,6 +8998,22 @@ TEST(VectorIndexServiceTest, RegisterIndexConfigRejectsInvalidCombinations) {
   bad_half_pq_bits.faiss_pq_bits = 8;
   EXPECT_FALSE(
       service.register_index("idx_bad_half_pq_bits", bad_half_pq_bits));
+
+  vector_index::index_service::index_config bad_pq_dimension{
+      6, vector_index::metric_type::kEuclidean,
+      vector_index::backend_mode::kExternal,
+      vector_index::backend_provider::kFaiss, ""};
+  bad_pq_dimension.faiss_nlist = 8;
+  bad_pq_dimension.faiss_nprobe = 4;
+  bad_pq_dimension.faiss_pq_m = 4;
+  bad_pq_dimension.faiss_pq_bits = 8;
+  EXPECT_FALSE(
+      service.register_index("idx_bad_pq_dimension", bad_pq_dimension));
+
+  vector_index::index_service::index_config bad_pq_bits = bad_pq_dimension;
+  bad_pq_bits.dimension = 8;
+  bad_pq_bits.faiss_pq_bits = vector_index::k_max_faiss_pq_bits + 1;
+  EXPECT_FALSE(service.register_index("idx_bad_pq_bits", bad_pq_bits));
 }
 
 TEST(VectorIndexServiceTest, ServiceApiGuardBranchesRejectInvalidState) {

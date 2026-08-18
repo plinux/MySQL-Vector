@@ -285,12 +285,14 @@ bool bulk_upsert_from_reader(
     const std::string &index_name,
     const vector_index::index_service::bulk_load_reader &reader,
     const vector_index::index_service::bulk_load_options &options,
-    std::string *error);
+    std::string *error,
+    const vector_index::standalone_load_receipt *receipt = nullptr);
 bool bulk_upsert_from_raw_files(
     const std::string &index_name, const std::string &vector_filename,
     const std::string &docid_filename,
     const vector_index::index_service::bulk_load_options &options,
-    uint64_t *loaded_rows, std::string *error);
+    uint64_t *loaded_rows, std::string *error,
+    const vector_index::standalone_load_receipt *receipt = nullptr);
 bool entry_exists(const std::string &index_name, uint64_t doc_id, bool *found);
 bool bulk_build_index(const std::string &index_name,
                       std::string *error = nullptr);

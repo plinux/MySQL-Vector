@@ -21,6 +21,16 @@ VEC_INDEX_SEARCH('idx_load_transactional', VEC_FROMTEXT('[1,0]'), 1),
 CAST(201 AS JSON)) AS transactional_csv_visible;
 transactional_csv_visible
 1
+SELECT VEC_INDEX_CREATE('idx_load_transactional_atomic', 2, 'EUCLIDEAN',
+'MEMORY', 'NATIVE');
+VEC_INDEX_CREATE('idx_load_transactional_atomic', 2, 'EUCLIDEAN',
+'MEMORY', 'NATIVE')
+1
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_load_transactional_atomic', VEC_FROMTEXT('[1,0]'), 1),
+CAST(301 AS JSON)) AS transactional_staged_source_visible;
+transactional_staged_source_visible
+1
 DROP USER IF EXISTS 'vec_load_acl'@'localhost';
 Warnings:
 Note	3162	Authorization ID 'vec_load_acl'@'localhost' does not exist.
@@ -85,6 +95,8 @@ LOAD VECTOR DATA LOCAL INFILE 'vectors.fbin'
 FORMAT FBIN;
 ERROR 42000: Loading local data is disabled; this must be enabled on both the client and server sides
 SET GLOBAL local_infile = @old_local_infile;
+ERROR HY000: Incorrect arguments to LOAD VECTOR DATA staging source is not a regular file
+ERROR HY000: Incorrect arguments to LOAD VECTOR DATA staging source is not a regular file
 SELECT JSON_CONTAINS(
 VEC_INDEX_SEARCH('idx_load_standalone', VEC_FROMTEXT('[0,1]'), 1),
 CAST(202 AS JSON)) AS standalone_csv_visible;
@@ -225,6 +237,9 @@ generated_doc_0_visible	generated_doc_2_visible
 1	1
 SELECT VEC_INDEX_DROP('idx_load_transactional');
 VEC_INDEX_DROP('idx_load_transactional')
+1
+SELECT VEC_INDEX_DROP('idx_load_transactional_atomic');
+VEC_INDEX_DROP('idx_load_transactional_atomic')
 1
 SELECT VEC_INDEX_DROP('idx_load_standalone');
 VEC_INDEX_DROP('idx_load_standalone')

@@ -34,9 +34,11 @@
 #include "my_byteorder.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
+#include "scope_guard.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"
 #include "sql/binlog.h"
+#include "sql/debug_sync.h"
 #include "sql/log_event.h"
 #include "sql/mysqld.h"
 #include "sql/protocol.h"
@@ -46,6 +48,7 @@
 #include "sql/vector/item_vectorfunc_internal.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_load_file.h"
+#include "sql/vector/vector_load_staging.h"
 #include "sql/vector/vector_statement_publication.h"
 #include "sql/vector/vector_trx_participant.h"
 #endif
@@ -440,53 +443,101 @@ bool Sql_cmd_load_vector_index::execute(THD *thd) {
   }
 
   const bool is_standalone = info.consistency_mode == "standalone";
-
   uint64_t loaded_rows = 0;
   std::string error;
-  const bulk_load_reader load_reader =
-      format_fbin
-          ? make_fbin_load_reader(m_vector_filename, m_docid_filename,
-                                  info.dimension)
-          : make_csv_load_reader(m_vector_filename, nullptr);
-  uint64_t validated_rows = 0;
-  if (!validate_load_rows(load_reader, m_index_name, info.dimension,
-                          m_replace_duplicates, &validated_rows, &error)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0),
-             error.empty() ? k_load_vector_data_command : error.c_str());
-    return true;
-  }
   bool staged = false;
   if (is_standalone) {
     if (vector_trx_participant::in_user_multi_statement_transaction(thd)) {
       my_error(ER_LOCK_OR_ACTIVE_TRANSACTION, MYF(0));
       return true;
     }
-    loaded_rows = validated_rows;
-    vector_statement_publication::operation_payload payload;
-    payload.unsigned_values = {2, m_replace_duplicates ? 1U : 0U,
-                               m_rebuild_after_load ? 1U : 0U,
-                               info.dimension};
-    payload.string_values = {m_vector_filename, m_docid_filename,
-                             format_fbin ? "FBIN" : "CSV"};
-    std::string encoded;
-    staged = vector_statement_publication::encode_operation_payload(
-                 payload, &encoded) &&
-             vector_itemfunc_internal::stage_vector_statement_publication(
-                 thd, vector_index_truth_store::publication_operation::
-                          kBulkLoad,
-                 m_index_name, encoded, false);
-  } else {
-    staged = stage_transactional_load_rows(thd, m_index_name, load_reader,
-                                           &loaded_rows, &error);
   }
-  if (!staged) {
+
+  vector_index_truth_store::publication_intent intent;
+  if (!vector_index_registry::make_statement_publication_intent(
+          vector_index_truth_store::publication_operation::kBulkLoad,
+          m_index_name, std::string(), &intent)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), k_load_vector_data_command);
+    return true;
+  }
+  const vector_index::load_staging_identity staging_identity{
+      intent.index_name, intent.publication_id};
+  vector_index::load_staging_artifact staging_artifact;
+  const std::string normalized_format = format_fbin ? "FBIN" : "CSV";
+  if (!vector_index::stage_load_artifact(staging_identity, m_vector_filename,
+                                         m_docid_filename, normalized_format,
+                                         &staging_artifact, &error)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0),
              error.empty() ? k_load_vector_data_command : error.c_str());
     return true;
   }
+  auto staging_cleanup = create_scope_guard([&]() {
+    (void)vector_index::remove_load_staging_artifact(staging_identity);
+  });
 
-  if (!binlog_load_vector_rows(thd, m_index_name, info.dimension, load_reader,
-                               m_rebuild_after_load, is_standalone, &error)) {
+  vector_index::load_staging_paths staging_paths;
+  if (!vector_index::verify_load_artifact(staging_identity, staging_artifact,
+                                          normalized_format, &staging_paths,
+                                          &error)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0),
+             error.empty() ? k_load_vector_data_command : error.c_str());
+    return true;
+  }
+  DEBUG_SYNC(thd, "vector_load_after_staging");
+  const bulk_load_reader load_reader =
+      format_fbin
+          ? make_fbin_load_reader(staging_paths.vector_filename,
+                                  staging_paths.docid_filename, info.dimension)
+          : make_csv_load_reader(staging_paths.vector_filename, nullptr);
+
+  if (is_standalone) {
+    if (!validate_load_rows(load_reader, m_index_name, info.dimension,
+                            m_replace_duplicates, &loaded_rows, &error) ||
+        !binlog_load_vector_rows(thd, m_index_name, info.dimension, load_reader,
+                                 m_rebuild_after_load, true, &error)) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0),
+               error.empty() ? k_load_vector_data_command : error.c_str());
+      return true;
+    }
+
+    vector_statement_publication::operation_payload payload;
+    std::vector<vector_index_truth_store::publication_intent> intents;
+    if (vector_index::make_load_staging_payload(
+            staging_identity, staging_artifact, m_replace_duplicates,
+            m_rebuild_after_load, info.dimension, normalized_format,
+            &payload) &&
+        vector_statement_publication::encode_operation_payload(
+            payload, &intent.payload)) {
+      intents.push_back(std::move(intent));
+      staged = vector_trx_participant::stage_statement_publication(
+          thd, std::move(intents), false);
+    }
+    if (!staged) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), k_load_vector_data_command);
+      return true;
+    }
+    staging_cleanup.release();
+  } else {
+    if (!validate_load_rows(load_reader, m_index_name, info.dimension,
+                            m_replace_duplicates, &loaded_rows, &error)) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0),
+               error.empty() ? k_load_vector_data_command : error.c_str());
+      return true;
+    }
+    uint64_t staged_rows = 0;
+    staged = stage_transactional_load_rows(thd, m_index_name, load_reader,
+                                           &staged_rows, &error);
+    if (staged && staged_rows != loaded_rows) {
+      error = "LOAD VECTOR DATA staged row count mismatch";
+      staged = false;
+    }
+    if (staged) {
+      staged = binlog_load_vector_rows(thd, m_index_name, info.dimension,
+                                       load_reader, m_rebuild_after_load, false,
+                                       &error);
+    }
+  }
+  if (!staged) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0),
              error.empty() ? k_load_vector_data_command : error.c_str());
     return true;

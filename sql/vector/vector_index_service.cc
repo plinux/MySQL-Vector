@@ -114,6 +114,19 @@ bool parse_manifest_size(const std::string &text, size_t *value) {
   return true;
 }
 
+bool valid_load_receipt(const standalone_load_receipt &receipt) {
+  return receipt.publication_id != 0 && !receipt.artifact_identity.empty() &&
+         receipt.artifact_identity.find_first_of("\t\r\n") == std::string::npos;
+}
+
+bool load_receipts_equal(const standalone_load_receipt &lhs,
+                         const standalone_load_receipt &rhs) {
+  return lhs.publication_id == rhs.publication_id &&
+         lhs.artifact_identity == rhs.artifact_identity &&
+         lhs.vector_checksum == rhs.vector_checksum &&
+         lhs.docid_checksum == rhs.docid_checksum;
+}
+
 void remove_file_if_exists(const std::string &path) {
   std::error_code ignored;
   std::filesystem::remove(path, ignored);
@@ -241,7 +254,7 @@ bool copy_or_link_file(const std::string &source, const std::string &target) {
     remove_file_if_exists(target);
     return false;
   }
-  return true;
+  return sync_file_and_parent(target);
 }
 
 bool write_generated_docid_file(const std::string &path, uint64_t row_count) {
@@ -263,7 +276,7 @@ bool write_generated_docid_file(const std::string &path, uint64_t row_count) {
     remove_file_if_exists(path);
     return false;
   }
-  return true;
+  return sync_file_and_parent(path);
 }
 
 bool detect_dense_docid_file(const std::string &path, uint64_t row_count,
@@ -1014,11 +1027,26 @@ bool standalone_entry_store::upsert(const std::string &index_name,
   return flush_if_needed(index_name, &state_it->second, cache_budget);
 }
 
-bool standalone_entry_store::bulk_upsert(const std::string &index_name,
-                                         const committed_entries &entries) {
+bool standalone_entry_store::bulk_upsert(
+    const std::string &index_name, const committed_entries &entries,
+    const standalone_load_receipt *receipt) {
   auto state_it = m_indexes.find(index_name);
-  if (state_it == m_indexes.end()) return false;
-  if (entries.empty()) return true;
+  if (state_it == m_indexes.end() ||
+      (receipt != nullptr && !valid_load_receipt(*receipt))) {
+    return false;
+  }
+  if (entries.empty()) {
+    if (receipt == nullptr) return true;
+    const index_state before_bulk = state_it->second;
+    state_it->second.load_receipt = *receipt;
+    const manifest_save_result save_result =
+        save_manifest(index_name, state_it->second);
+    if (save_result == manifest_save_result::kPublishedDurable) return true;
+    if (save_result == manifest_save_result::kNotPublished) {
+      state_it->second = before_bulk;
+    }
+    return false;
+  }
 
   for (const auto &entry : entries) {
     if (entry.second.size() != state_it->second.dimension) return false;
@@ -1074,6 +1102,10 @@ bool standalone_entry_store::bulk_upsert(const std::string &index_name,
     remove_file_if_exists(path);
     return false;
   }
+  if (!sync_file_and_parent(path)) {
+    remove_file_if_exists(path);
+    return false;
+  }
 
   std::error_code ec;
   const uintmax_t file_bytes = std::filesystem::file_size(path, ec);
@@ -1098,6 +1130,7 @@ bool standalone_entry_store::bulk_upsert(const std::string &index_name,
   }
   state_it->second.generation = state_it->second.segments.back().generation;
   state_it->second.build_source = build_source_for_state(state_it->second);
+  if (receipt != nullptr) state_it->second.load_receipt = *receipt;
 
   const manifest_save_result save_result =
       save_manifest(index_name, state_it->second);
@@ -1114,11 +1147,25 @@ bool standalone_entry_store::bulk_upsert(const std::string &index_name,
 bool standalone_entry_store::bulk_upsert_raw_files(
     const std::string &index_name, const std::string &vector_filename,
     const std::string &docid_filename, uint64_t row_count, size_t dimension,
-    uint64_t row_limit, std::unordered_set<uint64_t> *loaded_doc_ids) {
+    uint64_t row_limit, std::unordered_set<uint64_t> *loaded_doc_ids,
+    const standalone_load_receipt *receipt) {
   auto state_it = m_indexes.find(index_name);
-  if (state_it == m_indexes.end() || dimension != state_it->second.dimension)
+  if (state_it == m_indexes.end() || dimension != state_it->second.dimension ||
+      (receipt != nullptr && !valid_load_receipt(*receipt))) {
     return false;
-  if (row_count == 0) return true;
+  }
+  if (row_count == 0) {
+    if (receipt == nullptr) return true;
+    const index_state before_bulk = state_it->second;
+    state_it->second.load_receipt = *receipt;
+    const manifest_save_result save_result =
+        save_manifest(index_name, state_it->second);
+    if (save_result == manifest_save_result::kPublishedDurable) return true;
+    if (save_result == manifest_save_result::kNotPublished) {
+      state_it->second = before_bulk;
+    }
+    return false;
+  }
   if (row_count > std::numeric_limits<size_t>::max()) return false;
 
   vector_load_file_info file_info;
@@ -1226,6 +1273,10 @@ bool standalone_entry_store::bulk_upsert_raw_files(
       if (!vector_file || !docid_file) return false;
 
       standalone_segment &segment = new_segments.back();
+      if (!sync_file_and_parent(segment.vector_path) ||
+          !sync_file_and_parent(segment.docid_path)) {
+        return false;
+      }
       size_t vector_bytes = 0;
       size_t docid_bytes = 0;
       if (!file_size_as_size(segment.vector_path, &vector_bytes) ||
@@ -1310,6 +1361,7 @@ bool standalone_entry_store::bulk_upsert_raw_files(
     uint64_t generation;
     uint64_t next_segment_id;
     std::string build_source;
+    standalone_load_receipt load_receipt;
     std::vector<uint64_t> inserted_live_doc_ids;
   } journal{state_it->second.segments.size(),
             state_it->second.raw_locator_runs.size(),
@@ -1317,6 +1369,7 @@ bool standalone_entry_store::bulk_upsert_raw_files(
             state_it->second.generation,
             state_it->second.next_segment_id,
             state_it->second.build_source,
+            state_it->second.load_receipt,
             {}};
   const auto rollback_publish = [&state_it, &journal]() {
     for (const uint64_t doc_id : journal.inserted_live_doc_ids) {
@@ -1328,6 +1381,7 @@ bool standalone_entry_store::bulk_upsert_raw_files(
     state_it->second.generation = journal.generation;
     state_it->second.next_segment_id = journal.next_segment_id;
     state_it->second.build_source = journal.build_source;
+    state_it->second.load_receipt = journal.load_receipt;
   };
 
   state_it->second.segments.insert(state_it->second.segments.end(),
@@ -1364,6 +1418,7 @@ bool standalone_entry_store::bulk_upsert_raw_files(
   state_it->second.entry_count = state_it->second.live_doc_ids.size();
   state_it->second.generation = state_it->second.segments.back().generation;
   state_it->second.build_source = build_source_for_state(state_it->second);
+  if (receipt != nullptr) state_it->second.load_receipt = *receipt;
 
   const manifest_save_result save_result =
       save_manifest(index_name, state_it->second);
@@ -1375,6 +1430,14 @@ bool standalone_entry_store::bulk_upsert_raw_files(
     return false;
   }
   return true;
+}
+
+bool standalone_entry_store::load_receipt_matches(
+    const std::string &index_name,
+    const standalone_load_receipt &receipt) const {
+  const auto state_it = m_indexes.find(index_name);
+  return state_it != m_indexes.end() && valid_load_receipt(receipt) &&
+         load_receipts_equal(state_it->second.load_receipt, receipt);
 }
 
 bool standalone_entry_store::erase(const std::string &index_name,
@@ -2477,6 +2540,10 @@ bool standalone_entry_store::flush_index(const std::string &index_name,
     remove_file_if_exists(path);
     return false;
   }
+  if (!sync_file_and_parent(path)) {
+    remove_file_if_exists(path);
+    return false;
+  }
 
   std::error_code ec;
   const uintmax_t file_bytes = std::filesystem::file_size(path, ec);
@@ -2545,6 +2612,10 @@ bool standalone_entry_store::load_manifest(const std::string &index_name,
   bool saw_generation = false;
   bool saw_next_segment_id = false;
   bool saw_segment_count = false;
+  bool saw_load_publication_id = false;
+  bool saw_load_artifact_identity = false;
+  bool saw_load_vector_checksum = false;
+  bool saw_load_docid_checksum = false;
 
   std::string line;
   while (std::getline(file, line)) {
@@ -2595,6 +2666,42 @@ bool standalone_entry_store::load_manifest(const std::string &index_name,
     if (fields[0] == "build_source") {
       if (fields.size() != 2) return false;
       loaded.build_source = fields[1];
+      continue;
+    }
+    if (fields[0] == "load_publication_id") {
+      if (saw_load_publication_id || fields.size() != 2 ||
+          !detail::parse_uint64(fields[1],
+                                &loaded.load_receipt.publication_id)) {
+        return false;
+      }
+      saw_load_publication_id = true;
+      continue;
+    }
+    if (fields[0] == "load_artifact_identity") {
+      if (saw_load_artifact_identity || fields.size() != 2 ||
+          fields[1].find_first_of("\t\r\n") != std::string::npos) {
+        return false;
+      }
+      loaded.load_receipt.artifact_identity = fields[1];
+      saw_load_artifact_identity = true;
+      continue;
+    }
+    if (fields[0] == "load_vector_checksum") {
+      if (saw_load_vector_checksum || fields.size() != 2 ||
+          !detail::parse_uint64(fields[1],
+                                &loaded.load_receipt.vector_checksum)) {
+        return false;
+      }
+      saw_load_vector_checksum = true;
+      continue;
+    }
+    if (fields[0] == "load_docid_checksum") {
+      if (saw_load_docid_checksum || fields.size() != 2 ||
+          !detail::parse_uint64(fields[1],
+                                &loaded.load_receipt.docid_checksum)) {
+        return false;
+      }
+      saw_load_docid_checksum = true;
       continue;
     }
     if (fields[0] == "segment" || fields[0] == "segment_delta") {
@@ -2662,9 +2769,17 @@ bool standalone_entry_store::load_manifest(const std::string &index_name,
   }
 
   if (!saw_dimension || !saw_entry_count || !saw_generation ||
-      !saw_next_segment_id || !saw_segment_count ||
-      manifest_dimension != state->dimension ||
-      loaded.segments.size() != expected_segment_count) {
+      !saw_next_segment_id || !saw_segment_count || !saw_load_publication_id ||
+      !saw_load_artifact_identity || !saw_load_vector_checksum ||
+      !saw_load_docid_checksum || manifest_dimension != state->dimension ||
+      loaded.segments.size() != expected_segment_count ||
+      ((loaded.load_receipt.publication_id == 0) !=
+       loaded.load_receipt.artifact_identity.empty()) ||
+      (loaded.load_receipt.publication_id == 0 &&
+       (loaded.load_receipt.vector_checksum != 0 ||
+        loaded.load_receipt.docid_checksum != 0)) ||
+      (loaded.load_receipt.publication_id != 0 &&
+       !valid_load_receipt(loaded.load_receipt))) {
     return false;
   }
 
@@ -2705,7 +2820,12 @@ standalone_entry_store::save_manifest(const std::string &index_name,
        << "build_source\t"
        << (state.build_source.empty() ? build_source_for_state(state)
                                       : state.build_source)
-       << '\n';
+       << '\n'
+       << "load_publication_id\t" << state.load_receipt.publication_id << '\n'
+       << "load_artifact_identity\t" << state.load_receipt.artifact_identity
+       << '\n'
+       << "load_vector_checksum\t" << state.load_receipt.vector_checksum << '\n'
+       << "load_docid_checksum\t" << state.load_receipt.docid_checksum << '\n';
   for (const standalone_segment &segment : state.segments) {
     if (segment.kind == standalone_segment_kind::kRawFbin) {
       file << "segment_raw_fbin\t"
@@ -3001,6 +3121,12 @@ std::unique_ptr<backend> build_backend_from_config(
     const std::string &index_name,
     const vector_index::index_service::index_config &config) {
   if (config_rejects_diskann_build_mode(config)) {
+    return nullptr;
+  }
+  if ((config.faiss_pq_m != 0 || config.faiss_pq_bits != 0) &&
+      !valid_faiss_ivf_pq_config(config.dimension, config.faiss_nlist,
+                                 config.faiss_nprobe, config.faiss_pq_m,
+                                 config.faiss_pq_bits)) {
     return nullptr;
   }
 
@@ -6180,6 +6306,10 @@ bool index_service::set_faiss_ivf_pq_params(const std::string &index_name,
     return false;
 
   if (config_it->second.provider != backend_provider::kFaiss) return false;
+  if (!valid_faiss_ivf_pq_config(config_it->second.dimension, faiss_nlist,
+                                 faiss_nprobe, faiss_pq_m, faiss_pq_bits)) {
+    return false;
+  }
   if (config_it->second.faiss_nlist != faiss_nlist ||
       config_it->second.faiss_pq_m != faiss_pq_m ||
       config_it->second.faiss_pq_bits != faiss_pq_bits) {
@@ -7140,10 +7270,10 @@ bool index_service::direct_upsert(const std::string &index_name,
   return true;
 }
 
-bool index_service::bulk_upsert_from_reader(const std::string &index_name,
-                                            const bulk_load_reader &reader,
-                                            const bulk_load_options &options,
-                                            std::string *error) {
+bool index_service::bulk_upsert_from_reader(
+    const std::string &index_name, const bulk_load_reader &reader,
+    const bulk_load_options &options, std::string *error,
+    const standalone_load_receipt *receipt) {
   if (error != nullptr) error->clear();
   auto config_it = m_index_configs.find(index_name);
   auto lifecycle_it = m_lifecycle_infos.find(index_name);
@@ -7221,7 +7351,7 @@ bool index_service::bulk_upsert_from_reader(const std::string &index_name,
 
   if (config_it->second.consistency_mode ==
       index_consistency_mode::kStandalone) {
-    if (!m_standalone_store.bulk_upsert(index_name, staged_entries)) {
+    if (!m_standalone_store.bulk_upsert(index_name, staged_entries, receipt)) {
       mark_lifecycle_failure(&lifecycle_it->second, ERROR_REPLAY_STATE_FAILED);
       set_bulk_load_error(error, "LOAD VECTOR DATA could not publish rows");
       return false;
@@ -7269,7 +7399,8 @@ bool index_service::bulk_upsert_from_reader(const std::string &index_name,
 bool index_service::bulk_upsert_from_raw_files(
     const std::string &index_name, const std::string &vector_filename,
     const std::string &docid_filename, const bulk_load_options &options,
-    uint64_t *loaded_rows, std::string *error) {
+    uint64_t *loaded_rows, std::string *error,
+    const standalone_load_receipt *receipt) {
   if (error != nullptr) error->clear();
   if (loaded_rows != nullptr) *loaded_rows = 0;
   auto config_it = m_index_configs.find(index_name);
@@ -7378,7 +7509,7 @@ bool index_service::bulk_upsert_from_raw_files(
 
   if (!m_standalone_store.bulk_upsert_raw_files(
           index_name, vector_filename, docid_filename, file_info.row_count,
-          file_info.dimension, row_limit, &seen_doc_ids)) {
+          file_info.dimension, row_limit, &seen_doc_ids, receipt)) {
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_REPLAY_STATE_FAILED);
     set_bulk_load_error(error, "LOAD VECTOR DATA could not publish raw files");
     return false;
@@ -7389,6 +7520,12 @@ bool index_service::bulk_upsert_from_raw_files(
 
   mark_lifecycle_bulk_loading(&lifecycle_it->second);
   return true;
+}
+
+bool index_service::standalone_load_receipt_matches(
+    const std::string &index_name,
+    const standalone_load_receipt &receipt) const {
+  return m_standalone_store.load_receipt_matches(index_name, receipt);
 }
 
 bool index_service::direct_erase(const std::string &index_name,

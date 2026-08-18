@@ -50,6 +50,14 @@ enum class index_rename_result {
   kDurabilityUnknown
 };
 
+/** Durable receipt proving one standalone LOAD publication completed. */
+struct standalone_load_receipt {
+  uint64_t publication_id{0};
+  std::string artifact_identity;
+  uint64_t vector_checksum{0};
+  uint64_t docid_checksum{0};
+};
+
 /**
   Bounded committed vector entry cache.
 
@@ -143,12 +151,16 @@ class standalone_entry_store {
   bool upsert(const std::string &index_name, uint64_t doc_id,
               const vector_data &vector, size_t cache_budget);
   bool bulk_upsert(const std::string &index_name,
-                   const committed_entries &entries);
+                   const committed_entries &entries,
+                   const standalone_load_receipt *receipt = nullptr);
   bool bulk_upsert_raw_files(
       const std::string &index_name, const std::string &vector_filename,
       const std::string &docid_filename, uint64_t row_count, size_t dimension,
       uint64_t row_limit,
-      std::unordered_set<uint64_t> *loaded_doc_ids = nullptr);
+      std::unordered_set<uint64_t> *loaded_doc_ids = nullptr,
+      const standalone_load_receipt *receipt = nullptr);
+  bool load_receipt_matches(const std::string &index_name,
+                            const standalone_load_receipt &receipt) const;
   bool erase(const std::string &index_name, uint64_t doc_id,
              size_t cache_budget);
   bool prepare_raw_segments_for_rebuild(const std::string &index_name);
@@ -230,6 +242,7 @@ class standalone_entry_store {
     uint64_t generation{0};
     uint64_t next_segment_id{1};
     std::string build_source{"memory"};
+    standalone_load_receipt load_receipt;
   };
 
   bool flush_index(const std::string &index_name, index_state *state);
@@ -678,15 +691,18 @@ class index_service {
   bool restore_committed_state_for_startup(const committed_state &state);
   bool direct_upsert(const std::string &index_name, uint64_t doc_id,
                      const vector_data &vector);
-  bool bulk_upsert_from_reader(const std::string &index_name,
-                               const bulk_load_reader &reader,
-                               const bulk_load_options &options,
-                               std::string *error);
-  bool bulk_upsert_from_raw_files(const std::string &index_name,
-                                  const std::string &vector_filename,
-                                  const std::string &docid_filename,
-                                  const bulk_load_options &options,
-                                  uint64_t *loaded_rows, std::string *error);
+  bool bulk_upsert_from_reader(
+      const std::string &index_name, const bulk_load_reader &reader,
+      const bulk_load_options &options, std::string *error,
+      const standalone_load_receipt *receipt = nullptr);
+  bool bulk_upsert_from_raw_files(
+      const std::string &index_name, const std::string &vector_filename,
+      const std::string &docid_filename, const bulk_load_options &options,
+      uint64_t *loaded_rows, std::string *error,
+      const standalone_load_receipt *receipt = nullptr);
+  bool standalone_load_receipt_matches(
+      const std::string &index_name,
+      const standalone_load_receipt &receipt) const;
   bool direct_erase(const std::string &index_name, uint64_t doc_id);
   bool replace_committed_entries(const std::string &index_name,
                                  const committed_entries &entries);

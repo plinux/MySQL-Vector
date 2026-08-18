@@ -360,6 +360,13 @@ void write_raw_docid_file(const std::string &path,
   ASSERT_TRUE(file.good());
 }
 
+void write_text_file(const std::string &path, const std::string &content) {
+  std::ofstream file(path, std::ios::trunc);
+  ASSERT_TRUE(file.good());
+  file << content;
+  ASSERT_TRUE(file.good());
+}
+
 bool hnswlib_tuning_supported() {
   std::unique_ptr<vector_index::backend> backend =
       vector_index::create_backend(2, vector_index::metric_type::kEuclidean,
@@ -1289,6 +1296,12 @@ TEST_F(ItemVectorFuncFixture, RebuildAllAndRecoverAllItemsCoverErrorAndSuccess) 
     thd()->clear_error();
     Server_initializer::set_expected_error(0);
   }
+}
+
+TEST_F(ItemVectorFuncFixture, MutatingItemsRemainNonConstantOverLiterals) {
+  Item_func_vec_index_rebuild_all item{POS()};
+  EXPECT_TRUE(item.walk(&Item::is_non_const_over_literals, enum_walk::POSTFIX,
+                        nullptr));
 }
 
 TEST_F(ItemVectorFuncFixture, IndexAdminItemsCoverSuccessAndErrorPaths) {
@@ -2298,6 +2311,142 @@ TEST_F(ItemVectorFuncFixture, LoadVectorCommandImportsRawFiles) {
   std::filesystem::remove_all(root, ec);
 }
 
+TEST_F(ItemVectorFuncFixture,
+       LoadVectorCommandCoversCsvDuplicateReplaceAndTransactionalPaths) {
+  const std::string unique_suffix =
+      "_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+  const std::string root = std::string(testing::TempDir()) +
+                           "/load_vector_command_csv" + unique_suffix;
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  vector_root_guard vector_root(root + "/managed");
+  controlled_truth_store store;
+  TruthStoreOverrideGuard truth_store_override(&store);
+  FileAccessGuard file_access(thd());
+  SecureFilePrivGuard secure_file_priv("");
+
+  const std::string standalone_index =
+      "idx_load_csv_standalone" + unique_suffix;
+  vector_index_registry::create_index_options standalone_options;
+  standalone_options.consistency_mode_specified = true;
+  standalone_options.consistency_mode =
+      vector_index::index_consistency_mode::kStandalone;
+  ASSERT_TRUE(vector_index_registry::create_index(
+      standalone_index, 2, "euclidean", "memory", "native",
+      standalone_options));
+
+  const auto run_command = [&](const std::string &path,
+                               const std::string &index_name,
+                               bool replace_duplicates, uint expected_error) {
+    auto *command = new (thd()->mem_root) Sql_cmd_load_vector_index(
+        false, make_lex_string(path.c_str()), make_lex_string(""),
+        make_lex_string(index_name.c_str()), make_lex_string("CSV"),
+        replace_duplicates, false);
+    Server_initializer::set_expected_error(expected_error);
+    const bool failed = command->execute(thd());
+    if (expected_error == 0) {
+      EXPECT_FALSE(failed);
+      EXPECT_FALSE(thd()->is_error());
+    } else {
+      EXPECT_TRUE(failed);
+      thd()->clear_error();
+    }
+    thd()->get_stmt_da()->reset_diagnostics_area();
+    thd()->get_stmt_da()->reset_condition_info(thd());
+    Server_initializer::set_expected_error(0);
+  };
+
+  const std::string duplicate_path = root + "/duplicate.csv";
+  write_text_file(duplicate_path, "doc_id,vector\n5,\"[1,0]\"\n5,\"[0,1]\"\n");
+  run_command(duplicate_path, standalone_index, false, ER_WRONG_ARGUMENTS);
+  run_command(duplicate_path, standalone_index, true, 0);
+  ASSERT_EQ(1U, store.attached_publication_intents.size());
+  commit_statement_publication(thd(), &store);
+  run_command(duplicate_path, standalone_index, false, ER_WRONG_ARGUMENTS);
+
+  const std::string wrong_dimension_path = root + "/wrong-dimension.csv";
+  write_text_file(wrong_dimension_path, "doc_id,vector\n7,\"[1,2,3]\"\n");
+  run_command(wrong_dimension_path, standalone_index, false,
+              ER_WRONG_ARGUMENTS);
+
+  const ulonglong original_option_bits = thd()->variables.option_bits;
+  thd()->variables.option_bits |= OPTION_BEGIN;
+  const std::string single_path = root + "/single.csv";
+  write_text_file(single_path, "doc_id,vector\n8,\"[1,1]\"\n");
+  run_command(single_path, standalone_index, false,
+              ER_LOCK_OR_ACTIVE_TRANSACTION);
+  thd()->variables.option_bits = original_option_bits;
+
+  const std::string transactional_index =
+      "idx_load_csv_transactional" + unique_suffix;
+  ASSERT_TRUE(vector_index_registry::create_index(
+      transactional_index, 2, "euclidean", "memory", "native"));
+  run_command(single_path, transactional_index, false, 0);
+  EXPECT_EQ(0, vector_trx_participant::commit_for_testing(thd(), true));
+
+  thd()->killed = THD::KILL_QUERY;
+  run_command(single_path, transactional_index, true, ER_WRONG_ARGUMENTS);
+  thd()->killed = THD::NOT_KILLED;
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(ItemVectorFuncFixture, LoadVectorCommandRollbackRemovesManagedInput) {
+  const std::string unique_suffix =
+      "_" + std::to_string(reinterpret_cast<uintptr_t>(this));
+  const std::string index_name = "idx_load_rollback_cmd" + unique_suffix;
+  const std::string root = std::string(testing::TempDir()) +
+                           "/load_vector_command_rollback" + unique_suffix;
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+
+  const std::string vector_path = root + "/vectors.fbin";
+  const std::string docid_path = root + "/vectors.u64";
+  write_raw_fbin_file(vector_path, 1, 2, {1.0F, 0.0F});
+  write_raw_docid_file(docid_path, {101});
+
+  controlled_truth_store store;
+  vector_root_guard vector_root(root + "/managed");
+  TruthStoreOverrideGuard truth_store_override(&store);
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "native", options));
+
+  FileAccessGuard file_access(thd());
+  SecureFilePrivGuard secure_file_priv("");
+  auto *command = new (thd()->mem_root) Sql_cmd_load_vector_index(
+      false, make_lex_string(vector_path.c_str()),
+      make_lex_string(docid_path.c_str()), make_lex_string(index_name.c_str()),
+      make_lex_string("FBIN"), false, false);
+  ASSERT_FALSE(command->execute(thd()));
+  ASSERT_EQ(1U, store.attached_publication_intents.size());
+
+  const auto &intent = store.attached_publication_intents.front();
+  vector_statement_publication::operation_payload payload;
+  ASSERT_TRUE(vector_statement_publication::decode_operation_payload(
+      intent.payload, &payload));
+  vector_index::load_staging_artifact artifact;
+  ASSERT_TRUE(vector_index::parse_load_staging_payload(
+      {intent.index_name, intent.publication_id}, payload, &artifact, nullptr,
+      nullptr, nullptr, nullptr));
+  vector_index::load_staging_paths paths;
+  std::string error;
+  ASSERT_TRUE(vector_index::verify_load_artifact(
+      {intent.index_name, intent.publication_id}, artifact, "FBIN", &paths,
+      &error))
+      << error;
+
+  rollback_statement_publication(thd(), &store);
+  EXPECT_FALSE(std::filesystem::exists(paths.vector_filename));
+  EXPECT_FALSE(std::filesystem::exists(paths.docid_filename));
+  std::filesystem::remove_all(root, ec);
+}
+
 TEST_F(ItemVectorFuncFixture, UpsertBatchCoversStandaloneReaderEdges) {
   const std::string index_name =
       "idx_upsert_batch_item_" +
@@ -2349,6 +2498,27 @@ TEST_F(ItemVectorFuncFixture, UpsertBatchCoversStandaloneReaderEdges) {
       POS(), make_item_list({make_string_item(index_name.c_str()),
                              make_null_marked_string_item("docids"),
                              make_binary_blob_item(vectors), new Item_uint(2)})));
+  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
+      POS(),
+      make_item_list({make_null_marked_string_item("index"),
+                      make_binary_blob_item(docids),
+                      make_binary_blob_item(vectors), new Item_uint(2)})));
+  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
+      POS(),
+      make_item_list(
+          {make_string_item(index_name.c_str()), make_binary_blob_item(docids),
+           make_null_marked_string_item("vectors"), new Item_uint(2)})));
+  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
+      POS(),
+      make_item_list({make_string_item("idx_batch_missing"),
+                      make_binary_blob_item(docids),
+                      make_binary_blob_item(vectors), new Item_uint(2)})));
+  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
+      POS(),
+      make_item_list(
+          {make_string_item(index_name.c_str()), make_binary_blob_item(docids),
+           make_binary_blob_item(binary_vector_payload({1.0F, 0.0F, 0.0F})),
+           new Item_uint(2)})));
 
   const std::string non_finite_vectors = binary_vector_payload(
       {std::numeric_limits<float>::quiet_NaN(), 0.0F});
@@ -2371,6 +2541,18 @@ TEST_F(ItemVectorFuncFixture, UpsertBatchCoversStandaloneReaderEdges) {
   thd()->killed = THD::NOT_KILLED;
   thd()->clear_error();
   Server_initializer::set_expected_error(0);
+
+  const std::string transactional_index = index_name + "_transactional";
+  ASSERT_TRUE(vector_index_registry::create_index(
+      transactional_index, 2, "euclidean", "memory", "native"));
+  auto *transactional_item = new Item_func_vec_index_upsert_batch(
+      POS(),
+      make_item_list({make_string_item(transactional_index.c_str()),
+                      make_binary_blob_item(docids),
+                      make_binary_blob_item(vectors), new Item_uint(2)}));
+  fix_item(thd(), transactional_item);
+  EXPECT_EQ(2, transactional_item->val_int());
+  commit_statement_publication(thd(), &store);
 }
 
 TEST_F(ItemVectorFuncFixture, ItemTuningItemsRejectUnsupportedBackends) {

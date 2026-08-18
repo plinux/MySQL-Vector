@@ -1892,14 +1892,14 @@ bool bulk_upsert_from_reader(
     const std::string &index_name,
     const vector_index::index_service::bulk_load_reader &reader,
     const vector_index::index_service::bulk_load_options &options,
-    std::string *error) {
+    std::string *error, const vector_index::standalone_load_receipt *receipt) {
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   runtime_state_snapshot snapshot;
   if (!capture_runtime_state_locked(&snapshot)) return false;
 
   if (!g_index_service.bulk_upsert_from_reader(index_name, reader, options,
-                                               error)) {
+                                               error, receipt)) {
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
   return persist_registry_state_or_rollback_locked(snapshot, true);
@@ -1909,7 +1909,8 @@ bool bulk_upsert_from_raw_files(
     const std::string &index_name, const std::string &vector_filename,
     const std::string &docid_filename,
     const vector_index::index_service::bulk_load_options &options,
-    uint64_t *loaded_rows, std::string *error) {
+    uint64_t *loaded_rows, std::string *error,
+    const vector_index::standalone_load_receipt *receipt) {
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   runtime_state_snapshot snapshot;
@@ -1917,7 +1918,7 @@ bool bulk_upsert_from_raw_files(
 
   if (!g_index_service.bulk_upsert_from_raw_files(
           index_name, vector_filename, docid_filename, options, loaded_rows,
-          error)) {
+          error, receipt)) {
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
   return persist_registry_state_or_rollback_locked(snapshot, true);
