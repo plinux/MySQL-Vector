@@ -27,6 +27,8 @@
 #include <cmath>
 #include <limits>
 
+#include "sql/vector/vector_segmented_search.h"
+
 namespace vector_index {
 
 namespace {
@@ -46,7 +48,9 @@ uint32_t clamp_u64_to_u32(uint64_t value) {
 
 uint32_t clamp_pq_chunks(uint64_t chunks, uint32_t dimension) {
   const uint64_t adjusted = std::max<uint64_t>(1, chunks);
-  return clamp_u64_to_u32(std::min<uint64_t>(adjusted, dimension));
+  return clamp_u64_to_u32(
+      std::min<uint64_t>(
+          {adjusted, dimension, k_max_diskann_disk_pq_dims}));
 }
 
 uint64_t ceil_to_u64(long double value) {
@@ -99,19 +103,19 @@ bool diskann_node_fits_sector(uint32_t dimension, uint32_t max_degree,
 }
 
 uint32_t effective_disk_pq_dims(uint32_t dimension, uint32_t max_degree,
-                                uint32_t disk_pq_dims,
-                                uint32_t pq_chunks) {
+                                uint32_t disk_pq_dims) {
   if (dimension == 0) return 0;
-  if (disk_pq_dims != 0) return std::min(disk_pq_dims, dimension);
+  if (disk_pq_dims != 0) {
+    return std::min<uint32_t>(
+        {disk_pq_dims, dimension, k_max_diskann_disk_pq_dims});
+  }
   if (diskann_node_fits_sector(dimension, max_degree, 0)) return 0;
 
   const uint32_t max_safe_dims =
       diskann_max_disk_pq_dims_for_sector(max_degree);
   if (max_safe_dims == 0) return 0;
-
-  const uint32_t bounded_chunks =
-      pq_chunks == 0 ? dimension : std::min(pq_chunks, dimension);
-  return std::min(bounded_chunks, max_safe_dims);
+  return std::min<uint32_t>(
+      {dimension, max_safe_dims, k_max_diskann_disk_pq_dims});
 }
 
 uint64_t cache_nodes_from_budget(uint64_t cache_budget_size,
@@ -120,6 +124,41 @@ uint64_t cache_nodes_from_budget(uint64_t cache_budget_size,
   return floor_to_u64(static_cast<long double>(cache_budget_size) /
                       (static_cast<long double>(cached_node_size) *
                        k_diskann_cache_expansion_rate));
+}
+
+uint32_t normalize_search_complexity(uint32_t manual_search_complexity) {
+  return manual_search_complexity == 0 ? k_default_diskann_search_complexity
+                                       : manual_search_complexity;
+}
+
+uint32_t profile_search_complexity(uint32_t fanout_segments,
+                                   diskann_search_profile profile,
+                                   diskann_search_profile_reason &reason) {
+  const bool many_segments = fanout_segments >= 32;
+  switch (profile) {
+    case diskann_search_profile::kManual:
+      reason = diskann_search_profile_reason::kManual;
+      return 0;
+    case diskann_search_profile::kFast:
+      reason = diskann_search_profile_reason::kFast;
+      return 800;
+    case diskann_search_profile::kBalanced:
+      if (many_segments) {
+        reason = diskann_search_profile_reason::kBalancedManySegments;
+        return 1200;
+      }
+      reason = diskann_search_profile_reason::kBalancedFewSegments;
+      return 2400;
+    case diskann_search_profile::kHighRecall:
+      if (many_segments) {
+        reason = diskann_search_profile_reason::kHighRecallManySegments;
+        return 1600;
+      }
+      reason = diskann_search_profile_reason::kHighRecallFewSegments;
+      return 3200;
+  }
+  reason = diskann_search_profile_reason::kManual;
+  return 0;
 }
 
 }  // namespace
@@ -144,13 +183,15 @@ bool make_diskann_segment_budget(const diskann_segment_budget_input &input,
     chunks = pq_code_budget_size / input.row_count;
   }
 
-  const uint32_t pq_chunks = clamp_pq_chunks(chunks, input.dimension);
   const uint32_t disk_pq_dims = effective_disk_pq_dims(
-      input.dimension, input.max_degree, input.disk_pq_dims, pq_chunks);
+      input.dimension, input.max_degree, input.disk_pq_dims);
   if (!diskann_node_fits_sector(input.dimension, input.max_degree,
                                 disk_pq_dims)) {
     return false;
   }
+  const uint32_t pq_chunks =
+      disk_pq_dims == 0 ? clamp_pq_chunks(chunks, input.dimension)
+                        : disk_pq_dims;
 
   uint64_t cache_nodes = 0;
   const uint64_t cached_node_size =
@@ -182,6 +223,86 @@ bool make_diskann_segment_budget(const diskann_segment_budget_input &input,
   budget->build_memory_gb =
       static_cast<double>(build_memory_size) / k_bytes_per_gib;
   return budget->pq_chunks != 0;
+}
+
+bool choose_diskann_search_budget(uint32_t requested_top_k,
+                                  uint32_t fanout_segments,
+                                  uint64_t segment_min_entries [[maybe_unused]],
+                                  uint64_t segment_max_entries,
+                                  uint32_t manual_search_complexity,
+                                  diskann_search_profile profile,
+                                  diskann_search_budget *budget) {
+  if (budget == nullptr || requested_top_k == 0 || fanout_segments == 0 ||
+      segment_max_entries == 0) {
+    return false;
+  }
+
+  diskann_search_profile_reason reason = diskann_search_profile_reason::kManual;
+  const uint32_t manual_complexity =
+      normalize_search_complexity(manual_search_complexity);
+  uint32_t effective_complexity = manual_complexity;
+  const uint32_t profile_complexity =
+      profile_search_complexity(fanout_segments, profile, reason);
+  if (profile != diskann_search_profile::kManual &&
+      profile_complexity > effective_complexity) {
+    effective_complexity = profile_complexity;
+  } else if (profile != diskann_search_profile::kManual &&
+             manual_complexity >= profile_complexity) {
+    reason = diskann_search_profile_reason::kManualHigher;
+  }
+  const uint32_t min_complexity =
+      requested_top_k == std::numeric_limits<uint32_t>::max()
+          ? requested_top_k
+          : requested_top_k + 1;
+  effective_complexity = std::max<uint32_t>(effective_complexity,
+                                            min_complexity);
+
+  const uint32_t per_segment_top_k =
+      diskann_search_list_slack_top_k(requested_top_k, effective_complexity,
+                                      fanout_segments);
+  const uint64_t candidate_count =
+      static_cast<uint64_t>(per_segment_top_k) * fanout_segments;
+  budget->search_complexity = effective_complexity;
+  budget->per_segment_top_k = per_segment_top_k;
+  budget->candidate_count = clamp_u64_to_u32(candidate_count);
+  budget->profile = profile;
+  budget->reason = reason;
+  return true;
+}
+
+const char *diskann_search_profile_name(diskann_search_profile profile) {
+  switch (profile) {
+    case diskann_search_profile::kManual:
+      return "manual";
+    case diskann_search_profile::kFast:
+      return "fast";
+    case diskann_search_profile::kBalanced:
+      return "balanced";
+    case diskann_search_profile::kHighRecall:
+      return "high_recall";
+  }
+  return "manual";
+}
+
+const char *diskann_search_profile_reason_name(
+    diskann_search_profile_reason reason) {
+  switch (reason) {
+    case diskann_search_profile_reason::kManual:
+      return "manual";
+    case diskann_search_profile_reason::kFast:
+      return "fast_800";
+    case diskann_search_profile_reason::kBalancedManySegments:
+      return "balanced_many_segments_1200";
+    case diskann_search_profile_reason::kBalancedFewSegments:
+      return "balanced_few_segments_2400";
+    case diskann_search_profile_reason::kHighRecallManySegments:
+      return "high_recall_many_segments_1600";
+    case diskann_search_profile_reason::kHighRecallFewSegments:
+      return "high_recall_few_segments_3200";
+    case diskann_search_profile_reason::kManualHigher:
+      return "manual_higher";
+  }
+  return "manual";
 }
 
 }  // namespace vector_index

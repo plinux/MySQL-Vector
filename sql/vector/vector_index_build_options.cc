@@ -26,6 +26,7 @@
 #include <algorithm>
 
 #include "sql/vector/vector_build_pipeline_policy.h"
+#include "sql/vector/vector_diskann_scheduler.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_runtime_thread_pool.h"
 #include "sql/vector/vector_segment_runtime_scheduler.h"
@@ -51,8 +52,11 @@ ulonglong opt_vector_diskann_search_cache_size = 0;
 double opt_vector_diskann_search_cache_ratio = 0.1;
 ulong opt_vector_diskann_search_complexity =
     vector_index::k_default_diskann_search_complexity;
+ulong opt_vector_diskann_search_profile =
+    static_cast<ulong>(vector_index::diskann_search_profile::kManual);
 ulong opt_vector_diskann_search_beamwidth =
     vector_index::k_default_diskann_search_beamwidth;
+ulong opt_vector_diskann_exact_rerank_candidates = 0;
 ulonglong opt_vector_diskann_pq_code_budget_size = 0;
 double opt_vector_diskann_pq_code_budget_ratio =
     vector_index::k_default_diskann_pq_code_budget_ratio;
@@ -85,6 +89,8 @@ ulonglong opt_vector_hnsw_index_memory_size = 0;
 bool opt_vector_lazy_external_runtime = false;
 ulong opt_vector_build_pipeline_mode =
     static_cast<ulong>(vector_index::build_pipeline_mode::kAuto);
+ulong opt_vector_diskann_segment_profile =
+    static_cast<ulong>(vector_index::diskann_segment_profile::kManual);
 ulonglong opt_vector_build_pipeline_min_rows =
     vector_index::k_default_build_pipeline_min_rows;
 ulonglong opt_vector_build_pipeline_min_size =

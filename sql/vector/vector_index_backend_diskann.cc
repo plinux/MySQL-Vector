@@ -1117,8 +1117,11 @@ class diskann_native_state {
   }
 
   bool search(const vector_data &query, size_t top_k,
+              uint32_t search_complexity, uint32_t search_beamwidth,
               std::vector<search_result> *results) const {
-    if (results == nullptr || top_k > std::numeric_limits<uint32_t>::max()) {
+    if (results == nullptr || search_complexity == 0 ||
+        !valid_diskann_search_beamwidth(search_beamwidth) ||
+        top_k > std::numeric_limits<uint32_t>::max()) {
       return false;
     }
     std::shared_lock<std::shared_mutex> guard(m_lifecycle_mutex);
@@ -1126,10 +1129,13 @@ class diskann_native_state {
     if (m_offline_handle != nullptr) {
       std::vector<uint64_t> doc_ids(top_k, 0);
       std::vector<float> distances(top_k, 0.0F);
-      const int32_t count = search_loaded_handle_locked(
+      int32_t count = search_loaded_handle_locked(
           {m_offline_handle, m_offline_handle_variant}, query, top_k,
-          doc_ids.data(), distances.data());
-      if (count < 0) return false;
+          search_complexity, search_beamwidth, doc_ids.data(),
+          distances.data());
+      DBUG_EXECUTE_IF("vector_backend_diskann_offline_search_oversized_count",
+                      count = std::numeric_limits<int32_t>::max(););
+      if (count < 0 || static_cast<size_t>(count) > top_k) return false;
       for (int32_t i = 0; i < count; ++i) {
         results->push_back({doc_ids[static_cast<size_t>(i)],
                             distances[static_cast<size_t>(i)]});
@@ -1140,15 +1146,16 @@ class diskann_native_state {
     std::string ids_buffer(top_k * (sizeof(uint32_t) + sizeof(uint64_t)), '\0');
     std::vector<float> distances(top_k, 0.0F);
     const uint32_t effective_search_complexity =
-        std::max(m_search_complexity, static_cast<uint32_t>(top_k));
+        std::max(search_complexity, static_cast<uint32_t>(top_k));
     const int32_t count = m_api->search_vector(
         callback_context(), m_index_handle,
         reinterpret_cast<const uint8_t *>(query.data()), query.size(), 0.0F,
         effective_search_complexity, nullptr, 0, 0,
         reinterpret_cast<uint8_t *>(ids_buffer.data()), ids_buffer.size(),
-        distances.data(), distances.size(),
-        vector_index::k_default_diskann_search_beamwidth, nullptr);
-    if (count < 0) return false;
+        distances.data(), distances.size(), search_beamwidth, nullptr);
+    if (count < 0 || static_cast<size_t>(count) > top_k) {
+      return false;
+    }
 
     const uint8_t *ptr = reinterpret_cast<const uint8_t *>(ids_buffer.data());
     size_t remaining = ids_buffer.size();
@@ -1195,10 +1202,14 @@ class diskann_native_state {
   }
 
   bool search_batch(const std::vector<vector_data> &queries, size_t begin,
-                    size_t end, size_t top_k, uint32_t search_threads,
+                    size_t end, size_t top_k, uint32_t search_complexity,
+                    uint32_t search_beamwidth, uint32_t search_threads,
                     std::vector<std::vector<search_result>> *results) const {
-    if (results == nullptr || begin > end || end > queries.size())
+    if (results == nullptr || search_complexity == 0 ||
+        !valid_diskann_search_beamwidth(search_beamwidth) || begin > end ||
+        end > queries.size()) {
       return false;
+    }
     const size_t query_count = end - begin;
     results->clear();
     results->resize(query_count);
@@ -1234,8 +1245,9 @@ class diskann_native_state {
     scratch.result_counts.assign(query_count, 0);
     int32_t searched = search_loaded_handle_batch_locked(
         {m_offline_handle, m_offline_handle_variant}, scratch.query_data.data(),
-        query_count, top_k, search_threads, scratch.doc_ids.data(),
-        scratch.distances.data(), scratch.result_counts.data());
+        query_count, top_k, search_complexity, search_beamwidth, search_threads,
+        scratch.doc_ids.data(), scratch.distances.data(),
+        scratch.result_counts.data());
     DBUG_EXECUTE_IF("vector_backend_fail_diskann_offline_batch_search",
                     searched = -1;);
     DBUG_EXECUTE_IF(
@@ -1364,15 +1376,17 @@ class diskann_native_state {
     float distance = 0.0F;
     uint32_t result_count = 0;
     const bool null_handle_rejected =
-        search_loaded_handle_batch_locked({}, query.data(), 1, 1, 1, &doc_id,
-                                          &distance, &result_count) < 0;
+        search_loaded_handle_batch_locked(
+            {}, query.data(), 1, 1, m_search_complexity, m_search_beamwidth, 1,
+            &doc_id, &distance, &result_count) < 0;
     const auto *fake_handle = reinterpret_cast<const void *>(0x1);
     const bool oversized_top_k_rejected =
         search_loaded_handle_batch_locked(
             {fake_handle, diskann_runtime_variant::kVendoredOffline},
             query.data(), 1,
-            static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1, 1,
-            &doc_id, &distance, &result_count) < 0;
+            static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1,
+            m_search_complexity, m_search_beamwidth, 1, &doc_id, &distance,
+            &result_count) < 0;
     return null_handle_rejected && oversized_top_k_rejected;
   }
 
@@ -2032,8 +2046,8 @@ class diskann_native_state {
       std::fill(doc_ids.begin(), doc_ids.end(), 0);
       std::fill(distances.begin(), distances.end(), 0.0F);
       const int32_t count = search_loaded_handle_locked(
-          handle, sample.vector, validation_top_k, doc_ids.data(),
-          distances.data());
+          handle, sample.vector, validation_top_k, m_search_complexity,
+          m_search_beamwidth, doc_ids.data(), distances.data());
       bool force_failure = false;
       DBUG_EXECUTE_IF("vector_backend_diskann_native_pq_force_self_hit_failure",
                       force_failure = true;);
@@ -3552,11 +3566,12 @@ class diskann_native_state {
 
 #ifdef MYSQL_VECTOR_DISKANN_VENDORED_STATIC_LINKED
   mysql_vector_diskann_search_config make_vendored_search_config_locked(
-      uint32_t top_k, uint32_t search_threads, uint32_t cache_nodes) const {
+      uint32_t top_k, uint32_t search_complexity, uint32_t search_beamwidth,
+      uint32_t search_threads, uint32_t cache_nodes) const {
     mysql_vector_diskann_search_config config{};
     config.top_k = top_k;
-    config.search_complexity = std::max(m_search_complexity, top_k);
-    config.beamwidth = m_search_beamwidth;
+    config.search_complexity = std::max(search_complexity, top_k);
+    config.beamwidth = search_beamwidth;
     config.batch_search_threads = search_threads;
     config.search_io_limit = m_search_io_limit;
     config.cache_nodes = cache_nodes;
@@ -3606,8 +3621,9 @@ class diskann_native_state {
       mysql_vector_diskann_build_config build_config =
           make_vendored_load_config_locked(index_prefix, row_count);
       mysql_vector_diskann_search_config search_config =
-          make_vendored_search_config_locked(1, m_offline_search_threads,
-                                             build_config.cache_nodes);
+          make_vendored_search_config_locked(
+              1, m_search_complexity, m_search_beamwidth,
+              m_offline_search_threads, build_config.cache_nodes);
       std::string error;
       const void *handle =
           m_vendored_api->load(build_config, search_config, &error);
@@ -3696,21 +3712,24 @@ class diskann_native_state {
 
   int32_t search_loaded_handle_locked(offline_loaded_handle handle,
                                       const vector_data &query, size_t top_k,
+                                      uint32_t search_complexity,
+                                      uint32_t search_beamwidth,
                                       uint64_t *doc_ids,
                                       float *distances) const {
-    if (handle.handle == nullptr ||
+    if (handle.handle == nullptr || search_complexity == 0 ||
+        !valid_diskann_search_beamwidth(search_beamwidth) ||
         top_k > std::numeric_limits<uint32_t>::max()) {
       return -1;
     }
     const uint32_t top_k_uint32 = static_cast<uint32_t>(top_k);
     const uint32_t effective_search_complexity =
-        std::max(m_search_complexity, top_k_uint32);
+        std::max(search_complexity, top_k_uint32);
     if (handle.variant == diskann_runtime_variant::kVendoredOffline) {
 #ifdef MYSQL_VECTOR_DISKANN_VENDORED_STATIC_LINKED
       const mysql_vector_diskann_search_config search_config =
-          make_vendored_search_config_locked(top_k_uint32,
-                                             m_offline_search_threads,
-                                             effective_loaded_cache_nodes_locked());
+          make_vendored_search_config_locked(
+              top_k_uint32, effective_search_complexity, search_beamwidth,
+              m_offline_search_threads, effective_loaded_cache_nodes_locked());
       return m_vendored_api->search_one(handle.handle, query.data(),
                                         query.size(), search_config, doc_ids,
                                         distances);
@@ -3720,27 +3739,29 @@ class diskann_native_state {
     }
     return m_offline_api->search(
         handle.handle, query.data(), query.size(), top_k_uint32,
-        effective_search_complexity, m_search_beamwidth, doc_ids, distances);
+        effective_search_complexity, search_beamwidth, doc_ids, distances);
   }
 
   int32_t search_loaded_handle_batch_locked(
       offline_loaded_handle handle,
       const float *query_data, size_t query_count, size_t top_k,
+      uint32_t search_complexity, uint32_t search_beamwidth,
       uint32_t search_threads, uint64_t *doc_ids, float *distances,
       uint32_t *result_counts) const {
-    if (handle.handle == nullptr ||
+    if (handle.handle == nullptr || search_complexity == 0 ||
+        !valid_diskann_search_beamwidth(search_beamwidth) ||
         top_k > std::numeric_limits<uint32_t>::max()) {
       return -1;
     }
     const uint32_t top_k_uint32 = static_cast<uint32_t>(top_k);
     const uint32_t effective_search_complexity =
-        std::max(m_search_complexity, top_k_uint32);
+        std::max(search_complexity, top_k_uint32);
     if (handle.variant == diskann_runtime_variant::kVendoredOffline) {
 #ifdef MYSQL_VECTOR_DISKANN_VENDORED_STATIC_LINKED
       const mysql_vector_diskann_search_config search_config =
-          make_vendored_search_config_locked(top_k_uint32,
-                                             search_threads,
-                                             effective_loaded_cache_nodes_locked());
+          make_vendored_search_config_locked(
+              top_k_uint32, effective_search_complexity, search_beamwidth,
+              search_threads, effective_loaded_cache_nodes_locked());
       return m_vendored_api->search_many(
           handle.handle, query_data, query_count, m_dimension, search_config,
           doc_ids, distances, result_counts);
@@ -3750,7 +3771,7 @@ class diskann_native_state {
     }
     return m_offline_api->search_batch(
         handle.handle, query_data, query_count, m_dimension, top_k_uint32,
-        effective_search_complexity, m_search_beamwidth, search_threads,
+        effective_search_complexity, search_beamwidth, search_threads,
         doc_ids, distances, result_counts);
   }
 
@@ -4481,13 +4502,35 @@ bool diskann_backend::erase(uint64_t doc_id) {
 
 bool diskann_backend::search(const vector_data &query, size_t top_k,
                             std::vector<search_result> *results) const {
+  backend_search_options options;
+  options.diskann_search_complexity = m_diskann_search_complexity;
+  options.diskann_search_beamwidth = m_diskann_search_beamwidth;
+  return search_with_options(query, top_k, options, results);
+}
+
+bool diskann_backend::search_with_options(
+    const vector_data &query, size_t top_k,
+    const backend_search_options &options,
+    std::vector<search_result> *results) const {
   if (results == nullptr || query.size() != m_dimension) return false;
+  const uint32_t search_complexity =
+      options.diskann_search_complexity == 0
+          ? m_diskann_search_complexity
+          : options.diskann_search_complexity;
+  const uint32_t search_beamwidth =
+      options.diskann_search_beamwidth == 0 ? m_diskann_search_beamwidth
+                                            : options.diskann_search_beamwidth;
+  if (search_complexity == 0 ||
+      !valid_diskann_search_beamwidth(search_beamwidth)) {
+    return false;
+  }
   results->clear();
   if (top_k == 0) return true;
   if (m_entry_count == 0) return true;
   top_k = std::min(top_k, m_entry_count);
   if (m_native_runtime_enabled && m_native_state != nullptr) {
-    bool native_search_ok = m_native_state->search(query, top_k, results);
+    bool native_search_ok = m_native_state->search(
+        query, top_k, search_complexity, search_beamwidth, results);
     DBUG_EXECUTE_IF("vector_backend_fail_diskann_native_search",
                     native_search_ok = false; results->clear(););
     if (native_search_ok) {
@@ -4527,7 +4570,28 @@ bool diskann_backend::search(const vector_data &query, size_t top_k,
 bool diskann_backend::search_batch(
     const std::vector<vector_data> &queries, size_t top_k,
     std::vector<std::vector<search_result>> *results) const {
+  backend_search_options options;
+  options.diskann_search_complexity = m_diskann_search_complexity;
+  options.diskann_search_beamwidth = m_diskann_search_beamwidth;
+  return search_batch_with_options(queries, top_k, options, results);
+}
+
+bool diskann_backend::search_batch_with_options(
+    const std::vector<vector_data> &queries, size_t top_k,
+    const backend_search_options &options,
+    std::vector<std::vector<search_result>> *results) const {
   if (results == nullptr) return false;
+  const uint32_t search_complexity =
+      options.diskann_search_complexity == 0
+          ? m_diskann_search_complexity
+          : options.diskann_search_complexity;
+  const uint32_t search_beamwidth =
+      options.diskann_search_beamwidth == 0 ? m_diskann_search_beamwidth
+                                            : options.diskann_search_beamwidth;
+  if (search_complexity == 0 ||
+      !valid_diskann_search_beamwidth(search_beamwidth)) {
+    return false;
+  }
   results->clear();
   results->resize(queries.size());
 
@@ -4543,9 +4607,9 @@ bool diskann_backend::search_batch(
   if (m_native_runtime_enabled && m_native_state != nullptr &&
       !m_entries_complete) {
     bool native_batch_search_ok =
-        m_native_state->search_batch(queries, 0, queries.size(), top_k,
-                                     static_cast<uint32_t>(thread_count),
-                                     results);
+        m_native_state->search_batch(
+            queries, 0, queries.size(), top_k, search_complexity,
+            search_beamwidth, static_cast<uint32_t>(thread_count), results);
     DBUG_EXECUTE_IF("vector_backend_fail_diskann_native_batch_search",
                     native_batch_search_ok = false;);
     if (native_batch_search_ok) return true;
@@ -4555,7 +4619,9 @@ bool diskann_backend::search_batch(
 
   if (thread_count <= 1 || queries.size() <= 1) {
     for (size_t i = 0; i < queries.size(); ++i) {
-      if (!search(queries[i], top_k, &(*results)[i])) return false;
+      if (!search_with_options(queries[i], top_k, options, &(*results)[i])) {
+        return false;
+      }
     }
     return true;
   }
@@ -4563,7 +4629,8 @@ bool diskann_backend::search_batch(
   return vector_index::parallel_for_queries(
       queries.size(), thread_count, [&](size_t begin, size_t end, size_t) {
         for (size_t i = begin; i < end; ++i) {
-          if (!search(queries[i], top_k, &(*results)[i])) {
+          if (!search_with_options(queries[i], top_k, options,
+                                   &(*results)[i])) {
             return false;
           }
         }
@@ -5027,8 +5094,9 @@ bool diskann_backend::native_search_batch_for_testing(
   if (m_native_state == nullptr || begin > end) return false;
   const uint32_t search_threads = static_cast<uint32_t>(
       vector_index::effective_diskann_search_threads(end - begin));
-  return m_native_state->search_batch(queries, begin, end, top_k,
-                                      search_threads, results);
+  return m_native_state->search_batch(
+      queries, begin, end, top_k, m_diskann_search_complexity,
+      m_diskann_search_beamwidth, search_threads, results);
 }
 
 std::string diskann_term_directory_for_testing(const std::string &index_name,

@@ -1,5 +1,9 @@
---source include/have_vector_diskann.inc
---source include/big_test.inc
+--source include/have_vector_diskann_offline.inc
+
+# Native strict PQ validation enters the real offline adapter. Keep 2 GiB for
+# mysqld, PQ artifacts, backend workspaces, and instrumentation before headroom.
+--let $vector_big_test_estimated_peak_kib=2097152
+--source suite/vector/include/vector_big_test_memory.inc
 
 --echo #
 --echo # WL#Vector: DISKANN PQ runtime selector is observable
@@ -107,24 +111,6 @@ SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 29, VEC_FROMTEXT('[29,0
 SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 30, VEC_FROMTEXT('[30,0,0,0]'));
 SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 31, VEC_FROMTEXT('[31,0,0,0]'));
 SELECT VEC_INDEX_UPSERT('idx_diskann_pq_runtime_diskpq', 32, VEC_FROMTEXT('[32,0,0,0]'));
---enable_result_log
---enable_query_log
-
-# A compiled DiskANN provider may expose only the serial ABI. Probe the
-# optional offline Native-PQ bridge before asserting its artifacts.
---disable_query_log
---disable_result_log
---disable_abort_on_error
-SELECT VEC_INDEX_REBUILD('idx_diskann_pq_runtime_diskpq');
---let $diskann_native_pq_rebuild_errno = $mysql_errno
---enable_abort_on_error
-if ($diskann_native_pq_rebuild_errno)
-{
-  SELECT VEC_INDEX_DROP('idx_diskann_pq_runtime_diskpq');
-  SET GLOBAL vector_diskann_pq_runtime = @old_vector_diskann_pq_runtime;
-  --remove_file $vector_diskann_pq_runtime_accelerated_csv
-  --skip Test requires DiskANN offline Native-PQ build support
-}
 --enable_result_log
 --enable_query_log
 

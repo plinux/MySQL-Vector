@@ -1645,6 +1645,41 @@ The following options may be given as the first argument:
  Default worker count for DiskANN vector index bulk build
  and rebuild. Use 0 for automatic hardware-thread based
  sizing.
+ --vector-diskann-cache-nodes=# 
+ DiskANN offline adapter BFS static-cache node count used
+ when loading a disk index. Use 0 to disable this cache.
+ --vector-diskann-disk-pq-dims=# 
+ DiskANN offline build disk PQ dimensions. Use 0 for
+ automatic disk layout: keep full vectors when node
+ records fit one DiskANN sector, otherwise derive the
+ largest sector-safe disk PQ dimensions capped by the
+ DiskANN C++ loader chunk limit.
+ --vector-diskann-exact-rerank-candidates=# 
+ Preferred DiskANN candidate count per query before exact
+ rerank. Use 0 for automatic sizing from search complexity
+ and search profile. Positive values may improve recall at
+ higher exact-rerank CPU and I/O cost, and are still
+ capped by vector_search_batch_result_count.
+ --vector-diskann-max-degree=# 
+ Default DiskANN graph max degree for new vector indexes.
+ --vector-diskann-offline-search-threads[=#] 
+ DiskANN offline adapter searcher thread count used when
+ loading a disk index. Use 0 for the adapter default.
+ --vector-diskann-pq-code-budget-ratio=# 
+ DiskANN native runtime PQ-code budget ratio relative to
+ raw vector bytes when vector_diskann_pq_code_budget_size
+ is 0.
+ --vector-diskann-pq-code-budget-size=# 
+ DiskANN offline build PQ code budget in bytes. Use 0 to
+ derive the budget from
+ vector_diskann_pq_code_budget_ratio times raw vector
+ bytes.
+ --vector-diskann-pq-runtime=name 
+ DiskANN PQ/kmeans runtime selector. OFFICIAL keeps the
+ upstream DiskANN implementation. NATIVE_AUTO generates
+ MySQL-Vector native PQ artifacts and permits an official
+ fallback. NATIVE_STRICT requires the native artifact and
+ graph/cache bridge path to succeed.
  --vector-diskann-raw-segment-size=# 
  Maximum DiskANN offline raw segment size in bytes before
  the vector builder rolls over to another segment.
@@ -2115,6 +2150,14 @@ vector-build-memory-size 1073741824
 vector-default-library hnsw
 vector-diskann-build-memory-size 1073741824
 vector-diskann-build-threads 0
+vector-diskann-cache-nodes 0
+vector-diskann-disk-pq-dims 0
+vector-diskann-exact-rerank-candidates 0
+vector-diskann-max-degree 32
+vector-diskann-offline-search-threads 1
+vector-diskann-pq-code-budget-ratio 0.125
+vector-diskann-pq-code-budget-size 0
+vector-diskann-pq-runtime native_auto
 vector-diskann-raw-segment-size 268435456
 vector-entry-cache-size 268435456
 vector-faiss-build-threads 0

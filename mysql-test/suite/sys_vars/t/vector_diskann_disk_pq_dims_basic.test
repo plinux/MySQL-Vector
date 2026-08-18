@@ -26,14 +26,14 @@ SELECT vector_diskann_disk_pq_dims;
 SET GLOBAL vector_diskann_disk_pq_dims=12;
 SELECT @@global.vector_diskann_disk_pq_dims;
 
-SET GLOBAL vector_diskann_disk_pq_dims=65535;
+SET GLOBAL vector_diskann_disk_pq_dims=512;
 SELECT @@global.vector_diskann_disk_pq_dims;
 
 SET GLOBAL vector_diskann_disk_pq_dims=0;
 SELECT @@global.vector_diskann_disk_pq_dims;
 
 --Error ER_WRONG_VALUE_FOR_VAR
-SET GLOBAL vector_diskann_disk_pq_dims=65536;
+SET GLOBAL vector_diskann_disk_pq_dims=513;
 
 --Error ER_WRONG_VALUE_FOR_VAR
 SET GLOBAL vector_diskann_disk_pq_dims=-1;

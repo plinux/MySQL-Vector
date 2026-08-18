@@ -389,6 +389,11 @@ bool mysql_vector_diskann_validate_search_config(
     copy_error("search_complexity is zero", error_buffer, error_buffer_size);
     return false;
   }
+  if (config->top_k > config->search_complexity) {
+    copy_error("top_k exceeds search_complexity", error_buffer,
+               error_buffer_size);
+    return false;
+  }
   if (config->beamwidth == 0) {
     copy_error("beamwidth is zero", error_buffer, error_buffer_size);
     return false;

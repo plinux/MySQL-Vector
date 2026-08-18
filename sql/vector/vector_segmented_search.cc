@@ -153,10 +153,7 @@ bool merge_segment_batch_topk(
     for (const auto &segment_results : segment_batch_results) {
       per_query_segments.push_back(segment_results[query_index]);
     }
-    if (!merge_segment_topk(per_query_segments, top_k,
-                            &(*results)[query_index])) {
-      return false;
-    }
+    merge_segment_topk(per_query_segments, top_k, &(*results)[query_index]);
   }
   return true;
 }

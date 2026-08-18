@@ -32,9 +32,20 @@
 
 namespace vector_index::detail {
 
+size_t compute_diskann_exact_rerank_candidate_top_k(
+    size_t top_k, size_t query_count, size_t authoritative_count,
+    size_t segment_count, uint32_t search_complexity,
+    diskann_search_profile search_profile, size_t result_budget,
+    size_t candidate_target);
+
 std::unique_ptr<backend> build_backend_from_config(
     const std::string &index_name,
     const vector_index::index_service::index_config &config);
+
+/** Merge one segment's build diagnostics into the index-wide aggregate. */
+void merge_segment_build_diagnostics(
+    uint64_t segment_row_count, const backend_build_diagnostics &source,
+    backend_build_diagnostics *aggregate);
 
 template <typename... Bools>
 inline bool all_true(Bools... values) {

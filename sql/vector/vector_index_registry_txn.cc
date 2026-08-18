@@ -104,8 +104,12 @@ bool search_committed_runtime_loaded(
   }
 
   {
+    std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
     std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-    if (runtime->search(query, top_k, results)) return true;
+    if (g_index_service.search_runtime_with_exact_rerank(
+            index_name, config, runtime.get(), query, top_k, results)) {
+      return true;
+    }
   }
   if (!vector_index::detail::can_rebuild_after_search_failure(config))
     return false;
@@ -121,8 +125,10 @@ bool search_committed_runtime_loaded(
     }
   }
 
+  std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
   std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-  return runtime->search(query, top_k, results);
+  return g_index_service.search_runtime_with_exact_rerank(
+      index_name, config, runtime.get(), query, top_k, results);
 }
 
 bool search_committed_runtime_batch_loaded(
@@ -145,8 +151,12 @@ bool search_committed_runtime_batch_loaded(
   }
 
   {
+    std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
     std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-    if (runtime->search_batch(queries, top_k, results)) return true;
+    if (g_index_service.search_batch_runtime_with_exact_rerank(
+            index_name, config, runtime.get(), queries, top_k, results)) {
+      return true;
+    }
   }
   if (!vector_index::detail::can_rebuild_after_search_failure(config))
     return false;
@@ -162,8 +172,10 @@ bool search_committed_runtime_batch_loaded(
     }
   }
 
+  std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
   std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-  return runtime->search_batch(queries, top_k, results);
+  return g_index_service.search_batch_runtime_with_exact_rerank(
+      index_name, config, runtime.get(), queries, top_k, results);
 }
 
 size_t pending_change_count_for_thd_locked(uint64_t thd_id) {

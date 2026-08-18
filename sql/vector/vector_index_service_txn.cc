@@ -47,6 +47,7 @@
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_mapped_search.h"
+#include "sql/vector/vector_segmented_search.h"
 
 #ifndef O_BINARY
 #define O_BINARY 0
@@ -111,6 +112,35 @@ bool pending_budget_allows(size_t current_bytes, size_t additional_bytes) {
   if (opt_vector_pending_cache_size == 0) return true;
   if (current_bytes > opt_vector_pending_cache_size) return false;
   return additional_bytes <= opt_vector_pending_cache_size - current_bytes;
+}
+
+bool rerank_candidates_with_vectors(
+    const vector_data &query, metric_type metric,
+    const std::vector<search_result> &candidates,
+    const committed_entries &candidate_vectors, size_t top_k,
+    std::vector<search_result> *results, bool *reranked) {
+  if (results == nullptr || reranked == nullptr) return false;
+  *reranked = false;
+
+  std::vector<vector_mapped_search::visible_candidate> visible_rows;
+  visible_rows.reserve(candidates.size());
+  std::unordered_set<uint64_t> seen_doc_ids;
+  for (const search_result &candidate : candidates) {
+    if (!seen_doc_ids.insert(candidate.doc_id).second) continue;
+    const auto vector_it = candidate_vectors.find(candidate.doc_id);
+    if (vector_it == candidate_vectors.end()) return true;
+    visible_rows.push_back(
+        vector_mapped_search::visible_candidate{candidate.doc_id,
+                                                vector_it->second});
+  }
+
+  if (!vector_mapped_search::rank_visible_candidates(query, metric,
+                                                     visible_rows, top_k,
+                                                     results)) {
+    return false;
+  }
+  *reranked = true;
+  return true;
 }
 
 class pending_spill_guard {
@@ -600,6 +630,188 @@ bool index_service::release_savepoint(uint64_t txn_id, const std::string &name) 
   return true;
 }
 
+size_t index_service::diskann_exact_rerank_segment_count(
+    const std::string &index_name, const index_config &config) const {
+  size_t segment_count = 0;
+  if (config.consistency_mode == index_consistency_mode::kStandalone) {
+    segment_count = m_standalone_store.raw_segment_count(index_name);
+  }
+  if (segment_count == 0) {
+    const auto segment_task_it = m_segment_task_rows.find(index_name);
+    if (segment_task_it != m_segment_task_rows.end()) {
+      segment_count = segment_task_it->second.size();
+    }
+  }
+  return std::max<size_t>(segment_count, 1);
+}
+
+size_t index_service::diskann_exact_rerank_candidate_top_k(
+    const std::string &index_name, const index_config &config, size_t top_k,
+    size_t query_count) const {
+  if (config.provider != backend_provider::kDiskAnn ||
+      config.mode != backend_mode::kExternal || top_k == 0 ||
+      query_count == 0) {
+    return top_k;
+  }
+
+  const size_t authoritative_count =
+      config.consistency_mode == index_consistency_mode::kStandalone
+          ? m_standalone_store.entry_count(index_name)
+          : m_entry_store.entry_count(index_name);
+  if (authoritative_count <= top_k) return top_k;
+
+  const size_t segment_count =
+      diskann_exact_rerank_segment_count(index_name, config);
+  return detail::compute_diskann_exact_rerank_candidate_top_k(
+      top_k, query_count, authoritative_count, segment_count,
+      config.diskann_search_complexity,
+      static_cast<diskann_search_profile>(opt_vector_diskann_search_profile),
+      static_cast<size_t>(opt_vector_search_batch_result_count),
+      static_cast<size_t>(opt_vector_diskann_exact_rerank_candidates));
+}
+
+bool index_service::exact_rerank_search_results(
+    const std::string &index_name, const index_config &config,
+    const vector_data &query, const std::vector<search_result> &candidates,
+    size_t top_k, std::vector<search_result> *results, bool *reranked) const {
+  if (results == nullptr || reranked == nullptr) return false;
+  *reranked = false;
+  if (candidates.empty()) {
+    results->clear();
+    *reranked = true;
+    return true;
+  }
+
+  std::unordered_set<uint64_t> candidate_doc_ids;
+  for (const search_result &candidate : candidates) {
+    candidate_doc_ids.insert(candidate.doc_id);
+  }
+
+  committed_entries candidate_vectors;
+  bool complete = false;
+  if (!load_exact_rerank_vectors(index_name, config, candidate_doc_ids,
+                                 &candidate_vectors, &complete)) {
+    return false;
+  }
+  if (!complete) return true;
+  return rerank_candidates_with_vectors(query, config.metric, candidates,
+                                       candidate_vectors, top_k, results,
+                                       reranked);
+}
+
+bool index_service::load_exact_rerank_vectors(
+    const std::string &index_name, const index_config &config,
+    const std::unordered_set<uint64_t> &doc_ids, committed_entries *vectors,
+    bool *complete) const {
+  if (vectors == nullptr || complete == nullptr) return false;
+  vectors->clear();
+  *complete = false;
+  if (doc_ids.empty()) {
+    *complete = true;
+    return true;
+  }
+
+  if (config.consistency_mode == index_consistency_mode::kStandalone) {
+    if (!m_standalone_store.find_entries(index_name, doc_ids, vectors))
+      return false;
+  } else {
+    for (const uint64_t doc_id : doc_ids) {
+      vector_data vector;
+      bool found = false;
+      if (!m_entry_store.find_committed_entry(index_name, doc_id, &vector,
+                                             &found)) {
+        return false;
+      }
+      if (found) (*vectors)[doc_id] = std::move(vector);
+    }
+  }
+
+  *complete = vectors->size() == doc_ids.size();
+  return true;
+}
+
+bool index_service::search_runtime_with_exact_rerank(
+    const std::string &index_name, const index_config &config,
+    const backend *runtime, const vector_data &query, size_t top_k,
+    std::vector<search_result> *results) const {
+  if (runtime == nullptr || results == nullptr) return false;
+
+  const bool can_exact_rerank =
+      config.provider == backend_provider::kDiskAnn &&
+      config.mode == backend_mode::kExternal;
+  const size_t candidate_top_k =
+      diskann_exact_rerank_candidate_top_k(index_name, config, top_k, 1);
+  std::vector<search_result> candidates;
+  if (!runtime->search_for_rerank(query, top_k, candidate_top_k, &candidates))
+    return false;
+
+  if (can_exact_rerank) {
+    bool reranked = false;
+    if (!exact_rerank_search_results(index_name, config, query, candidates,
+                                     top_k, results, &reranked)) {
+      return false;
+    }
+    if (reranked) return true;
+  }
+
+  if (candidates.size() > top_k) candidates.resize(top_k);
+  *results = std::move(candidates);
+  return true;
+}
+
+bool index_service::search_batch_runtime_with_exact_rerank(
+    const std::string &index_name, const index_config &config,
+    const backend *runtime, const std::vector<vector_data> &queries,
+    size_t top_k, std::vector<std::vector<search_result>> *results) const {
+  if (runtime == nullptr || results == nullptr) return false;
+
+  const bool can_exact_rerank =
+      config.provider == backend_provider::kDiskAnn &&
+      config.mode == backend_mode::kExternal;
+  const size_t candidate_top_k = diskann_exact_rerank_candidate_top_k(
+      index_name, config, top_k, queries.size());
+  std::vector<std::vector<search_result>> candidates;
+  if (!runtime->search_batch_for_rerank(queries, top_k, candidate_top_k,
+                                        &candidates))
+    return false;
+
+  if (can_exact_rerank) {
+    std::unordered_set<uint64_t> candidate_doc_ids;
+    for (const std::vector<search_result> &query_candidates : candidates) {
+      for (const search_result &candidate : query_candidates) {
+        candidate_doc_ids.insert(candidate.doc_id);
+      }
+    }
+    committed_entries candidate_vectors;
+    bool complete = false;
+    if (!load_exact_rerank_vectors(index_name, config, candidate_doc_ids,
+                                   &candidate_vectors, &complete)) {
+      return false;
+    }
+
+    results->clear();
+    results->resize(candidates.size());
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      bool reranked = false;
+      if (complete) {
+        if (!rerank_candidates_with_vectors(queries[i], config.metric,
+                                           candidates[i], candidate_vectors,
+                                           top_k, &(*results)[i], &reranked)) {
+          return false;
+        }
+      }
+      if (!reranked) {
+        if (candidates[i].size() > top_k) candidates[i].resize(top_k);
+        (*results)[i] = std::move(candidates[i]);
+      }
+    }
+    return true;
+  }
+
+  *results = std::move(candidates);
+  return true;
+}
+
 bool index_service::search(const std::string &index_name, const vector_data &query,
                            size_t top_k,
                            std::vector<search_result> *results) const {
@@ -618,16 +830,20 @@ bool index_service::search_loaded(const std::string &index_name,
     return false;
   {
     std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-    if (runtime->search(query, top_k, results)) return true;
+    if (search_runtime_with_exact_rerank(index_name, config, runtime.get(),
+                                         query, top_k, results)) {
+      return true;
+    }
   }
   if (!detail::can_rebuild_after_search_failure(config)) return false;
 
   index_service *self = const_cast<index_service *>(this);
   if (!self->rebuild_runtime_from_store_for_search(index_name)) return false;
-  if (!snapshot_search_backend_loaded(index_name, query, &runtime, nullptr))
+  if (!snapshot_search_backend_loaded(index_name, query, &runtime, &config))
     return false;
   std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-  return runtime->search(query, top_k, results);
+  return search_runtime_with_exact_rerank(index_name, config, runtime.get(),
+                                          query, top_k, results);
 }
 
 bool index_service::snapshot_search_backend_loaded(
@@ -672,20 +888,22 @@ bool index_service::search_batch_loaded(
     return false;
   }
   auto config_it = m_index_configs.find(index_name);
-  if (config_it != m_index_configs.end()) {
-    for (const vector_data &query : queries) {
-      if (query.size() != config_it->second.dimension) return false;
-    }
+  if (config_it == m_index_configs.end()) return false;
+  for (const vector_data &query : queries) {
+    if (query.size() != config_it->second.dimension) return false;
   }
   auto index_it = m_indexes.find(index_name);
   if (index_it == m_indexes.end()) return false;
   backend_ptr runtime = index_it->second;
   {
     std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-    if (runtime->search_batch(queries, top_k, results)) return true;
+    if (search_batch_runtime_with_exact_rerank(index_name, config_it->second,
+                                               runtime.get(), queries, top_k,
+                                               results)) {
+      return true;
+    }
   }
-  if (config_it == m_index_configs.end() ||
-      !detail::can_rebuild_after_search_failure(config_it->second)) {
+  if (!detail::can_rebuild_after_search_failure(config_it->second)) {
     return false;
   }
   index_service *self = const_cast<index_service *>(this);
@@ -695,7 +913,9 @@ bool index_service::search_batch_loaded(
     return false;
   runtime = index_it->second;
   std::shared_lock<std::shared_mutex> runtime_guard(runtime->runtime_mutex());
-  return runtime->search_batch(queries, top_k, results);
+  return search_batch_runtime_with_exact_rerank(index_name, config_it->second,
+                                                runtime.get(), queries, top_k,
+                                                results);
 }
 
 bool index_service::search_with_pending(uint64_t txn_id,

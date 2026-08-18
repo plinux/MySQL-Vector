@@ -88,6 +88,93 @@ TEST(VectorSegmentRuntimeSchedulerTest, AutoBuildThreadsSharesCpuBudget) {
   EXPECT_EQ(8U, plan.effective_build_threads);
 }
 
+TEST(VectorSegmentRuntimeSchedulerTest, CpuBudgetCapsParallelTasks) {
+  vector_index::segment_scheduler_input input;
+  input.segment_count = 8;
+  input.requested_task_count = 8;
+  input.cpu_budget = 3;
+  input.requested_build_threads = 8;
+  input.requested_blas_threads = 8;
+
+  vector_index::segment_scheduler_plan plan;
+  ASSERT_TRUE(vector_index::make_segment_scheduler_plan(input, &plan));
+
+  EXPECT_EQ(3U, plan.task_count);
+  EXPECT_EQ(1U, plan.effective_build_threads);
+  EXPECT_EQ(1U, plan.effective_blas_threads);
+  EXPECT_STREQ("cpu_budget", plan.segment_parallel_reason);
+}
+
+TEST(VectorSegmentRuntimeSchedulerTest, MemoryBudgetKeepsRequestedTasks) {
+  vector_index::segment_scheduler_input input;
+  input.segment_count = 8;
+  input.requested_task_count = 4;
+  input.cpu_budget = 32;
+  input.requested_build_threads = 0;
+  input.build_memory_budget = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+  input.per_segment_memory_estimate = 8ULL * 1024ULL * 1024ULL * 1024ULL;
+
+  vector_index::segment_scheduler_plan plan;
+  ASSERT_TRUE(vector_index::make_segment_scheduler_plan(input, &plan));
+
+  EXPECT_EQ(4U, plan.task_count);
+  EXPECT_EQ(8U, plan.effective_build_threads);
+  EXPECT_EQ(input.build_memory_budget, plan.segment_memory_budget);
+  EXPECT_EQ(input.per_segment_memory_estimate, plan.segment_memory_estimate);
+  EXPECT_STREQ("within_budget", plan.segment_parallel_reason);
+}
+
+TEST(VectorSegmentRuntimeSchedulerTest, MemoryBudgetReducesTasks) {
+  vector_index::segment_scheduler_input input;
+  input.segment_count = 8;
+  input.requested_task_count = 4;
+  input.cpu_budget = 32;
+  input.requested_build_threads = 0;
+  input.build_memory_budget = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+  input.per_segment_memory_estimate = 8ULL * 1024ULL * 1024ULL * 1024ULL;
+
+  vector_index::segment_scheduler_plan plan;
+  ASSERT_TRUE(vector_index::make_segment_scheduler_plan(input, &plan));
+
+  EXPECT_EQ(2U, plan.task_count);
+  EXPECT_EQ(16U, plan.effective_build_threads);
+  EXPECT_STREQ("memory_budget", plan.segment_parallel_reason);
+}
+
+TEST(VectorSegmentRuntimeSchedulerTest, MemoryBudgetAllowsOneTaskMinimum) {
+  vector_index::segment_scheduler_input input;
+  input.segment_count = 8;
+  input.requested_task_count = 4;
+  input.cpu_budget = 32;
+  input.requested_build_threads = 0;
+  input.build_memory_budget = 8ULL * 1024ULL * 1024ULL * 1024ULL;
+  input.per_segment_memory_estimate = 8ULL * 1024ULL * 1024ULL * 1024ULL;
+
+  vector_index::segment_scheduler_plan plan;
+  ASSERT_TRUE(vector_index::make_segment_scheduler_plan(input, &plan));
+
+  EXPECT_EQ(1U, plan.task_count);
+  EXPECT_EQ(32U, plan.effective_build_threads);
+  EXPECT_STREQ("memory_budget", plan.segment_parallel_reason);
+}
+
+TEST(VectorSegmentRuntimeSchedulerTest, RequestedSerialIgnoresLargerBudget) {
+  vector_index::segment_scheduler_input input;
+  input.segment_count = 8;
+  input.requested_task_count = 1;
+  input.cpu_budget = 32;
+  input.requested_build_threads = 0;
+  input.build_memory_budget = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+  input.per_segment_memory_estimate = 8ULL * 1024ULL * 1024ULL * 1024ULL;
+
+  vector_index::segment_scheduler_plan plan;
+  ASSERT_TRUE(vector_index::make_segment_scheduler_plan(input, &plan));
+
+  EXPECT_EQ(1U, plan.task_count);
+  EXPECT_EQ(32U, plan.effective_build_threads);
+  EXPECT_STREQ("within_budget", plan.segment_parallel_reason);
+}
+
 TEST(VectorSegmentRuntimeSchedulerTest, ExpandsSearchCandidatesPerSegment) {
   vector_index::segment_scheduler_input input;
   input.segment_count = 5;
@@ -118,6 +205,43 @@ TEST(VectorSegmentRuntimeSchedulerTest, RejectsZeroSegments) {
 
   vector_index::segment_scheduler_plan plan;
   EXPECT_FALSE(vector_index::make_segment_scheduler_plan(input, &plan));
+}
+
+TEST(VectorSegmentRuntimeSchedulerTest, RejectsNullPlan) {
+  vector_index::segment_scheduler_input input;
+  input.segment_count = 1;
+  EXPECT_FALSE(vector_index::make_segment_scheduler_plan(input, nullptr));
+}
+
+TEST(VectorSegmentRuntimeSchedulerTest, ZeroDefaultsStayBounded) {
+  vector_index::segment_scheduler_input input;
+  input.segment_count = 2;
+  input.cpu_budget = 2;
+  input.requested_blas_threads = 0;
+  input.search_candidate_multiplier = 0;
+  input.top_k = 0;
+  input.build_memory_budget = 1024;
+  input.per_segment_memory_estimate = 0;
+
+  vector_index::segment_scheduler_plan plan;
+  ASSERT_TRUE(vector_index::make_segment_scheduler_plan(input, &plan));
+  EXPECT_EQ(1U, plan.effective_blas_threads);
+  EXPECT_EQ(0U, plan.candidates_per_segment);
+  EXPECT_STREQ("unbounded", plan.segment_parallel_reason);
+}
+
+TEST(VectorSegmentRuntimeSchedulerTest, ZeroMemoryBudgetLeavesTasksUnbounded) {
+  vector_index::segment_scheduler_input input;
+  input.segment_count = 4;
+  input.requested_task_count = 3;
+  input.cpu_budget = 12;
+  input.build_memory_budget = 0;
+  input.per_segment_memory_estimate = 1024;
+
+  vector_index::segment_scheduler_plan plan;
+  ASSERT_TRUE(vector_index::make_segment_scheduler_plan(input, &plan));
+  EXPECT_EQ(3U, plan.task_count);
+  EXPECT_STREQ("unbounded", plan.segment_parallel_reason);
 }
 
 TEST(VectorSegmentRuntimeSchedulerTest, AutoBuildThreadsCapsBlasThreads) {

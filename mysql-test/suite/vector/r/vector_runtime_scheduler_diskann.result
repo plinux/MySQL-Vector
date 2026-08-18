@@ -1,0 +1,61 @@
+SET @old_provider_build_threads = @@GLOBAL.vector_diskann_build_threads;
+SET GLOBAL vector_diskann_build_threads = 2;
+#
+# WL#Vector: provider runtime scheduler diagnostics
+#
+SELECT VEC_INDEX_CREATE('idx_scheduler_diskann', 2, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN');
+VEC_INDEX_CREATE('idx_scheduler_diskann', 2, 'EUCLIDEAN',
+'EXTERNAL', 'DISKANN')
+1
+SELECT VEC_INDEX_UPSERT('idx_scheduler_diskann', 1,
+VEC_FROMTEXT('[1,0]'));
+VEC_INDEX_UPSERT('idx_scheduler_diskann', 1,
+VEC_FROMTEXT('[1,0]'))
+1
+SELECT VEC_INDEX_UPSERT('idx_scheduler_diskann', 2,
+VEC_FROMTEXT('[2,0]'));
+VEC_INDEX_UPSERT('idx_scheduler_diskann', 2,
+VEC_FROMTEXT('[2,0]'))
+1
+SELECT VEC_INDEX_REBUILD('idx_scheduler_diskann');
+VEC_INDEX_REBUILD('idx_scheduler_diskann')
+1
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_diskann'),
+'$.backend_build_runtime')) AS runtime,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_diskann'),
+'$.backend_build_effective_threads') >= 1
+AS effective_threads_present,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_diskann'),
+'$.backend_build_effective_blas_threads') >= 1
+AS effective_blas_threads_present,
+COALESCE(JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_diskann'),
+'$.backend_build_pq_chunks'), 0) AS pq_chunks,
+COALESCE(JSON_EXTRACT(VEC_INDEX_INFO('idx_scheduler_diskann'),
+'$.backend_build_cache_nodes'), 0) AS cache_nodes;
+runtime	effective_threads_present	effective_blas_threads_present	pq_chunks	cache_nodes
+<runtime>	1	1	0	0
+SHOW VECTOR STATUS FOR INDEX idx_scheduler_diskann
+WHERE Section = 'BACKEND_HEALTH'
+       AND Variable_name LIKE 'idx_scheduler_diskann.scheduler_%';
+Section	Variable_name	Value
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_path	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_segment_count	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_task_count	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_concurrent_tasks	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_cpu_budget	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_effective_build_threads	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_effective_blas_threads	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_raw_reader_threads	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_pq_train_threads	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_pq_compress_threads	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_single_index_build	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_candidates_per_segment	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_effective_segment_tasks	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_segment_memory_estimate	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_segment_memory_budget	<value>
+BACKEND_HEALTH	idx_scheduler_diskann.scheduler_segment_parallel_reason	<value>
+SELECT VEC_INDEX_DROP('idx_scheduler_diskann');
+VEC_INDEX_DROP('idx_scheduler_diskann')
+1
+SET GLOBAL vector_diskann_build_threads = @old_provider_build_threads;

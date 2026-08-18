@@ -96,6 +96,12 @@ struct search_result {
   double distance{0.0};
 };
 
+/** Immutable backend search options owned by one request. */
+struct backend_search_options {
+  uint32_t diskann_search_complexity{0};
+  uint32_t diskann_search_beamwidth{0};
+};
+
 /** Last backend build/rebuild phase timings exposed for observability. */
 struct backend_build_diagnostics {
   std::string runtime;
@@ -245,6 +251,12 @@ class backend {
   virtual bool search(const vector_data &query, size_t top_k,
                       std::vector<search_result> *results) const = 0;
 
+  /** Search with immutable options derived for this request. */
+  virtual bool search_with_options(
+      const vector_data &query, size_t top_k,
+      const backend_search_options &options,
+      std::vector<search_result> *results) const;
+
   /**
     Search a batch of independent query vectors.
 
@@ -254,6 +266,12 @@ class backend {
   */
   virtual bool search_batch(
       const std::vector<vector_data> &queries, size_t top_k,
+      std::vector<std::vector<search_result>> *results) const;
+
+  /** Batch search with immutable options derived for this request. */
+  virtual bool search_batch_with_options(
+      const std::vector<vector_data> &queries, size_t top_k,
+      const backend_search_options &options,
       std::vector<std::vector<search_result>> *results) const;
 
   /**
@@ -769,9 +787,16 @@ class diskann_backend final : public backend {
   bool erase(uint64_t doc_id) override;
   bool search(const vector_data &query, size_t top_k,
               std::vector<search_result> *results) const override;
+  bool search_with_options(const vector_data &query, size_t top_k,
+                           const backend_search_options &options,
+                           std::vector<search_result> *results) const override;
   bool search_batch(const std::vector<vector_data> &queries, size_t top_k,
                     std::vector<std::vector<search_result>> *results) const
       override;
+  bool search_batch_with_options(
+      const std::vector<vector_data> &queries, size_t top_k,
+      const backend_search_options &options,
+      std::vector<std::vector<search_result>> *results) const override;
   bool collect_doc_ids(std::vector<uint64_t> *doc_ids) const override;
   bool load_committed_entries(
       const std::unordered_map<uint64_t, vector_data> &entries) override;

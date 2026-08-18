@@ -41,7 +41,10 @@ INSERT INTO t1 (test_name) VALUES
   ('vector_build_pipeline_progress_interval'),
   ('vector_build_segment_max_rows'),
   ('vector_build_segment_target_size'),
-  ('vector_diskann_pq_runtime');
+  ('vector_diskann_exact_rerank_candidates'),
+  ('vector_diskann_pq_runtime'),
+  ('vector_diskann_search_profile'),
+  ('vector_diskann_segment_profile');
 --enable_query_log
 
 --disable_warnings

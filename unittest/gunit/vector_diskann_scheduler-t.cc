@@ -30,12 +30,14 @@
 namespace vector_diskann_scheduler_unittest {
 
 constexpr uint64_t k_small_budget_rows = 4096;
+constexpr uint32_t k_small_budget_dimension = 128;
 
 TEST(VectorDiskAnnSchedulerTest, DerivesPerSegmentPqBudget) {
   vector_index::diskann_segment_budget_input input;
-  input.dimension = 128;
-  input.row_count = 262144;
-  input.payload_size = 262144ULL * 128ULL * sizeof(float);
+  input.dimension = k_small_budget_dimension;
+  input.row_count = k_small_budget_rows;
+  input.payload_size =
+      k_small_budget_rows * k_small_budget_dimension * sizeof(float);
   input.pq_code_budget_size = 0;
   input.pq_code_budget_ratio = 0.125;
   input.disk_pq_dims = 0;
@@ -48,10 +50,10 @@ TEST(VectorDiskAnnSchedulerTest, DerivesPerSegmentPqBudget) {
   EXPECT_GT(budget.pq_code_budget_gb, 0.0);
 }
 
-TEST(VectorDiskAnnSchedulerTest, DerivesEffectiveDiskPqDimsForLargeNodes) {
+TEST(VectorDiskAnnSchedulerTest, DerivesRecallFirstDiskPqDimsForLargeNodes) {
   vector_index::diskann_segment_budget_input input;
   input.dimension = 1024;
-  input.row_count = 16777216;
+  input.row_count = k_small_budget_rows;
   input.payload_size = input.row_count * input.dimension * sizeof(float);
   input.pq_code_budget_size = 0;
   input.pq_code_budget_ratio = 0.125;
@@ -65,11 +67,37 @@ TEST(VectorDiskAnnSchedulerTest, DerivesEffectiveDiskPqDimsForLargeNodes) {
   EXPECT_EQ(512U, budget.pq_chunks);
 }
 
+TEST(VectorDiskAnnSchedulerTest, KeepsRawDiskLayoutWhenNodeFitsSector) {
+  vector_index::diskann_segment_budget_input input;
+  input.dimension = 32;
+  input.row_count = k_small_budget_rows;
+  input.payload_size = input.row_count * input.dimension * sizeof(float);
+  input.disk_pq_dims = 0;
+  input.max_degree = 56;
+
+  vector_index::diskann_segment_budget budget;
+  ASSERT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
+  EXPECT_EQ(0U, budget.disk_pq_dims);
+}
+
+TEST(VectorDiskAnnSchedulerTest, RejectsDegreeTooLargeForDiskSector) {
+  vector_index::diskann_segment_budget_input input;
+  input.dimension = 1024;
+  input.row_count = k_small_budget_rows;
+  input.payload_size = input.row_count * input.dimension * sizeof(float);
+  input.disk_pq_dims = 0;
+  input.max_degree = 1024;
+
+  vector_index::diskann_segment_budget budget;
+  EXPECT_FALSE(vector_index::make_diskann_segment_budget(input, &budget));
+}
+
 TEST(VectorDiskAnnSchedulerTest, ExplicitDiskPqDimsWinsOverRatio) {
   vector_index::diskann_segment_budget_input input;
-  input.dimension = 128;
-  input.row_count = 262144;
-  input.payload_size = 262144ULL * 128ULL * sizeof(float);
+  input.dimension = k_small_budget_dimension;
+  input.row_count = k_small_budget_rows;
+  input.payload_size =
+      k_small_budget_rows * k_small_budget_dimension * sizeof(float);
   input.pq_code_budget_size = 0;
   input.pq_code_budget_ratio = 0.125;
   input.disk_pq_dims = 32;
@@ -82,23 +110,25 @@ TEST(VectorDiskAnnSchedulerTest, ExplicitDiskPqDimsWinsOverRatio) {
 
 TEST(VectorDiskAnnSchedulerTest, DerivesCacheNodesFromSegmentRows) {
   vector_index::diskann_segment_budget_input input;
-  input.dimension = 128;
-  input.row_count = 262144;
-  input.payload_size = 262144ULL * 128ULL * sizeof(float);
+  input.dimension = k_small_budget_dimension;
+  input.row_count = k_small_budget_rows;
+  input.payload_size =
+      k_small_budget_rows * k_small_budget_dimension * sizeof(float);
   input.max_degree = 56;
   input.search_cache_ratio = 0.2;
 
   vector_index::diskann_segment_budget budget;
   ASSERT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
 
-  EXPECT_EQ(30229U, budget.cache_nodes);
+  EXPECT_EQ(472U, budget.cache_nodes);
 }
 
 TEST(VectorDiskAnnSchedulerTest, ExplicitCacheSizeWinsOverRatio) {
   vector_index::diskann_segment_budget_input input;
-  input.dimension = 128;
-  input.row_count = 262144;
-  input.payload_size = 262144ULL * 128ULL * sizeof(float);
+  input.dimension = k_small_budget_dimension;
+  input.row_count = k_small_budget_rows;
+  input.payload_size =
+      k_small_budget_rows * k_small_budget_dimension * sizeof(float);
   input.max_degree = 56;
   input.search_cache_size = 1024ULL * 1024ULL;
   input.search_cache_ratio = 0.2;
@@ -141,43 +171,46 @@ TEST(VectorDiskAnnSchedulerTest, RuntimeCacheFootprintAlignsFloatCoordinates) {
 
 TEST(VectorDiskAnnSchedulerTest, UsesConfiguredBuildMemoryBudget) {
   vector_index::diskann_segment_budget_input input;
-  input.dimension = 128;
-  input.row_count = 262144;
-  input.payload_size = 262144ULL * 128ULL * sizeof(float);
-  input.build_memory_size = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+  input.dimension = k_small_budget_dimension;
+  input.row_count = k_small_budget_rows;
+  input.payload_size =
+      k_small_budget_rows * k_small_budget_dimension * sizeof(float);
+  input.build_memory_size = 16ULL * 1024ULL * 1024ULL;
 
   vector_index::diskann_segment_budget budget;
   ASSERT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
 
-  EXPECT_DOUBLE_EQ(16.0, budget.build_memory_gb);
+  EXPECT_DOUBLE_EQ(0.015625, budget.build_memory_gb);
 }
 
 TEST(VectorDiskAnnSchedulerTest, AutoBuildMemoryUsesAvailableMemoryBudget) {
   vector_index::diskann_segment_budget_input input;
-  input.dimension = 128;
-  input.row_count = 262144;
-  input.payload_size = 262144ULL * 128ULL * sizeof(float);
+  input.dimension = k_small_budget_dimension;
+  input.row_count = k_small_budget_rows;
+  input.payload_size =
+      k_small_budget_rows * k_small_budget_dimension * sizeof(float);
   input.build_memory_size = 0;
-  input.available_build_memory_size = 24ULL * 1024ULL * 1024ULL * 1024ULL;
+  input.available_build_memory_size = 24ULL * 1024ULL * 1024ULL;
 
   vector_index::diskann_segment_budget budget;
   ASSERT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
 
-  EXPECT_DOUBLE_EQ(24.0, budget.build_memory_gb);
+  EXPECT_DOUBLE_EQ(0.0234375, budget.build_memory_gb);
 }
 
 TEST(VectorDiskAnnSchedulerTest, AutoBuildMemoryFallsBackToPayloadBudget) {
   vector_index::diskann_segment_budget_input input;
-  input.dimension = 128;
-  input.row_count = 262144;
-  input.payload_size = 262144ULL * 128ULL * sizeof(float);
+  input.dimension = k_small_budget_dimension;
+  input.row_count = k_small_budget_rows;
+  input.payload_size =
+      k_small_budget_rows * k_small_budget_dimension * sizeof(float);
   input.build_memory_size = 0;
   input.available_build_memory_size = 0;
 
   vector_index::diskann_segment_budget budget;
   ASSERT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
 
-  EXPECT_DOUBLE_EQ(0.125, budget.build_memory_gb);
+  EXPECT_DOUBLE_EQ(0.001953125, budget.build_memory_gb);
 }
 
 TEST(VectorDiskAnnSchedulerTest, CacheSizeRoundsUpToOneNode) {
@@ -238,9 +271,10 @@ TEST(VectorDiskAnnSchedulerTest, ExplicitDiskPqDimsClampToDimension) {
 
 TEST(VectorDiskAnnSchedulerTest, RejectsMissingOutputAndZeroInputs) {
   vector_index::diskann_segment_budget_input input;
-  input.dimension = 128;
-  input.row_count = 262144;
-  input.payload_size = 262144ULL * 128ULL * sizeof(float);
+  input.dimension = k_small_budget_dimension;
+  input.row_count = k_small_budget_rows;
+  input.payload_size =
+      k_small_budget_rows * k_small_budget_dimension * sizeof(float);
 
   vector_index::diskann_segment_budget budget;
   EXPECT_FALSE(vector_index::make_diskann_segment_budget(input, nullptr));
@@ -290,9 +324,10 @@ TEST(VectorDiskAnnSchedulerTest, SaturatesHugePqBudgetToDimension) {
 
 TEST(VectorDiskAnnSchedulerTest, RejectsInvalidRatios) {
   vector_index::diskann_segment_budget_input input;
-  input.dimension = 128;
-  input.row_count = 262144;
-  input.payload_size = 262144ULL * 128ULL * sizeof(float);
+  input.dimension = k_small_budget_dimension;
+  input.row_count = k_small_budget_rows;
+  input.payload_size =
+      k_small_budget_rows * k_small_budget_dimension * sizeof(float);
 
   vector_index::diskann_segment_budget budget;
   input.pq_code_budget_ratio = -0.1;

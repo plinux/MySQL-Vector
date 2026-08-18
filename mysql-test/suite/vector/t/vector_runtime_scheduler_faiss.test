@@ -1,0 +1,11 @@
+--source include/have_vector_faiss.inc
+
+SET @old_provider_build_threads = @@GLOBAL.vector_faiss_build_threads;
+SET GLOBAL vector_faiss_build_threads = 2;
+
+--let $vector_index_name=idx_scheduler_faiss
+--let $vector_mode=EXTERNAL
+--let $vector_provider=FAISS
+--source suite/vector/include/vector_provider_runtime_scheduler.inc
+
+SET GLOBAL vector_faiss_build_threads = @old_provider_build_threads;

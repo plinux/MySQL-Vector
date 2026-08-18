@@ -30,16 +30,16 @@ SET GLOBAL vector_diskann_disk_pq_dims=12;
 SELECT @@global.vector_diskann_disk_pq_dims;
 @@global.vector_diskann_disk_pq_dims
 12
-SET GLOBAL vector_diskann_disk_pq_dims=65535;
+SET GLOBAL vector_diskann_disk_pq_dims=512;
 SELECT @@global.vector_diskann_disk_pq_dims;
 @@global.vector_diskann_disk_pq_dims
-65535
+512
 SET GLOBAL vector_diskann_disk_pq_dims=0;
 SELECT @@global.vector_diskann_disk_pq_dims;
 @@global.vector_diskann_disk_pq_dims
 0
-SET GLOBAL vector_diskann_disk_pq_dims=65536;
-ERROR 42000: Variable 'vector_diskann_disk_pq_dims' can't be set to the value of '65536'
+SET GLOBAL vector_diskann_disk_pq_dims=513;
+ERROR 42000: Variable 'vector_diskann_disk_pq_dims' can't be set to the value of '513'
 SET GLOBAL vector_diskann_disk_pq_dims=-1;
 ERROR 42000: Variable 'vector_diskann_disk_pq_dims' can't be set to the value of '-1'
 SET GLOBAL vector_diskann_disk_pq_dims=DEFAULT;

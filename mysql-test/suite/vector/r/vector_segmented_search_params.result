@@ -4,9 +4,11 @@
 SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
 SET @old_vector_build_segment_max_rows = @@GLOBAL.vector_build_segment_max_rows;
 SET @old_vector_build_segment_target_size = @@GLOBAL.vector_build_segment_target_size;
+SET @old_vector_diskann_search_profile = @@GLOBAL.vector_diskann_search_profile;
 SET GLOBAL vector_build_pipeline_mode = 'segmented';
 SET GLOBAL vector_build_segment_max_rows = 1048576;
 SET GLOBAL vector_build_segment_target_size = 1048576;
+SET GLOBAL vector_diskann_search_profile = 'high_recall';
 SELECT VEC_INDEX_CREATE('idx_segmented_search_params', 2, 'EUCLIDEAN',
 'MEMORY', 'HNSWLIB', 0, 'standalone');
 VEC_INDEX_CREATE('idx_segmented_search_params', 2, 'EUCLIDEAN',
@@ -90,16 +92,34 @@ AS UNSIGNED) = 0 AS non_diskann_search_list_zero,
 CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
 '$.scheduler_search_diskann_beamwidth'))
 AS UNSIGNED) = 0 AS non_diskann_beamwidth_zero,
+JSON_EXTRACT(@segmented_search_info,
+'$.scheduler_search_profile') IS NULL AS non_diskann_profile_null,
+JSON_EXTRACT(@segmented_search_info,
+'$.scheduler_search_effective_complexity') IS NULL AS non_diskann_effective_complexity_null,
+JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+'$.scheduler_search_advice')) = 'not_applicable'
+         AS non_diskann_advice_not_applicable,
+JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+'$.scheduler_search_advice_reason')) =
+'not_segmented_diskann_search'
+         AS non_diskann_advice_reason_visible,
+CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+'$.scheduler_search_suggested_complexity'))
+AS UNSIGNED) = 0 AS non_diskann_suggested_complexity_zero,
+CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+'$.scheduler_search_suggested_segment_target_size'))
+AS UNSIGNED) = 0 AS non_diskann_suggested_segment_target_zero,
 CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
 '$.scheduler_search_total_candidate_rows'))
 AS UNSIGNED) =
 @segmented_search_candidate_count * @segmented_search_query_count
 AS total_candidate_rows_match;
-query_count_visible	min_segment_entries_visible	max_segment_entries_cover_min	total_segment_entries_cover_max	non_diskann_search_list_zero	non_diskann_beamwidth_zero	total_candidate_rows_match
-1	1	1	1	1	1	1
+query_count_visible	min_segment_entries_visible	max_segment_entries_cover_min	total_segment_entries_cover_max	non_diskann_search_list_zero	non_diskann_beamwidth_zero	non_diskann_profile_null	non_diskann_effective_complexity_null	non_diskann_advice_not_applicable	non_diskann_advice_reason_visible	non_diskann_suggested_complexity_zero	non_diskann_suggested_segment_target_zero	total_candidate_rows_match
+1	1	1	1	1	1	1	1	1	1	1	1	1
 SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
 SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
 SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+SET GLOBAL vector_diskann_search_profile = @old_vector_diskann_search_profile;
 SELECT VEC_INDEX_DROP('idx_segmented_search_params');
 VEC_INDEX_DROP('idx_segmented_search_params')
 1

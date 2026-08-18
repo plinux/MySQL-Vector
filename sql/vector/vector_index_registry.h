@@ -46,12 +46,15 @@ struct index_info {
   bool truth_store_enabled{true};
   std::string build_source;
   std::string build_pipeline_mode;
+  std::string build_segment_profile;
+  std::string build_segment_profile_reason;
   std::string build_pipeline_decision;
   std::string build_pipeline_trigger;
   uint64_t build_pipeline_rows{0};
   uint64_t build_pipeline_payload_size{0};
   uint64_t build_pipeline_raw_segments{0};
   uint64_t build_segment_effective_row_limit{0};
+  uint64_t build_segment_effective_target_size{0};
   uint64_t build_segment_target_size{0};
   uint64_t build_segment_max_rows{0};
   std::string build_segment_policy;
@@ -222,8 +225,9 @@ bool bulk_upsert_from_raw_files(
     const std::string &docid_filename,
     const vector_index::index_service::bulk_load_options &options,
     uint64_t *loaded_rows, std::string *error);
-bool bulk_build_index(const std::string &index_name);
-bool rebuild_index(const std::string &index_name);
+bool bulk_build_index(const std::string &index_name,
+                      std::string *error = nullptr);
+bool rebuild_index(const std::string &index_name, std::string *error = nullptr);
 bool recover_index(const std::string &index_name);
 bool replace_committed_entries(
     const std::string &index_name,

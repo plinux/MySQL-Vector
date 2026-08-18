@@ -1,0 +1,110 @@
+--source include/have_vector_diskann_offline.inc
+
+# The 32 MiB high-dimensional input drives eight native offline builds. Allow
+# 2 GiB for mysqld, backend workspaces, and instrumentation before headroom.
+--let $vector_big_test_estimated_peak_kib=2097152
+--source suite/vector/include/vector_big_test_memory.inc
+
+--echo #
+--echo # WL#Vector: DISKANN segmented exact rerank keeps boundary docids
+--echo #
+
+--disable_query_log
+--let $vector_fbin=$MYSQLTEST_VARDIR/vector_diskann_segmented_exact_rerank.fbin
+--let $vector_docid=$MYSQLTEST_VARDIR/vector_diskann_segmented_exact_rerank.u64
+--exec rm -f $vector_fbin $vector_docid
+--exec perl $MYSQL_TEST_DIR/suite/vector/std_data/generate_docid_fbin.pl $vector_fbin $vector_docid 8192 1024
+SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
+SET @old_vector_build_pipeline_max_tasks = @@GLOBAL.vector_build_pipeline_max_tasks;
+SET @old_vector_build_segment_max_rows = @@GLOBAL.vector_build_segment_max_rows;
+SET @old_vector_build_segment_target_size = @@GLOBAL.vector_build_segment_target_size;
+SET @old_vector_diskann_pq_runtime = @@GLOBAL.vector_diskann_pq_runtime;
+SET @old_vector_diskann_segmented_serving = @@GLOBAL.vector_diskann_segmented_serving;
+SET @old_vector_search_batch_result_count = @@GLOBAL.vector_search_batch_result_count;
+SET GLOBAL vector_build_pipeline_mode = 'segmented';
+SET GLOBAL vector_build_pipeline_max_tasks = 1;
+SET GLOBAL vector_build_segment_max_rows = 1024;
+SET GLOBAL vector_build_segment_target_size = 4194304;
+SET GLOBAL vector_diskann_pq_runtime = 'native_auto';
+SET GLOBAL vector_diskann_segmented_serving = ON;
+SET GLOBAL vector_search_batch_result_count = 4096;
+--enable_query_log
+
+SELECT VEC_INDEX_CREATE('idx_diskann_segmented_rerank', 1024, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN', 0, 'standalone');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_segmented_rerank',
+                                        'offline');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_segmented_rerank',
+                                          32, 64, 4);
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(
+  'idx_diskann_segmented_rerank', 2048);
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH(
+  'idx_diskann_segmented_rerank', 16);
+
+--disable_query_log
+eval LOAD VECTOR DATA INFILE '$MYSQLTEST_VARDIR/vector_diskann_segmented_exact_rerank.fbin'
+  DOCID INFILE '$MYSQLTEST_VARDIR/vector_diskann_segmented_exact_rerank.u64'
+  INTO VECTOR INDEX idx_diskann_segmented_rerank
+  FORMAT FBIN;
+--enable_query_log
+
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_segmented_rerank'),
+                    '$.standalone_raw_segment_count') AS raw_segment_count;
+
+--disable_query_log
+SET @build_result = VEC_INDEX_BULK_BUILD(
+  'idx_diskann_segmented_rerank');
+--enable_query_log
+
+--replace_regex /diskann_vendored_offline|diskann_offline/<diskann_segment_backend>/
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_segmented_rerank'),
+  '$.backend_variant')) AS backend_variant,
+  CAST(JSON_UNQUOTE(JSON_EXTRACT(
+    VEC_INDEX_INFO('idx_diskann_segmented_rerank'),
+    '$.backend_build_invocations')) AS UNSIGNED) >= 8 AS has_backend_builds,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_segmented_rerank'),
+  '$.native_pq_runtime_official_pq_used') AS used_official_fallback,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_segmented_rerank'),
+  '$.scheduler_single_index_build') AS single_index_build,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_segmented_rerank'),
+  '$.entry_count') AS entry_count;
+
+SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_SEARCH('idx_diskann_segmented_rerank',
+                          VEC_FROMTEXT(CONCAT('[', 1023,
+                          REPEAT(',0', 1023), ']')), 10),
+         '$[0]')) AS UNSIGNED) = 1023 AS boundary_left_top1,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_SEARCH('idx_diskann_segmented_rerank',
+                          VEC_FROMTEXT(CONCAT('[', 1024,
+                          REPEAT(',0', 1023), ']')), 10),
+         '$[0]')) AS UNSIGNED) = 1024 AS boundary_right_top1,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_SEARCH('idx_diskann_segmented_rerank',
+                          VEC_FROMTEXT(CONCAT('[', 2047,
+                          REPEAT(',0', 1023), ']')), 10),
+         '$[0]')) AS UNSIGNED) = 2047 AS second_segment_tail_top1,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(
+         VEC_INDEX_SEARCH('idx_diskann_segmented_rerank',
+                          VEC_FROMTEXT(CONCAT('[', 8191,
+                          REPEAT(',0', 1023), ']')), 10),
+         '$[0]')) AS UNSIGNED) = 8191 AS tail_segment_top1;
+
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_segmented_rerank'),
+                    '$.scheduler_search_fanout_segments') AS fanout_segments,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_segmented_rerank'),
+                    '$.scheduler_search_candidate_count') > 10
+         AS candidate_window_expanded,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_segmented_rerank'),
+                    '$.scheduler_search_candidate_count') <=
+         @@GLOBAL.vector_search_batch_result_count AS candidate_budget_applied;
+
+SELECT VEC_INDEX_DROP('idx_diskann_segmented_rerank');
+
+--disable_query_log
+--source suite/vector/include/vector_restore_segmented_build_globals.inc
+SET GLOBAL vector_search_batch_result_count = @old_vector_search_batch_result_count;
+--enable_query_log
+
+--remove_file $vector_fbin
+--remove_file $vector_docid

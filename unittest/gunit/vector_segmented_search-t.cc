@@ -23,8 +23,10 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <vector>
 
+#include "sql/vector/vector_diskann_scheduler.h"
 #include "sql/vector/vector_segmented_search.h"
 
 namespace vector_index {
@@ -63,6 +65,129 @@ TEST(VectorSegmentedSearchTest, DiskAnnSearchListSlackShrinksByFanout) {
   EXPECT_EQ(10U, diskann_search_list_slack_top_k(10, 16, 4));
   EXPECT_EQ(10U, diskann_search_list_slack_top_k(10, 0, 4));
   EXPECT_EQ(0U, diskann_search_list_slack_top_k(0, 64, 1));
+}
+
+TEST(VectorSegmentedSearchTest, DiskAnnBalancedSearchProfileCoversFewSegments) {
+  diskann_search_budget budget;
+  EXPECT_TRUE(choose_diskann_search_budget(
+      10, 17, 1, 130816, 800, diskann_search_profile::kBalanced, &budget));
+
+  EXPECT_EQ(2400U, budget.search_complexity);
+  EXPECT_EQ(diskann_search_profile::kBalanced, budget.profile);
+  EXPECT_EQ(diskann_search_profile_reason::kBalancedFewSegments,
+            budget.reason);
+  EXPECT_LT(budget.candidate_count, budget.search_complexity);
+}
+
+TEST(VectorSegmentedSearchTest, DiskAnnHighRecallSearchProfileCoversFewSegments) {
+  diskann_search_budget budget;
+  EXPECT_TRUE(choose_diskann_search_budget(
+      10, 17, 1, 130816, 800, diskann_search_profile::kHighRecall, &budget));
+
+  EXPECT_EQ(3200U, budget.search_complexity);
+  EXPECT_EQ(diskann_search_profile::kHighRecall, budget.profile);
+  EXPECT_EQ(diskann_search_profile_reason::kHighRecallFewSegments,
+            budget.reason);
+  EXPECT_LT(budget.candidate_count, budget.search_complexity);
+}
+
+TEST(VectorSegmentedSearchTest, DiskAnnHighRecallSearchProfileKeepsManySegments) {
+  diskann_search_budget budget;
+  EXPECT_TRUE(choose_diskann_search_budget(
+      10, 33, 1, 65408, 800, diskann_search_profile::kHighRecall, &budget));
+
+  EXPECT_EQ(1600U, budget.search_complexity);
+  EXPECT_EQ(diskann_search_profile_reason::kHighRecallManySegments,
+            budget.reason);
+  EXPECT_LT(budget.candidate_count, budget.search_complexity);
+}
+
+TEST(VectorSegmentedSearchTest, DiskAnnManualSearchProfileKeepsExplicitValue) {
+  diskann_search_budget budget;
+  EXPECT_TRUE(choose_diskann_search_budget(
+      10, 17, 1, 130816, 1234, diskann_search_profile::kManual, &budget));
+
+  EXPECT_EQ(1234U, budget.search_complexity);
+  EXPECT_EQ(diskann_search_profile::kManual, budget.profile);
+  EXPECT_EQ(diskann_search_profile_reason::kManual, budget.reason);
+}
+
+TEST(VectorSegmentedSearchTest, DiskAnnSearchProfileDoesNotLowerExplicitValue) {
+  diskann_search_budget budget;
+  EXPECT_TRUE(choose_diskann_search_budget(
+      10, 17, 1, 130816, 5000, diskann_search_profile::kBalanced, &budget));
+
+  EXPECT_EQ(5000U, budget.search_complexity);
+  EXPECT_EQ(diskann_search_profile_reason::kManualHigher, budget.reason);
+}
+
+TEST(VectorSegmentedSearchTest, DiskAnnFastAndBalancedManySegmentProfiles) {
+  diskann_search_budget budget;
+  ASSERT_TRUE(choose_diskann_search_budget(
+      10, 4, 1, 1024, 64, diskann_search_profile::kFast, &budget));
+  EXPECT_EQ(800U, budget.search_complexity);
+  EXPECT_EQ(diskann_search_profile_reason::kFast, budget.reason);
+
+  ASSERT_TRUE(choose_diskann_search_budget(
+      10, 32, 1, 1024, 64, diskann_search_profile::kBalanced, &budget));
+  EXPECT_EQ(1200U, budget.search_complexity);
+  EXPECT_EQ(diskann_search_profile_reason::kBalancedManySegments,
+            budget.reason);
+}
+
+TEST(VectorSegmentedSearchTest, DiskAnnSearchBudgetRejectsInvalidInputs) {
+  diskann_search_budget budget;
+  EXPECT_FALSE(choose_diskann_search_budget(
+      10, 1, 1, 1, 64, diskann_search_profile::kManual, nullptr));
+  EXPECT_FALSE(choose_diskann_search_budget(
+      0, 1, 1, 1, 64, diskann_search_profile::kManual, &budget));
+  EXPECT_FALSE(choose_diskann_search_budget(
+      10, 0, 1, 1, 64, diskann_search_profile::kManual, &budget));
+  EXPECT_FALSE(choose_diskann_search_budget(
+      10, 1, 1, 0, 64, diskann_search_profile::kManual, &budget));
+}
+
+TEST(VectorSegmentedSearchTest, DiskAnnSearchBudgetHandlesMaximumTopK) {
+  diskann_search_budget budget;
+  ASSERT_TRUE(choose_diskann_search_budget(
+      std::numeric_limits<uint32_t>::max(), 1, 1,
+      std::numeric_limits<uint32_t>::max(), 0,
+      diskann_search_profile::kManual, &budget));
+  EXPECT_EQ(std::numeric_limits<uint32_t>::max(), budget.search_complexity);
+}
+
+TEST(VectorSegmentedSearchTest, DiskAnnSearchProfileNamesCoverAllValues) {
+  EXPECT_STREQ("manual", diskann_search_profile_name(
+                             diskann_search_profile::kManual));
+  EXPECT_STREQ("fast",
+               diskann_search_profile_name(diskann_search_profile::kFast));
+  EXPECT_STREQ("balanced", diskann_search_profile_name(
+                               diskann_search_profile::kBalanced));
+  EXPECT_STREQ("high_recall", diskann_search_profile_name(
+                                  diskann_search_profile::kHighRecall));
+  EXPECT_STREQ("manual", diskann_search_profile_name(
+                             static_cast<diskann_search_profile>(999)));
+
+  EXPECT_STREQ("manual", diskann_search_profile_reason_name(
+                             diskann_search_profile_reason::kManual));
+  EXPECT_STREQ("fast_800", diskann_search_profile_reason_name(
+                               diskann_search_profile_reason::kFast));
+  EXPECT_STREQ("balanced_many_segments_1200",
+               diskann_search_profile_reason_name(
+                   diskann_search_profile_reason::kBalancedManySegments));
+  EXPECT_STREQ("balanced_few_segments_2400",
+               diskann_search_profile_reason_name(
+                   diskann_search_profile_reason::kBalancedFewSegments));
+  EXPECT_STREQ("high_recall_many_segments_1600",
+               diskann_search_profile_reason_name(
+                   diskann_search_profile_reason::kHighRecallManySegments));
+  EXPECT_STREQ("high_recall_few_segments_3200",
+               diskann_search_profile_reason_name(
+                   diskann_search_profile_reason::kHighRecallFewSegments));
+  EXPECT_STREQ("manual_higher", diskann_search_profile_reason_name(
+                                    diskann_search_profile_reason::kManualHigher));
+  EXPECT_STREQ("manual", diskann_search_profile_reason_name(
+                             static_cast<diskann_search_profile_reason>(999)));
 }
 
 TEST(VectorSegmentedSearchTest, MergeHandlesEmptyAndZeroTopK) {
@@ -185,6 +310,26 @@ TEST(VectorSegmentedSearchTest, BatchMergeKeepsPerQueryTopK) {
   EXPECT_EQ(1U, merged[0][1].doc_id);
   EXPECT_EQ(10U, merged[1][0].doc_id);
   EXPECT_EQ(12U, merged[1][1].doc_id);
+}
+
+TEST(VectorSegmentedSearchTest, BatchMergeDeduplicatesEachQueryIndependently) {
+  std::vector<std::vector<search_result>> merged;
+  EXPECT_TRUE(merge_segment_batch_topk(
+      {{{{7, 0.50F}, {8, 0.20F}}, {{30, 0.10F}}},
+       {{{7, 0.10F}, {9, 0.30F}}, {{10, 0.10F}, {20, 0.10F}}}},
+      3, &merged));
+
+  ASSERT_EQ(2U, merged.size());
+  ASSERT_EQ(3U, merged[0].size());
+  EXPECT_EQ(7U, merged[0][0].doc_id);
+  EXPECT_FLOAT_EQ(0.10F, merged[0][0].distance);
+  EXPECT_EQ(8U, merged[0][1].doc_id);
+  EXPECT_EQ(9U, merged[0][2].doc_id);
+
+  ASSERT_EQ(3U, merged[1].size());
+  EXPECT_EQ(10U, merged[1][0].doc_id);
+  EXPECT_EQ(20U, merged[1][1].doc_id);
+  EXPECT_EQ(30U, merged[1][2].doc_id);
 }
 
 }  // namespace

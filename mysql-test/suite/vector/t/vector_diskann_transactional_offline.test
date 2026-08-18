@@ -1,4 +1,4 @@
---source include/have_vector_diskann.inc
+--source include/have_vector_diskann_offline.inc
 
 # The transactional rebuild forces the real offline adapter. Keep 2 GiB for
 # mysqld and the native build workspace before headroom.
@@ -32,26 +32,7 @@ SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 50, VEC_FROMTEXT('[5,0]'));
 SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 60, VEC_FROMTEXT('[6,0]'));
 SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 70, VEC_FROMTEXT('[7,0]'));
 SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 80, VEC_FROMTEXT('[8,0]'));
-delimiter |;
-CREATE PROCEDURE try_diskann_offline_rebuild()
-BEGIN
-  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET @rebuild_ok = 0;
-  SET @rebuild_ok = 1;
-  SET @rebuild_result = VEC_INDEX_REBUILD('idx_diskann_txn_offline');
-END|
-delimiter ;|
-CALL try_diskann_offline_rebuild();
-DROP PROCEDURE try_diskann_offline_rebuild;
---let $rebuild_ok=`SELECT @rebuild_ok`
-if (!$rebuild_ok)
-{
-  SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
-  SET GLOBAL vector_build_pipeline_max_tasks = @old_vector_build_pipeline_max_tasks;
-  SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
-  SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
-  SELECT VEC_INDEX_DROP('idx_diskann_txn_offline');
-  --skip Test requires DISKANN offline adapter support
-}
+SET @rebuild_result = VEC_INDEX_REBUILD('idx_diskann_txn_offline');
 --enable_result_log
 --enable_query_log
 

@@ -1,0 +1,11 @@
+--source include/have_vector_hnsw.inc
+
+SET @old_provider_build_threads = @@GLOBAL.vector_hnsw_build_threads;
+SET GLOBAL vector_hnsw_build_threads = 2;
+
+--let $vector_index_name=idx_scheduler_hnsw
+--let $vector_mode=MEMORY
+--let $vector_provider=HNSWLIB
+--source suite/vector/include/vector_provider_runtime_scheduler.inc
+
+SET GLOBAL vector_hnsw_build_threads = @old_provider_build_threads;

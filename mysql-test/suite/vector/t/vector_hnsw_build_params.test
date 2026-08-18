@@ -12,8 +12,10 @@ SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw_mem', 24, 320);
 SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_hnsw_ext', 48, 96);
 
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_hnsw_mem');
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_hnsw_ext');
 
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
@@ -24,8 +26,10 @@ SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
 --source include/restart_mysqld.inc
 
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_hnsw_mem');
 --replace_regex /last_apply_latency_ms":[0-9]+/last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_hnsw_ext');
 
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'

@@ -5,6 +5,7 @@
 --echo #
 
 SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
+SET @old_vector_diskann_segment_profile = @@GLOBAL.vector_diskann_segment_profile;
 SET @old_vector_build_pipeline_min_rows = @@GLOBAL.vector_build_pipeline_min_rows;
 SET @old_vector_build_pipeline_min_size = @@GLOBAL.vector_build_pipeline_min_size;
 
@@ -31,6 +32,7 @@ SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
                                  '$.build_pipeline_trigger')) AS pipeline_trigger;
 
 SET GLOBAL vector_build_pipeline_mode = 'auto';
+SET GLOBAL vector_diskann_segment_profile = 'high_recall';
 SET GLOBAL vector_build_pipeline_min_rows = 1;
 SET GLOBAL vector_build_pipeline_min_size = 0;
 SELECT VEC_INDEX_REBUILD('idx_pipeline_policy');
@@ -40,14 +42,28 @@ SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
                                  '$.build_pipeline_decision')) AS decision,
 JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
                                  '$.build_pipeline_trigger')) AS pipeline_trigger,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_segment_profile')) AS segment_profile,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                                 '$.build_segment_profile_reason')) AS profile_reason,
 JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
                     '$.build_pipeline_rows') AS pipeline_rows,
        JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
                     '$.build_pipeline_payload_size') AS payload_size,
        JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
-                    '$.build_pipeline_raw_segments') AS raw_segments;
+                    '$.build_pipeline_raw_segments') AS raw_segments,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+                    '$.build_segment_effective_target_size') AS effective_target_size;
+
+SET GLOBAL vector_diskann_segment_profile = 'balanced';
+SELECT @@GLOBAL.vector_diskann_segment_profile;
+SET GLOBAL vector_diskann_segment_profile = 'throughput';
+SELECT @@GLOBAL.vector_diskann_segment_profile;
+--error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_segment_profile = 'bogus';
 
 SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+SET GLOBAL vector_diskann_segment_profile = @old_vector_diskann_segment_profile;
 SET GLOBAL vector_build_pipeline_min_rows = @old_vector_build_pipeline_min_rows;
 SET GLOBAL vector_build_pipeline_min_size = @old_vector_build_pipeline_min_size;
 

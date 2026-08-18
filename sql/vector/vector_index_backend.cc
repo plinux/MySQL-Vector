@@ -475,6 +475,32 @@ bool read_committed_entries(
   });
 }
 
+bool collect_full_rerank_candidates(
+    const backend &source, size_t requested_candidate_count,
+    std::vector<search_result> *candidates) {
+  const size_t entry_count = source.entry_count();
+  if (candidates == nullptr || requested_candidate_count < entry_count) {
+    return false;
+  }
+
+  std::vector<uint64_t> doc_ids;
+  if (!source.collect_doc_ids(&doc_ids) || doc_ids.size() != entry_count) {
+    return false;
+  }
+
+  std::sort(doc_ids.begin(), doc_ids.end());
+  if (std::adjacent_find(doc_ids.begin(), doc_ids.end()) != doc_ids.end()) {
+    return false;
+  }
+
+  candidates->clear();
+  candidates->reserve(doc_ids.size());
+  for (uint64_t doc_id : doc_ids) {
+    candidates->push_back({doc_id, 0.0});
+  }
+  return true;
+}
+
 }  // namespace
 
 bool backend::load_committed_entries(
@@ -584,17 +610,50 @@ bool backend::search_batch(
   return true;
 }
 
+bool backend::search_with_options(
+    const vector_data &query, size_t top_k,
+    const backend_search_options &options [[maybe_unused]],
+    std::vector<search_result> *results) const {
+  return search(query, top_k, results);
+}
+
+bool backend::search_batch_with_options(
+    const std::vector<vector_data> &queries, size_t top_k,
+    const backend_search_options &options [[maybe_unused]],
+    std::vector<std::vector<search_result>> *results) const {
+  return search_batch(queries, top_k, results);
+}
+
 bool backend::search_for_rerank(
     const vector_data &query, size_t top_k, size_t candidate_top_k,
     std::vector<search_result> *results) const {
-  return search(query, std::max(top_k, candidate_top_k), results);
+  if (results == nullptr) return false;
+  const size_t requested_candidate_count = std::max(top_k, candidate_top_k);
+  if (candidate_top_k > top_k &&
+      collect_full_rerank_candidates(*this, requested_candidate_count,
+                                     results)) {
+    return true;
+  }
+  return search(query, requested_candidate_count, results);
 }
 
 bool backend::search_batch_for_rerank(
     const std::vector<vector_data> &queries, size_t top_k,
     size_t candidate_top_k,
     std::vector<std::vector<search_result>> *results) const {
-  return search_batch(queries, std::max(top_k, candidate_top_k), results);
+  if (results == nullptr) return false;
+  results->clear();
+  if (queries.empty()) return true;
+
+  const size_t requested_candidate_count = std::max(top_k, candidate_top_k);
+  std::vector<search_result> candidates;
+  if (candidate_top_k > top_k &&
+      collect_full_rerank_candidates(*this, requested_candidate_count,
+                                     &candidates)) {
+    results->assign(queries.size(), candidates);
+    return true;
+  }
+  return search_batch(queries, requested_candidate_count, results);
 }
 
 bool backend::collect_doc_ids(std::vector<uint64_t> *doc_ids

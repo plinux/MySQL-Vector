@@ -19,6 +19,7 @@ SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
 --source include/restart_mysqld.inc
 
 --replace_regex /external_manifest_generation":[0-9]+/external_manifest_generation":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_faiss_sidecar');
 SELECT VEC_INDEX_SEARCH('idx_faiss_sidecar', VEC_FROMTEXT('[1,2]'), 1);
 

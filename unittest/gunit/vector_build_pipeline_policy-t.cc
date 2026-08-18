@@ -35,6 +35,7 @@ using vector_index::build_pipeline_mode;
 using vector_index::build_pipeline_path;
 using vector_index::build_pipeline_thresholds;
 using vector_index::build_pipeline_trigger;
+using vector_index::diskann_segment_profile;
 
 namespace {
 
@@ -130,16 +131,106 @@ TEST(VectorBuildPipelinePolicyTest, AutoTriggerPriorityIsStable) {
                   build_pipeline_trigger::kRawSegmentCount);
 }
 
-TEST(VectorBuildPipelinePolicyTest, DefaultSegmentRowLimitHonorsRowCap) {
+TEST(VectorBuildPipelinePolicyTest, DefaultSegmentRowLimitPrefersByteTarget) {
   build_pipeline_thresholds thresholds;
 
   const uint64_t row_limit =
       vector_index::build_segment_row_limit(1024, thresholds);
 
-  EXPECT_EQ(1048576ULL, thresholds.segment_max_rows);
-  EXPECT_EQ(8ULL * 1024ULL * 1024ULL * 1024ULL,
+  EXPECT_EQ(static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()),
+            thresholds.segment_max_rows);
+  EXPECT_EQ(2ULL * 1024ULL * 1024ULL * 1024ULL,
             thresholds.segment_target_size);
-  EXPECT_EQ(thresholds.segment_max_rows, row_limit);
+  EXPECT_EQ((2ULL * 1024ULL * 1024ULL * 1024ULL) /
+                (1024ULL * sizeof(float) + sizeof(uint64_t)),
+            row_limit);
+}
+
+TEST(VectorBuildPipelinePolicyTest, ManualDiskAnnSegmentProfileKeepsThresholds) {
+  build_pipeline_thresholds thresholds;
+  thresholds.segment_target_size = 768ULL * 1024ULL * 1024ULL;
+
+  const auto result = vector_index::apply_diskann_segment_profile(
+      1024, 2097152, 8589934592ULL, diskann_segment_profile::kManual,
+      thresholds, true);
+
+  EXPECT_FALSE(result.applied);
+  EXPECT_STREQ("manual", result.reason);
+  EXPECT_EQ(thresholds.segment_target_size,
+            result.thresholds.segment_target_size);
+  EXPECT_EQ(vector_index::build_segment_row_limit(1024, thresholds),
+            vector_index::build_segment_row_limit(1024, result.thresholds));
+}
+
+TEST(VectorBuildPipelinePolicyTest, HighRecallDiskAnnSegmentProfileUses256M) {
+  build_pipeline_thresholds thresholds;
+
+  const auto result = vector_index::apply_diskann_segment_profile(
+      1024, 2097152, 8589934592ULL, diskann_segment_profile::kHighRecall,
+      thresholds, true);
+
+  EXPECT_TRUE(result.applied);
+  EXPECT_STREQ("high_recall_256m", result.reason);
+  EXPECT_EQ(256ULL * 1024ULL * 1024ULL,
+            result.thresholds.segment_target_size);
+  EXPECT_EQ(65408ULL,
+            vector_index::build_segment_row_limit(1024, result.thresholds));
+}
+
+TEST(VectorBuildPipelinePolicyTest, BalancedDiskAnnSegmentProfileUses512M) {
+  build_pipeline_thresholds thresholds;
+
+  const auto result = vector_index::apply_diskann_segment_profile(
+      1024, 2097152, 8589934592ULL, diskann_segment_profile::kBalanced,
+      thresholds, true);
+
+  EXPECT_TRUE(result.applied);
+  EXPECT_STREQ("balanced_512m", result.reason);
+  EXPECT_EQ(512ULL * 1024ULL * 1024ULL,
+            result.thresholds.segment_target_size);
+  EXPECT_EQ(130816ULL,
+            vector_index::build_segment_row_limit(1024, result.thresholds));
+}
+
+TEST(VectorBuildPipelinePolicyTest, ThroughputDiskAnnSegmentProfileUsesLargeTarget) {
+  build_pipeline_thresholds thresholds;
+  thresholds.segment_target_size = 256ULL * 1024ULL * 1024ULL;
+
+  const auto result = vector_index::apply_diskann_segment_profile(
+      1024, 2097152, 8589934592ULL, diskann_segment_profile::kThroughput,
+      thresholds, true);
+
+  EXPECT_TRUE(result.applied);
+  EXPECT_STREQ("throughput_large_segment", result.reason);
+  EXPECT_GE(result.thresholds.segment_target_size,
+            vector_index::k_default_build_segment_target_size);
+}
+
+TEST(VectorBuildPipelinePolicyTest, DiskAnnSegmentProfileIgnoresIneligiblePath) {
+  build_pipeline_thresholds thresholds;
+
+  const auto result = vector_index::apply_diskann_segment_profile(
+      1024, 2097152, 8589934592ULL, diskann_segment_profile::kHighRecall,
+      thresholds, false);
+
+  EXPECT_FALSE(result.applied);
+  EXPECT_STREQ("not_applicable", result.reason);
+  EXPECT_EQ(thresholds.segment_target_size,
+            result.thresholds.segment_target_size);
+}
+
+TEST(VectorBuildPipelinePolicyTest, ForcedDirectSkipsDiskAnnSegmentProfile) {
+  build_pipeline_thresholds thresholds;
+  thresholds.mode = build_pipeline_mode::kDirect;
+
+  const auto result = vector_index::apply_diskann_segment_profile(
+      1024, 2097152, 8589934592ULL, diskann_segment_profile::kHighRecall,
+      thresholds, true);
+
+  EXPECT_FALSE(result.applied);
+  EXPECT_STREQ("forced_direct", result.reason);
+  EXPECT_EQ(thresholds.segment_target_size,
+            result.thresholds.segment_target_size);
 }
 
 TEST(VectorBuildPipelinePolicyTest, EstimatesMilvusSizedRawSegmentFanout) {
@@ -170,6 +261,39 @@ TEST(VectorBuildPipelinePolicyTest, HandlesZeroRowsAndSaturatedDimensions) {
                     std::numeric_limits<uint64_t>::max(), thresholds));
 }
 
+TEST(VectorBuildPipelinePolicyTest,
+     HighRecallSmallDimensionUsesBalancedSegmentSize) {
+  build_pipeline_thresholds thresholds;
+  const auto result = vector_index::apply_diskann_segment_profile(
+      512, 1000, 1000, diskann_segment_profile::kHighRecall, thresholds, true);
+  EXPECT_TRUE(result.applied);
+  EXPECT_STREQ("high_recall_512m", result.reason);
+  EXPECT_EQ(512ULL * 1024ULL * 1024ULL,
+            result.thresholds.segment_target_size);
+}
+
+TEST(VectorBuildPipelinePolicyTest,
+     ThroughputProfileReportsNoChangeAtDefaultTarget) {
+  build_pipeline_thresholds thresholds;
+  thresholds.segment_target_size =
+      vector_index::k_default_build_segment_target_size;
+  const auto result = vector_index::apply_diskann_segment_profile(
+      128, 1000, 1000, diskann_segment_profile::kThroughput, thresholds, true);
+  EXPECT_FALSE(result.applied);
+  EXPECT_STREQ("throughput_large_segment", result.reason);
+}
+
+TEST(VectorBuildPipelinePolicyTest, UnknownProfileLeavesManualThresholds) {
+  build_pipeline_thresholds thresholds;
+  const auto result = vector_index::apply_diskann_segment_profile(
+      128, 1000, 1000, static_cast<diskann_segment_profile>(999), thresholds,
+      true);
+  EXPECT_FALSE(result.applied);
+  EXPECT_EQ(thresholds.segment_target_size,
+            result.thresholds.segment_target_size);
+  EXPECT_STREQ("manual", result.reason);
+}
+
 TEST(VectorBuildPipelinePolicyTest, UnknownModeUsesAutomaticThresholds) {
   build_pipeline_thresholds thresholds;
   thresholds.mode = static_cast<build_pipeline_mode>(999);
@@ -193,6 +317,16 @@ TEST(VectorBuildPipelinePolicyTest, NamesAreStableForStatusOutput) {
                               static_cast<build_pipeline_path>(999)));
   EXPECT_STREQ("unknown", vector_index::build_pipeline_trigger_name(
                               static_cast<build_pipeline_trigger>(999)));
+  EXPECT_STREQ("high_recall", vector_index::diskann_segment_profile_name(
+                                  diskann_segment_profile::kHighRecall));
+  EXPECT_STREQ("manual", vector_index::diskann_segment_profile_name(
+                             diskann_segment_profile::kManual));
+  EXPECT_STREQ("throughput", vector_index::diskann_segment_profile_name(
+                                 diskann_segment_profile::kThroughput));
+  EXPECT_STREQ("balanced", vector_index::diskann_segment_profile_name(
+                               diskann_segment_profile::kBalanced));
+  EXPECT_STREQ("unknown", vector_index::diskann_segment_profile_name(
+                              static_cast<diskann_segment_profile>(999)));
 }
 
 }  // namespace vector_build_pipeline_policy_unittest

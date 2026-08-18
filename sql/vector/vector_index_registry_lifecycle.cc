@@ -104,11 +104,18 @@ bool populate_index_info_locked(const std::string &index_name, index_info *info)
   vector_index::index_service::build_pipeline_snapshot pipeline_snapshot;
   if (g_index_service.describe_build_pipeline(index_name, &pipeline_snapshot)) {
     info->build_pipeline_mode = pipeline_snapshot.mode;
+    info->build_segment_profile = pipeline_snapshot.diskann_segment_profile;
+    info->build_segment_profile_reason =
+        pipeline_snapshot.diskann_segment_profile_reason;
     info->build_pipeline_decision = pipeline_snapshot.decision;
     info->build_pipeline_trigger = pipeline_snapshot.trigger;
     info->build_pipeline_rows = pipeline_snapshot.row_count;
     info->build_pipeline_payload_size = pipeline_snapshot.payload_size;
     info->build_pipeline_raw_segments = pipeline_snapshot.raw_segment_count;
+    info->build_segment_effective_target_size =
+        pipeline_snapshot.effective_segment_target_size;
+    info->build_segment_effective_row_limit =
+        pipeline_snapshot.effective_segment_row_limit;
   }
 
   info->dimension = config.dimension;
@@ -129,15 +136,33 @@ bool populate_index_info_locked(const std::string &index_name, index_info *info)
   info->build_source = observability.build_source;
   const vector_index::build_pipeline_runtime_config runtime_config =
       vector_index::global_build_pipeline_runtime_config();
-  info->build_segment_effective_row_limit =
-      vector_index::build_segment_row_limit(
-          static_cast<uint64_t>(config.dimension), runtime_config.thresholds);
+  if (info->build_segment_effective_row_limit == 0) {
+    info->build_segment_effective_row_limit =
+        vector_index::build_segment_row_limit(
+            static_cast<uint64_t>(config.dimension), runtime_config.thresholds);
+  }
+  if (info->build_segment_profile.empty()) {
+    info->build_segment_profile =
+        vector_index::diskann_segment_profile_name(
+            runtime_config.diskann_profile);
+  }
+  if (info->build_segment_profile_reason.empty()) {
+    info->build_segment_profile_reason = "not_evaluated";
+  }
+  if (info->build_segment_effective_target_size == 0) {
+    info->build_segment_effective_target_size =
+        runtime_config.thresholds.segment_target_size;
+  }
   info->build_segment_target_size =
       runtime_config.thresholds.segment_target_size;
   info->build_segment_max_rows = runtime_config.thresholds.segment_max_rows;
+  vector_index::build_pipeline_thresholds effective_thresholds =
+      runtime_config.thresholds;
+  effective_thresholds.segment_target_size =
+      info->build_segment_effective_target_size;
   info->build_segment_policy =
       build_segment_policy_name(static_cast<uint64_t>(config.dimension),
-                                runtime_config.thresholds);
+                                effective_thresholds);
   info->backend_variant = config.backend_variant;
   info->search_ef = config.search_ef;
   info->hnsw_m = config.hnsw_m;
@@ -566,24 +591,41 @@ std::unique_ptr<vector_index::backend> build_recovered_backend(
   return recovered;
 }
 
-bool rebuild_standalone_plan_locked(const lifecycle_backend_plan &plan) {
+void set_rebuild_error(std::string *error, const char *message) {
+  if (error != nullptr && message != nullptr && error->empty()) *error = message;
+}
+
+bool rebuild_standalone_plan_locked(const lifecycle_backend_plan &plan,
+                                    std::string *error) {
   vector_index::index_service::committed_state current_state;
-  if (!g_index_service.snapshot_committed_state(&current_state)) return false;
-  if (!validate_backend_plan_against_state_locked(plan, current_state))
+  if (!g_index_service.snapshot_committed_state(&current_state)) {
+    set_rebuild_error(error, "vector registry could not snapshot state");
     return false;
+  }
+  if (!validate_backend_plan_against_state_locked(plan, current_state)) {
+    set_rebuild_error(error, "vector index changed during rebuild");
+    return false;
+  }
 
   runtime_state_snapshot snapshot;
-  if (!capture_runtime_state_locked(&snapshot)) return false;
-  if (!g_index_service.rebuild_index(plan.index_name)) {
+  if (!capture_runtime_state_locked(&snapshot)) {
+    set_rebuild_error(error, "vector registry could not capture state");
+    return false;
+  }
+  if (!g_index_service.rebuild_index(plan.index_name, error)) {
     const bool has_segment_tasks =
         refresh_segment_tasks_from_service_locked(plan.index_name);
     if (has_segment_tasks) (void)persist_segment_tasks_locked();
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
   if (!refresh_segment_tasks_from_service_locked(plan.index_name)) {
+    set_rebuild_error(error, "vector registry could not refresh segment tasks");
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
-  if (!persist_registry_state_or_rollback_locked(snapshot, true)) return false;
+  if (!persist_registry_state_or_rollback_locked(snapshot, true)) {
+    set_rebuild_error(error, "vector registry could not persist rebuild state");
+    return false;
+  }
   return evict_committed_cache_to_budget_locked();
 }
 
@@ -1286,39 +1328,65 @@ bool bulk_upsert_from_raw_files(
   return persist_registry_state_or_rollback_locked(snapshot, true);
 }
 
-bool bulk_build_index(const std::string &index_name) {
-  return rebuild_index(index_name);
+bool bulk_build_index(const std::string &index_name, std::string *error) {
+  return rebuild_index(index_name, error);
 }
 
-bool rebuild_index(const std::string &index_name) {
+bool rebuild_index(const std::string &index_name, std::string *error) {
+  if (error != nullptr) error->clear();
   vector_status::record_rebuild_request();
   lifecycle_backend_plan plan;
   {
     std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-    if (!ensure_metadata_loaded_locked()) return false;
-    if (!snapshot_backend_plan_locked(index_name, &plan)) return false;
+    if (!ensure_metadata_loaded_locked()) {
+      set_rebuild_error(error, "vector registry metadata is unavailable");
+      return false;
+    }
+    if (!snapshot_backend_plan_locked(index_name, &plan)) {
+      set_rebuild_error(error, "vector index not found or not rebuildable");
+      return false;
+    }
   }
   if (uses_standalone_source(plan)) {
     std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-    if (!ensure_metadata_loaded_locked()) return false;
-    return rebuild_standalone_plan_locked(plan);
+    if (!ensure_metadata_loaded_locked()) {
+      set_rebuild_error(error, "vector registry metadata is unavailable");
+      return false;
+    }
+    return rebuild_standalone_plan_locked(plan, error);
   }
 
   std::unique_ptr<vector_index::backend> rebuilt = build_rebuilt_backend(plan);
-  if (rebuilt == nullptr) return false;
+  if (rebuilt == nullptr) {
+    set_rebuild_error(error, "vector index backend rebuild failed");
+    return false;
+  }
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) return false;
-  if (!validate_backend_plan_locked(plan)) return false;
+  if (!ensure_metadata_loaded_locked()) {
+    set_rebuild_error(error, "vector registry metadata is unavailable");
+    return false;
+  }
+  if (!validate_backend_plan_locked(plan)) {
+    set_rebuild_error(error, "vector index changed during rebuild");
+    return false;
+  }
 
   runtime_state_snapshot snapshot;
-  if (!capture_runtime_state_locked(&snapshot)) return false;
+  if (!capture_runtime_state_locked(&snapshot)) {
+    set_rebuild_error(error, "vector registry could not capture state");
+    return false;
+  }
   const bool ok = g_index_service.install_rebuilt_index(
       index_name, plan.entries, std::move(rebuilt));
   if (!ok) {
+    set_rebuild_error(error, "vector registry could not publish rebuilt index");
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
-  if (!persist_registry_state_or_rollback_locked(snapshot, true)) return false;
+  if (!persist_registry_state_or_rollback_locked(snapshot, true)) {
+    set_rebuild_error(error, "vector registry could not persist rebuild state");
+    return false;
+  }
   return evict_committed_cache_to_budget_locked();
 }
 

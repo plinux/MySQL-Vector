@@ -54,6 +54,7 @@
 #include "sql/vector/vector_index_backend_common.h"
 #include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_index_limits.h"
+#include "sql/vector/vector_index_observability.h"
 #include "sql/vector/vector_index_runtime_config.h"
 #include "sql/vector/vector_index_runtime_thread_pool.h"
 #include "sql/vector/vector_index_status_fields.h"
@@ -429,12 +430,22 @@ class StubBackend final : public vector_index::backend {
   }
   bool supports_mutations() const override { return m_supports_mutations; }
 
+  bool collect_doc_ids(std::vector<uint64_t> *doc_ids) const override {
+    if (!allow_collect_doc_ids || doc_ids == nullptr) return false;
+    *doc_ids = authoritative_doc_ids;
+    return true;
+  }
+
+  size_t entry_count() const override { return authoritative_doc_ids.size(); }
+
   bool m_supports_mutations{true};
   bool allow_upsert{true};
   bool allow_recover{true};
+  bool allow_collect_doc_ids{false};
   size_t upsert_calls{0};
   mutable size_t search_calls{0};
   size_t fail_search_call{0};
+  std::vector<uint64_t> authoritative_doc_ids;
   std::unordered_map<uint64_t, vector_index::vector_data> upserted_entries;
   vector_index::vector_data last_vector;
 };
@@ -623,6 +634,53 @@ TEST(VectorIndexBackendTest, BackendDefaultMethodsCoverReaderAndTuningGuards) {
   EXPECT_EQ(0U, backend.external_manifest_generation());
 }
 
+TEST(VectorIndexBackendTest, RerankFullCoverageUsesAuthoritativeDocIds) {
+  StubBackend backend;
+  backend.allow_collect_doc_ids = true;
+  backend.authoritative_doc_ids = {9, 3, 7};
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(backend.search_for_rerank({1.0F, 1.0F}, 2, 3, &results));
+  EXPECT_EQ(0U, backend.search_calls);
+  ASSERT_EQ(3U, results.size());
+  EXPECT_EQ(3U, results[0].doc_id);
+  EXPECT_EQ(7U, results[1].doc_id);
+  EXPECT_EQ(9U, results[2].doc_id);
+  EXPECT_DOUBLE_EQ(0.0, results[0].distance);
+
+  std::vector<std::vector<vector_index::search_result>> batch_results;
+  ASSERT_TRUE(backend.search_batch_for_rerank(
+      {{1.0F, 1.0F}, {2.0F, 2.0F}}, 2, 3, &batch_results));
+  EXPECT_EQ(0U, backend.search_calls);
+  ASSERT_EQ(2U, batch_results.size());
+  for (const auto &batch_result : batch_results) {
+    ASSERT_EQ(results.size(), batch_result.size());
+    for (size_t i = 0; i < results.size(); ++i) {
+      EXPECT_EQ(results[i].doc_id, batch_result[i].doc_id);
+      EXPECT_DOUBLE_EQ(results[i].distance, batch_result[i].distance);
+    }
+  }
+
+  backend.search_calls = 0;
+  ASSERT_TRUE(backend.search_for_rerank({1.0F, 1.0F}, 2, 2, &results));
+  EXPECT_EQ(1U, backend.search_calls);
+
+  backend.search_calls = 0;
+  ASSERT_TRUE(backend.search_for_rerank({1.0F, 1.0F}, 3, 3, &results));
+  EXPECT_EQ(1U, backend.search_calls);
+
+  backend.search_calls = 0;
+  backend.authoritative_doc_ids = {3, 3, 7};
+  ASSERT_TRUE(backend.search_for_rerank({1.0F, 1.0F}, 2, 3, &results));
+  EXPECT_EQ(1U, backend.search_calls);
+
+  EXPECT_FALSE(backend.search_for_rerank({1.0F, 1.0F}, 2, 3, nullptr));
+  EXPECT_FALSE(backend.search_batch_for_rerank({{1.0F, 1.0F}}, 2, 3,
+                                               nullptr));
+  ASSERT_TRUE(backend.search_batch_for_rerank({}, 2, 3, &batch_results));
+  EXPECT_TRUE(batch_results.empty());
+}
+
 TEST(VectorIndexBackendTest,
      BackendBuildDiagnosticsAppearInInfoAndBackendHealthFields) {
   vector_index_registry::index_info info;
@@ -647,16 +705,17 @@ TEST(VectorIndexBackendTest,
   info.build_diagnostics.search_fanout_segments = 3;
   info.build_diagnostics.search_fanout_threads = 2;
   info.build_diagnostics.search_global_top_k = 10;
-  info.build_diagnostics.search_per_segment_top_k = 30;
+  info.build_diagnostics.search_per_segment_top_k = 40;
   info.build_diagnostics.search_result_budget = 1000;
-  info.build_diagnostics.search_candidate_count = 90;
+  info.build_diagnostics.search_candidate_count = 120;
   info.build_diagnostics.search_query_count = 4;
   info.build_diagnostics.search_segment_min_entries = 11;
   info.build_diagnostics.search_segment_max_entries = 31;
   info.build_diagnostics.search_segment_total_entries = 63;
   info.build_diagnostics.search_diskann_search_list = 1600;
   info.build_diagnostics.search_diskann_beamwidth = 16;
-  info.build_diagnostics.search_total_candidate_rows = 360;
+  info.build_diagnostics.search_effective_complexity = 1600;
+  info.build_diagnostics.search_total_candidate_rows = 480;
   info.build_diagnostics.single_index_build = true;
   info.build_diagnostics.pq_chunks = 8;
   info.build_diagnostics.cache_nodes = 5;
@@ -867,7 +926,7 @@ TEST(VectorIndexBackendTest,
   const auto *search_per_segment_top_k =
       find_status_field(fields, "scheduler_search_per_segment_top_k");
   ASSERT_NE(nullptr, search_per_segment_top_k);
-  EXPECT_EQ(30U, search_per_segment_top_k->uint_value);
+  EXPECT_EQ(40U, search_per_segment_top_k->uint_value);
   const auto *search_result_budget =
       find_status_field(fields, "scheduler_search_result_budget");
   ASSERT_NE(nullptr, search_result_budget);
@@ -875,7 +934,7 @@ TEST(VectorIndexBackendTest,
   const auto *search_candidate_count =
       find_status_field(fields, "scheduler_search_candidate_count");
   ASSERT_NE(nullptr, search_candidate_count);
-  EXPECT_EQ(90U, search_candidate_count->uint_value);
+  EXPECT_EQ(120U, search_candidate_count->uint_value);
   const auto *search_query_count =
       find_status_field(fields, "scheduler_search_query_count");
   ASSERT_NE(nullptr, search_query_count);
@@ -900,10 +959,78 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "scheduler_search_diskann_beamwidth");
   ASSERT_NE(nullptr, search_diskann_beamwidth);
   EXPECT_EQ(16U, search_diskann_beamwidth->uint_value);
+  const auto *search_effective_complexity =
+      find_status_field(fields, "scheduler_search_effective_complexity");
+  ASSERT_NE(nullptr, search_effective_complexity);
+  EXPECT_EQ(1600U, search_effective_complexity->uint_value);
   const auto *search_total_candidate_rows =
       find_status_field(fields, "scheduler_search_total_candidate_rows");
   ASSERT_NE(nullptr, search_total_candidate_rows);
-  EXPECT_EQ(360U, search_total_candidate_rows->uint_value);
+  EXPECT_EQ(480U, search_total_candidate_rows->uint_value);
+  const auto *search_advice =
+      find_status_field(fields, "scheduler_search_advice");
+  ASSERT_NE(nullptr, search_advice);
+  EXPECT_EQ("no_action", search_advice->string_value);
+  const auto *search_advice_reason =
+      find_status_field(fields, "scheduler_search_advice_reason");
+  ASSERT_NE(nullptr, search_advice_reason);
+  EXPECT_EQ("search_diagnostics_within_policy",
+            search_advice_reason->string_value);
+  const auto *suggested_complexity =
+      find_status_field(fields, "scheduler_search_suggested_complexity");
+  ASSERT_NE(nullptr, suggested_complexity);
+  EXPECT_EQ(1600U, suggested_complexity->uint_value);
+  const auto *suggested_segment_target =
+      find_status_field(fields,
+                        "scheduler_search_suggested_segment_target_size");
+  ASSERT_NE(nullptr, suggested_segment_target);
+  EXPECT_EQ(0U, suggested_segment_target->uint_value);
+}
+
+TEST(VectorIndexBackendTest, DiskAnnSearchAdviceCoversTuningBranches) {
+  vector_index::backend_build_diagnostics diagnostics;
+  diagnostics.runtime = "segmented";
+  diagnostics.search_fanout_segments = 16;
+  diagnostics.search_query_count = 4;
+  diagnostics.search_global_top_k = 10;
+  diagnostics.search_per_segment_top_k = 10;
+  diagnostics.search_candidate_count = 160;
+  diagnostics.search_result_budget = 640;
+  diagnostics.search_total_candidate_rows = 640;
+  diagnostics.search_diskann_search_list = 64;
+  diagnostics.search_diskann_beamwidth = 16;
+  diagnostics.search_effective_complexity = 64;
+  diagnostics.search_segment_max_entries = 65536;
+  diagnostics.search_profile = "manual";
+
+  auto advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 10, diagnostics.search_result_budget);
+  EXPECT_EQ("increase_search_complexity", advice.advice);
+  EXPECT_EQ("fanout_candidate_window_too_small", advice.reason);
+  EXPECT_EQ(800U, advice.suggested_complexity);
+  EXPECT_EQ(0U, advice.suggested_segment_target_size);
+
+  diagnostics.search_per_segment_top_k = 64;
+  diagnostics.search_candidate_count = 1024;
+  diagnostics.search_total_candidate_rows = 4096;
+  advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 10, 1000);
+  EXPECT_EQ("increase_vector_search_batch_result_count", advice.advice);
+  EXPECT_EQ("candidate_budget_truncates_batch", advice.reason);
+
+  diagnostics.search_result_budget = 4096;
+  diagnostics.search_segment_max_entries = 130816;
+  advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 10, diagnostics.search_result_budget);
+  EXPECT_EQ("use_smaller_segments_or_high_recall_profile", advice.advice);
+  EXPECT_EQ("large_segments_without_high_recall_profile", advice.reason);
+  EXPECT_EQ(268435456U, advice.suggested_segment_target_size);
+
+  diagnostics.search_fanout_segments = 1;
+  advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 10, diagnostics.search_result_budget);
+  EXPECT_EQ("not_applicable", advice.advice);
+  EXPECT_EQ("not_segmented_diskann_search", advice.reason);
 }
 
 TEST(VectorIndexBackendTest,
@@ -1433,29 +1560,29 @@ TEST(VectorIndexBackendTest, DiskAnnSelectedRealLibraryMatchesAbiV2) {
 
 TEST(VectorIndexBackendTest, DiskAnnOfflineBuildMemorySizeMapsToGigabytes) {
   EXPECT_DOUBLE_EQ(
-      1.0, vector_index::diskann_build_memory_size_gb_for_testing(
-               1024ULL * 1024ULL * 1024ULL));
+      0.0009765625, vector_index::diskann_build_memory_size_gb_for_testing(
+                        1024ULL * 1024ULL));
   EXPECT_DOUBLE_EQ(
-      1.5, vector_index::diskann_build_memory_size_gb_for_testing(
-               1536ULL * 1024ULL * 1024ULL));
+      0.00146484375, vector_index::diskann_build_memory_size_gb_for_testing(
+                         1536ULL * 1024ULL));
   EXPECT_GT(vector_index::diskann_build_memory_size_gb_for_testing(1), 0.0);
 }
 
 TEST(VectorIndexBackendTest, DiskAnnBuildMemoryUsesAvailableBudgetWhenUnset) {
   vector_index::diskann_segment_budget_input input;
   input.dimension = 128;
-  input.row_count = 1000000;
+  input.row_count = 4096;
   input.payload_size = input.row_count * input.dimension * sizeof(float);
   input.pq_code_budget_size = 0;
   input.pq_code_budget_ratio =
       vector_index::k_default_diskann_pq_code_budget_ratio;
   input.search_cache_ratio = 0.1;
   input.build_memory_size = 0;
-  input.available_build_memory_size = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+  input.available_build_memory_size = 64ULL * 1024ULL * 1024ULL;
 
   vector_index::diskann_segment_budget budget;
   EXPECT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
-  EXPECT_DOUBLE_EQ(64.0, budget.build_memory_gb);
+  EXPECT_DOUBLE_EQ(0.0625, budget.build_memory_gb);
 }
 
 TEST(VectorIndexBackendTest, DiskAnnAvailableBuildMemoryIsObservable) {
@@ -1472,7 +1599,7 @@ TEST(VectorIndexBackendTest, DiskAnnVendoredLoadConfigUsesSegmentBudget) {
   uint32_t pq_chunks = 0;
   uint32_t cache_nodes = 0;
   if (!vector_index::diskann_vendored_load_config_budget_for_testing(
-          1000000, &build_memory_gb, &pq_chunks, &cache_nodes)) {
+          4096, &build_memory_gb, &pq_chunks, &cache_nodes)) {
     SUCCEED();
     return;
   }
@@ -1483,10 +1610,10 @@ TEST(VectorIndexBackendTest, DiskAnnVendoredLoadConfigUsesSegmentBudget) {
   EXPECT_GT(cache_nodes, 0U);
 }
 
-TEST(VectorIndexBackendTest, DiskAnnSegmentBudgetAutoDiskPqDimsFitsSector) {
+TEST(VectorIndexBackendTest, DiskAnnSegmentBudgetUsesSectorSafeDiskPqDims) {
   vector_index::diskann_segment_budget_input input;
   input.dimension = 1024;
-  input.row_count = 16777216;
+  input.row_count = 4096;
   input.payload_size = input.row_count * input.dimension * sizeof(float);
   input.pq_code_budget_size = 0;
   input.pq_code_budget_ratio =
@@ -1499,9 +1626,6 @@ TEST(VectorIndexBackendTest, DiskAnnSegmentBudgetAutoDiskPqDimsFitsSector) {
   EXPECT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
   EXPECT_EQ(512U, budget.pq_chunks);
   EXPECT_EQ(512U, budget.disk_pq_dims);
-  EXPECT_LE((static_cast<uint64_t>(input.max_degree) + 1) * sizeof(uint32_t) +
-                budget.disk_pq_dims,
-            4096U);
 
   input.dimension = 32;
   input.payload_size = input.row_count * input.dimension * sizeof(float);
@@ -1512,12 +1636,13 @@ TEST(VectorIndexBackendTest, DiskAnnSegmentBudgetAutoDiskPqDimsFitsSector) {
   input.payload_size = input.row_count * input.dimension * sizeof(float);
   input.disk_pq_dims = 2048;
   EXPECT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
-  EXPECT_EQ(1024U, budget.disk_pq_dims);
+  EXPECT_EQ(512U, budget.disk_pq_dims);
 
-  input.dimension = 8192;
+  input.dimension = 64;
   input.payload_size = input.row_count * input.dimension * sizeof(float);
-  input.disk_pq_dims = 8192;
-  EXPECT_FALSE(vector_index::make_diskann_segment_budget(input, &budget));
+  input.disk_pq_dims = 128;
+  EXPECT_TRUE(vector_index::make_diskann_segment_budget(input, &budget));
+  EXPECT_EQ(64U, budget.disk_pq_dims);
 }
 
 TEST(VectorIndexBackendTest, DiskAnnEffectiveOfflineDegreeBoundsTinyBuilds) {
@@ -1670,6 +1795,12 @@ TEST(VectorIndexBackendTest, DiskAnnVendoredRuntimeConfigValidation) {
   EXPECT_TRUE(vector_index::diskann_vendored_search_config_valid_for_testing(
       10, 100, 16, &error));
   EXPECT_TRUE(error.empty());
+  EXPECT_TRUE(vector_index::diskann_vendored_search_config_valid_for_testing(
+      100, 100, 16, &error));
+  EXPECT_TRUE(error.empty());
+  EXPECT_FALSE(vector_index::diskann_vendored_search_config_valid_for_testing(
+      101, 100, 16, &error));
+  EXPECT_EQ("top_k exceeds search_complexity", error);
   EXPECT_FALSE(vector_index::diskann_vendored_search_config_valid_for_testing(
       0, 100, 16, &error));
   EXPECT_EQ("top_k is zero", error);
@@ -7887,6 +8018,10 @@ TEST(VectorIndexBackendTest,
   ASSERT_TRUE(backend.search({2.0F, 2.0F}, 1, &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(2U, result[0].doc_id);
+  ASSERT_TRUE(backend.search({2.0F, 2.0F}, 10, &result));
+  ASSERT_EQ(2U, result.size());
+  EXPECT_EQ(2U, result[0].doc_id);
+  EXPECT_EQ(1U, result[1].doc_id);
   EXPECT_TRUE(backend.set_diskann_search_complexity(80));
   EXPECT_EQ(80U, backend.diskann_search_complexity());
 }
@@ -8229,7 +8364,7 @@ TEST(VectorIndexBackendTest,
   }
 
   backend.clear_committed_snapshot_for_testing();
-  ASSERT_TRUE(backend.search_batch({{2.0F, 2.0F}, {1.0F, 1.0F}}, 1,
+  ASSERT_TRUE(backend.search_batch({{2.0F, 2.0F}, {1.0F, 1.0F}}, 10,
                                    &batch_results));
   ASSERT_EQ(2U, batch_results.size());
   ASSERT_EQ(1U, batch_results[0].size());

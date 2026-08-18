@@ -9,6 +9,18 @@ SET GLOBAL vector_diskann_cache_nodes = 7;
 SELECT VEC_INDEX_CREATE('idx_diskann_search_complexity', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
 SET GLOBAL vector_diskann_cache_nodes = @old_vector_diskann_cache_nodes;
 
+SET GLOBAL vector_diskann_search_profile = 'manual';
+SELECT @@GLOBAL.vector_diskann_search_profile;
+SET GLOBAL vector_diskann_search_profile = 'fast';
+SELECT @@GLOBAL.vector_diskann_search_profile;
+SET GLOBAL vector_diskann_search_profile = 'balanced';
+SELECT @@GLOBAL.vector_diskann_search_profile;
+SET GLOBAL vector_diskann_search_profile = 'high_recall';
+SELECT @@GLOBAL.vector_diskann_search_profile;
+--error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_search_profile = 'bogus';
+SET GLOBAL vector_diskann_search_profile = 'manual';
+
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann_search_complexity', 80);
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann_search_complexity', 16);
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann_search_complexity', 128);

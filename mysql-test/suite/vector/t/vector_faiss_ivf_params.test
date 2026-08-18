@@ -11,6 +11,7 @@ SELECT VEC_INDEX_UPSERT('idx_faiss_ivf', 9, VEC_FROMTEXT('[9,9]'));
 SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf', 2, 1);
 
 --replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_faiss_ivf');
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_faiss_ivf.backend_variant';
@@ -23,6 +24,7 @@ SELECT VEC_INDEX_SEARCH('idx_faiss_ivf', VEC_FROMTEXT('[1,1]'), 1);
 --source include/restart_mysqld.inc
 
 --replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_faiss_ivf');
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_faiss_ivf.backend_variant';

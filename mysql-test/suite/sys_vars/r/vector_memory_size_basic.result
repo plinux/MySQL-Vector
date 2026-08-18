@@ -17,7 +17,7 @@ SELECT @@global.vector_build_pipeline_min_size;
 4294967296
 SELECT @@global.vector_build_segment_target_size;
 @@global.vector_build_segment_target_size
-8589934592
+2147483648
 SELECT @@global.vector_diskann_build_memory_size;
 @@global.vector_diskann_build_memory_size
 1073741824
@@ -41,7 +41,7 @@ SHOW GLOBAL VARIABLES LIKE 'vector\\_%\\_size';
 Variable_name	Value
 vector_build_memory_size	1073741824
 vector_build_pipeline_min_size	4294967296
-vector_build_segment_target_size	8589934592
+vector_build_segment_target_size	2147483648
 vector_diskann_build_memory_size	1073741824
 vector_diskann_pq_code_budget_size	0
 vector_diskann_raw_segment_size	268435456
@@ -54,7 +54,7 @@ SHOW SESSION VARIABLES LIKE 'vector\\_%\\_size';
 Variable_name	Value
 vector_build_memory_size	1073741824
 vector_build_pipeline_min_size	4294967296
-vector_build_segment_target_size	8589934592
+vector_build_segment_target_size	2147483648
 vector_diskann_build_memory_size	1073741824
 vector_diskann_pq_code_budget_size	0
 vector_diskann_raw_segment_size	268435456
@@ -81,7 +81,7 @@ ORDER BY VARIABLE_NAME;
 VARIABLE_NAME	VARIABLE_VALUE
 vector_build_memory_size	1073741824
 vector_build_pipeline_min_size	4294967296
-vector_build_segment_target_size	8589934592
+vector_build_segment_target_size	2147483648
 vector_diskann_build_memory_size	1073741824
 vector_diskann_pq_code_budget_size	0
 vector_diskann_raw_segment_size	268435456
@@ -170,7 +170,7 @@ SELECT @@global.vector_build_pipeline_min_size;
 4294967296
 SELECT @@global.vector_build_segment_target_size;
 @@global.vector_build_segment_target_size
-8589934592
+2147483648
 SELECT @@global.vector_diskann_build_memory_size;
 @@global.vector_diskann_build_memory_size
 1073741824

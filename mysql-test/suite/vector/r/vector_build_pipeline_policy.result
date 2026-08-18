@@ -2,6 +2,7 @@
 # WL#Vector: adaptive build pipeline policy visibility
 #
 SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
+SET @old_vector_diskann_segment_profile = @@GLOBAL.vector_diskann_segment_profile;
 SET @old_vector_build_pipeline_min_rows = @@GLOBAL.vector_build_pipeline_min_rows;
 SET @old_vector_build_pipeline_min_size = @@GLOBAL.vector_build_pipeline_min_size;
 SELECT VEC_INDEX_CREATE('idx_pipeline_policy', 2, 'EUCLIDEAN', 'MEMORY',
@@ -37,6 +38,7 @@ JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
 mode	decision	pipeline_trigger
 segmented	segmented	forced_segmented
 SET GLOBAL vector_build_pipeline_mode = 'auto';
+SET GLOBAL vector_diskann_segment_profile = 'high_recall';
 SET GLOBAL vector_build_pipeline_min_rows = 1;
 SET GLOBAL vector_build_pipeline_min_size = 0;
 SELECT VEC_INDEX_REBUILD('idx_pipeline_policy');
@@ -48,15 +50,32 @@ JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
 '$.build_pipeline_decision')) AS decision,
 JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
 '$.build_pipeline_trigger')) AS pipeline_trigger,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+'$.build_segment_profile')) AS segment_profile,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+'$.build_segment_profile_reason')) AS profile_reason,
 JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
 '$.build_pipeline_rows') AS pipeline_rows,
 JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
 '$.build_pipeline_payload_size') AS payload_size,
 JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
-'$.build_pipeline_raw_segments') AS raw_segments;
-mode	decision	pipeline_trigger	pipeline_rows	payload_size	raw_segments
-auto	segmented	row_count	1	8	1
+'$.build_pipeline_raw_segments') AS raw_segments,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_pipeline_policy'),
+'$.build_segment_effective_target_size') AS effective_target_size;
+mode	decision	pipeline_trigger	segment_profile	profile_reason	pipeline_rows	payload_size	raw_segments	effective_target_size
+auto	segmented	row_count	high_recall	not_applicable	1	8	1	2147483648
+SET GLOBAL vector_diskann_segment_profile = 'balanced';
+SELECT @@GLOBAL.vector_diskann_segment_profile;
+@@GLOBAL.vector_diskann_segment_profile
+balanced
+SET GLOBAL vector_diskann_segment_profile = 'throughput';
+SELECT @@GLOBAL.vector_diskann_segment_profile;
+@@GLOBAL.vector_diskann_segment_profile
+throughput
+SET GLOBAL vector_diskann_segment_profile = 'bogus';
+ERROR 42000: Variable 'vector_diskann_segment_profile' can't be set to the value of 'bogus'
 SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+SET GLOBAL vector_diskann_segment_profile = @old_vector_diskann_segment_profile;
 SET GLOBAL vector_build_pipeline_min_rows = @old_vector_build_pipeline_min_rows;
 SET GLOBAL vector_build_pipeline_min_size = @old_vector_build_pipeline_min_size;
 SELECT VEC_INDEX_DROP('idx_pipeline_policy');

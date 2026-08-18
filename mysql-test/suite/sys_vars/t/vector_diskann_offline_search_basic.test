@@ -11,6 +11,7 @@ SELECT @@global.vector_diskann_offline_search_threads,
        @@global.vector_diskann_cache_nodes,
        @@global.vector_diskann_search_complexity,
        @@global.vector_diskann_search_beamwidth,
+       @@global.vector_diskann_exact_rerank_candidates,
        @@global.vector_diskann_pq_code_budget_size,
        @@global.vector_diskann_pq_code_budget_ratio,
        @@global.vector_diskann_search_cache_size,
@@ -23,6 +24,7 @@ SELECT VARIABLE_NAME, VARIABLE_VALUE
                           'vector_diskann_cache_nodes',
                           'vector_diskann_search_complexity',
                           'vector_diskann_search_beamwidth',
+                          'vector_diskann_exact_rerank_candidates',
                           'vector_diskann_pq_code_budget_size',
                           'vector_diskann_pq_code_budget_ratio',
                           'vector_diskann_search_cache_size',
@@ -38,6 +40,7 @@ SET GLOBAL vector_diskann_search_io_limit=1024;
 SET GLOBAL vector_diskann_cache_nodes=2048;
 SET GLOBAL vector_diskann_search_complexity=96;
 SET GLOBAL vector_diskann_search_beamwidth=16;
+SET GLOBAL vector_diskann_exact_rerank_candidates=8192;
 SET GLOBAL vector_diskann_pq_code_budget_size=1048576;
 SET GLOBAL vector_diskann_pq_code_budget_ratio=0.25;
 SET GLOBAL vector_diskann_search_cache_size=2097152;
@@ -47,6 +50,7 @@ SELECT @@global.vector_diskann_offline_search_threads,
        @@global.vector_diskann_cache_nodes,
        @@global.vector_diskann_search_complexity,
        @@global.vector_diskann_search_beamwidth,
+       @@global.vector_diskann_exact_rerank_candidates,
        @@global.vector_diskann_pq_code_budget_size,
        @@global.vector_diskann_pq_code_budget_ratio,
        @@global.vector_diskann_search_cache_size,
@@ -57,6 +61,7 @@ SET GLOBAL vector_diskann_search_io_limit=4294967295;
 SET GLOBAL vector_diskann_cache_nodes=4294967295;
 SET GLOBAL vector_diskann_search_complexity=4294967295;
 SET GLOBAL vector_diskann_search_beamwidth=128;
+SET GLOBAL vector_diskann_exact_rerank_candidates=1048576;
 SET GLOBAL vector_diskann_pq_code_budget_size=0;
 SET GLOBAL vector_diskann_pq_code_budget_ratio=1;
 SET GLOBAL vector_diskann_search_cache_size=0;
@@ -66,6 +71,7 @@ SELECT @@global.vector_diskann_offline_search_threads,
        @@global.vector_diskann_cache_nodes,
        @@global.vector_diskann_search_complexity,
        @@global.vector_diskann_search_beamwidth,
+       @@global.vector_diskann_exact_rerank_candidates,
        @@global.vector_diskann_pq_code_budget_size,
        @@global.vector_diskann_pq_code_budget_ratio,
        @@global.vector_diskann_search_cache_size,
@@ -84,6 +90,8 @@ SET GLOBAL vector_diskann_search_complexity=4294967296;
 --Error ER_WRONG_VALUE_FOR_VAR
 SET GLOBAL vector_diskann_search_beamwidth=129;
 --Error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL vector_diskann_exact_rerank_candidates=1048577;
+--Error ER_WRONG_VALUE_FOR_VAR
 SET GLOBAL vector_diskann_search_io_limit=-1;
 --Error ER_WRONG_VALUE_FOR_VAR
 SET GLOBAL vector_diskann_pq_code_budget_size=-1;
@@ -100,6 +108,7 @@ SET PERSIST vector_diskann_search_io_limit=1024;
 SET PERSIST vector_diskann_cache_nodes=2048;
 SET PERSIST vector_diskann_search_complexity=96;
 SET PERSIST vector_diskann_search_beamwidth=16;
+SET PERSIST vector_diskann_exact_rerank_candidates=8192;
 SET PERSIST vector_diskann_pq_code_budget_size=1048576;
 SET PERSIST vector_diskann_pq_code_budget_ratio=0.25;
 SET PERSIST vector_diskann_search_cache_size=2097152;
@@ -111,6 +120,7 @@ SELECT VARIABLE_NAME, VARIABLE_VALUE
                           'vector_diskann_cache_nodes',
                           'vector_diskann_search_complexity',
                           'vector_diskann_search_beamwidth',
+                          'vector_diskann_exact_rerank_candidates',
                           'vector_diskann_pq_code_budget_size',
                           'vector_diskann_pq_code_budget_ratio',
                           'vector_diskann_search_cache_size',
@@ -122,6 +132,7 @@ RESET PERSIST IF EXISTS vector_diskann_search_io_limit;
 RESET PERSIST IF EXISTS vector_diskann_cache_nodes;
 RESET PERSIST IF EXISTS vector_diskann_search_complexity;
 RESET PERSIST IF EXISTS vector_diskann_search_beamwidth;
+RESET PERSIST IF EXISTS vector_diskann_exact_rerank_candidates;
 RESET PERSIST IF EXISTS vector_diskann_pq_code_budget_size;
 RESET PERSIST IF EXISTS vector_diskann_pq_code_budget_ratio;
 RESET PERSIST IF EXISTS vector_diskann_search_cache_size;
@@ -131,6 +142,7 @@ SET GLOBAL vector_diskann_search_io_limit=DEFAULT;
 SET GLOBAL vector_diskann_cache_nodes=DEFAULT;
 SET GLOBAL vector_diskann_search_complexity=DEFAULT;
 SET GLOBAL vector_diskann_search_beamwidth=DEFAULT;
+SET GLOBAL vector_diskann_exact_rerank_candidates=DEFAULT;
 SET GLOBAL vector_diskann_pq_code_budget_size=DEFAULT;
 SET GLOBAL vector_diskann_pq_code_budget_ratio=DEFAULT;
 SET GLOBAL vector_diskann_search_cache_size=DEFAULT;
@@ -140,6 +152,7 @@ SELECT @@global.vector_diskann_offline_search_threads,
        @@global.vector_diskann_cache_nodes,
        @@global.vector_diskann_search_complexity,
        @@global.vector_diskann_search_beamwidth,
+       @@global.vector_diskann_exact_rerank_candidates,
        @@global.vector_diskann_pq_code_budget_size,
        @@global.vector_diskann_pq_code_budget_ratio,
        @@global.vector_diskann_search_cache_size,

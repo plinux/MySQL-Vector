@@ -80,6 +80,7 @@ struct hnsw_runtime_config {
 
 struct build_pipeline_runtime_config {
   build_pipeline_thresholds thresholds;
+  diskann_segment_profile diskann_profile{diskann_segment_profile::kManual};
   uint32_t progress_interval{k_default_build_pipeline_progress_interval};
 };
 

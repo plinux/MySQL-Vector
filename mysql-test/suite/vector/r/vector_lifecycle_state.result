@@ -9,7 +9,7 @@ SELECT VEC_INDEX_STAGE_UPSERT('idx_lifecycle', @txn, 1, '[1,1]');
 VEC_INDEX_STAGE_UPSERT('idx_lifecycle', @txn, 1, '[1,1]')
 1
 SELECT VEC_INDEX_REBUILD('idx_lifecycle');
-ERROR HY000: Incorrect arguments to vec_index_rebuild
+ERROR HY000: Incorrect arguments to vector index not found or not rebuildable
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_lifecycle.lifecycle_state';
 Section	Variable_name	Value
@@ -106,7 +106,7 @@ SELECT VEC_INDEX_STAGE_UPSERT('idx_lifecycle_ext', @txn_ext, 9, '[9,9]');
 VEC_INDEX_STAGE_UPSERT('idx_lifecycle_ext', @txn_ext, 9, '[9,9]')
 1
 SELECT VEC_INDEX_REBUILD('idx_lifecycle_ext');
-ERROR HY000: Incorrect arguments to vec_index_rebuild
+ERROR HY000: Incorrect arguments to vector index not found or not rebuildable
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_lifecycle_ext.lifecycle_state';
 Section	Variable_name	Value

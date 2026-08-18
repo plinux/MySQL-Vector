@@ -141,6 +141,7 @@
 #include "sql/transaction_info.h"
 #ifdef HAVE_VECTOR_INDEX
 #include "sql/vector/vector_build_pipeline_policy.h"
+#include "sql/vector/vector_diskann_scheduler.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_limits.h"
 #endif
@@ -7227,6 +7228,12 @@ static bool check_vector_build_pipeline_progress_interval(sys_var *self,
 static const char *vector_build_pipeline_mode_names[] = {
     "auto", "direct", "segmented", nullptr};
 
+static const char *vector_diskann_segment_profile_names[] = {
+    "manual", "throughput", "balanced", "high_recall", nullptr};
+
+static const char *vector_diskann_search_profile_names[] = {
+    "manual", "fast", "balanced", "high_recall", nullptr};
+
 static Sys_var_enum Sys_vector_build_pipeline_mode(
     "vector_build_pipeline_mode",
     "Vector build pipeline selector. AUTO chooses segmented build for large "
@@ -7235,6 +7242,17 @@ static Sys_var_enum Sys_vector_build_pipeline_mode(
     GLOBAL_VAR(opt_vector_build_pipeline_mode), CMD_LINE(REQUIRED_ARG),
     vector_build_pipeline_mode_names,
     DEFAULT(static_cast<ulong>(vector_index::build_pipeline_mode::kAuto)),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_enum Sys_vector_diskann_segment_profile(
+    "vector_diskann_segment_profile",
+    "DiskANN standalone raw-segment profile. MANUAL uses the explicit vector "
+    "build segment variables, THROUGHPUT favors larger segments, BALANCED "
+    "uses a middle segment size, and HIGH_RECALL favors smaller high-dimensional "
+    "segments.",
+    GLOBAL_VAR(opt_vector_diskann_segment_profile), CMD_LINE(REQUIRED_ARG),
+    vector_diskann_segment_profile_names,
+    DEFAULT(static_cast<ulong>(vector_index::diskann_segment_profile::kManual)),
     NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_ulonglong Sys_vector_build_pipeline_min_rows(
@@ -7367,6 +7385,40 @@ static Sys_var_ulong Sys_vector_diskann_search_beamwidth(
     NO_MUTEX_GUARD, NOT_IN_BINLOG,
     ON_CHECK(check_vector_diskann_search_beamwidth));
 
+static bool check_vector_diskann_exact_rerank_candidates(sys_var *self, THD *,
+                                                         set_var *var) {
+  if (var->value == nullptr) return false;
+
+  const longlong signed_value = var->value->val_int();
+  if (!var->value->unsigned_flag && signed_value < 0) {
+    const std::string value = std::to_string(signed_value);
+    my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str, value.c_str());
+    return true;
+  }
+
+  const ulonglong value = var->value->val_uint();
+  if (value <= vector_index::k_max_search_batch_result_count) {
+    return false;
+  }
+
+  const std::string value_string = std::to_string(value);
+  my_error(ER_WRONG_VALUE_FOR_VAR, MYF(0), self->name.str,
+           value_string.c_str());
+  return true;
+}
+
+static Sys_var_ulong Sys_vector_diskann_exact_rerank_candidates(
+    "vector_diskann_exact_rerank_candidates",
+    "Preferred DiskANN candidate count per query before exact rerank. Use 0 "
+    "for automatic sizing from search complexity and search profile. Positive "
+    "values may improve recall at higher exact-rerank CPU and I/O cost, and "
+    "are still capped by vector_search_batch_result_count.",
+    GLOBAL_VAR(opt_vector_diskann_exact_rerank_candidates),
+    CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, vector_index::k_max_search_batch_result_count),
+    DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_vector_diskann_exact_rerank_candidates));
+
 static Sys_var_ulonglong Sys_vector_diskann_pq_code_budget_size(
     "vector_diskann_pq_code_budget_size",
     "DiskANN offline build PQ code budget in bytes. Use 0 to derive the "
@@ -7390,7 +7442,8 @@ static Sys_var_ulong Sys_vector_diskann_disk_pq_dims(
     "vector_diskann_disk_pq_dims",
     "DiskANN offline build disk PQ dimensions. Use 0 for automatic disk "
     "layout: keep full vectors when node records fit one DiskANN sector, "
-    "otherwise derive disk PQ dimensions from the PQ code budget.",
+    "otherwise derive the largest sector-safe disk PQ dimensions capped by "
+    "the DiskANN C++ loader chunk limit.",
     GLOBAL_VAR(opt_vector_diskann_disk_pq_dims), CMD_LINE(REQUIRED_ARG),
     VALID_RANGE(0, vector_index::k_max_diskann_disk_pq_dims), DEFAULT(0),
     BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
@@ -7452,6 +7505,16 @@ static Sys_var_ulong Sys_vector_diskann_search_complexity(
     DEFAULT(vector_index::k_default_diskann_search_complexity), BLOCK_SIZE(1),
     NO_MUTEX_GUARD, NOT_IN_BINLOG,
     ON_CHECK(check_vector_uint32_positive));
+
+static Sys_var_enum Sys_vector_diskann_search_profile(
+    "vector_diskann_search_profile",
+    "DiskANN segmented search profile. MANUAL uses the explicit DiskANN search "
+    "complexity, FAST favors lower search cost, BALANCED targets a middle "
+    "recall/throughput tradeoff, and HIGH_RECALL favors larger search lists.",
+    GLOBAL_VAR(opt_vector_diskann_search_profile), CMD_LINE(REQUIRED_ARG),
+    vector_diskann_search_profile_names,
+    DEFAULT(static_cast<ulong>(vector_index::diskann_search_profile::kManual)),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_ulong Sys_vector_diskann_max_degree(
     "vector_diskann_max_degree",

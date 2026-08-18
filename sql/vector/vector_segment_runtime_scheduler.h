@@ -34,6 +34,8 @@ struct segment_scheduler_input {
   uint32_t cpu_budget{0};
   uint32_t requested_build_threads{0};
   uint32_t requested_blas_threads{1};
+  uint64_t build_memory_budget{0};
+  uint64_t per_segment_memory_estimate{0};
   uint32_t top_k{0};
   uint32_t search_candidate_multiplier{1};
   bool single_index_build{false};
@@ -48,6 +50,9 @@ struct segment_scheduler_plan {
   uint32_t pq_train_threads{1};
   uint32_t pq_compress_threads{1};
   uint32_t candidates_per_segment{0};
+  uint64_t segment_memory_budget{0};
+  uint64_t segment_memory_estimate{0};
+  const char *segment_parallel_reason{"unbounded"};
   bool single_index_build{false};
 };
 

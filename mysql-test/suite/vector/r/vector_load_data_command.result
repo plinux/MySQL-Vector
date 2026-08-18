@@ -207,7 +207,7 @@ JSON_EXTRACT(VEC_INDEX_INFO('idx_load_mixed_segments'),
 JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_load_mixed_segments'),
 '$.build_segment_policy')) AS segment_policy;
 build_source	raw_segment_count	raw_segments	segment_policy
-raw_segments_compacted	1	2	row_limited
+raw_segments_compacted	2	2	row_limited
 SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
 SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
 SELECT VEC_INDEX_CREATE('idx_load_generated_docid', 2, 'EUCLIDEAN', 'MEMORY',

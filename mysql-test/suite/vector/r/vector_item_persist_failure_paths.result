@@ -20,7 +20,7 @@ ERROR HY000: Incorrect arguments to vec_index_upsert
 SELECT VEC_INDEX_ERASE('idx_item_pf_a', 1);
 ERROR HY000: Incorrect arguments to vec_index_erase
 SELECT VEC_INDEX_REBUILD('idx_item_pf_a');
-ERROR HY000: Incorrect arguments to vec_index_rebuild
+ERROR HY000: Incorrect arguments to vector registry could not persist rebuild state
 SELECT VEC_INDEX_RECOVER('idx_item_pf_a');
 ERROR HY000: Incorrect arguments to vec_index_recover
 SELECT VEC_INDEX_REBUILD_ALL();

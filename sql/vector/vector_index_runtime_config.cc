@@ -130,6 +130,8 @@ build_pipeline_runtime_config global_build_pipeline_runtime_config() {
   build_pipeline_runtime_config config;
   config.thresholds.mode =
       static_cast<build_pipeline_mode>(opt_vector_build_pipeline_mode);
+  config.diskann_profile =
+      static_cast<diskann_segment_profile>(opt_vector_diskann_segment_profile);
   config.thresholds.min_rows = opt_vector_build_pipeline_min_rows;
   config.thresholds.min_size = opt_vector_build_pipeline_min_size;
   config.thresholds.segment_max_rows = opt_vector_build_segment_max_rows;

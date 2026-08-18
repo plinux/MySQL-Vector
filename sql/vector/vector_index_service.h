@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "sql/vector/vector_build_pipeline_policy.h"
+#include "sql/vector/vector_diskann_scheduler.h"
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_segment_task.h"
 
@@ -115,6 +116,7 @@ class standalone_entry_store {
                              const std::string &vector_filename,
                              const std::string &docid_filename,
                              uint64_t row_count, size_t dimension,
+                             uint64_t row_limit,
                              std::unordered_set<uint64_t> *loaded_doc_ids =
                                  nullptr);
   bool erase(const std::string &index_name, uint64_t doc_id,
@@ -128,6 +130,9 @@ class standalone_entry_store {
                       const entry_visitor &visitor) const;
   bool find_entry(const std::string &index_name, uint64_t doc_id,
                   vector_data *vector, bool *found) const;
+  bool find_entries(const std::string &index_name,
+                    const std::unordered_set<uint64_t> &doc_ids,
+                    committed_entries *vectors) const;
   size_t entry_count(const std::string &index_name) const;
   size_t memory_bytes(const std::string &index_name) const;
   size_t segment_count(const std::string &index_name) const;
@@ -149,6 +154,8 @@ class standalone_entry_store {
     size_t dimension{0};
     size_t bytes{0};
     uint64_t generation{0};
+    bool dense_doc_ids{false};
+    uint64_t first_doc_id{0};
   };
 
   struct index_state {
@@ -294,11 +301,15 @@ class index_service {
 
   struct build_pipeline_snapshot {
     std::string mode{"auto"};
+    std::string diskann_segment_profile{"manual"};
+    std::string diskann_segment_profile_reason{"manual"};
     std::string decision{"direct"};
     std::string trigger{"below_threshold"};
     uint64_t row_count{0};
     uint64_t payload_size{0};
     uint64_t raw_segment_count{0};
+    uint64_t effective_segment_target_size{0};
+    uint64_t effective_segment_row_limit{0};
   };
 
   struct index_observability_state {
@@ -398,6 +409,14 @@ class index_service {
                                       index_config *config = nullptr) const;
   bool search_batch_loaded(
       const std::string &index_name, const std::vector<vector_data> &queries,
+      size_t top_k, std::vector<std::vector<search_result>> *results) const;
+  bool search_runtime_with_exact_rerank(
+      const std::string &index_name, const index_config &config,
+      const backend *runtime, const vector_data &query, size_t top_k,
+      std::vector<search_result> *results) const;
+  bool search_batch_runtime_with_exact_rerank(
+      const std::string &index_name, const index_config &config,
+      const backend *runtime, const std::vector<vector_data> &queries,
       size_t top_k, std::vector<std::vector<search_result>> *results) const;
   bool search_with_pending(uint64_t txn_id, const std::string &index_name,
                            const vector_data &query, size_t top_k,
@@ -540,6 +559,20 @@ class index_service {
                                       bool preserve_lifecycle);
   bool ensure_runtime_loaded(const std::string &index_name);
   void maybe_unload_runtime(const std::string &index_name);
+  size_t diskann_exact_rerank_segment_count(
+      const std::string &index_name, const index_config &config) const;
+  size_t diskann_exact_rerank_candidate_top_k(
+      const std::string &index_name, const index_config &config, size_t top_k,
+      size_t query_count) const;
+  bool exact_rerank_search_results(
+      const std::string &index_name, const index_config &config,
+      const vector_data &query, const std::vector<search_result> &candidates,
+      size_t top_k, std::vector<search_result> *results,
+      bool *reranked) const;
+  bool load_exact_rerank_vectors(
+      const std::string &index_name, const index_config &config,
+      const std::unordered_set<uint64_t> &doc_ids, committed_entries *vectors,
+      bool *complete) const;
   build_input_stats collect_build_input_stats(
       const std::string &index_name, const index_config &config) const;
   build_pipeline_decision record_build_pipeline_decision(
@@ -561,6 +594,11 @@ std::unique_ptr<backend> make_segmented_backend_for_testing(
     backend_build_diagnostics diagnostics = {});
 bool raw_segments_use_single_backend_for_testing(
     const index_service::index_config &config);
+size_t diskann_exact_rerank_candidate_top_k_for_testing(
+    size_t top_k, size_t query_count, size_t authoritative_count,
+    size_t segment_count, uint32_t search_complexity,
+    diskann_search_profile search_profile, size_t result_budget,
+    size_t candidate_target);
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 }  // namespace vector_index

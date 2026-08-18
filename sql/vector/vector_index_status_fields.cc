@@ -94,6 +94,10 @@ bool has_build_diagnostics(
   present |= diagnostics.pq_train_threads != 0;
   present |= diagnostics.pq_compress_threads != 0;
   present |= diagnostics.candidates_per_segment != 0;
+  present |= diagnostics.effective_segment_tasks != 0;
+  present |= diagnostics.segment_memory_estimate != 0;
+  present |= diagnostics.segment_memory_budget != 0;
+  present |= !diagnostics.segment_parallel_reason.empty();
   present |= diagnostics.search_fanout_segments != 0;
   present |= diagnostics.search_fanout_threads != 0;
   present |= diagnostics.search_global_top_k != 0;
@@ -106,7 +110,10 @@ bool has_build_diagnostics(
   present |= diagnostics.search_segment_total_entries != 0;
   present |= diagnostics.search_diskann_search_list != 0;
   present |= diagnostics.search_diskann_beamwidth != 0;
+  present |= diagnostics.search_effective_complexity != 0;
   present |= diagnostics.search_total_candidate_rows != 0;
+  present |= !diagnostics.search_profile.empty();
+  present |= !diagnostics.search_profile_reason.empty();
   present |= diagnostics.single_index_build;
   present |= diagnostics.pq_chunks != 0;
   present |= diagnostics.cache_nodes != 0;
@@ -241,6 +248,14 @@ void append_build_diagnostics(
               diagnostics.single_index_build);
   append_uint(fields, "scheduler_candidates_per_segment",
               diagnostics.candidates_per_segment);
+  append_uint(fields, "scheduler_effective_segment_tasks",
+              diagnostics.effective_segment_tasks);
+  append_uint(fields, "scheduler_segment_memory_estimate",
+              diagnostics.segment_memory_estimate);
+  append_uint(fields, "scheduler_segment_memory_budget",
+              diagnostics.segment_memory_budget);
+  append_nullable_string(fields, "scheduler_segment_parallel_reason",
+                         diagnostics.segment_parallel_reason);
   const bool has_search_diagnostics =
       diagnostics.search_fanout_segments != 0 ||
       diagnostics.search_fanout_threads != 0 ||
@@ -254,8 +269,19 @@ void append_build_diagnostics(
       diagnostics.search_segment_total_entries != 0 ||
       diagnostics.search_diskann_search_list != 0 ||
       diagnostics.search_diskann_beamwidth != 0 ||
-      diagnostics.search_total_candidate_rows != 0;
+      diagnostics.search_effective_complexity != 0 ||
+      diagnostics.search_total_candidate_rows != 0 ||
+      !diagnostics.search_profile.empty() ||
+      !diagnostics.search_profile_reason.empty();
   if (has_search_diagnostics) {
+    if (!diagnostics.search_profile.empty()) {
+      append_string(fields, "scheduler_search_profile",
+                    diagnostics.search_profile);
+    }
+    if (!diagnostics.search_profile_reason.empty()) {
+      append_string(fields, "scheduler_search_profile_reason",
+                    diagnostics.search_profile_reason);
+    }
     append_uint(fields, "scheduler_search_fanout_segments",
                 diagnostics.search_fanout_segments);
     append_uint(fields, "scheduler_search_fanout_threads",
@@ -280,8 +306,23 @@ void append_build_diagnostics(
                 diagnostics.search_diskann_search_list);
     append_uint(fields, "scheduler_search_diskann_beamwidth",
                 diagnostics.search_diskann_beamwidth);
+    if (diagnostics.search_effective_complexity != 0) {
+      append_uint(fields, "scheduler_search_effective_complexity",
+                  diagnostics.search_effective_complexity);
+    }
     append_uint(fields, "scheduler_search_total_candidate_rows",
                 diagnostics.search_total_candidate_rows);
+    const vector_index_observability::vector_search_advice advice =
+        vector_index_observability::derive_diskann_search_advice(
+            diagnostics,
+            static_cast<uint32_t>(diagnostics.search_global_top_k),
+            diagnostics.search_result_budget);
+    append_string(fields, "scheduler_search_advice", advice.advice);
+    append_string(fields, "scheduler_search_advice_reason", advice.reason);
+    append_uint(fields, "scheduler_search_suggested_complexity",
+                advice.suggested_complexity);
+    append_uint(fields, "scheduler_search_suggested_segment_target_size",
+                advice.suggested_segment_target_size);
   }
   append_uint(fields, "diskann_segment_pq_chunks",
               diskann_provider ? diagnostics.pq_chunks : 0);
@@ -342,7 +383,7 @@ void collect_info_fields(const vector_index_registry::index_info &info,
                          field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(72);
+  fields->reserve(75);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
@@ -352,6 +393,9 @@ void collect_info_fields(const vector_index_registry::index_info &info,
   append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
   append_string(fields, "build_source", info.build_source);
   append_string(fields, "build_pipeline_mode", info.build_pipeline_mode);
+  append_string(fields, "build_segment_profile", info.build_segment_profile);
+  append_string(fields, "build_segment_profile_reason",
+                info.build_segment_profile_reason);
   append_string(fields, "build_pipeline_decision",
                 info.build_pipeline_decision);
   append_string(fields, "build_pipeline_trigger",
@@ -363,6 +407,8 @@ void collect_info_fields(const vector_index_registry::index_info &info,
               info.build_pipeline_raw_segments);
   append_uint(fields, "build_segment_effective_row_limit",
               info.build_segment_effective_row_limit);
+  append_uint(fields, "build_segment_effective_target_size",
+              info.build_segment_effective_target_size);
   append_uint(fields, "build_segment_target_size",
               info.build_segment_target_size);
   append_uint(fields, "build_segment_max_rows", info.build_segment_max_rows);
@@ -437,7 +483,7 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
                                 field_values *fields) {
   if (fields == nullptr) return;
   fields->clear();
-  fields->reserve(49);
+  fields->reserve(52);
 
   append_uint(fields, "dimension", info.dimension);
   append_string(fields, "metric", info.metric);
@@ -447,6 +493,9 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
   append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
   append_string(fields, "build_source", info.build_source);
   append_string(fields, "build_pipeline_mode", info.build_pipeline_mode);
+  append_string(fields, "build_segment_profile", info.build_segment_profile);
+  append_string(fields, "build_segment_profile_reason",
+                info.build_segment_profile_reason);
   append_string(fields, "build_pipeline_decision",
                 info.build_pipeline_decision);
   append_string(fields, "build_pipeline_trigger",
@@ -458,6 +507,8 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
               info.build_pipeline_raw_segments);
   append_uint(fields, "build_segment_effective_row_limit",
               info.build_segment_effective_row_limit);
+  append_uint(fields, "build_segment_effective_target_size",
+              info.build_segment_effective_target_size);
   append_uint(fields, "build_segment_target_size",
               info.build_segment_target_size);
   append_uint(fields, "build_segment_max_rows", info.build_segment_max_rows);

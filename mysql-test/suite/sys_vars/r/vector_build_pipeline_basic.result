@@ -11,7 +11,7 @@ SELECT @@global.vector_build_pipeline_mode,
 @@global.vector_build_pipeline_max_tasks,
 @@global.vector_build_pipeline_progress_interval;
 @@global.vector_build_pipeline_mode	@@global.vector_build_pipeline_min_rows	@@global.vector_build_pipeline_min_size	@@global.vector_build_segment_max_rows	@@global.vector_build_segment_target_size	@@global.vector_build_pipeline_max_tasks	@@global.vector_build_pipeline_progress_interval
-auto	1048576	4294967296	1048576	8589934592	1	10
+auto	1048576	4294967296	4294967295	2147483648	1	10
 SELECT VARIABLE_NAME, VARIABLE_VALUE
 FROM performance_schema.global_variables
 WHERE VARIABLE_NAME IN ('vector_build_pipeline_mode',
@@ -28,8 +28,8 @@ vector_build_pipeline_min_rows	1048576
 vector_build_pipeline_min_size	4294967296
 vector_build_pipeline_mode	auto
 vector_build_pipeline_progress_interval	10
-vector_build_segment_max_rows	1048576
-vector_build_segment_target_size	8589934592
+vector_build_segment_max_rows	4294967295
+vector_build_segment_target_size	2147483648
 SELECT @@session.vector_build_pipeline_mode;
 ERROR HY000: Variable 'vector_build_pipeline_mode' is a GLOBAL variable
 # Runtime changes are allowed.
@@ -131,5 +131,5 @@ SELECT @@global.vector_build_pipeline_mode,
 @@global.vector_build_pipeline_max_tasks,
 @@global.vector_build_pipeline_progress_interval;
 @@global.vector_build_pipeline_mode	@@global.vector_build_pipeline_min_rows	@@global.vector_build_pipeline_min_size	@@global.vector_build_segment_max_rows	@@global.vector_build_segment_target_size	@@global.vector_build_pipeline_max_tasks	@@global.vector_build_pipeline_progress_interval
-auto	1048576	4294967296	1048576	8589934592	1	10
+auto	1048576	4294967296	4294967295	2147483648	1	10
 # End of tests.

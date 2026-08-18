@@ -43,6 +43,20 @@ uint32_t auto_build_threads(uint32_t cpu_budget, uint32_t task_count) {
   return std::max(1U, budget_per_task);
 }
 
+uint32_t memory_limited_task_count(uint32_t requested_tasks,
+                                   uint32_t segment_count,
+                                   uint64_t build_memory_budget,
+                                   uint64_t per_segment_memory_estimate) {
+  if (build_memory_budget == 0 || per_segment_memory_estimate == 0) {
+    return requested_tasks;
+  }
+  const uint64_t memory_tasks =
+      std::max<uint64_t>(1, build_memory_budget / per_segment_memory_estimate);
+  const uint32_t capped_tasks =
+      static_cast<uint32_t>(std::min<uint64_t>(segment_count, memory_tasks));
+  return std::min(requested_tasks, capped_tasks);
+}
+
 uint32_t saturated_multiply(uint32_t lhs, uint32_t rhs) {
   const uint64_t product = static_cast<uint64_t>(lhs) * rhs;
   return product > std::numeric_limits<uint32_t>::max()
@@ -58,15 +72,30 @@ bool make_segment_scheduler_plan(const segment_scheduler_input &input,
 
   const uint32_t cpu_budget =
       input.cpu_budget == 0 ? auto_cpu_budget() : input.cpu_budget;
-  if (cpu_budget == 0) return false;
 
-  const uint32_t requested_tasks =
-      input.requested_task_count == 0 ? input.segment_count
-                                      : input.requested_task_count;
+  const uint32_t requested_tasks = input.requested_task_count == 0
+                                       ? input.segment_count
+                                       : input.requested_task_count;
+  const uint32_t requested_task_count =
+      std::max(1U, std::min(input.segment_count, requested_tasks));
+  const uint32_t cpu_limited_task_count =
+      std::min(requested_task_count, cpu_budget);
+  const uint32_t memory_limited_tasks = memory_limited_task_count(
+      cpu_limited_task_count, input.segment_count, input.build_memory_budget,
+      input.per_segment_memory_estimate);
   const uint32_t task_count =
-      input.single_index_build
-          ? 1U
-          : std::max(1U, std::min(input.segment_count, requested_tasks));
+      input.single_index_build ? 1U : memory_limited_tasks;
+  const char *segment_parallel_reason = "unbounded";
+  if (input.single_index_build) {
+    segment_parallel_reason = "single_index_build";
+  } else if (memory_limited_tasks < cpu_limited_task_count) {
+    segment_parallel_reason = "memory_budget";
+  } else if (cpu_limited_task_count < requested_task_count) {
+    segment_parallel_reason = "cpu_budget";
+  } else if (input.build_memory_budget != 0 &&
+             input.per_segment_memory_estimate != 0) {
+    segment_parallel_reason = "within_budget";
+  }
   const uint32_t requested_build_threads =
       input.requested_build_threads == 0
           ? auto_build_threads(cpu_budget, task_count)
@@ -94,6 +123,9 @@ bool make_segment_scheduler_plan(const segment_scheduler_input &input,
   plan->pq_train_threads = effective_build_threads;
   plan->pq_compress_threads = effective_build_threads;
   plan->candidates_per_segment = std::max(input.top_k, candidates);
+  plan->segment_memory_budget = input.build_memory_budget;
+  plan->segment_memory_estimate = input.per_segment_memory_estimate;
+  plan->segment_parallel_reason = segment_parallel_reason;
   plan->single_index_build = input.single_index_build;
   return true;
 }

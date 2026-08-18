@@ -54,6 +54,31 @@ struct diskann_segment_budget {
   double build_memory_gb{0.0};
 };
 
+enum class diskann_search_profile : uint32_t {
+  kManual = 0,
+  kFast = 1,
+  kBalanced = 2,
+  kHighRecall = 3
+};
+
+enum class diskann_search_profile_reason : uint32_t {
+  kManual = 0,
+  kFast = 1,
+  kBalancedManySegments = 2,
+  kBalancedFewSegments = 3,
+  kHighRecallManySegments = 4,
+  kHighRecallFewSegments = 5,
+  kManualHigher = 6
+};
+
+struct diskann_search_budget {
+  uint32_t search_complexity{0};
+  uint32_t per_segment_top_k{0};
+  uint32_t candidate_count{0};
+  diskann_search_profile profile{diskann_search_profile::kManual};
+  diskann_search_profile_reason reason{diskann_search_profile_reason::kManual};
+};
+
 /**
   Derive per-segment DiskANN PQ/cache/build budget.
 
@@ -65,6 +90,35 @@ struct diskann_segment_budget {
 */
 bool make_diskann_segment_budget(const diskann_segment_budget_input &input,
                                  diskann_segment_budget *budget);
+
+/**
+  Derive the effective segmented DiskANN search budget.
+
+  @param requested_top_k SQL topK requested by the caller.
+  @param fanout_segments Number of segments searched by the fan-out runtime.
+  @param segment_min_entries Minimum entry count across segments.
+  @param segment_max_entries Maximum entry count across segments.
+  @param manual_search_complexity Search list requested by index/global config.
+  @param profile Search profile selected by global policy.
+  @param budget Output effective search budget.
+
+  @retval true A valid budget was produced.
+  @retval false Input is invalid.
+*/
+bool choose_diskann_search_budget(uint32_t requested_top_k,
+                                  uint32_t fanout_segments,
+                                  uint64_t segment_min_entries,
+                                  uint64_t segment_max_entries,
+                                  uint32_t manual_search_complexity,
+                                  diskann_search_profile profile,
+                                  diskann_search_budget *budget);
+
+/** Return the SQL name for a DiskANN search profile. */
+const char *diskann_search_profile_name(diskann_search_profile profile);
+
+/** Return the diagnostic reason name for a DiskANN search profile choice. */
+const char *diskann_search_profile_reason_name(
+    diskann_search_profile_reason reason);
 
 }  // namespace vector_index
 

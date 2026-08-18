@@ -710,8 +710,10 @@ longlong Item_func_vec_index_rebuild::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::rebuild_index(index_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  std::string error;
+  if (!vector_index_registry::rebuild_index(index_name, &error)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0),
+             error.empty() ? func_name() : error.c_str());
     return error_int();
   }
   if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
@@ -774,8 +776,10 @@ longlong Item_func_vec_index_bulk_build::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::bulk_build_index(index_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  std::string error;
+  if (!vector_index_registry::bulk_build_index(index_name, &error)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0),
+             error.empty() ? func_name() : error.c_str());
     return error_int();
   }
   if (!maybe_binlog_vector_write_query(current_thd)) return error_int();

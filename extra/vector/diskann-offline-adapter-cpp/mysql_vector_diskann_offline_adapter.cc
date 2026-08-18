@@ -1640,7 +1640,9 @@ mysql_vector_diskann_offline_search(const void *index_ptr,
 
     const auto *handle = static_cast<const offline_index *>(index_ptr);
     if (handle->index == nullptr ||
-        dimension != handle->public_dimension) {
+        dimension != handle->public_dimension || search_list_size < top_k ||
+        top_k > handle->doc_ids.size() ||
+        top_k > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
       return -1;
     }
 
@@ -1676,7 +1678,9 @@ mysql_vector_diskann_offline_search_batch(
     }
 
     const auto *handle = static_cast<const offline_index *>(index_ptr);
-    if (handle->index == nullptr || dimension != handle->public_dimension) {
+    if (handle->index == nullptr || dimension != handle->public_dimension ||
+        search_list_size < top_k || top_k > handle->doc_ids.size() ||
+        top_k > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
       return -1;
     }
     if (query_count > std::numeric_limits<size_t>::max() / dimension ||

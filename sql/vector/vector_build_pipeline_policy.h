@@ -25,17 +25,19 @@
 #define SQL_VECTOR_BUILD_PIPELINE_POLICY_INCLUDED
 
 #include <cstdint>
+#include <limits>
 
 namespace vector_index {
 
 inline constexpr uint64_t k_default_build_pipeline_min_rows = 1048576ULL;
 inline constexpr uint64_t k_default_build_pipeline_min_size =
     4ULL * 1024ULL * 1024ULL * 1024ULL;
-inline constexpr uint64_t k_default_build_segment_max_rows = 1048576ULL;
+inline constexpr uint64_t k_default_build_segment_max_rows =
+    std::numeric_limits<uint32_t>::max();
 inline constexpr uint64_t k_min_build_segment_target_size =
     1ULL * 1024ULL * 1024ULL;
 inline constexpr uint64_t k_default_build_segment_target_size =
-    8ULL * 1024ULL * 1024ULL * 1024ULL;
+    2ULL * 1024ULL * 1024ULL * 1024ULL;
 inline constexpr uint32_t k_default_build_pipeline_max_tasks = 1;
 inline constexpr uint32_t k_max_build_pipeline_max_tasks = 65535;
 inline constexpr uint32_t k_default_build_pipeline_progress_interval = 10;
@@ -61,6 +63,13 @@ enum class build_pipeline_trigger {
   kBelowThreshold,
 };
 
+enum class diskann_segment_profile {
+  kManual,
+  kThroughput,
+  kBalanced,
+  kHighRecall,
+};
+
 struct build_input_stats {
   uint64_t row_count{0};
   uint64_t payload_size{0};
@@ -77,6 +86,12 @@ struct build_pipeline_thresholds {
   uint32_t max_tasks{k_default_build_pipeline_max_tasks};
 };
 
+struct diskann_segment_profile_result {
+  build_pipeline_thresholds thresholds;
+  bool applied{false};
+  const char *reason{"manual"};
+};
+
 struct build_pipeline_decision {
   build_pipeline_path path{build_pipeline_path::kDirect};
   build_pipeline_trigger trigger{build_pipeline_trigger::kBelowThreshold};
@@ -90,6 +105,27 @@ struct build_pipeline_decision {
 */
 uint64_t build_segment_row_limit(uint64_t dimension,
                                  const build_pipeline_thresholds &thresholds);
+
+/**
+  Estimate how many raw build segments are needed for the input rows.
+
+  @retval 0 There are no rows to split.
+  @retval >0 Number of segments produced by the current threshold settings.
+*/
+uint64_t estimate_build_segment_count(
+    uint64_t row_count, uint64_t dimension,
+    const build_pipeline_thresholds &thresholds);
+
+/**
+  Apply the DiskANN standalone segment profile to the build thresholds.
+
+  The function is pure and does not read global variables. Callers decide
+  whether the current index is eligible for DiskANN standalone tuning.
+*/
+diskann_segment_profile_result apply_diskann_segment_profile(
+    uint64_t dimension, uint64_t row_count, uint64_t raw_payload_bytes,
+    diskann_segment_profile profile, const build_pipeline_thresholds &manual,
+    bool eligible);
 
 /**
   Select the build pipeline from input statistics and thresholds.
@@ -109,6 +145,9 @@ const char *build_pipeline_path_name(build_pipeline_path path);
 
 /** Return a stable SQL/status name for the decision trigger. */
 const char *build_pipeline_trigger_name(build_pipeline_trigger trigger);
+
+/** Return a stable SQL/status name for the DiskANN segment profile. */
+const char *diskann_segment_profile_name(diskann_segment_profile profile);
 
 }  // namespace vector_index
 

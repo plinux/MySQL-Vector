@@ -159,7 +159,7 @@ SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS(NULL, 8);
 ERROR HY000: Incorrect arguments to vec_index_set_diskann_disk_pq_dims
 SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_tune_diskann', NULL);
 ERROR HY000: Incorrect arguments to vec_index_set_diskann_disk_pq_dims
-SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_tune_diskann', 65536);
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_tune_diskann', 513);
 ERROR HY000: Incorrect arguments to vec_index_set_diskann_disk_pq_dims
 SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_tune_missing', 8);
 ERROR HY000: Incorrect arguments to vec_index_set_diskann_disk_pq_dims

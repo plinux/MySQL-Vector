@@ -7,10 +7,12 @@
 SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
 SET @old_vector_build_segment_max_rows = @@GLOBAL.vector_build_segment_max_rows;
 SET @old_vector_build_segment_target_size = @@GLOBAL.vector_build_segment_target_size;
+SET @old_vector_diskann_search_profile = @@GLOBAL.vector_diskann_search_profile;
 
 SET GLOBAL vector_build_pipeline_mode = 'segmented';
 SET GLOBAL vector_build_segment_max_rows = 1048576;
 SET GLOBAL vector_build_segment_target_size = 1048576;
+SET GLOBAL vector_diskann_search_profile = 'high_recall';
 
 --disable_query_log
 --let $vector_fbin=$MYSQLTEST_VARDIR/vector_segmented_search_params.fbin
@@ -37,27 +39,7 @@ SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
                     '$.standalone_raw_segment_count') AS raw_segment_count;
 
 --disable_query_log
-delimiter |;
-CREATE PROCEDURE try_segmented_search_params_build()
-BEGIN
-  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET @build_ok = 0;
-  SET @build_ok = 1;
-  SET @build_result = VEC_INDEX_BULK_BUILD('idx_segmented_search_params');
-END|
-delimiter ;|
-CALL try_segmented_search_params_build();
-DROP PROCEDURE try_segmented_search_params_build;
---let $build_ok=`SELECT @build_ok`
-if (!$build_ok)
-{
-  SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
-  SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
-  SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
-  SELECT VEC_INDEX_DROP('idx_segmented_search_params');
-  --remove_file $vector_fbin
-  --remove_file $vector_docid
-  --skip Test requires DISKANN offline adapter support
-}
+SET @build_result = VEC_INDEX_BULK_BUILD('idx_segmented_search_params');
 --enable_query_log
 
 SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_search_params'),
@@ -126,6 +108,23 @@ SELECT @segmented_search_query_count = 2 AS query_count_visible,
        CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
                                       '$.scheduler_search_diskann_beamwidth'))
             AS UNSIGNED) = 0 AS non_diskann_beamwidth_zero,
+       JSON_EXTRACT(@segmented_search_info,
+                    '$.scheduler_search_profile') IS NULL AS non_diskann_profile_null,
+       JSON_EXTRACT(@segmented_search_info,
+                    '$.scheduler_search_effective_complexity') IS NULL AS non_diskann_effective_complexity_null,
+       JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                 '$.scheduler_search_advice')) = 'not_applicable'
+         AS non_diskann_advice_not_applicable,
+       JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                 '$.scheduler_search_advice_reason')) =
+         'not_segmented_diskann_search'
+         AS non_diskann_advice_reason_visible,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_suggested_complexity'))
+            AS UNSIGNED) = 0 AS non_diskann_suggested_complexity_zero,
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
+                                      '$.scheduler_search_suggested_segment_target_size'))
+            AS UNSIGNED) = 0 AS non_diskann_suggested_segment_target_zero,
        CAST(JSON_UNQUOTE(JSON_EXTRACT(@segmented_search_info,
                                       '$.scheduler_search_total_candidate_rows'))
             AS UNSIGNED) =
@@ -135,6 +134,7 @@ SELECT @segmented_search_query_count = 2 AS query_count_visible,
 SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
 SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
 SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+SET GLOBAL vector_diskann_search_profile = @old_vector_diskann_search_profile;
 
 SELECT VEC_INDEX_DROP('idx_segmented_search_params');
 --remove_file $vector_fbin

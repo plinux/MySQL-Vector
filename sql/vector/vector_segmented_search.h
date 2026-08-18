@@ -44,14 +44,16 @@ size_t segmented_search_candidate_top_k(size_t top_k, size_t segment_count,
                                         size_t result_budget);
 
 /**
-  Calculate the per-segment topK that preserves DiskANN search-list slack.
+  Calculate the candidate topK that keeps DiskANN's search-list slack.
 
-  DiskANN can return at most one fewer candidate than its search complexity.
-  Distribute that candidate capacity across the active segments while retaining
-  the SQL-visible topK as the lower bound.
+  DiskANN search quality depends on keeping the returned candidate count smaller
+  than the search list when the requested topK allows it. For segmented search,
+  the caller asks each segment for its own candidate window. The total returned
+  candidate budget should therefore approximate the configured search list
+  across all segments, while each segment still keeps one result of slack below
+  the search list when possible.
 */
-size_t diskann_search_list_slack_top_k(size_t top_k,
-                                       size_t search_complexity,
+size_t diskann_search_list_slack_top_k(size_t top_k, size_t search_complexity,
                                        size_t fanout_count);
 
 /**

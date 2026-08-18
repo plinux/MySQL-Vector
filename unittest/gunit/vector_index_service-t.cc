@@ -56,6 +56,64 @@ bool has_suffix(const std::string &text, const std::string &suffix) {
          text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+TEST(VectorIndexServiceHelperTest, MergesSegmentBuildDiagnostics) {
+  vector_index::backend_build_diagnostics aggregate;
+  vector_index::backend_build_diagnostics first;
+  first.diskann_pq_runtime = "native_strict";
+  first.native_pq_runtime_selected_path = "avx2";
+  first.native_pq_runtime_bridge = "cpp_main";
+  first.native_pq_runtime_artifact_validation = "ok";
+  first.native_pq_runtime_artifacts_written = true;
+  first.native_pq_runtime_artifacts_consumed = true;
+  first.native_pq_runtime_official_pq_used = false;
+  first.effective_disk_pq_dims = 64;
+  vector_index::detail::merge_segment_build_diagnostics(100, first,
+                                                         &aggregate);
+
+  EXPECT_EQ(100U, aggregate.row_count);
+  EXPECT_EQ(1U, aggregate.segment_count);
+  EXPECT_EQ(1U, aggregate.build_invocations);
+  EXPECT_EQ("native_strict", aggregate.diskann_pq_runtime);
+  EXPECT_EQ("avx2", aggregate.native_pq_runtime_selected_path);
+  EXPECT_EQ("cpp_main", aggregate.native_pq_runtime_bridge);
+  EXPECT_EQ("ok", aggregate.native_pq_runtime_artifact_validation);
+
+  vector_index::backend_build_diagnostics second = first;
+  second.row_count = 90;
+  second.segment_count = 2;
+  second.build_invocations = 3;
+  second.diskann_pq_runtime = "official";
+  second.native_pq_runtime_selected_path = "scalar_fallback";
+  second.native_pq_runtime_bridge = "fallback";
+  second.native_pq_runtime_artifact_validation = "failed";
+  second.native_pq_runtime_official_pq_used = true;
+  second.effective_disk_pq_dims = 128;
+  second.fallback_reason = "bridge_failed";
+  vector_index::detail::merge_segment_build_diagnostics(100, second,
+                                                         &aggregate);
+
+  EXPECT_EQ(190U, aggregate.row_count);
+  EXPECT_EQ(3U, aggregate.segment_count);
+  EXPECT_EQ(4U, aggregate.build_invocations);
+  EXPECT_EQ("mixed", aggregate.diskann_pq_runtime);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_selected_path);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_bridge);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_artifact_validation);
+  EXPECT_EQ(128U, aggregate.effective_disk_pq_dims);
+  EXPECT_TRUE(aggregate.native_pq_runtime_artifacts_written);
+  EXPECT_TRUE(aggregate.native_pq_runtime_artifacts_consumed);
+  EXPECT_TRUE(aggregate.native_pq_runtime_official_pq_used);
+  EXPECT_EQ("bridge_failed", aggregate.fallback_reason);
+
+  vector_index::backend_build_diagnostics empty_strings;
+  vector_index::detail::merge_segment_build_diagnostics(
+      1, empty_strings, &aggregate);
+  EXPECT_EQ("mixed", aggregate.diskann_pq_runtime);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_selected_path);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_bridge);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_artifact_validation);
+}
+
 std::string find_faiss_snapshot_file(const std::string &root) {
   std::error_code ec;
   if (!std::filesystem::exists(root, ec) || ec) return "";
@@ -705,6 +763,94 @@ class NonWritableBackend final : public vector_index::backend {
     return vector_index::backend_provider::kDiskAnn;
   }
   bool supports_mutations() const override { return false; }
+};
+
+class RerankProbeDiskAnnBackend final : public vector_index::backend {
+ public:
+  explicit RerankProbeDiskAnnBackend(uint32_t search_complexity = 4)
+      : m_search_complexity(search_complexity) {}
+
+  bool upsert(uint64_t doc_id,
+              const vector_index::vector_data &vector) override {
+    m_entries[doc_id] = vector;
+    return true;
+  }
+
+  bool erase(uint64_t doc_id) override {
+    m_entries.erase(doc_id);
+    return true;
+  }
+
+  bool search(const vector_index::vector_data &query [[maybe_unused]],
+              size_t top_k,
+              std::vector<vector_index::search_result> *results) const override {
+    if (results == nullptr) return false;
+    requested_top_k_values.push_back(top_k);
+    results->clear();
+    results->push_back({1, 0.0});
+    results->push_back({2, 1.0});
+    if (results->size() > top_k) results->resize(top_k);
+    return true;
+  }
+
+  bool search_for_rerank(
+      const vector_index::vector_data &query [[maybe_unused]], size_t top_k,
+      size_t candidate_top_k,
+      std::vector<vector_index::search_result> *results) const override {
+    rerank_top_k_values.push_back(top_k);
+    rerank_candidate_top_k_values.push_back(candidate_top_k);
+    return search(query, candidate_top_k, results);
+  }
+
+  bool search_batch(
+      const std::vector<vector_index::vector_data> &queries, size_t top_k,
+      std::vector<std::vector<vector_index::search_result>> *results)
+      const override {
+    if (results == nullptr) return false;
+    requested_top_k_values.push_back(top_k);
+    results->clear();
+    results->reserve(queries.size());
+    for (size_t i = 0; i < queries.size(); ++i) {
+      std::vector<vector_index::search_result> row{{1, 0.0}, {2, 1.0}};
+      if (row.size() > top_k) row.resize(top_k);
+      results->push_back(std::move(row));
+    }
+    return true;
+  }
+
+  bool search_batch_for_rerank(
+      const std::vector<vector_index::vector_data> &queries, size_t top_k,
+      size_t candidate_top_k,
+      std::vector<std::vector<vector_index::search_result>> *results)
+      const override {
+    rerank_top_k_values.push_back(top_k);
+    rerank_candidate_top_k_values.push_back(candidate_top_k);
+    return search_batch(queries, candidate_top_k, results);
+  }
+
+  size_t entry_count() const override { return m_entries.size(); }
+  size_t dimension() const override { return 2; }
+  vector_index::metric_type metric() const override {
+    return vector_index::metric_type::kEuclidean;
+  }
+  vector_index::backend_mode mode() const override {
+    return vector_index::backend_mode::kExternal;
+  }
+  vector_index::backend_provider provider() const override {
+    return vector_index::backend_provider::kDiskAnn;
+  }
+  bool supports_mutations() const override { return true; }
+  uint32_t diskann_search_complexity() const override {
+    return m_search_complexity;
+  }
+
+  mutable std::vector<size_t> requested_top_k_values;
+  mutable std::vector<size_t> rerank_top_k_values;
+  mutable std::vector<size_t> rerank_candidate_top_k_values;
+
+ private:
+  uint32_t m_search_complexity{4};
+  std::unordered_map<uint64_t, vector_index::vector_data> m_entries;
 };
 
 class IncompatibleBackend final : public vector_index::backend {
@@ -2960,14 +3106,15 @@ TEST(VectorStandaloneEntryStoreTest, RawSegmentWithoutDocidsGeneratesDocIds) {
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_generated_docids", 2));
   EXPECT_TRUE(store.bulk_upsert_raw_files("idx_raw_generated_docids",
-                                          vector_path, "", 0, 2));
-  EXPECT_FALSE(store.bulk_upsert_raw_files("missing", vector_path, "", 2, 2));
+                                          vector_path, "", 0, 2, 2));
+  EXPECT_FALSE(store.bulk_upsert_raw_files("missing", vector_path, "", 2, 2,
+                                           2));
   EXPECT_FALSE(store.bulk_upsert_raw_files("idx_raw_generated_docids",
-                                           vector_path, "", 2, 3));
+                                           vector_path, "", 2, 3, 2));
   EXPECT_FALSE(store.bulk_upsert_raw_files("idx_raw_generated_docids",
-                                           vector_path, "", 3, 2));
+                                           vector_path, "", 3, 2, 3));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_generated_docids",
-                                          vector_path, "", 2, 2));
+                                          vector_path, "", 2, 2, 2));
   EXPECT_EQ(2U, store.entry_count("idx_raw_generated_docids"));
   EXPECT_EQ(1U, store.raw_segment_count("idx_raw_generated_docids"));
 
@@ -3002,7 +3149,7 @@ TEST(VectorStandaloneEntryStoreTest, RawSegmentCanReuseValidatedDocIdSet) {
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_reuse", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_reuse", vector_path,
-                                          docid_path, 2, 2,
+                                          docid_path, 2, 2, 2,
                                           &validated_doc_ids));
   EXPECT_TRUE(validated_doc_ids.empty());
   EXPECT_EQ(2U, store.entry_count("idx_raw_reuse"));
@@ -3043,7 +3190,7 @@ TEST(VectorStandaloneEntryStoreTest,
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_split_docids", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_split_docids", vector_path,
-                                          docid_path, 3, 2));
+                                          docid_path, 3, 2, 1));
   EXPECT_EQ(3U, store.entry_count("idx_raw_split_docids"));
   EXPECT_EQ(3U, store.raw_segment_count("idx_raw_split_docids"));
 
@@ -3086,13 +3233,14 @@ TEST(VectorStandaloneEntryStoreTest,
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_split_rollback", 2));
   EXPECT_FALSE(store.bulk_upsert_raw_files("idx_raw_split_rollback",
-                                           vector_path, short_docid_path, 3, 2));
+                                           vector_path, short_docid_path, 3, 2,
+                                           1));
   EXPECT_EQ(0U, store.entry_count("idx_raw_split_rollback"));
   EXPECT_EQ(0U, store.raw_segment_count("idx_raw_split_rollback"));
   EXPECT_EQ(0U, store.raw_segment_bytes("idx_raw_split_rollback"));
 
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_split_rollback", vector_path,
-                                          valid_docid_path, 3, 2));
+                                          valid_docid_path, 3, 2, 1));
   EXPECT_EQ(3U, store.entry_count("idx_raw_split_rollback"));
   EXPECT_EQ(3U, store.raw_segment_count("idx_raw_split_rollback"));
 
@@ -3118,7 +3266,7 @@ TEST(VectorStandaloneEntryStoreTest,
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_rebuild_budget", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_rebuild_budget", vector_path,
-                                          docid_path, 2, 2));
+                                          docid_path, 2, 2, 2));
   ASSERT_TRUE(store.upsert("idx_rebuild_budget", 20, {2.0F, 0.0F},
                            static_cast<size_t>(opt_vector_entry_cache_size)));
 
@@ -3243,7 +3391,7 @@ TEST(VectorStandaloneEntryStoreTest, RawAndDeltaSegmentsReplayInDocIdOrder) {
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_delta", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_delta", vector_path,
-                                          docid_path, 2, 2));
+                                          docid_path, 2, 2, 2));
   ASSERT_TRUE(store.upsert("idx_raw_delta", 20, {2.0F, 0.0F}, 0));
   ASSERT_TRUE(store.erase("idx_raw_delta", 30, 0));
 
@@ -3269,6 +3417,172 @@ TEST(VectorStandaloneEntryStoreTest, RawAndDeltaSegmentsReplayInDocIdOrder) {
   EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}), entries.at(20));
 }
 
+TEST(VectorStandaloneEntryStoreTest, FindEntriesReadsRawAndDeltaCandidates) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_find_entries_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {3.0F, 0.0F, 1.0F, 0.0F});
+  write_raw_docid_file(docid_path, {30, 10});
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_find_entries", 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_find_entries", vector_path,
+                                          docid_path, 2, 2, 2));
+  ASSERT_TRUE(store.upsert("idx_find_entries", 20, {2.0F, 0.0F}, 0));
+  ASSERT_TRUE(store.erase("idx_find_entries", 30, 0));
+
+  vector_index::committed_entries vectors;
+  ASSERT_TRUE(store.find_entries("idx_find_entries", {10, 20, 30, 99},
+                                 &vectors));
+  ASSERT_EQ(2U, vectors.size());
+  ASSERT_NE(vectors.end(), vectors.find(10));
+  ASSERT_NE(vectors.end(), vectors.find(20));
+  EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), vectors.at(10));
+  EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}), vectors.at(20));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest, FindEntriesUsesDenseRawDocidOffsets) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_find_dense_docids_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  write_raw_fbin_file(vector_path, 3, 2,
+                      {3.0F, 0.0F, 1.0F, 0.0F, 2.0F, 0.0F});
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_dense_find_entries", 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_dense_find_entries",
+                                          vector_path, "", 3, 2, 3));
+
+  const std::string stored_docid =
+      find_standalone_file_with_extension(root, ".u64");
+  ASSERT_FALSE(stored_docid.empty());
+  std::filesystem::remove(stored_docid, ec);
+  ASSERT_FALSE(ec);
+
+  vector_index::committed_entries vectors;
+  ASSERT_TRUE(store.find_entries("idx_dense_find_entries", {1, 2}, &vectors));
+  ASSERT_EQ(2U, vectors.size());
+  EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), vectors.at(1));
+  EXPECT_EQ((vector_index::vector_data{2.0F, 0.0F}), vectors.at(2));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     FindEntriesValidatesGuardsAndRawSegmentContents) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_find_entries_edges_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 2.0F, 0.0F});
+  write_raw_docid_file(docid_path, {10, 20});
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_find_edges", 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_find_edges", vector_path,
+                                          docid_path, 2, 2, 2));
+  vector_index::committed_entries vectors;
+  EXPECT_FALSE(store.find_entries("idx_find_edges", {10}, nullptr));
+  EXPECT_TRUE(store.find_entries("idx_find_edges", {}, &vectors));
+  EXPECT_TRUE(vectors.empty());
+  EXPECT_FALSE(store.find_entries("missing", {10}, &vectors));
+  ASSERT_TRUE(store.find_entries("idx_find_edges", {10}, &vectors));
+  ASSERT_EQ(1U, vectors.size());
+  EXPECT_EQ((vector_index::vector_data{1.0F, 0.0F}), vectors.at(10));
+
+  const std::string stored_fbin =
+      find_standalone_file_with_extension(root, ".fbin");
+  const std::string stored_docid =
+      find_standalone_file_with_extension(root, ".u64");
+  ASSERT_FALSE(stored_fbin.empty());
+  ASSERT_FALSE(stored_docid.empty());
+
+  write_raw_fbin_file(stored_fbin, 3, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F});
+  EXPECT_FALSE(store.find_entries("idx_find_edges", {10}, &vectors));
+  write_raw_fbin_file(stored_fbin, 2, 3,
+                      {1.0F, 0.0F, 0.0F, 2.0F, 0.0F, 0.0F});
+  EXPECT_FALSE(store.find_entries("idx_find_edges", {10}, &vectors));
+  write_raw_fbin_file(stored_fbin, 2, 2, {1.0F, 0.0F});
+  EXPECT_FALSE(store.find_entries("idx_find_edges", {20}, &vectors));
+  write_raw_fbin_file(stored_fbin, 2, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F});
+
+  write_raw_docid_file(stored_docid, {10, 20, 30});
+  EXPECT_FALSE(store.find_entries("idx_find_edges", {10}, &vectors));
+  {
+    std::ofstream file(stored_docid, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(file.good());
+    write_binary_value<uint64_t>(&file, 2);
+    write_binary_value<uint64_t>(&file, 10);
+  }
+  EXPECT_FALSE(store.find_entries("idx_find_edges", {20}, &vectors));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     FindEntriesValidatesDeltaSegmentSizeAndHeader) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_find_delta_edges_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_find_delta", 2));
+  ASSERT_TRUE(store.bulk_upsert(
+      "idx_find_delta", {{10, {1.0F, 0.0F}}, {20, {2.0F, 0.0F}}}));
+  vector_index::committed_entries vectors;
+  ASSERT_TRUE(store.find_entries("idx_find_delta", {10}, &vectors));
+  ASSERT_EQ(1U, vectors.size());
+
+  const std::string segment = find_standalone_segment_file(root);
+  ASSERT_FALSE(segment.empty());
+  const uintmax_t original_size = std::filesystem::file_size(segment, ec);
+  ASSERT_FALSE(ec);
+  {
+    std::ofstream file(segment, std::ios::binary | std::ios::app);
+    ASSERT_TRUE(file.good());
+    file.put('\0');
+  }
+  EXPECT_FALSE(store.find_entries("idx_find_delta", {10}, &vectors));
+  std::filesystem::resize_file(segment, original_size, ec);
+  ASSERT_FALSE(ec);
+  {
+    std::fstream file(segment,
+                      std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(file.good());
+    file.put('X');
+  }
+  EXPECT_FALSE(store.find_entries("idx_find_delta", {10}, &vectors));
+
+  std::filesystem::remove_all(root, ec);
+}
+
 TEST(VectorStandaloneEntryStoreTest, RawOnlyRebuildUsesRawSegmentReader) {
   const std::string root =
       std::string(testing::TempDir()) + "/standalone_raw_direct_rebuild_t";
@@ -3286,7 +3600,7 @@ TEST(VectorStandaloneEntryStoreTest, RawOnlyRebuildUsesRawSegmentReader) {
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_direct", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_direct", vector_path,
-                                          docid_path, 2, 2));
+                                          docid_path, 2, 2, 2));
 
   RawSegmentCountingBackend backend;
   ASSERT_TRUE(store.rebuild_backend_input("idx_raw_direct", &backend));
@@ -3319,7 +3633,7 @@ TEST(VectorStandaloneEntryStoreTest,
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_direct", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_direct", vector_path,
-                                          docid_path, 2, 2));
+                                          docid_path, 2, 2, 2));
 
   EXPECT_FALSE(store.read_rebuild_raw_segments(
       "missing", [](const vector_index::raw_vector_segment &) {
@@ -3393,7 +3707,7 @@ TEST(VectorStandaloneEntryStoreTest, RawSegmentReaderRejectsSizeDrift) {
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_drift", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_drift", vector_path,
-                                          docid_path, 2, 2));
+                                          docid_path, 2, 2, 2));
 
   const std::string stored_docid_path =
       find_raw_segment_file_from_manifest(root, ".u64");
@@ -3417,6 +3731,10 @@ TEST(VectorStandaloneEntryStoreTest, RawSegmentReaderRejectsSizeDrift) {
 }
 
 TEST(VectorStandaloneEntryStoreTest, MixedSegmentsCompactBeforeRawRebuild) {
+  build_pipeline_options_guard guard;
+  opt_vector_build_segment_max_rows = 1;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+
   const std::string root =
       std::string(testing::TempDir()) + "/standalone_raw_compact_rebuild_t";
   std::error_code ec;
@@ -3433,7 +3751,7 @@ TEST(VectorStandaloneEntryStoreTest, MixedSegmentsCompactBeforeRawRebuild) {
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_compact", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_compact", vector_path,
-                                          docid_path, 2, 2));
+                                          docid_path, 2, 2, 1));
   ASSERT_TRUE(store.upsert("idx_raw_compact", 20, {2.0F, 0.0F}, 0));
   ASSERT_TRUE(store.erase("idx_raw_compact", 30, 0));
 
@@ -3441,9 +3759,9 @@ TEST(VectorStandaloneEntryStoreTest, MixedSegmentsCompactBeforeRawRebuild) {
   ASSERT_TRUE(store.rebuild_backend_input("idx_raw_compact", &backend));
   EXPECT_EQ(1U, backend.raw_segment_reader_calls);
   EXPECT_EQ(0U, backend.committed_reader_calls);
-  EXPECT_EQ((std::vector<size_t>{2}), backend.raw_segment_doc_counts);
-  EXPECT_EQ(1U, store.segment_count("idx_raw_compact"));
-  EXPECT_EQ(1U, store.raw_segment_count("idx_raw_compact"));
+  EXPECT_EQ((std::vector<size_t>{1, 1}), backend.raw_segment_doc_counts);
+  EXPECT_EQ(2U, store.segment_count("idx_raw_compact"));
+  EXPECT_EQ(2U, store.raw_segment_count("idx_raw_compact"));
 
   const auto entries = collect_entries(&store, "idx_raw_compact");
   ASSERT_EQ(2U, entries.size());
@@ -3470,7 +3788,7 @@ TEST(VectorStandaloneEntryStoreTest,
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_raw_rename", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_rename", vector_path,
-                                          docid_path, 2, 2));
+                                          docid_path, 2, 2, 2));
   ASSERT_TRUE(store.rename_index("idx_raw_rename", "idx_raw_moved"));
   EXPECT_FALSE(store.has_index("idx_raw_rename"));
   EXPECT_TRUE(store.has_index("idx_raw_moved"));
@@ -3521,7 +3839,7 @@ TEST(VectorStandaloneEntryStoreTest,
   vector_index::standalone_entry_store store;
   ASSERT_TRUE(store.register_index("idx_rename_rollback", 2));
   ASSERT_TRUE(store.bulk_upsert_raw_files("idx_rename_rollback", vector_path,
-                                          docid_path, 2, 2));
+                                          docid_path, 2, 2, 2));
 
   const std::string manifest = find_manifest_file(root, "manifest.v1");
   ASSERT_FALSE(manifest.empty());
@@ -3744,9 +4062,10 @@ TEST(VectorStandaloneEntryStoreTest, RawSegmentRejectsInvalidSourceFiles) {
   ASSERT_TRUE(store.register_index("idx_raw_invalid", 2));
 
   EXPECT_FALSE(store.bulk_upsert_raw_files("idx_raw_invalid",
-                                           root + "/missing.fbin", "", 2, 2));
+                                           root + "/missing.fbin", "", 2, 2,
+                                           2));
   EXPECT_FALSE(store.bulk_upsert_raw_files("idx_raw_invalid", vector_path,
-                                           truncated_docid_path, 2, 2));
+                                           truncated_docid_path, 2, 2, 2));
   EXPECT_EQ(0U, store.entry_count("idx_raw_invalid"));
   EXPECT_EQ(0U, store.raw_segment_count("idx_raw_invalid"));
   EXPECT_EQ(0U, store.raw_segment_bytes("idx_raw_invalid"));
@@ -3999,7 +4318,7 @@ TEST(VectorStandaloneEntryStoreTest,
     vector_index::standalone_entry_store store;
     ASSERT_TRUE(store.register_index("idx_raw_manifest", 2));
     ASSERT_TRUE(store.bulk_upsert_raw_files("idx_raw_manifest", vector_path,
-                                            docid_path, 2, 2));
+                                            docid_path, 2, 2, 2));
     manifest = find_manifest_file(root, "manifest.v1");
     stored_fbin = find_standalone_file_with_extension(root, ".fbin");
     stored_docid = find_standalone_file_with_extension(root, ".u64");
@@ -4944,6 +5263,217 @@ TEST(VectorIndexServiceTest, SearchBatchAndLoadedSearchCoverLifecycleGuards) {
   ASSERT_TRUE(service.stage_upsert(2, "idx_batch", 3, {3.0F, 3.0F}));
   EXPECT_FALSE(service.search_with_pending_loaded(2, "idx_batch",
                                                   {3.0F, 3.0F}, 1, &result));
+}
+
+TEST(VectorIndexServiceTest, DiskAnnSearchExactReranksCommittedCandidates) {
+  vector_index::index_service service;
+  auto backend = std::make_unique<RerankProbeDiskAnnBackend>();
+  RerankProbeDiskAnnBackend *probe = backend.get();
+
+  ASSERT_TRUE(service.register_index("idx_rerank", std::move(backend)));
+  ASSERT_TRUE(service.stage_upsert(1, "idx_rerank", 1, {0.0F, 0.0F}));
+  ASSERT_TRUE(service.stage_upsert(1, "idx_rerank", 2, {10.0F, 10.0F}));
+  ASSERT_TRUE(service.commit(1));
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search("idx_rerank", {10.0F, 10.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(2U, result[0].doc_id);
+  ASSERT_FALSE(probe->requested_top_k_values.empty());
+  EXPECT_EQ(2U, probe->requested_top_k_values.back());
+  ASSERT_FALSE(probe->rerank_top_k_values.empty());
+  EXPECT_EQ(1U, probe->rerank_top_k_values.back());
+  ASSERT_FALSE(probe->rerank_candidate_top_k_values.empty());
+  EXPECT_EQ(2U, probe->rerank_candidate_top_k_values.back());
+}
+
+TEST(VectorIndexServiceTest, DiskAnnBatchSearchExactReranksCommittedCandidates) {
+  vector_index::index_service service;
+  auto backend = std::make_unique<RerankProbeDiskAnnBackend>();
+  RerankProbeDiskAnnBackend *probe = backend.get();
+
+  ASSERT_TRUE(service.register_index("idx_batch_rerank", std::move(backend)));
+  ASSERT_TRUE(service.stage_upsert(1, "idx_batch_rerank", 1, {0.0F, 0.0F}));
+  ASSERT_TRUE(service.stage_upsert(1, "idx_batch_rerank", 2, {10.0F, 10.0F}));
+  ASSERT_TRUE(service.commit(1));
+
+  std::vector<std::vector<vector_index::search_result>> results;
+  ASSERT_TRUE(service.search_batch(
+      "idx_batch_rerank", {{10.0F, 10.0F}, {0.0F, 0.0F}}, 1, &results));
+  ASSERT_EQ(2U, results.size());
+  ASSERT_EQ(1U, results[0].size());
+  EXPECT_EQ(2U, results[0][0].doc_id);
+  ASSERT_EQ(1U, results[1].size());
+  EXPECT_EQ(1U, results[1][0].doc_id);
+  ASSERT_FALSE(probe->requested_top_k_values.empty());
+  EXPECT_EQ(2U, probe->requested_top_k_values.back());
+  ASSERT_FALSE(probe->rerank_top_k_values.empty());
+  EXPECT_EQ(1U, probe->rerank_top_k_values.back());
+  ASSERT_FALSE(probe->rerank_candidate_top_k_values.empty());
+  EXPECT_EQ(2U, probe->rerank_candidate_top_k_values.back());
+}
+
+TEST(VectorIndexServiceTest,
+     DiskAnnExactRerankUsesAutomaticCandidateWindowForSmallIndex) {
+  vector_index::index_service service;
+  auto backend = std::make_unique<RerankProbeDiskAnnBackend>(64);
+  RerankProbeDiskAnnBackend *probe = backend.get();
+
+  ASSERT_TRUE(service.register_index("idx_rerank_slack", std::move(backend)));
+  for (uint64_t doc_id = 1; doc_id <= 100; ++doc_id) {
+    ASSERT_TRUE(service.stage_upsert(1, "idx_rerank_slack", doc_id,
+                                     {static_cast<float>(doc_id), 0.0F}));
+  }
+  ASSERT_TRUE(service.commit(1));
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search("idx_rerank_slack", {2.0F, 0.0F}, 10, &result));
+  ASSERT_FALSE(probe->requested_top_k_values.empty());
+  const size_t requested_top_k = probe->requested_top_k_values.back();
+  EXPECT_EQ(63U, requested_top_k);
+}
+
+TEST(VectorIndexServiceTest,
+     DiskAnnExactRerankCandidateTopKUsesGlobalFanoutWindow) {
+  constexpr size_t top_k = 10;
+  constexpr size_t query_count = 100;
+  constexpr size_t row_count = 4194304;
+  constexpr size_t segment_count = 65;
+  constexpr size_t result_budget = 262144;
+
+  EXPECT_EQ(780U, vector_index::diskann_exact_rerank_candidate_top_k_for_testing(
+                       top_k, query_count, row_count, segment_count, 800,
+                       vector_index::diskann_search_profile::kManual,
+                       result_budget, 0));
+  EXPECT_EQ(1560U,
+            vector_index::diskann_exact_rerank_candidate_top_k_for_testing(
+                top_k, query_count, row_count, segment_count, 800,
+                vector_index::diskann_search_profile::kHighRecall,
+                result_budget, 0));
+  EXPECT_EQ(2621U,
+            vector_index::diskann_exact_rerank_candidate_top_k_for_testing(
+                top_k, query_count, row_count, segment_count, 3200,
+                vector_index::diskann_search_profile::kHighRecall,
+                result_budget, 0));
+}
+
+TEST(VectorIndexServiceTest, DiskAnnExactRerankCandidateTopKCapsToBudget) {
+  constexpr size_t top_k = 10;
+  constexpr size_t query_count = 100;
+  constexpr size_t row_count = 4194304;
+  constexpr size_t segment_count = 65;
+  constexpr size_t result_budget = 51200;
+
+  EXPECT_EQ(512U,
+            vector_index::diskann_exact_rerank_candidate_top_k_for_testing(
+                top_k, query_count, row_count, segment_count, 800,
+                vector_index::diskann_search_profile::kManual,
+                result_budget, 8192));
+}
+
+TEST(VectorIndexServiceTest,
+     DiskAnnExactRerankCandidateTopKKeepsComputedWindowWhenBudgetAllows) {
+  constexpr size_t top_k = 10;
+  constexpr size_t query_count = 100;
+  constexpr size_t row_count = 4194304;
+  constexpr size_t segment_count = 65;
+  constexpr size_t result_budget = 1048576;
+
+  EXPECT_EQ(780U,
+            vector_index::diskann_exact_rerank_candidate_top_k_for_testing(
+                top_k, query_count, row_count, segment_count, 800,
+                vector_index::diskann_search_profile::kManual,
+                result_budget, 0));
+}
+
+TEST(VectorIndexServiceTest,
+     DiskAnnExactRerankCandidateTopKUsesExplicitTargetWhenBudgetAllows) {
+  constexpr size_t top_k = 10;
+  constexpr size_t query_count = 100;
+  constexpr size_t row_count = 4194304;
+  constexpr size_t segment_count = 65;
+  constexpr size_t result_budget = 1048576;
+
+  EXPECT_EQ(8192U,
+            vector_index::diskann_exact_rerank_candidate_top_k_for_testing(
+                top_k, query_count, row_count, segment_count, 800,
+                vector_index::diskann_search_profile::kManual,
+                result_budget, 8192));
+}
+
+TEST(VectorIndexServiceTest,
+     SegmentedDiskAnnRerankOverfetchesBeforeGlobalCandidateMerge) {
+  constexpr size_t k_top_k = 10;
+  constexpr size_t k_segment_count = 5;
+  constexpr size_t k_entries_per_segment = 1000;
+  constexpr size_t k_query_count = 32;
+  constexpr size_t k_result_budget = 262144;
+  constexpr uint32_t k_search_complexity = 400;
+  UlongGuard result_budget_guard(&opt_vector_search_batch_result_count,
+                                 k_result_budget);
+  UlongGuard candidate_target_guard(
+      &opt_vector_diskann_exact_rerank_candidates, 0);
+
+  vector_index::index_service::index_config config;
+  config.dimension = 2;
+  config.metric = vector_index::metric_type::kEuclidean;
+  config.mode = vector_index::backend_mode::kExternal;
+  config.provider = vector_index::backend_provider::kDiskAnn;
+  config.diskann_search_complexity = k_search_complexity;
+
+  std::vector<std::shared_ptr<vector_index::backend>> segments;
+  std::vector<RerankProbeDiskAnnBackend *> probes;
+  for (size_t segment_index = 0; segment_index < k_segment_count;
+       ++segment_index) {
+    auto segment =
+        std::make_shared<RerankProbeDiskAnnBackend>(k_search_complexity);
+    for (size_t row_index = 0; row_index < k_entries_per_segment;
+         ++row_index) {
+      const uint64_t doc_id = segment_index * k_entries_per_segment +
+                              row_index + 1;
+      ASSERT_TRUE(segment->upsert(doc_id, {static_cast<float>(doc_id), 0.0F}));
+    }
+    probes.push_back(segment.get());
+    segments.push_back(std::move(segment));
+  }
+
+  auto segmented = vector_index::make_segmented_backend_for_testing(
+      config, std::move(segments));
+  const size_t global_candidate_top_k =
+      vector_index::diskann_exact_rerank_candidate_top_k_for_testing(
+          k_top_k, 1, k_segment_count * k_entries_per_segment,
+          k_segment_count, k_search_complexity,
+          vector_index::diskann_search_profile::kManual, k_result_budget, 0);
+  ASSERT_EQ(395U, global_candidate_top_k);
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(segmented->search_for_rerank({0.0F, 0.0F}, k_top_k,
+                                           global_candidate_top_k, &results));
+  for (const auto *probe : probes) {
+    ASSERT_FALSE(probe->requested_top_k_values.empty());
+    EXPECT_EQ(158U, probe->requested_top_k_values.back());
+  }
+  auto diagnostics = segmented->build_diagnostics();
+  EXPECT_EQ(158U, diagnostics.search_per_segment_top_k);
+  EXPECT_EQ(790U, diagnostics.search_candidate_count);
+  EXPECT_EQ(790U, diagnostics.search_total_candidate_rows);
+
+  for (auto *probe : probes) probe->requested_top_k_values.clear();
+  std::vector<vector_index::vector_data> queries(
+      k_query_count, vector_index::vector_data{0.0F, 0.0F});
+  std::vector<std::vector<vector_index::search_result>> batch_results;
+  ASSERT_TRUE(segmented->search_batch_for_rerank(
+      queries, k_top_k, global_candidate_top_k, &batch_results));
+  ASSERT_EQ(k_query_count, batch_results.size());
+  for (const auto *probe : probes) {
+    ASSERT_FALSE(probe->requested_top_k_values.empty());
+    EXPECT_EQ(158U, probe->requested_top_k_values.back());
+  }
+  diagnostics = segmented->build_diagnostics();
+  EXPECT_EQ(158U, diagnostics.search_per_segment_top_k);
+  EXPECT_EQ(790U, diagnostics.search_candidate_count);
+  EXPECT_EQ(k_query_count * 790U,
+            diagnostics.search_total_candidate_rows);
 }
 
 TEST(VectorIndexServiceTest, DescribeIndexReturnsConfigAndMutationFlag) {

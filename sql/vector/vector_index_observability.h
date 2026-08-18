@@ -25,16 +25,28 @@
 #define SQL_VECTOR_INDEX_OBSERVABILITY_INCLUDED
 
 #include <cstdint>
+#include <string>
 
+#include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_registry.h"
 
 namespace vector_index_observability {
+
+struct vector_search_advice {
+  std::string advice{"not_applicable"};
+  std::string reason{"not_segmented_diskann_search"};
+  uint64_t suggested_complexity{0};
+  uint64_t suggested_segment_target_size{0};
+};
 
 uint64_t pending_apply_count(const vector_index_registry::index_info &info);
 uint64_t rebuild_progress(const vector_index_registry::index_info &info);
 uint64_t recover_progress(const vector_index_registry::index_info &info);
 bool is_loaded(const vector_index_registry::index_info &info);
 bool is_writable(const vector_index_registry::index_info &info);
+vector_search_advice derive_diskann_search_advice(
+    const vector_index::backend_build_diagnostics &diagnostics,
+    uint32_t requested_top_k, uint64_t result_budget);
 
 }  // namespace vector_index_observability
 

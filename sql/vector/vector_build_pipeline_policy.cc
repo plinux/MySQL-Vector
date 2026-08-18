@@ -30,6 +30,13 @@ namespace vector_index {
 
 namespace {
 
+inline constexpr uint64_t k_diskann_high_recall_segment_target_size =
+    256ULL * 1024ULL * 1024ULL;
+inline constexpr uint64_t k_diskann_balanced_segment_target_size =
+    512ULL * 1024ULL * 1024ULL;
+inline constexpr uint64_t k_diskann_throughput_segment_target_size =
+    k_default_build_segment_target_size;
+
 uint64_t saturating_vector_row_size(uint64_t dimension) {
   if (dimension >
       (std::numeric_limits<uint64_t>::max() - sizeof(uint64_t)) /
@@ -47,12 +54,68 @@ uint64_t build_segment_row_limit(uint64_t dimension,
                            ? std::numeric_limits<uint64_t>::max()
                            : thresholds.segment_max_rows;
   const uint64_t row_size = saturating_vector_row_size(dimension);
-  if (thresholds.segment_target_size != 0 && row_size != 0) {
+  if (thresholds.segment_target_size != 0) {
     row_limit = std::min(
         row_limit, std::max<uint64_t>(1, thresholds.segment_target_size /
                                              row_size));
   }
   return std::max<uint64_t>(1, row_limit);
+}
+
+uint64_t estimate_build_segment_count(
+    uint64_t row_count, uint64_t dimension,
+    const build_pipeline_thresholds &thresholds) {
+  if (row_count == 0) return 0;
+  const uint64_t row_limit = build_segment_row_limit(dimension, thresholds);
+  return (row_count - 1) / row_limit + 1;
+}
+
+diskann_segment_profile_result apply_diskann_segment_profile(
+    uint64_t dimension, uint64_t, uint64_t, diskann_segment_profile profile,
+    const build_pipeline_thresholds &manual, bool eligible) {
+  diskann_segment_profile_result result;
+  result.thresholds = manual;
+
+  if (!eligible) {
+    result.reason = "not_applicable";
+    return result;
+  }
+
+  if (manual.mode == build_pipeline_mode::kDirect) {
+    result.reason = "forced_direct";
+    return result;
+  }
+
+  switch (profile) {
+    case diskann_segment_profile::kManual:
+      result.reason = "manual";
+      return result;
+    case diskann_segment_profile::kThroughput:
+      result.thresholds.segment_target_size = std::max<uint64_t>(
+          manual.segment_target_size, k_diskann_throughput_segment_target_size);
+      result.reason = "throughput_large_segment";
+      break;
+    case diskann_segment_profile::kBalanced:
+      result.thresholds.segment_target_size = std::clamp<uint64_t>(
+          k_diskann_balanced_segment_target_size,
+          k_min_build_segment_target_size,
+          k_default_build_segment_target_size);
+      result.reason = "balanced_512m";
+      break;
+    case diskann_segment_profile::kHighRecall:
+      result.thresholds.segment_target_size = std::clamp<uint64_t>(
+          dimension >= 768 ? k_diskann_high_recall_segment_target_size
+                           : k_diskann_balanced_segment_target_size,
+          k_min_build_segment_target_size,
+          k_default_build_segment_target_size);
+      result.reason =
+          dimension >= 768 ? "high_recall_256m" : "high_recall_512m";
+      break;
+  }
+
+  result.applied = result.thresholds.segment_target_size !=
+                   manual.segment_target_size;
+  return result;
 }
 
 build_pipeline_decision select_build_pipeline(
@@ -124,6 +187,20 @@ const char *build_pipeline_trigger_name(build_pipeline_trigger trigger) {
       return "payload_size";
     case build_pipeline_trigger::kBelowThreshold:
       return "below_threshold";
+  }
+  return "unknown";
+}
+
+const char *diskann_segment_profile_name(diskann_segment_profile profile) {
+  switch (profile) {
+    case diskann_segment_profile::kManual:
+      return "manual";
+    case diskann_segment_profile::kThroughput:
+      return "throughput";
+    case diskann_segment_profile::kBalanced:
+      return "balanced";
+    case diskann_segment_profile::kHighRecall:
+      return "high_recall";
   }
   return "unknown";
 }
