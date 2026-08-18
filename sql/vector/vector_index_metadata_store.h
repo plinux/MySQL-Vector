@@ -81,7 +81,7 @@ struct metadata_row {
   bool diskann_accelerate_build{false};
   bool diskann_shuffle_build{false};
   bool diskann_use_bfs_cache{false};
-  std::string owner_schema;
+  std::string owner_schema{};
 };
 
 /**

@@ -1019,6 +1019,37 @@ bool reapply_metadata_tuning_locked(
   return true;
 }
 
+void assign_config_to_metadata_row(
+    const vector_index::index_service::index_config &config,
+    vector_index_metadata_store::metadata_row &row) {
+  row.dimension = config.dimension;
+  row.metric = config.metric;
+  row.mode = config.mode;
+  row.provider = config.provider;
+  row.consistency_mode = config.consistency_mode;
+  row.search_ef = config.search_ef;
+  row.hnsw_m = config.hnsw_m;
+  row.hnsw_ef_construction = config.hnsw_ef_construction;
+  row.hnsw_build_threads = config.hnsw_build_threads;
+  row.faiss_nlist = config.faiss_nlist;
+  row.faiss_nprobe = config.faiss_nprobe;
+  row.faiss_pq_m = config.faiss_pq_m;
+  row.faiss_pq_bits = config.faiss_pq_bits;
+  row.faiss_build_threads = config.faiss_build_threads;
+  row.diskann_max_degree = config.diskann_max_degree;
+  row.diskann_build_complexity = config.diskann_build_complexity;
+  row.diskann_build_threads = config.diskann_build_threads;
+  row.diskann_build_mode_value = config.diskann_build_mode_value;
+  row.diskann_build_mode_specified = config.diskann_build_mode_specified;
+  row.diskann_search_complexity = config.diskann_search_complexity;
+  row.diskann_search_beamwidth = config.diskann_search_beamwidth;
+  row.diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
+  row.diskann_disk_pq_dims = config.diskann_disk_pq_dims;
+  row.diskann_accelerate_build = config.diskann_accelerate_build;
+  row.diskann_shuffle_build = config.diskann_shuffle_build;
+  row.diskann_use_bfs_cache = config.diskann_use_bfs_cache;
+}
+
 bool snapshot_metadata_locked(
     std::vector<vector_index_metadata_store::metadata_row> *rows) {
   if (rows == nullptr) return false;
@@ -1049,32 +1080,7 @@ bool snapshot_metadata_locked(
 
     vector_index_metadata_store::metadata_row row;
     row.index_name = index_name;
-    row.dimension = config.dimension;
-    row.metric = config.metric;
-    row.mode = config.mode;
-    row.provider = config.provider;
-    row.consistency_mode = config.consistency_mode;
-    row.search_ef = config.search_ef;
-    row.hnsw_m = config.hnsw_m;
-    row.hnsw_ef_construction = config.hnsw_ef_construction;
-    row.hnsw_build_threads = config.hnsw_build_threads;
-    row.faiss_nlist = config.faiss_nlist;
-    row.faiss_nprobe = config.faiss_nprobe;
-    row.faiss_pq_m = config.faiss_pq_m;
-    row.faiss_pq_bits = config.faiss_pq_bits;
-    row.faiss_build_threads = config.faiss_build_threads;
-    row.diskann_max_degree = config.diskann_max_degree;
-    row.diskann_build_complexity = config.diskann_build_complexity;
-    row.diskann_build_threads = config.diskann_build_threads;
-    row.diskann_build_mode_value = config.diskann_build_mode_value;
-    row.diskann_build_mode_specified = config.diskann_build_mode_specified;
-    row.diskann_search_complexity = config.diskann_search_complexity;
-    row.diskann_search_beamwidth = config.diskann_search_beamwidth;
-    row.diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
-    row.diskann_disk_pq_dims = config.diskann_disk_pq_dims;
-    row.diskann_accelerate_build = config.diskann_accelerate_build;
-    row.diskann_shuffle_build = config.diskann_shuffle_build;
-    row.diskann_use_bfs_cache = config.diskann_use_bfs_cache;
+    assign_config_to_metadata_row(config, row);
     const index_binding binding = binding_for_index_locked(index_name);
     row.schema_name = binding.schema_name;
     row.table_name = binding.table_name;
@@ -1319,32 +1325,7 @@ bool persist_index_config_manifest_locked(
   bool found = false;
   for (auto &row : rows) {
     if (row.index_name != index_name) continue;
-    row.dimension = config.dimension;
-    row.metric = config.metric;
-    row.mode = config.mode;
-    row.provider = config.provider;
-    row.consistency_mode = config.consistency_mode;
-    row.search_ef = config.search_ef;
-    row.hnsw_m = config.hnsw_m;
-    row.hnsw_ef_construction = config.hnsw_ef_construction;
-    row.hnsw_build_threads = config.hnsw_build_threads;
-    row.faiss_nlist = config.faiss_nlist;
-    row.faiss_nprobe = config.faiss_nprobe;
-    row.faiss_pq_m = config.faiss_pq_m;
-    row.faiss_pq_bits = config.faiss_pq_bits;
-    row.faiss_build_threads = config.faiss_build_threads;
-    row.diskann_max_degree = config.diskann_max_degree;
-    row.diskann_build_complexity = config.diskann_build_complexity;
-    row.diskann_build_threads = config.diskann_build_threads;
-    row.diskann_build_mode_value = config.diskann_build_mode_value;
-    row.diskann_build_mode_specified = config.diskann_build_mode_specified;
-    row.diskann_search_complexity = config.diskann_search_complexity;
-    row.diskann_search_beamwidth = config.diskann_search_beamwidth;
-    row.diskann_pq_code_budget_size = config.diskann_pq_code_budget_size;
-    row.diskann_disk_pq_dims = config.diskann_disk_pq_dims;
-    row.diskann_accelerate_build = config.diskann_accelerate_build;
-    row.diskann_shuffle_build = config.diskann_shuffle_build;
-    row.diskann_use_bfs_cache = config.diskann_use_bfs_cache;
+    assign_config_to_metadata_row(config, row);
     found = true;
     break;
   }

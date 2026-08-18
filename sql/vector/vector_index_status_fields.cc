@@ -440,6 +440,84 @@ void append_build_diagnostics(
                                           : "not_applicable");
 }
 
+void append_index_definition_fields(
+    field_values *fields, const vector_index_registry::index_info &info) {
+  append_uint(fields, "dimension", info.dimension);
+  append_string(fields, "metric", info.metric);
+  append_string(fields, "mode", info.mode);
+  append_string(fields, "provider", info.provider);
+  append_string(fields, "consistency_mode", info.consistency_mode);
+  append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
+  append_string(fields, "build_source", info.build_source);
+  append_string(fields, "build_pipeline_mode", info.build_pipeline_mode);
+  append_string(fields, "build_segment_profile", info.build_segment_profile);
+  append_string(fields, "build_segment_profile_reason",
+                info.build_segment_profile_reason);
+  append_string(fields, "build_pipeline_decision",
+                info.build_pipeline_decision);
+  append_string(fields, "build_pipeline_trigger", info.build_pipeline_trigger);
+  append_uint(fields, "build_pipeline_rows", info.build_pipeline_rows);
+  append_uint(fields, "build_pipeline_payload_size",
+              info.build_pipeline_payload_size);
+  append_uint(fields, "build_pipeline_raw_segments",
+              info.build_pipeline_raw_segments);
+  append_uint(fields, "build_segment_effective_row_limit",
+              info.build_segment_effective_row_limit);
+  append_uint(fields, "build_segment_effective_target_size",
+              info.build_segment_effective_target_size);
+  append_uint(fields, "build_segment_target_size",
+              info.build_segment_target_size);
+  append_uint(fields, "build_segment_max_rows", info.build_segment_max_rows);
+  append_string(fields, "build_segment_policy", info.build_segment_policy);
+  append_uint(fields, "standalone_ingest_memory_bytes",
+              info.standalone_ingest_memory_bytes);
+  append_uint(fields, "standalone_segment_count",
+              info.standalone_segment_count);
+  append_uint(fields, "standalone_segment_bytes",
+              info.standalone_segment_bytes);
+  append_uint(fields, "standalone_raw_segment_count",
+              info.standalone_raw_segment_count);
+  append_uint(fields, "standalone_raw_segment_bytes",
+              info.standalone_raw_segment_bytes);
+  append_nullable_string(fields, "backend_variant", info.backend_variant);
+}
+
+void append_index_tuning_fields(field_values *fields,
+                                const vector_index_registry::index_info &info) {
+  append_nullable_string(fields, "owner_schema", info.owner_schema);
+  append_nullable_string(fields, "schema_name", info.schema_name);
+  append_nullable_string(fields, "table_name", info.table_name);
+  append_nullable_string(fields, "column_name", info.column_name);
+  append_uint(fields, "search_ef", info.search_ef);
+  append_uint(fields, "hnsw_m", info.hnsw_m);
+  append_uint(fields, "hnsw_ef_construction", info.hnsw_ef_construction);
+  append_uint(fields, "hnsw_build_threads", info.hnsw_build_threads);
+  append_uint(fields, "faiss_nlist", info.faiss_nlist);
+  append_uint(fields, "faiss_nprobe", info.faiss_nprobe);
+  append_uint(fields, "faiss_pq_m", info.faiss_pq_m);
+  append_uint(fields, "faiss_pq_bits", info.faiss_pq_bits);
+  append_uint(fields, "faiss_build_threads", info.faiss_build_threads);
+  append_uint(fields, "diskann_max_degree", info.diskann_max_degree);
+  append_uint(fields, "diskann_build_complexity",
+              info.diskann_build_complexity);
+  append_uint(fields, "diskann_build_threads", info.diskann_build_threads);
+  append_string(fields, "diskann_build_mode",
+                vector_index::diskann_build_mode_to_string(
+                    info.diskann_build_mode_value));
+  append_uint(fields, "diskann_search_complexity",
+              info.diskann_search_complexity);
+  append_uint(fields, "diskann_search_beamwidth",
+              info.diskann_search_beamwidth);
+  append_uint(fields, "diskann_pq_code_budget_size",
+              info.diskann_pq_code_budget_size);
+  append_uint(fields, "diskann_disk_pq_dims", info.diskann_disk_pq_dims);
+  append_uint(fields, "diskann_cache_nodes", info.diskann_cache_nodes);
+  append_bool(fields, "diskann_accelerate_build",
+              info.diskann_accelerate_build);
+  append_bool(fields, "diskann_shuffle_build", info.diskann_shuffle_build);
+  append_bool(fields, "diskann_use_bfs_cache", info.diskann_use_bfs_cache);
+}
+
 }  // namespace
 
 uint64_t pending_apply_count(const vector_index_registry::index_info &info) {
@@ -481,80 +559,11 @@ void collect_info_fields(const vector_index_registry::index_info &info,
   fields->clear();
   fields->reserve(75);
 
-  append_uint(fields, "dimension", info.dimension);
-  append_string(fields, "metric", info.metric);
-  append_string(fields, "mode", info.mode);
-  append_string(fields, "provider", info.provider);
-  append_string(fields, "consistency_mode", info.consistency_mode);
-  append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
-  append_string(fields, "build_source", info.build_source);
-  append_string(fields, "build_pipeline_mode", info.build_pipeline_mode);
-  append_string(fields, "build_segment_profile", info.build_segment_profile);
-  append_string(fields, "build_segment_profile_reason",
-                info.build_segment_profile_reason);
-  append_string(fields, "build_pipeline_decision",
-                info.build_pipeline_decision);
-  append_string(fields, "build_pipeline_trigger",
-                info.build_pipeline_trigger);
-  append_uint(fields, "build_pipeline_rows", info.build_pipeline_rows);
-  append_uint(fields, "build_pipeline_payload_size",
-              info.build_pipeline_payload_size);
-  append_uint(fields, "build_pipeline_raw_segments",
-              info.build_pipeline_raw_segments);
-  append_uint(fields, "build_segment_effective_row_limit",
-              info.build_segment_effective_row_limit);
-  append_uint(fields, "build_segment_effective_target_size",
-              info.build_segment_effective_target_size);
-  append_uint(fields, "build_segment_target_size",
-              info.build_segment_target_size);
-  append_uint(fields, "build_segment_max_rows", info.build_segment_max_rows);
-  append_string(fields, "build_segment_policy", info.build_segment_policy);
-  append_uint(fields, "standalone_ingest_memory_bytes",
-              info.standalone_ingest_memory_bytes);
-  append_uint(fields, "standalone_segment_count",
-              info.standalone_segment_count);
-  append_uint(fields, "standalone_segment_bytes",
-              info.standalone_segment_bytes);
-  append_uint(fields, "standalone_raw_segment_count",
-              info.standalone_raw_segment_count);
-  append_uint(fields, "standalone_raw_segment_bytes",
-              info.standalone_raw_segment_bytes);
-  append_nullable_string(fields, "backend_variant", info.backend_variant);
-  append_build_diagnostics(fields, ascii_equal_ignore_case(info.provider,
-                                                           "diskann"),
+  append_index_definition_fields(fields, info);
+  append_build_diagnostics(fields,
+                           ascii_equal_ignore_case(info.provider, "diskann"),
                            info.build_diagnostics);
-  append_nullable_string(fields, "owner_schema", info.owner_schema);
-  append_nullable_string(fields, "schema_name", info.schema_name);
-  append_nullable_string(fields, "table_name", info.table_name);
-  append_nullable_string(fields, "column_name", info.column_name);
-  append_uint(fields, "search_ef", info.search_ef);
-  append_uint(fields, "hnsw_m", info.hnsw_m);
-  append_uint(fields, "hnsw_ef_construction", info.hnsw_ef_construction);
-  append_uint(fields, "hnsw_build_threads", info.hnsw_build_threads);
-  append_uint(fields, "faiss_nlist", info.faiss_nlist);
-  append_uint(fields, "faiss_nprobe", info.faiss_nprobe);
-  append_uint(fields, "faiss_pq_m", info.faiss_pq_m);
-  append_uint(fields, "faiss_pq_bits", info.faiss_pq_bits);
-  append_uint(fields, "faiss_build_threads", info.faiss_build_threads);
-  append_uint(fields, "diskann_max_degree", info.diskann_max_degree);
-  append_uint(fields, "diskann_build_complexity",
-              info.diskann_build_complexity);
-  append_uint(fields, "diskann_build_threads", info.diskann_build_threads);
-  append_string(fields, "diskann_build_mode",
-                vector_index::diskann_build_mode_to_string(
-                    info.diskann_build_mode_value));
-  append_uint(fields, "diskann_search_complexity",
-              info.diskann_search_complexity);
-  append_uint(fields, "diskann_search_beamwidth",
-              info.diskann_search_beamwidth);
-  append_uint(fields, "diskann_pq_code_budget_size",
-              info.diskann_pq_code_budget_size);
-  append_uint(fields, "diskann_disk_pq_dims", info.diskann_disk_pq_dims);
-  append_uint(fields, "diskann_cache_nodes", info.diskann_cache_nodes);
-  append_bool(fields, "diskann_accelerate_build",
-              info.diskann_accelerate_build);
-  append_bool(fields, "diskann_shuffle_build", info.diskann_shuffle_build);
-  append_bool(fields, "diskann_use_bfs_cache", info.diskann_use_bfs_cache);
+  append_index_tuning_fields(fields, info);
   append_bool(fields, "supports_mutations", info.supports_mutations);
   append_string(fields, "lifecycle_state", info.lifecycle_state);
   append_uint(fields, "lifecycle_version", info.lifecycle_version);
@@ -581,76 +590,8 @@ void collect_index_state_fields(const vector_index_registry::index_info &info,
   fields->clear();
   fields->reserve(52);
 
-  append_uint(fields, "dimension", info.dimension);
-  append_string(fields, "metric", info.metric);
-  append_string(fields, "mode", info.mode);
-  append_string(fields, "provider", info.provider);
-  append_string(fields, "consistency_mode", info.consistency_mode);
-  append_bool(fields, "truth_store_enabled", info.truth_store_enabled);
-  append_string(fields, "build_source", info.build_source);
-  append_string(fields, "build_pipeline_mode", info.build_pipeline_mode);
-  append_string(fields, "build_segment_profile", info.build_segment_profile);
-  append_string(fields, "build_segment_profile_reason",
-                info.build_segment_profile_reason);
-  append_string(fields, "build_pipeline_decision",
-                info.build_pipeline_decision);
-  append_string(fields, "build_pipeline_trigger",
-                info.build_pipeline_trigger);
-  append_uint(fields, "build_pipeline_rows", info.build_pipeline_rows);
-  append_uint(fields, "build_pipeline_payload_size",
-              info.build_pipeline_payload_size);
-  append_uint(fields, "build_pipeline_raw_segments",
-              info.build_pipeline_raw_segments);
-  append_uint(fields, "build_segment_effective_row_limit",
-              info.build_segment_effective_row_limit);
-  append_uint(fields, "build_segment_effective_target_size",
-              info.build_segment_effective_target_size);
-  append_uint(fields, "build_segment_target_size",
-              info.build_segment_target_size);
-  append_uint(fields, "build_segment_max_rows", info.build_segment_max_rows);
-  append_string(fields, "build_segment_policy", info.build_segment_policy);
-  append_uint(fields, "standalone_ingest_memory_bytes",
-              info.standalone_ingest_memory_bytes);
-  append_uint(fields, "standalone_segment_count",
-              info.standalone_segment_count);
-  append_uint(fields, "standalone_segment_bytes",
-              info.standalone_segment_bytes);
-  append_uint(fields, "standalone_raw_segment_count",
-              info.standalone_raw_segment_count);
-  append_uint(fields, "standalone_raw_segment_bytes",
-              info.standalone_raw_segment_bytes);
-  append_nullable_string(fields, "backend_variant", info.backend_variant);
-  append_nullable_string(fields, "schema_name", info.schema_name);
-  append_nullable_string(fields, "table_name", info.table_name);
-  append_nullable_string(fields, "column_name", info.column_name);
-  append_uint(fields, "search_ef", info.search_ef);
-  append_uint(fields, "hnsw_m", info.hnsw_m);
-  append_uint(fields, "hnsw_ef_construction", info.hnsw_ef_construction);
-  append_uint(fields, "hnsw_build_threads", info.hnsw_build_threads);
-  append_uint(fields, "faiss_nlist", info.faiss_nlist);
-  append_uint(fields, "faiss_nprobe", info.faiss_nprobe);
-  append_uint(fields, "faiss_pq_m", info.faiss_pq_m);
-  append_uint(fields, "faiss_pq_bits", info.faiss_pq_bits);
-  append_uint(fields, "faiss_build_threads", info.faiss_build_threads);
-  append_uint(fields, "diskann_max_degree", info.diskann_max_degree);
-  append_uint(fields, "diskann_build_complexity",
-              info.diskann_build_complexity);
-  append_uint(fields, "diskann_build_threads", info.diskann_build_threads);
-  append_string(fields, "diskann_build_mode",
-                vector_index::diskann_build_mode_to_string(
-                    info.diskann_build_mode_value));
-  append_uint(fields, "diskann_search_complexity",
-              info.diskann_search_complexity);
-  append_uint(fields, "diskann_search_beamwidth",
-              info.diskann_search_beamwidth);
-  append_uint(fields, "diskann_pq_code_budget_size",
-              info.diskann_pq_code_budget_size);
-  append_uint(fields, "diskann_disk_pq_dims", info.diskann_disk_pq_dims);
-  append_uint(fields, "diskann_cache_nodes", info.diskann_cache_nodes);
-  append_bool(fields, "diskann_accelerate_build",
-              info.diskann_accelerate_build);
-  append_bool(fields, "diskann_shuffle_build", info.diskann_shuffle_build);
-  append_bool(fields, "diskann_use_bfs_cache", info.diskann_use_bfs_cache);
+  append_index_definition_fields(fields, info);
+  append_index_tuning_fields(fields, info);
   append_string(fields, "lifecycle_state", info.lifecycle_state);
   append_uint(fields, "lifecycle_version", info.lifecycle_version);
   append_bool(fields, "supports_mutations", info.supports_mutations);

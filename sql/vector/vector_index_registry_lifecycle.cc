@@ -561,6 +561,26 @@ bool validate_backend_plan_against_state_locked(
          current_entries_it->second == plan.entries;
 }
 
+bool validate_bulk_backend_plans_locked(
+    const std::vector<prepared_lifecycle_backend> &prepared_backends,
+    const std::vector<lifecycle_backend_plan> &standalone_plans) {
+  vector_index::index_service::committed_state current_state;
+  if (!g_index_service.snapshot_committed_state(&current_state)) return false;
+
+  for (const prepared_lifecycle_backend &prepared : prepared_backends) {
+    if (!validate_backend_plan_against_state_locked(prepared.plan,
+                                                    current_state)) {
+      return false;
+    }
+  }
+  for (const lifecycle_backend_plan &plan : standalone_plans) {
+    if (!validate_backend_plan_against_state_locked(plan, current_state)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool validate_backend_plan_locked(const lifecycle_backend_plan &plan) {
   vector_index::index_service::committed_state current_state;
   if (!g_index_service.snapshot_committed_state(&current_state)) return false;
@@ -1951,19 +1971,8 @@ bool rebuild_all_indexes(size_t *rebuilt_count) {
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
-  vector_index::index_service::committed_state current_state;
-  if (!g_index_service.snapshot_committed_state(&current_state)) return false;
-  for (const prepared_lifecycle_backend &prepared : prepared_backends) {
-    if (!validate_backend_plan_against_state_locked(prepared.plan,
-                                                   current_state)) {
-      return false;
-    }
-  }
-  for (const lifecycle_backend_plan &plan : standalone_plans) {
-    if (!validate_backend_plan_against_state_locked(plan, current_state)) {
-      return false;
-    }
-  }
+  if (!validate_bulk_backend_plans_locked(prepared_backends, standalone_plans))
+    return false;
   runtime_state_snapshot snapshot;
   if (!capture_runtime_state_locked(&snapshot)) return false;
   for (prepared_lifecycle_backend &prepared : prepared_backends) {
@@ -2022,19 +2031,8 @@ bool recover_all_indexes(size_t *recovered_count) {
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
-  vector_index::index_service::committed_state current_state;
-  if (!g_index_service.snapshot_committed_state(&current_state)) return false;
-  for (const prepared_lifecycle_backend &prepared : prepared_backends) {
-    if (!validate_backend_plan_against_state_locked(prepared.plan,
-                                                   current_state)) {
-      return false;
-    }
-  }
-  for (const lifecycle_backend_plan &plan : standalone_plans) {
-    if (!validate_backend_plan_against_state_locked(plan, current_state)) {
-      return false;
-    }
-  }
+  if (!validate_bulk_backend_plans_locked(prepared_backends, standalone_plans))
+    return false;
   runtime_state_snapshot snapshot;
   if (!capture_runtime_state_locked(&snapshot)) return false;
   for (prepared_lifecycle_backend &prepared : prepared_backends) {

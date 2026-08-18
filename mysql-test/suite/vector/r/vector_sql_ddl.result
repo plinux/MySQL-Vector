@@ -51,6 +51,7 @@ INDEX_STATE	test.t_vector_ddl.v.standalone_segment_bytes	0
 INDEX_STATE	test.t_vector_ddl.v.standalone_raw_segment_count	0
 INDEX_STATE	test.t_vector_ddl.v.standalone_raw_segment_bytes	0
 INDEX_STATE	test.t_vector_ddl.v.backend_variant	
+INDEX_STATE	test.t_vector_ddl.v.owner_schema	test
 INDEX_STATE	test.t_vector_ddl.v.schema_name	test
 INDEX_STATE	test.t_vector_ddl.v.table_name	t_vector_ddl
 INDEX_STATE	test.t_vector_ddl.v.column_name	v
@@ -187,6 +188,7 @@ INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_segment_bytes	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_raw_segment_count	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.standalone_raw_segment_bytes	0
 INDEX_STATE	test.t_vector_ddl_renamed.v.backend_variant	hnsw
+INDEX_STATE	test.t_vector_ddl_renamed.v.owner_schema	test
 INDEX_STATE	test.t_vector_ddl_renamed.v.schema_name	test
 INDEX_STATE	test.t_vector_ddl_renamed.v.table_name	t_vector_ddl_renamed
 INDEX_STATE	test.t_vector_ddl_renamed.v.column_name	v
@@ -345,6 +347,7 @@ INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_segment_bytes	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_raw_segment_count	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.standalone_raw_segment_bytes	0
 INDEX_STATE	test.t_vector_alter_dropcol.v.backend_variant	
+INDEX_STATE	test.t_vector_alter_dropcol.v.owner_schema	test
 INDEX_STATE	test.t_vector_alter_dropcol.v.schema_name	test
 INDEX_STATE	test.t_vector_alter_dropcol.v.table_name	t_vector_alter_dropcol
 INDEX_STATE	test.t_vector_alter_dropcol.v.column_name	v

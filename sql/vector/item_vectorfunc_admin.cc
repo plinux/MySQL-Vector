@@ -50,21 +50,27 @@ static bool eval_bool01_arg(Item *arg, bool *value) {
   return true;
 }
 
+static bool eval_string_arg(Item *arg, String *buffer, std::string *value) {
+  if (arg == nullptr || buffer == nullptr || value == nullptr) return false;
+  const String *parsed = arg->val_str(buffer);
+  if (parsed == nullptr || arg->null_value) return false;
+  to_std_string(parsed, value);
+  return true;
+}
+
 longlong Item_func_vec_index_create::val_int() {
   assert_fixed_arg_count_between(fixed, arg_count, 2, 7);
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   ulonglong dim = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint_arg(args[1], dim) || dim == 0) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (dim > vector_index::k_max_vector_dimension) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -85,33 +91,20 @@ longlong Item_func_vec_index_create::val_int() {
   String provider_buf;
   String consistency_buf;
   if (arg_count >= 3) {
-    const String *metric_arg = args[2]->val_str(&metric_buf);
-    if (metric_arg == nullptr || args[2]->null_value) {
+    if (!eval_string_arg(args[2], &metric_buf, &metric)) {
       my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
       return error_int();
     }
-    to_std_string(metric_arg, &metric);
   }
   if (arg_count >= 4) {
-    const String *mode_arg = args[3]->val_str(&mode_buf);
-    if (mode_arg == nullptr || args[3]->null_value) {
-      my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-      return error_int();
-    }
-    to_std_string(mode_arg, &mode);
-    if (mode.empty()) {
+    if (!eval_string_arg(args[3], &mode_buf, &mode) || mode.empty()) {
       my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
       return error_int();
     }
   }
   if (arg_count >= 5) {
-    const String *provider_arg = args[4]->val_str(&provider_buf);
-    if (provider_arg == nullptr || args[4]->null_value) {
-      my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-      return error_int();
-    }
-    to_std_string(provider_arg, &provider);
-    if (provider.empty()) {
+    if (!eval_string_arg(args[4], &provider_buf, &provider) ||
+        provider.empty()) {
       my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
       return error_int();
     }
@@ -127,14 +120,12 @@ longlong Item_func_vec_index_create::val_int() {
     options.build_threads = build_threads;
   }
   if (arg_count >= 7) {
-    const String *consistency_arg = args[6]->val_str(&consistency_buf);
-    if (consistency_arg == nullptr || args[6]->null_value) {
+    std::string consistency_text;
+    if (!eval_string_arg(args[6], &consistency_buf, &consistency_text)) {
       my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
       return error_int();
     }
 
-    std::string consistency_text;
-    to_std_string(consistency_arg, &consistency_text);
     vector_index::index_consistency_mode consistency_mode;
     if (!vector_index::parse_index_consistency_mode(consistency_text,
                                                     &consistency_mode)) {
@@ -171,17 +162,15 @@ longlong Item_func_vec_index_set_search_ef::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   uint32_t search_ef = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint32_arg(args[1], 1, std::numeric_limits<uint32_t>::max(),
                        search_ef)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -205,10 +194,10 @@ longlong Item_func_vec_index_set_hnsw_build_params::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   uint32_t hnsw_m = 0;
   uint32_t hnsw_ef_construction = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint32_arg(args[1], 1, std::numeric_limits<uint32_t>::max(),
                        hnsw_m) ||
       !eval_uint32_arg(args[2], 1, std::numeric_limits<uint32_t>::max(),
@@ -217,8 +206,6 @@ longlong Item_func_vec_index_set_hnsw_build_params::val_int() {
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -243,10 +230,10 @@ longlong Item_func_vec_index_set_faiss_ivf_params::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   uint32_t faiss_nlist = 0;
   uint32_t faiss_nprobe = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint32_arg(args[1], 0, std::numeric_limits<uint32_t>::max(),
                        faiss_nlist) ||
       !eval_uint32_arg(args[2], 0, std::numeric_limits<uint32_t>::max(),
@@ -255,8 +242,6 @@ longlong Item_func_vec_index_set_faiss_ivf_params::val_int() {
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -281,12 +266,12 @@ longlong Item_func_vec_index_set_faiss_ivfpq_params::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   uint32_t faiss_nlist = 0;
   uint32_t faiss_nprobe = 0;
   uint32_t faiss_pq_m = 0;
   uint32_t faiss_pq_bits = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint32_arg(args[1], 1, std::numeric_limits<uint32_t>::max(),
                        faiss_nlist) ||
       !eval_uint32_arg(args[2], 1, std::numeric_limits<uint32_t>::max(),
@@ -299,8 +284,6 @@ longlong Item_func_vec_index_set_faiss_ivfpq_params::val_int() {
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -326,11 +309,11 @@ longlong Item_func_vec_index_set_diskann_build_params::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   uint32_t diskann_max_degree = 0;
   uint32_t diskann_build_complexity = 0;
   uint32_t diskann_build_threads_arg = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint32_arg(args[1], 1, std::numeric_limits<uint32_t>::max(),
                        diskann_max_degree) ||
       !eval_uint32_arg(args[2], 1, std::numeric_limits<uint32_t>::max(),
@@ -342,8 +325,6 @@ longlong Item_func_vec_index_set_diskann_build_params::val_int() {
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -373,17 +354,15 @@ longlong Item_func_vec_index_set_diskann_search_complexity::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   uint32_t diskann_search_complexity = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint32_arg(args[1], 1, std::numeric_limits<uint32_t>::max(),
                        diskann_search_complexity)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -408,18 +387,15 @@ longlong Item_func_vec_index_set_diskann_search_beamwidth::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   uint32_t diskann_search_beamwidth = 0;
-  if (name == nullptr || args[0]->null_value ||
-      !eval_uint32_arg(args[1], 1,
-                       vector_index::k_max_diskann_search_beamwidth,
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
+      !eval_uint32_arg(args[1], 1, vector_index::k_max_diskann_search_beamwidth,
                        diskann_search_beamwidth)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -445,16 +421,14 @@ longlong Item_func_vec_index_set_diskann_pq_code_budget_size::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   ulonglong diskann_pq_code_budget_size = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint_arg(args[1], diskann_pq_code_budget_size)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -479,18 +453,15 @@ longlong Item_func_vec_index_set_diskann_disk_pq_dims::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   uint32_t diskann_disk_pq_dims = 0;
-  if (name == nullptr || args[0]->null_value ||
-      !eval_uint32_arg(args[1], 0,
-                       vector_index::k_max_diskann_disk_pq_dims,
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
+      !eval_uint32_arg(args[1], 0, vector_index::k_max_diskann_disk_pq_dims,
                        diskann_disk_pq_dims)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -515,15 +486,13 @@ longlong Item_func_vec_index_set_diskann_accelerate_build::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   bool accelerate_build = false;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_bool01_arg(args[1], &accelerate_build)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -548,15 +517,13 @@ longlong Item_func_vec_index_set_diskann_shuffle_build::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   bool shuffle_build = false;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_bool01_arg(args[1], &shuffle_build)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -581,15 +548,13 @@ longlong Item_func_vec_index_set_diskann_use_bfs_cache::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   bool use_bfs_cache = false;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_bool01_arg(args[1], &use_bfs_cache)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -615,18 +580,15 @@ longlong Item_func_vec_index_set_diskann_build_mode::val_int() {
 
   String name_buf;
   String mode_buf;
-  const String *name = args[0]->val_str(&name_buf);
-  const String *mode = args[1]->val_str(&mode_buf);
-  if (name == nullptr || mode == nullptr || args[0]->null_value ||
-      args[1]->null_value) {
+  std::string index_name;
+  std::string build_mode_text;
+  const bool name_valid = eval_string_arg(args[0], &name_buf, &index_name);
+  const bool mode_valid = eval_string_arg(args[1], &mode_buf, &build_mode_text);
+  if (!name_valid || !mode_valid) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  std::string build_mode_text;
-  to_std_string(name, &index_name);
-  to_std_string(mode, &build_mode_text);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -671,14 +633,12 @@ longlong Item_func_vec_index_drop::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
-  if (name == nullptr || args[0]->null_value) {
+  std::string index_name;
+  if (!eval_string_arg(args[0], &name_buf, &index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, DROP_ACL, func_name(), true))
     return error_int();
@@ -699,14 +659,12 @@ longlong Item_func_vec_index_rebuild::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
-  if (name == nullptr || args[0]->null_value) {
+  std::string index_name;
+  if (!eval_string_arg(args[0], &name_buf, &index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -733,14 +691,12 @@ longlong Item_func_vec_index_bulk_load_begin::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
-  if (name == nullptr || args[0]->null_value) {
+  std::string index_name;
+  if (!eval_string_arg(args[0], &name_buf, &index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -765,14 +721,12 @@ longlong Item_func_vec_index_bulk_build::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
-  if (name == nullptr || args[0]->null_value) {
+  std::string index_name;
+  if (!eval_string_arg(args[0], &name_buf, &index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -799,14 +753,12 @@ longlong Item_func_vec_index_recover::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
-  if (name == nullptr || args[0]->null_value) {
+  std::string index_name;
+  if (!eval_string_arg(args[0], &name_buf, &index_name)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -877,9 +829,9 @@ longlong Item_func_vec_index_upsert::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   ulonglong doc_id = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint_arg(args[1], doc_id)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
@@ -892,8 +844,6 @@ longlong Item_func_vec_index_upsert::val_int() {
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
@@ -1036,16 +986,14 @@ longlong Item_func_vec_index_erase::val_int() {
   null_value = true;
 
   String name_buf;
-  const String *name = args[0]->val_str(&name_buf);
+  std::string index_name;
   ulonglong doc_id = 0;
-  if (name == nullptr || args[0]->null_value ||
+  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
       !eval_uint_arg(args[1], doc_id)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
 
-  std::string index_name;
-  to_std_string(name, &index_name);
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();

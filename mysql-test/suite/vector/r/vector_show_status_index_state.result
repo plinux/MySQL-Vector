@@ -35,6 +35,7 @@ INDEX_STATE	idx_mem.standalone_segment_bytes	0
 INDEX_STATE	idx_mem.standalone_raw_segment_count	0
 INDEX_STATE	idx_mem.standalone_raw_segment_bytes	0
 INDEX_STATE	idx_mem.backend_variant	
+INDEX_STATE	idx_mem.owner_schema	test
 INDEX_STATE	idx_mem.schema_name	
 INDEX_STATE	idx_mem.table_name	
 INDEX_STATE	idx_mem.column_name	
@@ -110,6 +111,7 @@ INDEX_STATE	idx_ext.standalone_segment_bytes	0
 INDEX_STATE	idx_ext.standalone_raw_segment_count	0
 INDEX_STATE	idx_ext.standalone_raw_segment_bytes	0
 INDEX_STATE	idx_ext.backend_variant	hnsw
+INDEX_STATE	idx_ext.owner_schema	test
 INDEX_STATE	idx_ext.schema_name	
 INDEX_STATE	idx_ext.table_name	
 INDEX_STATE	idx_ext.column_name	
@@ -231,6 +233,7 @@ INDEX_STATE	idx_ext.standalone_segment_bytes	0
 INDEX_STATE	idx_ext.standalone_raw_segment_count	0
 INDEX_STATE	idx_ext.standalone_raw_segment_bytes	0
 INDEX_STATE	idx_ext.backend_variant	hnsw
+INDEX_STATE	idx_ext.owner_schema	test
 INDEX_STATE	idx_ext.schema_name	
 INDEX_STATE	idx_ext.table_name	
 INDEX_STATE	idx_ext.column_name	
@@ -372,6 +375,7 @@ INDEX_STATE	test.t_vec_status_meta.v.standalone_segment_bytes	0
 INDEX_STATE	test.t_vec_status_meta.v.standalone_raw_segment_count	0
 INDEX_STATE	test.t_vec_status_meta.v.standalone_raw_segment_bytes	0
 INDEX_STATE	test.t_vec_status_meta.v.backend_variant	
+INDEX_STATE	test.t_vec_status_meta.v.owner_schema	test
 INDEX_STATE	test.t_vec_status_meta.v.schema_name	test
 INDEX_STATE	test.t_vec_status_meta.v.table_name	t_vec_status_meta
 INDEX_STATE	test.t_vec_status_meta.v.column_name	v

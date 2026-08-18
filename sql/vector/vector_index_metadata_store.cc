@@ -174,18 +174,7 @@ std::string change_log_path() {
 }
 
 std::string segment_task_path() {
-  std::lock_guard<std::mutex> guard(g_path_mutex);
-  if (!g_path_override.empty()) return g_path_override + ".segment_tasks";
-
-  std::string path(mysql_real_data_home);
-  if (!path.empty()) {
-    const char tail = path.back();
-    if (tail != '/' && tail != '\\') path.push_back('/');
-  }
-  path.append(kStoreDirectory);
-  path.push_back('/');
-  path.append(kSegmentTaskFilename);
-  return path;
+  return store_path(kSegmentTaskFilename, ".segment_tasks");
 }
 
 bool ensure_parent_directory(const std::string &path) {
@@ -208,6 +197,30 @@ bool remove_if_exists(const std::string &path) {
   DBUG_EXECUTE_IF("vector_metadata_store_fail_remove_if_exists", return false;);
   if (std::remove(path.c_str()) != 0 && errno != ENOENT) return false;
   return true;
+}
+
+bool write_payload_atomically(const std::string &path,
+                              const std::string &payload) {
+  if (!ensure_parent_directory(path)) return false;
+
+  const std::string temp_path = path + ".tmp";
+  std::ofstream file(temp_path,
+                     std::ios::out | std::ios::binary | std::ios::trunc);
+  if (!file.good()) return false;
+  file << payload;
+  file.close();
+  if (!file) return false;
+
+  if (std::rename(temp_path.c_str(), path.c_str()) != 0) {
+    std::remove(temp_path.c_str());
+    return false;
+  }
+  return true;
+}
+
+bool remove_payload_file(const std::string &path) {
+  std::remove((path + ".tmp").c_str());
+  return remove_if_exists(path);
 }
 
 bool quarantine_file_if_exists(const std::string &path) {
@@ -301,28 +314,11 @@ bool load_all(std::vector<metadata_row> *rows) {
 
 bool save_all(const std::vector<metadata_row> &rows) {
   const std::string path = metadata_path();
-  const std::string temp_path = path + ".tmp";
-  if (rows.empty()) {
-    std::remove(temp_path.c_str());
-    if (!remove_if_exists(path)) return false;
-    return true;
-  }
+  if (rows.empty()) return remove_payload_file(path);
 
   std::string payload;
   if (!serialize_metadata_rows(rows, &payload)) return false;
-  if (!ensure_parent_directory(path)) return false;
-  std::ofstream file(temp_path, std::ios::out | std::ios::binary | std::ios::trunc);
-  if (!file.good()) return false;
-  file << payload;
-  file.close();
-  if (!file) return false;
-
-  if (std::rename(temp_path.c_str(), path.c_str()) != 0) {
-    std::remove(temp_path.c_str());
-    return false;
-  }
-
-  return true;
+  return write_payload_atomically(path, payload);
 }
 
 bool deserialize_committed_rows(const std::string &payload,
@@ -350,28 +346,11 @@ bool load_committed_all(std::vector<committed_row> *rows) {
 
 bool save_committed_all(const std::vector<committed_row> &rows) {
   const std::string path = committed_path();
-  const std::string temp_path = path + ".tmp";
-  if (rows.empty()) {
-    std::remove(temp_path.c_str());
-    if (!remove_if_exists(path)) return false;
-    return true;
-  }
+  if (rows.empty()) return remove_payload_file(path);
 
   std::string payload;
   if (!serialize_committed_rows(rows, &payload)) return false;
-  if (!ensure_parent_directory(path)) return false;
-  std::ofstream file(temp_path, std::ios::out | std::ios::binary | std::ios::trunc);
-  if (!file.good()) return false;
-  file << payload;
-  file.close();
-  if (!file) return false;
-
-  if (std::rename(temp_path.c_str(), path.c_str()) != 0) {
-    std::remove(temp_path.c_str());
-    return false;
-  }
-
-  return true;
+  return write_payload_atomically(path, payload);
 }
 
 bool deserialize_manifest_row(const std::string &payload, manifest_row *row) {
@@ -399,21 +378,9 @@ bool save_manifest(const manifest_row &row) {
   if (row.state.empty() || row.version == 0) return false;
 
   const std::string path = manifest_path();
-  const std::string temp_path = path + ".tmp";
   std::string payload;
   if (!serialize_manifest_row(row, &payload)) return false;
-  if (!ensure_parent_directory(path)) return false;
-  std::ofstream file(temp_path, std::ios::out | std::ios::binary | std::ios::trunc);
-  if (!file.good()) return false;
-  file << payload;
-  file.close();
-  if (!file) return false;
-
-  if (std::rename(temp_path.c_str(), path.c_str()) != 0) {
-    std::remove(temp_path.c_str());
-    return false;
-  }
-  return true;
+  return write_payload_atomically(path, payload);
 }
 
 bool deserialize_change_log_rows(const std::string &payload,
@@ -441,27 +408,11 @@ bool load_change_log(std::vector<change_log_row> *rows) {
 
 bool save_change_log(const std::vector<change_log_row> &rows) {
   const std::string path = change_log_path();
-  const std::string temp_path = path + ".tmp";
-  if (rows.empty()) {
-    std::remove(temp_path.c_str());
-    if (!remove_if_exists(path)) return false;
-    return true;
-  }
+  if (rows.empty()) return remove_payload_file(path);
 
   std::string payload;
   if (!serialize_change_log_rows(rows, &payload)) return false;
-  if (!ensure_parent_directory(path)) return false;
-  std::ofstream file(temp_path, std::ios::out | std::ios::binary | std::ios::trunc);
-  if (!file.good()) return false;
-  file << payload;
-  file.close();
-  if (!file) return false;
-
-  if (std::rename(temp_path.c_str(), path.c_str()) != 0) {
-    std::remove(temp_path.c_str());
-    return false;
-  }
-  return true;
+  return write_payload_atomically(path, payload);
 }
 
 bool deserialize_prepared_rows(const std::string &payload,
@@ -489,27 +440,11 @@ bool load_prepared(std::vector<prepared_change_row> *rows) {
 
 bool save_prepared(const std::vector<prepared_change_row> &rows) {
   const std::string path = prepared_path();
-  const std::string temp_path = path + ".tmp";
-  if (rows.empty()) {
-    std::remove(temp_path.c_str());
-    if (!remove_if_exists(path)) return false;
-    return true;
-  }
+  if (rows.empty()) return remove_payload_file(path);
 
   std::string payload;
   if (!serialize_prepared_rows(rows, &payload)) return false;
-  if (!ensure_parent_directory(path)) return false;
-  std::ofstream file(temp_path, std::ios::out | std::ios::binary | std::ios::trunc);
-  if (!file.good()) return false;
-  file << payload;
-  file.close();
-  if (!file) return false;
-
-  if (std::rename(temp_path.c_str(), path.c_str()) != 0) {
-    std::remove(temp_path.c_str());
-    return false;
-  }
-  return true;
+  return write_payload_atomically(path, payload);
 }
 
 bool deserialize_segment_task_rows(const std::string &payload,
@@ -537,27 +472,11 @@ bool load_segment_tasks(std::vector<segment_task_row> *rows) {
 
 bool save_segment_tasks(const std::vector<segment_task_row> &rows) {
   const std::string path = segment_task_path();
-  const std::string temp_path = path + ".tmp";
-  if (rows.empty()) {
-    std::remove(temp_path.c_str());
-    if (!remove_if_exists(path)) return false;
-    return true;
-  }
+  if (rows.empty()) return remove_payload_file(path);
 
   std::string payload;
   if (!serialize_segment_task_rows(rows, &payload)) return false;
-  if (!ensure_parent_directory(path)) return false;
-  std::ofstream file(temp_path, std::ios::out | std::ios::binary | std::ios::trunc);
-  if (!file.good()) return false;
-  file << payload;
-  file.close();
-  if (!file) return false;
-
-  if (std::rename(temp_path.c_str(), path.c_str()) != 0) {
-    std::remove(temp_path.c_str());
-    return false;
-  }
-  return true;
+  return write_payload_atomically(path, payload);
 }
 
 bool load_raw_artifact(const std::string &artifact_name, std::string *payload,
@@ -587,19 +506,7 @@ bool save_raw_artifact(const std::string &artifact_name,
     return delete_raw_artifact(artifact_name);
   }
 
-  const std::string temp_path = path + ".tmp";
-  if (!ensure_parent_directory(path)) return false;
-  std::ofstream file(temp_path, std::ios::out | std::ios::binary | std::ios::trunc);
-  if (!file.good()) return false;
-  file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
-  file.close();
-  if (!file) return false;
-
-  if (std::rename(temp_path.c_str(), path.c_str()) != 0) {
-    std::remove(temp_path.c_str());
-    return false;
-  }
-  return true;
+  return write_payload_atomically(path, payload);
 }
 
 bool delete_raw_artifact(const std::string &artifact_name) {

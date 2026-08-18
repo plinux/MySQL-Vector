@@ -722,22 +722,8 @@ bool memory_backend::search(const vector_data &query, size_t top_k,
   results->clear();
   if (top_k == 0) return true;
   if (!check_dimension(query, m_dimension)) return false;
-
-  for (const auto &entry : m_entries) {
-    double distance = 0.0;
-    if (!compute_distance(m_metric, query, entry.second, &distance)) return false;
-    results->push_back(search_result{entry.first, distance});
-  }
-
-  const size_t count = std::min(top_k, results->size());
-  std::partial_sort(
-      results->begin(), results->begin() + count, results->end(),
-      [](const search_result &lhs, const search_result &rhs) {
-        if (lhs.distance != rhs.distance) return lhs.distance < rhs.distance;
-        return lhs.doc_id < rhs.doc_id;
-      });
-  results->resize(count);
-  return true;
+  return detail::search_exact_entries(m_entries, m_metric, query, top_k,
+                                      results);
 }
 
 bool external_backend::upsert(uint64_t doc_id, const vector_data &vector) {
@@ -757,22 +743,8 @@ bool external_backend::search(const vector_data &query, size_t top_k,
   results->clear();
   if (top_k == 0) return true;
   if (!check_dimension(query, m_dimension)) return false;
-
-  for (const auto &entry : m_entries) {
-    double distance = 0.0;
-    if (!compute_distance(m_metric, query, entry.second, &distance)) return false;
-    results->push_back(search_result{entry.first, distance});
-  }
-
-  const size_t count = std::min(top_k, results->size());
-  std::partial_sort(
-      results->begin(), results->begin() + count, results->end(),
-      [](const search_result &lhs, const search_result &rhs) {
-        if (lhs.distance != rhs.distance) return lhs.distance < rhs.distance;
-        return lhs.doc_id < rhs.doc_id;
-      });
-  results->resize(count);
-  return true;
+  return detail::search_exact_entries(m_entries, m_metric, query, top_k,
+                                      results);
 }
 
 void external_backend::reset() { m_entries.clear(); }

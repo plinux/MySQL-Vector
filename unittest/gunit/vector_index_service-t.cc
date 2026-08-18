@@ -1889,8 +1889,7 @@ TEST(VectorIndexServiceTest,
   }
   EXPECT_EQ(kRequestCount, ready.load());
   start.store(true);
-  EXPECT_TRUE(probe->wait_for_active_searches(
-      2, std::chrono::seconds(2)));
+  EXPECT_TRUE(probe->wait_for_active_searches(2, std::chrono::seconds(2)));
   probe->release_searches();
   for (auto &search : searches) EXPECT_TRUE(search.get());
 

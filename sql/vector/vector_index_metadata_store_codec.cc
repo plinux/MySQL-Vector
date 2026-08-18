@@ -190,18 +190,16 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
            << vector_index::backend_provider_to_string(row.provider) << "\t"
            << vector_index::index_consistency_mode_to_string(
                   row.consistency_mode)
-           << "\t"
-           << row.lifecycle_state << "\t" << row.lifecycle_version << "\t"
-           << row.last_error_code << "\t" << row.last_error_ts << "\t"
-           << row.recover_fallback_count << "\t"
-           << row.last_recover_fallback_ts << "\t"
-           << encode_hex(row.schema_name) << "\t" << encode_hex(row.table_name)
-           << "\t" << encode_hex(row.column_name) << "\t"
-           << encode_hex(row.doc_id_column_name) << "\t" << row.search_ef
-           << "\t" << row.hnsw_m << "\t" << row.hnsw_ef_construction << "\t"
-           << row.hnsw_build_threads << "\t" << row.faiss_nlist << "\t"
-           << row.faiss_nprobe << "\t" << row.faiss_pq_m << "\t"
-           << row.faiss_pq_bits << "\t"
+           << "\t" << row.lifecycle_state << "\t" << row.lifecycle_version
+           << "\t" << row.last_error_code << "\t" << row.last_error_ts << "\t"
+           << row.recover_fallback_count << "\t" << row.last_recover_fallback_ts
+           << "\t" << encode_hex(row.schema_name) << "\t"
+           << encode_hex(row.table_name) << "\t" << encode_hex(row.column_name)
+           << "\t" << encode_hex(row.doc_id_column_name) << "\t"
+           << row.search_ef << "\t" << row.hnsw_m << "\t"
+           << row.hnsw_ef_construction << "\t" << row.hnsw_build_threads << "\t"
+           << row.faiss_nlist << "\t" << row.faiss_nprobe << "\t"
+           << row.faiss_pq_m << "\t" << row.faiss_pq_bits << "\t"
            << row.diskann_max_degree << "\t" << row.diskann_build_complexity
            << "\t" << row.diskann_search_complexity << "\t"
            << row.diskann_search_beamwidth << "\t"
@@ -210,7 +208,8 @@ bool serialize_metadata_rows_impl(const std::vector<metadata_row> &rows,
            << (row.diskann_accelerate_build ? 1 : 0) << "\t"
            << (row.diskann_shuffle_build ? 1 : 0) << "\t"
            << (row.diskann_use_bfs_cache ? 1 : 0) << "\t"
-           << row.diskann_build_threads << "\t" << row.faiss_build_threads << "\t"
+           << row.diskann_build_threads << "\t" << row.faiss_build_threads
+           << "\t"
            << vector_index::diskann_build_mode_to_string(
                   row.diskann_build_mode_value)
            << "\t" << (row.diskann_build_mode_specified ? 1 : 0) << "\t"
