@@ -13,7 +13,7 @@ VEC_INDEX_UPSERT('idx_segmented_recovery', 1, '[1,0]')
 1
 SET GLOBAL debug = '+d,vector_segment_task_before_publish';
 SELECT VEC_INDEX_BULK_BUILD('idx_segmented_recovery');
-ERROR HY000: Incorrect arguments to vec_index_bulk_build
+ERROR HY000: Incorrect arguments to LOAD VECTOR DATA could not publish rebuilt backend
 SET GLOBAL debug = '-d,vector_segment_task_before_publish';
 SELECT VEC_INDEX_SEARCH('idx_segmented_recovery', VEC_FROMTEXT('[1,0]'), 1);
 ERROR HY000: Incorrect arguments to vec_index_search

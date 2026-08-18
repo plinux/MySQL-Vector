@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <memory>
 #include <string>
@@ -2982,6 +2983,56 @@ TEST_F(VectorIndexRegistryTest,
 }
 
 TEST_F(VectorIndexRegistryTest,
+       StandaloneCompactionPersistFailureRestoresRawFiles) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib provider is not compiled in";
+  }
+  UlongGuard pipeline_guard(
+      &opt_vector_build_pipeline_mode,
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented));
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  UlonglongGuard segment_rows_guard(&opt_vector_build_segment_max_rows, 1);
+  const std::string root =
+      std::string(testing::TempDir()) + "/registry_compaction_persist_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  external_snapshot_root_guard root_guard(root);
+
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+  const std::string index_name = "idx_registry_compaction_persist";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "hnsw", options));
+  for (uint64_t doc_id = 1; doc_id <= 8; ++doc_id) {
+    ASSERT_TRUE(vector_index_registry::upsert(
+        index_name, doc_id, {static_cast<float>(doc_id), 0.0F}));
+  }
+  ASSERT_TRUE(vector_index_registry::rebuild_index(index_name));
+
+  const std::vector<std::string> source_files = regular_files_below(root);
+  ASSERT_FALSE(source_files.empty());
+  opt_vector_build_segment_max_rows = 4;
+  store_.fail_save_manifest_once = true;
+  EXPECT_FALSE(vector_index_registry::rebuild_index(index_name));
+  EXPECT_EQ(source_files, regular_files_below(root));
+
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ(8U, info.standalone_raw_segment_count);
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {8.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(8U, result[0].doc_id);
+
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(VectorIndexRegistryTest,
        StandaloneAllLifecycleRollbackOnPersistFailureKeepsServingState) {
   UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
   vector_index_registry::create_index_options options;
@@ -3086,6 +3137,101 @@ TEST_F(VectorIndexRegistryTest, SearchAndDifferentIndexRebuildRunConcurrently) {
   EXPECT_FALSE(failed.load());
   ASSERT_TRUE(vector_index_registry::drop_index("idx_registry_concurrent_search"));
   ASSERT_TRUE(vector_index_registry::drop_index("idx_registry_concurrent_rebuild"));
+}
+
+TEST_F(VectorIndexRegistryTest,
+       StandaloneCompactionKeepsSameIndexSearchAvailable) {
+  if (!hnswlib_tuning_supported()) {
+    GTEST_SKIP() << "hnswlib provider is not compiled in";
+  }
+  UlongGuard pipeline_guard(
+      &opt_vector_build_pipeline_mode,
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented));
+  UlonglongGuard cache_guard(&opt_vector_entry_cache_size, 0);
+  UlonglongGuard segment_rows_guard(&opt_vector_build_segment_max_rows, 1);
+  vector_index_registry::create_index_options options;
+  options.consistency_mode_specified = true;
+  options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
+
+  const std::string index_name = "idx_registry_compaction_search";
+  ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
+                                                  "memory", "hnsw", options));
+  for (uint64_t doc_id = 1; doc_id <= 8; ++doc_id) {
+    ASSERT_TRUE(vector_index_registry::upsert(
+        index_name, doc_id, {static_cast<float>(doc_id), 0.0F}));
+  }
+  ASSERT_TRUE(vector_index_registry::rebuild_index(index_name));
+
+  opt_vector_build_segment_max_rows = 4;
+  std::promise<void> build_entered_promise;
+  std::promise<void> release_build_promise;
+  std::shared_future<void> release_build =
+      release_build_promise.get_future().share();
+  vector_index_registry::detail::set_standalone_rebuild_build_hook_for_testing(
+      [&build_entered_promise, release_build]() {
+        build_entered_promise.set_value();
+        release_build.wait();
+      });
+
+  bool rebuild_ok = false;
+  std::thread rebuilder(
+      [&]() { rebuild_ok = vector_index_registry::rebuild_index(index_name); });
+  const bool build_entered =
+      build_entered_promise.get_future().wait_for(std::chrono::seconds(5)) ==
+      std::future_status::ready;
+
+  constexpr size_t kSearchWorkerCount = 8;
+  constexpr size_t kSearchIterations = 32;
+  std::promise<void> start_search_promise;
+  const std::shared_future<void> start_search =
+      start_search_promise.get_future().share();
+  std::vector<std::future<bool>> search_futures;
+  search_futures.reserve(kSearchWorkerCount);
+  for (size_t worker = 0; worker < kSearchWorkerCount; ++worker) {
+    search_futures.emplace_back(
+        std::async(std::launch::async, [&, start_search]() {
+          start_search.wait();
+          for (size_t iteration = 0; iteration < kSearchIterations;
+               ++iteration) {
+            const uint64_t expected_doc_id =
+                ((worker + iteration) % 2 == 0) ? 1 : 8;
+            std::vector<vector_index::search_result> result;
+            if (!vector_index_registry::search(
+                    index_name, {static_cast<float>(expected_doc_id), 0.0F}, 1,
+                    &result) ||
+                result.size() != 1 || result[0].doc_id != expected_doc_id) {
+              return false;
+            }
+          }
+          return true;
+        }));
+  }
+  start_search_promise.set_value();
+
+  const auto search_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  bool all_searches_ready = true;
+  for (std::future<bool> &search_future : search_futures) {
+    if (search_future.wait_until(search_deadline) !=
+        std::future_status::ready) {
+      all_searches_ready = false;
+    }
+  }
+
+  release_build_promise.set_value();
+  rebuilder.join();
+  bool all_searches_ok = true;
+  for (std::future<bool> &search_future : search_futures) {
+    all_searches_ok = search_future.get() && all_searches_ok;
+  }
+  vector_index_registry::detail::
+      reset_standalone_rebuild_build_hook_for_testing();
+
+  EXPECT_TRUE(build_entered);
+  EXPECT_TRUE(all_searches_ready);
+  EXPECT_TRUE(all_searches_ok);
+  EXPECT_TRUE(rebuild_ok);
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
 }
 
 TEST_F(VectorIndexRegistryTest,

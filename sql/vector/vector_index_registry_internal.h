@@ -28,6 +28,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <shared_mutex>
 #include <string>
@@ -262,6 +263,9 @@ bool apply_index_tuning_locked(const std::string &index_name,
 bool index_config_matches_for_testing(
     const vector_index::index_service::index_config &lhs,
     const vector_index::index_service::index_config &rhs);
+void set_standalone_rebuild_build_hook_for_testing(
+    std::function<void()> hook);
+void reset_standalone_rebuild_build_hook_for_testing();
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 bool snapshot_metadata_locked(
     std::vector<vector_index_metadata_store::metadata_row> *rows);

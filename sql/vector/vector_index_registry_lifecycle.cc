@@ -66,6 +66,10 @@ bool binding_matches_column(const index_binding &binding,
          binding.column_name == column_name;
 }
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+std::function<void()> g_standalone_rebuild_build_hook;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+
 const char *build_segment_policy_name(
     uint64_t dimension,
     const vector_index::build_pipeline_thresholds &thresholds) {
@@ -595,37 +599,90 @@ void set_rebuild_error(std::string *error, const char *message) {
   if (error != nullptr && message != nullptr && error->empty()) *error = message;
 }
 
-bool rebuild_standalone_plan_locked(const lifecycle_backend_plan &plan,
-                                    std::string *error) {
-  vector_index::index_service::committed_state current_state;
-  if (!g_index_service.snapshot_committed_state(&current_state)) {
-    set_rebuild_error(error, "vector registry could not snapshot state");
+bool rebuild_standalone_plan(const lifecycle_backend_plan &plan,
+                             std::string *error) {
+  vector_index::index_service::standalone_rebuild_plan rebuild_plan;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked()) {
+      set_rebuild_error(error, "vector registry metadata is unavailable");
+      return false;
+    }
+    if (!validate_backend_plan_locked(plan)) {
+      set_rebuild_error(error, "vector index changed during rebuild");
+      return false;
+    }
+    if (!g_index_service.prepare_standalone_rebuild(
+            plan.index_name, &rebuild_plan, error)) {
+      return false;
+    }
+  }
+
+  bool build_ok = false;
+  {
+    std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+    if (g_standalone_rebuild_build_hook) g_standalone_rebuild_build_hook();
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+    build_ok =
+        g_index_service.build_standalone_rebuild(&rebuild_plan, error);
+  }
+  if (!build_ok) {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    g_index_service.record_standalone_rebuild_tasks(rebuild_plan);
+    if (!rebuild_plan.segment_tasks.empty()) {
+      replace_segment_task_rows_for_index(plan.index_name,
+                                          rebuild_plan.segment_tasks);
+      (void)persist_segment_tasks_locked();
+    }
+    g_index_service.discard_standalone_rebuild(&rebuild_plan);
     return false;
   }
-  if (!validate_backend_plan_against_state_locked(plan, current_state)) {
+
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked() || !validate_backend_plan_locked(plan)) {
     set_rebuild_error(error, "vector index changed during rebuild");
+    g_index_service.discard_standalone_rebuild(&rebuild_plan);
     return false;
   }
 
   runtime_state_snapshot snapshot;
   if (!capture_runtime_state_locked(&snapshot)) {
     set_rebuild_error(error, "vector registry could not capture state");
+    g_index_service.discard_standalone_rebuild(&rebuild_plan);
     return false;
   }
-  if (!g_index_service.rebuild_index(plan.index_name, error)) {
-    const bool has_segment_tasks =
-        refresh_segment_tasks_from_service_locked(plan.index_name);
-    if (has_segment_tasks) (void)persist_segment_tasks_locked();
+  if (!g_index_service.publish_standalone_rebuild(&rebuild_plan, error)) {
+    g_index_service.record_standalone_rebuild_tasks(rebuild_plan);
+    if (!rebuild_plan.segment_tasks.empty()) {
+      replace_segment_task_rows_for_index(plan.index_name,
+                                          rebuild_plan.segment_tasks);
+      (void)persist_segment_tasks_locked();
+    }
+    g_index_service.discard_standalone_rebuild(&rebuild_plan);
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
   if (!refresh_segment_tasks_from_service_locked(plan.index_name)) {
     set_rebuild_error(error, "vector registry could not refresh segment tasks");
+    if (!g_index_service.rollback_standalone_rebuild(&rebuild_plan)) {
+      vector_status::record_runtime_state_rollback_failure();
+      return false;
+    }
     return rollback_runtime_state_and_fail_locked(snapshot);
   }
-  if (!persist_registry_state_or_rollback_locked(snapshot, true)) {
+  if (!persist_registry_state_locked()) {
+    vector_status::record_truth_store_persist_failure();
     set_rebuild_error(error, "vector registry could not persist rebuild state");
-    return false;
+    if (!g_index_service.rollback_standalone_rebuild(&rebuild_plan)) {
+      vector_status::record_runtime_state_rollback_failure();
+      return false;
+    }
+    replace_segment_task_rows_for_index(
+        plan.index_name, rebuild_plan.previous_segment_tasks);
+    return rollback_runtime_state_and_fail_locked(snapshot);
   }
+
+  g_index_service.finalize_standalone_rebuild(&rebuild_plan);
   return evict_committed_cache_to_budget_locked();
 }
 
@@ -1348,12 +1405,7 @@ bool rebuild_index(const std::string &index_name, std::string *error) {
     }
   }
   if (uses_standalone_source(plan)) {
-    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-    if (!ensure_metadata_loaded_locked()) {
-      set_rebuild_error(error, "vector registry metadata is unavailable");
-      return false;
-    }
-    return rebuild_standalone_plan_locked(plan, error);
+    return rebuild_standalone_plan(plan, error);
   }
 
   std::unique_ptr<vector_index::backend> rebuilt = build_rebuilt_backend(plan);
@@ -1832,6 +1884,15 @@ bool detail::index_config_matches_for_testing(
     const vector_index::index_service::index_config &lhs,
     const vector_index::index_service::index_config &rhs) {
   return index_config_matches(lhs, rhs);
+}
+
+void detail::set_standalone_rebuild_build_hook_for_testing(
+    std::function<void()> hook) {
+  g_standalone_rebuild_build_hook = std::move(hook);
+}
+
+void detail::reset_standalone_rebuild_build_hook_for_testing() {
+  g_standalone_rebuild_build_hook = nullptr;
 }
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 

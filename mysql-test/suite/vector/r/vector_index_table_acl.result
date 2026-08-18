@@ -126,7 +126,7 @@ owner_schema
 vector_acl_owner
 SELECT VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1);
 VEC_INDEX_SEARCH('idx_standalone_acl', '[1,1]', 1)
-[]
+[1]
 SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_standalone_acl'))
 AS owner_index_visible_after_restart;
 owner_index_visible_after_restart

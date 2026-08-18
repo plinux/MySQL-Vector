@@ -126,9 +126,18 @@ bool has_build_diagnostics(
   present |= !diagnostics.native_pq_runtime_selected_path.empty();
   present |= diagnostics.native_pq_runtime_elapsed_ms != 0;
   present |= diagnostics.native_pq_runtime_raw_reader_ms != 0;
+  present |= diagnostics.native_pq_runtime_train_ms != 0;
+  present |= diagnostics.native_pq_runtime_encode_ms != 0;
+  present |= diagnostics.native_pq_runtime_artifact_validation_ms != 0;
+  present |= !diagnostics.native_pq_runtime_centroid_scan_kernel.empty();
   present |= diagnostics.native_pq_runtime_distance_calls != 0;
   present |= diagnostics.native_pq_runtime_train_rows != 0;
   present |= diagnostics.native_pq_runtime_compressed_rows != 0;
+  present |= diagnostics.native_pq_runtime_encode_block_rows != 0;
+  present |= diagnostics.native_pq_runtime_memory_estimate != 0;
+  present |= diagnostics.native_pq_runtime_memory_budget != 0;
+  present |= diagnostics.native_pq_runtime_effective_threads != 0;
+  present |= !diagnostics.native_pq_runtime_memory_adjustment.empty();
   present |= diagnostics.native_pq_runtime_artifacts_written;
   present |= diagnostics.native_pq_runtime_artifacts_consumed;
   present |= diagnostics.native_pq_runtime_official_pq_used;
@@ -137,6 +146,7 @@ bool has_build_diagnostics(
   present |= diagnostics.native_pq_runtime_graph_ms != 0;
   present |= diagnostics.native_pq_runtime_cache_ms != 0;
   present |= !diagnostics.native_pq_runtime_artifact_validation.empty();
+  present |= diagnostics.native_pq_runtime_validation_failed;
   present |= !diagnostics.fallback_reason.empty();
   return present;
 }
@@ -184,9 +194,18 @@ void append_build_diagnostics(
       !diagnostics.native_pq_runtime_selected_path.empty() ||
       diagnostics.native_pq_runtime_elapsed_ms != 0 ||
       diagnostics.native_pq_runtime_raw_reader_ms != 0 ||
+      diagnostics.native_pq_runtime_train_ms != 0 ||
+      diagnostics.native_pq_runtime_encode_ms != 0 ||
+      diagnostics.native_pq_runtime_artifact_validation_ms != 0 ||
+      !diagnostics.native_pq_runtime_centroid_scan_kernel.empty() ||
       diagnostics.native_pq_runtime_distance_calls != 0 ||
       diagnostics.native_pq_runtime_train_rows != 0 ||
       diagnostics.native_pq_runtime_compressed_rows != 0 ||
+      diagnostics.native_pq_runtime_encode_block_rows != 0 ||
+      diagnostics.native_pq_runtime_memory_estimate != 0 ||
+      diagnostics.native_pq_runtime_memory_budget != 0 ||
+      diagnostics.native_pq_runtime_effective_threads != 0 ||
+      !diagnostics.native_pq_runtime_memory_adjustment.empty() ||
       diagnostics.native_pq_runtime_artifacts_written ||
       diagnostics.native_pq_runtime_artifacts_consumed ||
       diagnostics.native_pq_runtime_official_pq_used ||
@@ -194,7 +213,8 @@ void append_build_diagnostics(
       diagnostics.native_pq_runtime_bridge_ms != 0 ||
       diagnostics.native_pq_runtime_graph_ms != 0 ||
       diagnostics.native_pq_runtime_cache_ms != 0 ||
-      !diagnostics.native_pq_runtime_artifact_validation.empty();
+      !diagnostics.native_pq_runtime_artifact_validation.empty() ||
+      diagnostics.native_pq_runtime_validation_failed;
   if (diskann_provider && has_native_pq_diagnostics) {
     append_nullable_string(fields, "native_pq_runtime_selected_path",
                            diagnostics.native_pq_runtime_selected_path);
@@ -202,12 +222,30 @@ void append_build_diagnostics(
                 diagnostics.native_pq_runtime_elapsed_ms);
     append_uint(fields, "native_pq_runtime_raw_reader_ms",
                 diagnostics.native_pq_runtime_raw_reader_ms);
+    append_uint(fields, "native_pq_runtime_train_ms",
+                diagnostics.native_pq_runtime_train_ms);
+    append_uint(fields, "native_pq_runtime_encode_ms",
+                diagnostics.native_pq_runtime_encode_ms);
+    append_uint(fields, "native_pq_runtime_artifact_validation_ms",
+                diagnostics.native_pq_runtime_artifact_validation_ms);
+    append_nullable_string(fields, "native_pq_runtime_centroid_scan_kernel",
+                           diagnostics.native_pq_runtime_centroid_scan_kernel);
     append_uint(fields, "native_pq_runtime_distance_calls",
                 diagnostics.native_pq_runtime_distance_calls);
     append_uint(fields, "native_pq_runtime_train_rows",
                 diagnostics.native_pq_runtime_train_rows);
     append_uint(fields, "native_pq_runtime_compressed_rows",
                 diagnostics.native_pq_runtime_compressed_rows);
+    append_uint(fields, "native_pq_runtime_encode_block_rows",
+                diagnostics.native_pq_runtime_encode_block_rows);
+    append_uint(fields, "native_pq_runtime_memory_estimate",
+                diagnostics.native_pq_runtime_memory_estimate);
+    append_uint(fields, "native_pq_runtime_memory_budget",
+                diagnostics.native_pq_runtime_memory_budget);
+    append_uint(fields, "native_pq_runtime_effective_threads",
+                diagnostics.native_pq_runtime_effective_threads);
+    append_nullable_string(fields, "native_pq_runtime_memory_adjustment",
+                           diagnostics.native_pq_runtime_memory_adjustment);
     append_bool(fields, "native_pq_runtime_artifacts_written",
                 diagnostics.native_pq_runtime_artifacts_written);
     append_bool(fields, "native_pq_runtime_artifacts_consumed",
@@ -224,6 +262,32 @@ void append_build_diagnostics(
                 diagnostics.native_pq_runtime_cache_ms);
     append_nullable_string(fields, "native_pq_runtime_artifact_validation",
                            diagnostics.native_pq_runtime_artifact_validation);
+    if (diagnostics.native_pq_runtime_validation_failed) {
+      append_bool(fields, "native_pq_runtime_validation_failed", true);
+      append_nullable_string(
+          fields, "native_pq_runtime_validation_failed_doc_id",
+          diagnostics.native_pq_runtime_validation_failed_doc_id);
+      append_nullable_string(
+          fields, "native_pq_runtime_validation_best_doc_id",
+          diagnostics.native_pq_runtime_validation_best_doc_id);
+      append_uint(fields, "native_pq_runtime_validation_result_count",
+                  diagnostics.native_pq_runtime_validation_result_count);
+      append_nullable_string(
+          fields, "native_pq_runtime_validation_best_search_distance",
+          diagnostics.native_pq_runtime_validation_best_search_distance);
+      append_nullable_string(
+          fields, "native_pq_runtime_validation_best_exact_distance",
+          diagnostics.native_pq_runtime_validation_best_exact_distance);
+      append_nullable_string(
+          fields, "native_pq_runtime_validation_self_pq_distance",
+          diagnostics.native_pq_runtime_validation_self_pq_distance);
+      append_nullable_string(
+          fields, "native_pq_runtime_validation_pivots_checksum",
+          diagnostics.native_pq_runtime_validation_pivots_checksum);
+      append_nullable_string(
+          fields, "native_pq_runtime_validation_compressed_checksum",
+          diagnostics.native_pq_runtime_validation_compressed_checksum);
+    }
   }
   append_nullable_string(fields, "backend_build_fallback_reason",
                          diagnostics.fallback_reason);

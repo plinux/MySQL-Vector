@@ -10,7 +10,7 @@ SET @old_vector_build_segment_target_size = @@GLOBAL.vector_build_segment_target
 SET @old_vector_diskann_search_profile = @@GLOBAL.vector_diskann_search_profile;
 
 SET GLOBAL vector_build_pipeline_mode = 'segmented';
-SET GLOBAL vector_build_segment_max_rows = 1048576;
+SET GLOBAL vector_build_segment_max_rows = 256;
 SET GLOBAL vector_build_segment_target_size = 1048576;
 SET GLOBAL vector_diskann_search_profile = 'high_recall';
 

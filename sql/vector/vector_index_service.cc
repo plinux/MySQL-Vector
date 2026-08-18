@@ -270,11 +270,30 @@ void merge_segment_build_diagnostics(
       source.native_pq_runtime_elapsed_ms;
   aggregate->native_pq_runtime_raw_reader_ms +=
       source.native_pq_runtime_raw_reader_ms;
+  aggregate->native_pq_runtime_train_ms += source.native_pq_runtime_train_ms;
+  aggregate->native_pq_runtime_encode_ms += source.native_pq_runtime_encode_ms;
+  aggregate->native_pq_runtime_artifact_validation_ms +=
+      source.native_pq_runtime_artifact_validation_ms;
+  merge_diagnostic_string(source.native_pq_runtime_centroid_scan_kernel,
+                          &aggregate->native_pq_runtime_centroid_scan_kernel);
   aggregate->native_pq_runtime_distance_calls +=
       source.native_pq_runtime_distance_calls;
   aggregate->native_pq_runtime_train_rows += source.native_pq_runtime_train_rows;
   aggregate->native_pq_runtime_compressed_rows +=
       source.native_pq_runtime_compressed_rows;
+  aggregate->native_pq_runtime_encode_block_rows =
+      std::max(aggregate->native_pq_runtime_encode_block_rows,
+               source.native_pq_runtime_encode_block_rows);
+  aggregate->native_pq_runtime_memory_estimate +=
+      source.native_pq_runtime_memory_estimate;
+  aggregate->native_pq_runtime_memory_budget =
+      std::max(aggregate->native_pq_runtime_memory_budget,
+               source.native_pq_runtime_memory_budget);
+  aggregate->native_pq_runtime_effective_threads =
+      std::max(aggregate->native_pq_runtime_effective_threads,
+               source.native_pq_runtime_effective_threads);
+  merge_diagnostic_string(source.native_pq_runtime_memory_adjustment,
+                          &aggregate->native_pq_runtime_memory_adjustment);
   aggregate->native_pq_runtime_artifacts_written =
       aggregate->native_pq_runtime_artifacts_written ||
       source.native_pq_runtime_artifacts_written;
@@ -291,6 +310,32 @@ void merge_segment_build_diagnostics(
   aggregate->native_pq_runtime_cache_ms += source.native_pq_runtime_cache_ms;
   merge_diagnostic_string(source.native_pq_runtime_artifact_validation,
                           &aggregate->native_pq_runtime_artifact_validation);
+  aggregate->native_pq_runtime_validation_failed =
+      aggregate->native_pq_runtime_validation_failed ||
+      source.native_pq_runtime_validation_failed;
+  merge_diagnostic_string(
+      source.native_pq_runtime_validation_failed_doc_id,
+      &aggregate->native_pq_runtime_validation_failed_doc_id);
+  merge_diagnostic_string(source.native_pq_runtime_validation_best_doc_id,
+                          &aggregate->native_pq_runtime_validation_best_doc_id);
+  aggregate->native_pq_runtime_validation_result_count =
+      std::max(aggregate->native_pq_runtime_validation_result_count,
+               source.native_pq_runtime_validation_result_count);
+  merge_diagnostic_string(
+      source.native_pq_runtime_validation_best_search_distance,
+      &aggregate->native_pq_runtime_validation_best_search_distance);
+  merge_diagnostic_string(
+      source.native_pq_runtime_validation_best_exact_distance,
+      &aggregate->native_pq_runtime_validation_best_exact_distance);
+  merge_diagnostic_string(
+      source.native_pq_runtime_validation_self_pq_distance,
+      &aggregate->native_pq_runtime_validation_self_pq_distance);
+  merge_diagnostic_string(
+      source.native_pq_runtime_validation_pivots_checksum,
+      &aggregate->native_pq_runtime_validation_pivots_checksum);
+  merge_diagnostic_string(
+      source.native_pq_runtime_validation_compressed_checksum,
+      &aggregate->native_pq_runtime_validation_compressed_checksum);
   if (!source.fallback_reason.empty()) {
     aggregate->fallback_reason = source.fallback_reason;
   }
@@ -1162,6 +1207,324 @@ std::string standalone_entry_store::build_source_for_state(
     }
   }
   return has_raw_segment ? "raw_segments_compacted" : "delta_replay";
+}
+
+bool standalone_entry_store::write_compacted_raw_segment(
+    const std::string &index_name,
+    const std::vector<raw_vector_segment> &source_segments, uint64_t segment_id,
+    uint64_t generation, raw_vector_segment *compacted_segment) const {
+  if (source_segments.empty() || segment_id == 0 || generation == 0 ||
+      compacted_segment == nullptr) {
+    return false;
+  }
+
+  const size_t dimension = source_segments.front().dimension;
+  if (dimension == 0) return false;
+
+  uint64_t row_count = 0;
+  for (const raw_vector_segment &segment : source_segments) {
+    if (segment.dimension != dimension ||
+        segment.row_count > std::numeric_limits<uint64_t>::max() - row_count) {
+      return false;
+    }
+    row_count += segment.row_count;
+  }
+  if (row_count == 0 || row_count > std::numeric_limits<uint32_t>::max()) {
+    return false;
+  }
+
+  const std::string vector_path = raw_vector_path(index_name, segment_id);
+  const std::string docid_path = raw_docid_path(index_name, segment_id);
+  if (vector_path.empty() || docid_path.empty() ||
+      !detail::ensure_parent_directory(vector_path) ||
+      !detail::ensure_parent_directory(docid_path)) {
+    return false;
+  }
+
+  std::ofstream vector_file(vector_path,
+                            std::ios::out | std::ios::binary | std::ios::trunc);
+  std::ofstream docid_file(docid_path,
+                           std::ios::out | std::ios::binary | std::ios::trunc);
+  const auto cleanup_output = [&]() {
+    if (vector_file.is_open()) vector_file.close();
+    if (docid_file.is_open()) docid_file.close();
+    remove_file_if_exists(vector_path);
+    remove_file_if_exists(docid_path);
+  };
+  if (!vector_file.is_open() || !docid_file.is_open() ||
+      !write_plain_value(vector_file, static_cast<uint32_t>(row_count)) ||
+      !write_plain_value(vector_file, static_cast<uint32_t>(dimension)) ||
+      !write_plain_value(docid_file, row_count)) {
+    cleanup_output();
+    return false;
+  }
+
+  const size_t vector_bytes = dimension * sizeof(float);
+  if (vector_bytes >
+      static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+    cleanup_output();
+    return false;
+  }
+
+  uint64_t rows_written = 0;
+  std::string read_error;
+  for (const raw_vector_segment &segment : source_segments) {
+    vector_load_file_info file_info;
+    const bool read_ok = read_fbin_vectors(
+        segment.vector_path, segment.docid_path, dimension, &file_info,
+        &read_error,
+        [&](uint64_t doc_id, const float *values, size_t vector_dimension) {
+          if (values == nullptr || vector_dimension != dimension ||
+              !write_plain_value(docid_file, doc_id)) {
+            return false;
+          }
+          vector_file.write(reinterpret_cast<const char *>(values),
+                            static_cast<std::streamsize>(vector_bytes));
+          if (!vector_file.good()) return false;
+          ++rows_written;
+          return true;
+        });
+    if (!read_ok || file_info.row_count != segment.row_count ||
+        file_info.dimension != dimension) {
+      cleanup_output();
+      return false;
+    }
+  }
+
+  vector_file.close();
+  docid_file.close();
+  if (!vector_file || !docid_file || rows_written != row_count) {
+    cleanup_output();
+    return false;
+  }
+
+  size_t persisted_vector_bytes = 0;
+  size_t persisted_docid_bytes = 0;
+  if (!file_size_as_size(vector_path, &persisted_vector_bytes) ||
+      !file_size_as_size(docid_path, &persisted_docid_bytes) ||
+      persisted_vector_bytes >
+          std::numeric_limits<size_t>::max() - persisted_docid_bytes) {
+    cleanup_output();
+    return false;
+  }
+
+  compacted_segment->vector_path = vector_path;
+  compacted_segment->docid_path = docid_path;
+  compacted_segment->row_count = static_cast<size_t>(row_count);
+  compacted_segment->dimension = dimension;
+  compacted_segment->bytes = persisted_vector_bytes + persisted_docid_bytes;
+  compacted_segment->generation = generation;
+  return true;
+}
+
+void standalone_entry_store::discard_levelled_compaction(
+    raw_segment_compaction *compaction) const {
+  if (compaction == nullptr) return;
+  if (compaction->published) return;
+  for (const std::string &path : compaction->created_files) {
+    remove_file_if_exists(path);
+  }
+  *compaction = raw_segment_compaction{};
+}
+
+bool standalone_entry_store::stage_levelled_compaction(
+    const std::string &index_name, uint64_t row_limit,
+    raw_segment_compaction *compaction) {
+  if (compaction == nullptr || row_limit == 0) return false;
+  discard_levelled_compaction(compaction);
+
+  const auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end() ||
+      !can_rebuild_direct_from_raw_segments(state_it->second)) {
+    return false;
+  }
+
+  compaction->source_generation = state_it->second.generation;
+  compaction->source_next_segment_id = state_it->second.next_segment_id;
+  compaction->source_build_source = state_it->second.build_source;
+  compaction->next_generation = state_it->second.generation;
+  compaction->next_segment_id = state_it->second.next_segment_id;
+  if (!read_raw_segments(state_it->second,
+                         [compaction](const raw_vector_segment &segment) {
+                           compaction->source_segments.push_back(segment);
+                           return true;
+                         })) {
+    discard_levelled_compaction(compaction);
+    return false;
+  }
+
+  if (compaction->source_segments.size() < 2) {
+    compaction->segments = compaction->source_segments;
+    return true;
+  }
+
+  size_t first = 0;
+  while (first < compaction->source_segments.size()) {
+    const raw_vector_segment &first_segment =
+        compaction->source_segments[first];
+    if (first_segment.row_count >= row_limit) {
+      compaction->segments.push_back(first_segment);
+      ++first;
+      continue;
+    }
+
+    uint64_t grouped_rows = 0;
+    size_t last = first;
+    while (last < compaction->source_segments.size()) {
+      const raw_vector_segment &candidate = compaction->source_segments[last];
+      if (candidate.row_count >= row_limit ||
+          candidate.row_count > row_limit - grouped_rows) {
+        break;
+      }
+      grouped_rows += candidate.row_count;
+      ++last;
+    }
+
+    if (last - first < 2) {
+      compaction->segments.push_back(first_segment);
+      ++first;
+      continue;
+    }
+    if (compaction->next_segment_id == std::numeric_limits<uint64_t>::max() ||
+        compaction->next_generation == std::numeric_limits<uint64_t>::max()) {
+      discard_levelled_compaction(compaction);
+      return false;
+    }
+
+    std::vector<raw_vector_segment> group(
+        compaction->source_segments.begin() + first,
+        compaction->source_segments.begin() + last);
+    raw_vector_segment compacted_segment;
+    if (!write_compacted_raw_segment(
+            index_name, group, compaction->next_segment_id,
+            compaction->next_generation + 1, &compacted_segment)) {
+      discard_levelled_compaction(compaction);
+      return false;
+    }
+    ++compaction->next_segment_id;
+    ++compaction->next_generation;
+    compaction->created_files.push_back(compacted_segment.vector_path);
+    compaction->created_files.push_back(compacted_segment.docid_path);
+    compaction->segments.push_back(std::move(compacted_segment));
+    for (const raw_vector_segment &segment : group) {
+      compaction->replaced_files.push_back(segment.vector_path);
+      compaction->replaced_files.push_back(segment.docid_path);
+    }
+    first = last;
+  }
+
+  compaction->needed =
+      compaction->segments.size() < compaction->source_segments.size();
+  return true;
+}
+
+bool standalone_entry_store::publish_levelled_compaction(
+    const std::string &index_name, raw_segment_compaction *compaction) {
+  if (compaction == nullptr) return false;
+  if (!compaction->needed) return true;
+
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end() ||
+      state_it->second.generation != compaction->source_generation ||
+      state_it->second.next_segment_id != compaction->source_next_segment_id ||
+      state_it->second.segments.size() != compaction->source_segments.size()) {
+    return false;
+  }
+
+  for (size_t i = 0; i < compaction->source_segments.size(); ++i) {
+    const standalone_segment &current = state_it->second.segments[i];
+    const raw_vector_segment &source = compaction->source_segments[i];
+    if (current.kind != standalone_segment_kind::kRawFbin ||
+        current.vector_path != source.vector_path ||
+        current.docid_path != source.docid_path ||
+        current.record_count != source.row_count ||
+        current.dimension != source.dimension ||
+        current.bytes != source.bytes ||
+        current.generation != source.generation) {
+      return false;
+    }
+  }
+
+  DBUG_EXECUTE_IF("vector_standalone_compaction_before_publish", return false;);
+
+  index_state next_state = state_it->second;
+  if (!assign_raw_segments(&next_state, compaction->segments)) return false;
+  next_state.generation = compaction->next_generation;
+  next_state.next_segment_id = compaction->next_segment_id;
+  next_state.build_source = "raw_segments_compacted";
+  if (!save_manifest(index_name, next_state)) return false;
+
+  state_it->second = std::move(next_state);
+  compaction->published = true;
+  return true;
+}
+
+bool standalone_entry_store::rollback_levelled_compaction(
+    const std::string &index_name, raw_segment_compaction *compaction) {
+  if (compaction == nullptr) return false;
+  if (!compaction->needed || !compaction->published) {
+    discard_levelled_compaction(compaction);
+    return true;
+  }
+
+  auto state_it = m_indexes.find(index_name);
+  if (state_it == m_indexes.end()) return false;
+
+  index_state restored_state = state_it->second;
+  if (!assign_raw_segments(&restored_state, compaction->source_segments)) {
+    return false;
+  }
+  restored_state.generation = compaction->source_generation;
+  restored_state.next_segment_id = compaction->source_next_segment_id;
+  restored_state.build_source = compaction->source_build_source;
+  if (!save_manifest(index_name, restored_state)) return false;
+
+  state_it->second = std::move(restored_state);
+  compaction->published = false;
+  discard_levelled_compaction(compaction);
+  return true;
+}
+
+void standalone_entry_store::finalize_levelled_compaction(
+    raw_segment_compaction *compaction) const {
+  if (compaction == nullptr) return;
+  if (!compaction->published) {
+    discard_levelled_compaction(compaction);
+    return;
+  }
+  for (const std::string &path : compaction->replaced_files) {
+    remove_file_if_exists(path);
+  }
+  compaction->created_files.clear();
+  *compaction = raw_segment_compaction{};
+}
+
+bool standalone_entry_store::assign_raw_segments(
+    index_state *state,
+    const std::vector<raw_vector_segment> &raw_segments) const {
+  if (state == nullptr) return false;
+
+  std::vector<standalone_segment> segments;
+  segments.reserve(raw_segments.size());
+  for (const raw_vector_segment &raw_segment : raw_segments) {
+    standalone_segment segment;
+    segment.kind = standalone_segment_kind::kRawFbin;
+    segment.vector_path = raw_segment.vector_path;
+    segment.docid_path = raw_segment.docid_path;
+    segment.record_count = raw_segment.row_count;
+    segment.dimension = raw_segment.dimension;
+    segment.bytes = raw_segment.bytes;
+    segment.generation = raw_segment.generation;
+    uint64_t first_doc_id = 0;
+    if (detect_dense_docid_file(segment.docid_path, segment.record_count,
+                                &first_doc_id)) {
+      segment.dense_doc_ids = true;
+      segment.first_doc_id = first_doc_id;
+    }
+    segments.push_back(std::move(segment));
+  }
+  state->segments = std::move(segments);
+  return true;
 }
 
 bool standalone_entry_store::compact_to_raw_segment(const std::string &index_name,
@@ -2326,6 +2689,39 @@ bool has_any_pending_changes(const pending_changes_map &pending_changes) {
     if (!txn_changes.second.empty()) return true;
   }
   return false;
+}
+
+bool index_configs_equal(const index_service::index_config &lhs,
+                         const index_service::index_config &rhs) {
+  return lhs.dimension == rhs.dimension && lhs.metric == rhs.metric &&
+         lhs.mode == rhs.mode && lhs.provider == rhs.provider &&
+         lhs.backend_variant == rhs.backend_variant &&
+         lhs.search_ef == rhs.search_ef && lhs.hnsw_m == rhs.hnsw_m &&
+         lhs.hnsw_ef_construction == rhs.hnsw_ef_construction &&
+         lhs.hnsw_build_threads == rhs.hnsw_build_threads &&
+         lhs.faiss_nlist == rhs.faiss_nlist &&
+         lhs.faiss_nprobe == rhs.faiss_nprobe &&
+         lhs.faiss_pq_m == rhs.faiss_pq_m &&
+         lhs.faiss_pq_bits == rhs.faiss_pq_bits &&
+         lhs.faiss_build_threads == rhs.faiss_build_threads &&
+         lhs.diskann_max_degree == rhs.diskann_max_degree &&
+         lhs.diskann_build_complexity == rhs.diskann_build_complexity &&
+         lhs.diskann_build_threads == rhs.diskann_build_threads &&
+         lhs.diskann_build_blas_threads == rhs.diskann_build_blas_threads &&
+         lhs.diskann_build_mode_value == rhs.diskann_build_mode_value &&
+         lhs.diskann_search_complexity == rhs.diskann_search_complexity &&
+         lhs.diskann_search_beamwidth == rhs.diskann_search_beamwidth &&
+         lhs.diskann_pq_code_budget_size ==
+             rhs.diskann_pq_code_budget_size &&
+         lhs.diskann_disk_pq_dims == rhs.diskann_disk_pq_dims &&
+         lhs.diskann_cache_nodes == rhs.diskann_cache_nodes &&
+         lhs.diskann_accelerate_build == rhs.diskann_accelerate_build &&
+         lhs.diskann_shuffle_build == rhs.diskann_shuffle_build &&
+         lhs.diskann_use_bfs_cache == rhs.diskann_use_bfs_cache &&
+         lhs.diskann_build_mode_specified ==
+             rhs.diskann_build_mode_specified &&
+         lhs.diskann_segmented_serving == rhs.diskann_segmented_serving &&
+         lhs.consistency_mode == rhs.consistency_mode;
 }
 
 bool lazy_external_runtime_enabled() {
@@ -3606,6 +4002,16 @@ std::unique_ptr<backend> build_segmented_backend_from_raw_segments(
                               vector_index_metadata_store::
                                   segment_task_state::kPending));
   }
+  DBUG_EXECUTE_IF("vector_segment_backend_build_failure", {
+    if (!segment_task_rows.empty()) {
+      segment_task_rows.front().state =
+          vector_index_metadata_store::segment_task_state::kFailed;
+      segment_task_rows.front().last_error_code = ERROR_REPLAY_STATE_FAILED;
+      segment_task_rows.front().updated_ts = now_unix_epoch_seconds();
+    }
+    if (task_rows != nullptr) *task_rows = segment_task_rows;
+    return nullptr;
+  });
 
   if (raw_segments_use_single_backend(config)) {
     const build_pipeline_runtime_config pipeline_config =
@@ -3745,7 +4151,8 @@ std::unique_ptr<backend> build_segmented_backend_from_raw_segments(
 
 std::unique_ptr<backend> build_segmented_backend_from_standalone(
     const std::string &index_name, const index_service::index_config &config,
-    standalone_entry_store *standalone_store,
+    standalone_entry_store *standalone_store, uint64_t segment_row_limit,
+    standalone_entry_store::raw_segment_compaction *compaction,
     std::vector<vector_index_metadata_store::segment_task_row> *task_rows) {
   if (standalone_store == nullptr ||
       config.consistency_mode != index_consistency_mode::kStandalone) {
@@ -3756,25 +4163,43 @@ std::unique_ptr<backend> build_segmented_backend_from_standalone(
   }
 
   std::vector<raw_vector_segment> raw_segments;
-  const bool read_ok = standalone_store->read_rebuild_raw_segments(
-      index_name, [&raw_segments](const raw_vector_segment &segment) {
-        raw_segments.push_back(segment);
-        return true;
-      });
+  bool read_ok = false;
+  if (compaction != nullptr) {
+    if (!standalone_store->stage_levelled_compaction(
+            index_name, segment_row_limit, compaction)) {
+      return nullptr;
+    }
+    if (compaction->needed) {
+      raw_segments = compaction->segments;
+      read_ok = true;
+    }
+  }
+  if (!read_ok) {
+    read_ok = standalone_store->read_rebuild_raw_segments(
+        index_name, [&raw_segments](const raw_vector_segment &segment) {
+          raw_segments.push_back(segment);
+          return true;
+        });
+  }
   if (!read_ok) return nullptr;
 
   return build_segmented_backend_from_raw_segments(
-      index_name, config, std::move(raw_segments), "raw_segments", true,
-      task_rows);
+      index_name, config, std::move(raw_segments),
+      compaction != nullptr && compaction->needed ? "raw_segments_compacted"
+                                                  : "raw_segments",
+      true, task_rows);
 }
 
 std::unique_ptr<backend> build_segmented_backend_from_source(
     const std::string &index_name, const index_service::index_config &config,
-    const vector_entry_store &entry_store, standalone_entry_store *standalone_store,
+    const vector_entry_store &entry_store,
+    standalone_entry_store *standalone_store, uint64_t segment_row_limit,
+    standalone_entry_store::raw_segment_compaction *compaction,
     std::vector<vector_index_metadata_store::segment_task_row> *task_rows) {
   if (config.consistency_mode == index_consistency_mode::kStandalone) {
-    return build_segmented_backend_from_standalone(index_name, config,
-                                                  standalone_store, task_rows);
+    return build_segmented_backend_from_standalone(
+        index_name, config, standalone_store, segment_row_limit, compaction,
+        task_rows);
   }
   if (config.consistency_mode != index_consistency_mode::kTransactional ||
       config.provider != backend_provider::kDiskAnn ||
@@ -3853,6 +4278,66 @@ bool raw_segments_use_single_backend_for_testing(
     const index_service::index_config &config) {
   return raw_segments_use_single_backend(config);
 }
+
+void index_service::mark_index_ready(const std::string &index_name,
+                                     lifecycle_info *lifecycle) {
+  mark_lifecycle_ready(lifecycle);
+  m_last_failed_build_diagnostics.erase(index_name);
+}
+
+bool index_service::build_runtime_from_current_policy(
+    const std::string &index_name, const index_config &persisted_config,
+    std::unique_ptr<backend> *runtime) {
+  if (runtime == nullptr) return false;
+
+  const build_pipeline_snapshot previous_pipeline =
+      m_build_pipeline_snapshots[index_name];
+  const auto previous_tasks = m_segment_task_rows[index_name];
+  const index_config build_config =
+      detail::with_dynamic_build_options(persisted_config);
+  const build_pipeline_decision decision =
+      record_build_pipeline_decision(index_name, build_config);
+  const bool segmented = should_build_segmented(build_config, decision);
+  const uint64_t segment_row_limit =
+      m_build_pipeline_snapshots[index_name].effective_segment_row_limit;
+
+  std::vector<vector_index_metadata_store::segment_task_row> segment_tasks;
+  standalone_entry_store::raw_segment_compaction compaction;
+  std::unique_ptr<backend> rebuilt =
+      segmented
+          ? build_segmented_backend_from_source(
+                index_name, build_config, m_entry_store, &m_standalone_store,
+                segment_row_limit, &compaction, &segment_tasks)
+          : build_backend_from_config(index_name, build_config);
+  if (rebuilt != nullptr && !segmented &&
+      !rebuild_backend_from_source(m_entry_store, m_standalone_store,
+                                   index_name, build_config, rebuilt.get())) {
+    rebuilt.reset();
+  }
+  if (rebuilt == nullptr) {
+    m_standalone_store.discard_levelled_compaction(&compaction);
+    m_build_pipeline_snapshots[index_name] = previous_pipeline;
+    m_segment_task_rows[index_name] = previous_tasks;
+    return false;
+  }
+  if (segmented && !m_standalone_store.publish_levelled_compaction(
+                       index_name, &compaction)) {
+    m_standalone_store.discard_levelled_compaction(&compaction);
+    m_build_pipeline_snapshots[index_name] = previous_pipeline;
+    m_segment_task_rows[index_name] = previous_tasks;
+    return false;
+  }
+
+  if (segmented) {
+    m_segment_task_rows[index_name] = std::move(segment_tasks);
+  } else {
+    m_segment_task_rows[index_name].clear();
+  }
+  *runtime = std::move(rebuilt);
+  m_standalone_store.finalize_levelled_compaction(&compaction);
+  return true;
+}
+
 bool index_service::ensure_runtime_loaded(const std::string &index_name) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
@@ -3860,23 +4345,28 @@ bool index_service::ensure_runtime_loaded(const std::string &index_name) {
                 m_entry_store.has_index(index_name))) {
     return false;
   }
-  if (!lazy_external_runtime_enabled() ||
-      config_it->second.mode != backend_mode::kExternal) {
-    return true;
-  }
-  const size_t committed_count = m_entry_store.entry_count(index_name);
+  const bool standalone =
+      config_it->second.consistency_mode ==
+      index_consistency_mode::kStandalone;
+  const bool source_backed_runtime =
+      standalone || (lazy_external_runtime_enabled() &&
+                     config_it->second.mode == backend_mode::kExternal);
+  if (!source_backed_runtime) return true;
+  const size_t committed_count =
+      standalone
+          ? m_standalone_store.entry_count(index_name)
+          : m_entry_store.entry_count(index_name);
   if (committed_count == 0 ||
       index_it->second->entry_count() == committed_count)
     return true;
 
-  std::unique_ptr<backend> loaded =
-      build_backend_from_config(index_name, config_it->second);
-  if (loaded == nullptr) return false;
-  if (!rebuild_backend_from_source(m_entry_store, m_standalone_store,
-                                   index_name, config_it->second,
-                                   loaded.get()))
+  std::unique_ptr<backend> loaded;
+  if (!build_runtime_from_current_policy(index_name, config_it->second,
+                                         &loaded)) {
     return false;
+  }
   index_it->second = std::move(loaded);
+  m_last_failed_build_diagnostics.erase(index_name);
   return true;
 }
 
@@ -3888,6 +4378,37 @@ bool index_service::ensure_runtime_loaded_for_search(
     return false;
   }
   return ensure_runtime_loaded(index_name);
+}
+
+bool index_service::runtime_loaded_for_search(
+    const std::string &index_name) const {
+  const auto config_it = m_index_configs.find(index_name);
+  const auto index_it = m_indexes.find(index_name);
+  const auto lifecycle_it = m_lifecycle_infos.find(index_name);
+  if (!all_true(config_it != m_index_configs.end(),
+                index_it != m_indexes.end(),
+                lifecycle_it != m_lifecycle_infos.end(),
+                m_entry_store.has_index(index_name))) {
+    return false;
+  }
+  if (lifecycle_it->second.state == LIFECYCLE_BULK_LOADING) return false;
+
+  const bool standalone =
+      config_it->second.consistency_mode ==
+      index_consistency_mode::kStandalone;
+  const bool source_backed_runtime =
+      standalone || (lazy_external_runtime_enabled() &&
+                     config_it->second.mode == backend_mode::kExternal);
+  if (!source_backed_runtime) return true;
+
+  const size_t source_count =
+      standalone ? m_standalone_store.entry_count(index_name)
+                 : m_entry_store.entry_count(index_name);
+  const size_t runtime_count = index_it->second->entry_count();
+  if (runtime_count == source_count) return true;
+  return standalone && runtime_count > 0 &&
+         m_standalone_rebuilds.find(index_name) !=
+             m_standalone_rebuilds.end();
 }
 
 bool index_service::rebuild_runtime_from_store_for_search(
@@ -3905,14 +4426,14 @@ bool index_service::rebuild_runtime_from_store_for_search(
     return false;
   }
 
-  std::unique_ptr<backend> rebuilt =
-      build_backend_from_config(index_name, config_it->second);
-  if (rebuilt == nullptr ||
-      !rebuild_backend_from_store(m_entry_store, index_name, rebuilt.get())) {
+  std::unique_ptr<backend> rebuilt;
+  if (!build_runtime_from_current_policy(index_name, config_it->second,
+                                         &rebuilt)) {
     return false;
   }
 
   index_it->second = std::move(rebuilt);
+  m_last_failed_build_diagnostics.erase(index_name);
   mark_recover_fallback(&lifecycle_it->second, true);
   return true;
 }
@@ -3962,8 +4483,9 @@ build_input_stats index_service::collect_build_input_stats(
   return stats;
 }
 
-build_pipeline_decision index_service::record_build_pipeline_decision(
-    const std::string &index_name, const index_config &config) {
+build_pipeline_decision index_service::make_build_pipeline_decision(
+    const std::string &index_name, const index_config &config,
+    build_pipeline_snapshot *snapshot) const {
   const build_pipeline_runtime_config runtime_config =
       global_build_pipeline_runtime_config();
   const build_input_stats stats = collect_build_input_stats(index_name, config);
@@ -3972,20 +4494,29 @@ build_pipeline_decision index_service::record_build_pipeline_decision(
   const build_pipeline_decision decision =
       select_build_pipeline(stats, segment_profile.thresholds);
 
-  build_pipeline_snapshot snapshot;
-  snapshot.mode = build_pipeline_mode_name(runtime_config.thresholds.mode);
-  snapshot.diskann_segment_profile =
+  build_pipeline_snapshot candidate;
+  candidate.mode = build_pipeline_mode_name(runtime_config.thresholds.mode);
+  candidate.diskann_segment_profile =
       diskann_segment_profile_name(runtime_config.diskann_profile);
-  snapshot.diskann_segment_profile_reason = segment_profile.reason;
-  snapshot.decision = build_pipeline_path_name(decision.path);
-  snapshot.trigger = build_pipeline_trigger_name(decision.trigger);
-  snapshot.row_count = stats.row_count;
-  snapshot.payload_size = stats.payload_size;
-  snapshot.raw_segment_count = stats.raw_segment_count;
-  snapshot.effective_segment_target_size =
+  candidate.diskann_segment_profile_reason = segment_profile.reason;
+  candidate.decision = build_pipeline_path_name(decision.path);
+  candidate.trigger = build_pipeline_trigger_name(decision.trigger);
+  candidate.row_count = stats.row_count;
+  candidate.payload_size = stats.payload_size;
+  candidate.raw_segment_count = stats.raw_segment_count;
+  candidate.effective_segment_target_size =
       segment_profile.thresholds.segment_target_size;
-  snapshot.effective_segment_row_limit = build_segment_row_limit(
+  candidate.effective_segment_row_limit = build_segment_row_limit(
       static_cast<uint64_t>(config.dimension), segment_profile.thresholds);
+  if (snapshot != nullptr) *snapshot = std::move(candidate);
+  return decision;
+}
+
+build_pipeline_decision index_service::record_build_pipeline_decision(
+    const std::string &index_name, const index_config &config) {
+  build_pipeline_snapshot snapshot;
+  const build_pipeline_decision decision =
+      make_build_pipeline_decision(index_name, config, &snapshot);
   m_build_pipeline_snapshots[index_name] = std::move(snapshot);
   return decision;
 }
@@ -4108,6 +4639,8 @@ bool index_service::unregister_index(const std::string &index_name) {
   m_lifecycle_infos.erase(index_name);
   m_build_pipeline_snapshots.erase(index_name);
   m_segment_task_rows.erase(index_name);
+  m_last_failed_build_diagnostics.erase(index_name);
+  m_standalone_rebuilds.erase(index_name);
   return true;
 }
 
@@ -4144,6 +4677,14 @@ bool index_service::rename_index(const std::string &old_index_name,
     for (auto &row : segment_tasks) row.index_name = new_index_name;
     has_segment_tasks = true;
   }
+  backend_build_diagnostics failed_build_diagnostics;
+  bool has_failed_build_diagnostics = false;
+  auto old_failed_diagnostics_it =
+      m_last_failed_build_diagnostics.find(old_index_name);
+  if (old_failed_diagnostics_it != m_last_failed_build_diagnostics.end()) {
+    failed_build_diagnostics = old_failed_diagnostics_it->second;
+    has_failed_build_diagnostics = true;
+  }
 
   std::unique_ptr<backend> renamed_backend =
       build_backend_from_config(new_index_name, config);
@@ -4163,6 +4704,7 @@ bool index_service::rename_index(const std::string &old_index_name,
   m_lifecycle_infos.erase(old_lifecycle_it);
   m_build_pipeline_snapshots.erase(old_index_name);
   m_segment_task_rows.erase(old_index_name);
+  m_last_failed_build_diagnostics.erase(old_index_name);
 
   m_indexes.emplace(new_index_name, std::move(renamed_backend));
   m_index_configs.emplace(new_index_name, config);
@@ -4173,6 +4715,10 @@ bool index_service::rename_index(const std::string &old_index_name,
   }
   if (has_segment_tasks) {
     m_segment_task_rows.emplace(new_index_name, std::move(segment_tasks));
+  }
+  if (has_failed_build_diagnostics) {
+    m_last_failed_build_diagnostics.emplace(
+        new_index_name, std::move(failed_build_diagnostics));
   }
   maybe_unload_runtime(new_index_name);
 
@@ -4202,6 +4748,276 @@ bool index_service::begin_bulk_load(const std::string &index_name) {
   return true;
 }
 
+bool index_service::prepare_standalone_rebuild(
+    const std::string &index_name, standalone_rebuild_plan *plan,
+    std::string *error) {
+  if (error != nullptr) error->clear();
+  if (plan == nullptr) {
+    set_bulk_load_error(error, "invalid standalone rebuild plan");
+    return false;
+  }
+  *plan = standalone_rebuild_plan{};
+
+  const auto config_it = m_index_configs.find(index_name);
+  const auto index_it = m_indexes.find(index_name);
+  const auto lifecycle_it = m_lifecycle_infos.find(index_name);
+  if (!all_true(config_it != m_index_configs.end(),
+                index_it != m_indexes.end(),
+                lifecycle_it != m_lifecycle_infos.end(),
+                m_entry_store.has_index(index_name),
+                m_standalone_store.has_index(index_name))) {
+    set_bulk_load_error(error, "vector index not found");
+    return false;
+  }
+  if (config_it->second.consistency_mode !=
+      index_consistency_mode::kStandalone) {
+    set_bulk_load_error(error, "vector index is not standalone");
+    return false;
+  }
+  if (pending_changes_contain_index(m_pending_changes, index_name)) {
+    set_bulk_load_error(error, "vector index has pending changes");
+    return false;
+  }
+  if (m_standalone_rebuilds.find(index_name) !=
+      m_standalone_rebuilds.end()) {
+    set_bulk_load_error(error, "vector index rebuild is already active");
+    return false;
+  }
+  if (!m_standalone_store.prepare_raw_segments_for_rebuild(index_name)) {
+    set_bulk_load_error(error,
+                        "standalone rebuild could not prepare raw input");
+    return false;
+  }
+
+  plan->index_name = index_name;
+  plan->source_config = config_it->second;
+  plan->build_config = detail::with_dynamic_build_options(config_it->second);
+  plan->source_lifecycle_version = lifecycle_it->second.version;
+  plan->source_generation = m_standalone_store.generation(index_name);
+  plan->previous_runtime = index_it->second;
+  plan->previous_lifecycle = lifecycle_it->second;
+
+  const auto pipeline_it = m_build_pipeline_snapshots.find(index_name);
+  plan->had_previous_pipeline =
+      pipeline_it != m_build_pipeline_snapshots.end();
+  if (plan->had_previous_pipeline) {
+    plan->previous_pipeline = pipeline_it->second;
+  }
+  const auto tasks_it = m_segment_task_rows.find(index_name);
+  plan->had_previous_segment_tasks = tasks_it != m_segment_task_rows.end();
+  if (plan->had_previous_segment_tasks) {
+    plan->previous_segment_tasks = tasks_it->second;
+  }
+  const auto failed_diagnostics_it =
+      m_last_failed_build_diagnostics.find(index_name);
+  plan->had_previous_failed_build_diagnostics =
+      failed_diagnostics_it != m_last_failed_build_diagnostics.end();
+  if (plan->had_previous_failed_build_diagnostics) {
+    plan->previous_failed_build_diagnostics = failed_diagnostics_it->second;
+  }
+
+  const build_pipeline_decision decision = make_build_pipeline_decision(
+      index_name, plan->build_config, &plan->pipeline);
+  plan->segmented = should_build_segmented(plan->build_config, decision);
+  m_standalone_rebuilds.insert(index_name);
+  plan->prepared = true;
+  return true;
+}
+
+bool index_service::build_standalone_rebuild(standalone_rebuild_plan *plan,
+                                             std::string *error) {
+  if (error != nullptr) error->clear();
+  if (plan == nullptr || !plan->prepared || plan->published ||
+      plan->index_name.empty()) {
+    set_bulk_load_error(error, "standalone rebuild plan is not prepared");
+    return false;
+  }
+
+  plan->raw_segments.clear();
+  plan->segment_tasks.clear();
+  if (plan->segmented) {
+    if (!m_standalone_store.stage_levelled_compaction(
+            plan->index_name, plan->pipeline.effective_segment_row_limit,
+            &plan->compaction)) {
+      set_bulk_load_error(error,
+                          "standalone rebuild could not stage compaction");
+      return false;
+    }
+    if (plan->compaction.needed) {
+      plan->raw_segments = plan->compaction.segments;
+    }
+  }
+  if (plan->raw_segments.empty() &&
+      !m_standalone_store.read_rebuild_raw_segments(
+          plan->index_name,
+          [plan](const raw_vector_segment &segment) {
+            plan->raw_segments.push_back(segment);
+            return true;
+          })) {
+    set_bulk_load_error(error,
+                        "standalone rebuild could not read raw input");
+    return false;
+  }
+
+  if (plan->segmented) {
+    plan->rebuilt_backend = build_segmented_backend_from_raw_segments(
+        plan->index_name, plan->build_config, plan->raw_segments,
+        plan->compaction.needed ? "raw_segments_compacted" : "raw_segments",
+        true, &plan->segment_tasks);
+  } else {
+    plan->rebuilt_backend =
+        build_backend_from_config(plan->index_name, plan->build_config);
+    if (plan->rebuilt_backend != nullptr) {
+      const raw_vector_segment_reader reader =
+          [plan](const raw_vector_segment_visitor &visitor) {
+            if (!visitor) return false;
+            for (const raw_vector_segment &segment : plan->raw_segments) {
+              if (!visitor(segment)) return false;
+            }
+            return true;
+          };
+      bool rebuild_ok =
+          plan->rebuilt_backend->rebuild_from_raw_segments(reader);
+      DBUG_EXECUTE_IF(
+          "vector_standalone_rebuild_after_backend_build_failure",
+          rebuild_ok = false;);
+      if (!rebuild_ok) {
+        plan->failed_build_diagnostics =
+            plan->rebuilt_backend->build_diagnostics();
+        plan->has_failed_build_diagnostics = true;
+        DBUG_EXECUTE_IF(
+            "vector_standalone_rebuild_after_backend_build_failure", {
+              plan->failed_build_diagnostics.fallback_reason =
+                  "debug_forced_post_build_failure";
+            });
+        set_bulk_load_error(
+            error,
+            rebuild_error_from_diagnostics(plan->failed_build_diagnostics));
+        plan->rebuilt_backend.reset();
+      }
+    }
+  }
+  if (plan->rebuilt_backend == nullptr) {
+    if (error != nullptr && error->empty()) {
+      set_bulk_load_error(error,
+                          "standalone rebuild could not create backend");
+    }
+    return false;
+  }
+  plan->built = true;
+  return true;
+}
+
+bool index_service::publish_standalone_rebuild(
+    standalone_rebuild_plan *plan, std::string *error) {
+  if (error != nullptr) error->clear();
+  if (plan == nullptr || !plan->prepared || !plan->built ||
+      plan->published || plan->rebuilt_backend == nullptr) {
+    set_bulk_load_error(error, "standalone rebuild plan is not built");
+    return false;
+  }
+
+  const auto config_it = m_index_configs.find(plan->index_name);
+  const auto index_it = m_indexes.find(plan->index_name);
+  const auto lifecycle_it = m_lifecycle_infos.find(plan->index_name);
+  if (!all_true(config_it != m_index_configs.end(),
+                index_it != m_indexes.end(),
+                lifecycle_it != m_lifecycle_infos.end(),
+                m_standalone_rebuilds.find(plan->index_name) !=
+                    m_standalone_rebuilds.end(),
+                index_configs_equal(config_it->second, plan->source_config),
+                lifecycle_it->second.version ==
+                    plan->source_lifecycle_version,
+                index_it->second == plan->previous_runtime,
+                m_standalone_store.generation(plan->index_name) ==
+                    plan->source_generation,
+                !pending_changes_contain_index(m_pending_changes,
+                                               plan->index_name))) {
+    set_bulk_load_error(error, "vector index changed during rebuild");
+    return false;
+  }
+
+  DBUG_EXECUTE_IF("vector_segment_task_before_publish", {
+    set_bulk_load_error(error,
+                        "LOAD VECTOR DATA could not publish rebuilt backend");
+    return false;
+  });
+  if (plan->segmented &&
+      !m_standalone_store.publish_levelled_compaction(plan->index_name,
+                                                      &plan->compaction)) {
+    set_bulk_load_error(error,
+                        "LOAD VECTOR DATA could not publish compacted input");
+    return false;
+  }
+
+  m_build_pipeline_snapshots[plan->index_name] = plan->pipeline;
+  m_segment_task_rows[plan->index_name] = plan->segment_tasks;
+  index_it->second = std::move(plan->rebuilt_backend);
+  mark_index_ready(plan->index_name, &lifecycle_it->second);
+  maybe_unload_runtime(plan->index_name);
+  plan->published = true;
+  return true;
+}
+
+void index_service::record_standalone_rebuild_tasks(
+    const standalone_rebuild_plan &plan) {
+  if (!plan.index_name.empty()) {
+    m_segment_task_rows[plan.index_name] = plan.segment_tasks;
+  }
+}
+
+bool index_service::rollback_standalone_rebuild(
+    standalone_rebuild_plan *plan) {
+  if (plan == nullptr || !plan->prepared || !plan->published) return false;
+  if (!m_standalone_store.rollback_levelled_compaction(plan->index_name,
+                                                       &plan->compaction)) {
+    return false;
+  }
+
+  m_indexes[plan->index_name] = plan->previous_runtime;
+  m_lifecycle_infos[plan->index_name] = plan->previous_lifecycle;
+  if (plan->had_previous_pipeline) {
+    m_build_pipeline_snapshots[plan->index_name] = plan->previous_pipeline;
+  } else {
+    m_build_pipeline_snapshots.erase(plan->index_name);
+  }
+  if (plan->had_previous_segment_tasks) {
+    m_segment_task_rows[plan->index_name] = plan->previous_segment_tasks;
+  } else {
+    m_segment_task_rows.erase(plan->index_name);
+  }
+  if (plan->had_previous_failed_build_diagnostics) {
+    m_last_failed_build_diagnostics[plan->index_name] =
+        plan->previous_failed_build_diagnostics;
+  } else {
+    m_last_failed_build_diagnostics.erase(plan->index_name);
+  }
+  m_standalone_rebuilds.erase(plan->index_name);
+  plan->published = false;
+  plan->prepared = false;
+  return true;
+}
+
+void index_service::discard_standalone_rebuild(
+    standalone_rebuild_plan *plan) {
+  if (plan == nullptr || plan->published) return;
+  if (plan->has_failed_build_diagnostics && !plan->index_name.empty()) {
+    m_last_failed_build_diagnostics[plan->index_name] =
+        plan->failed_build_diagnostics;
+  }
+  m_standalone_store.discard_levelled_compaction(&plan->compaction);
+  m_standalone_rebuilds.erase(plan->index_name);
+  *plan = standalone_rebuild_plan{};
+}
+
+void index_service::finalize_standalone_rebuild(
+    standalone_rebuild_plan *plan) {
+  if (plan == nullptr || !plan->published) return;
+  m_standalone_store.finalize_levelled_compaction(&plan->compaction);
+  m_standalone_rebuilds.erase(plan->index_name);
+  *plan = standalone_rebuild_plan{};
+}
+
 bool index_service::rebuild_index(const std::string &index_name,
                                   std::string *error) {
   if (error != nullptr) error->clear();
@@ -4214,6 +5030,7 @@ bool index_service::rebuild_index(const std::string &index_name,
     set_bulk_load_error(error, "vector index not found");
     return false;
   }
+  const lifecycle_info lifecycle_before_rebuild = lifecycle_it->second;
   mark_lifecycle_state(&lifecycle_it->second, LIFECYCLE_REBUILDING);
 
   // Rebuild currently requires no staged writes against this index.
@@ -4227,35 +5044,58 @@ bool index_service::rebuild_index(const std::string &index_name,
       detail::with_dynamic_build_options(config_it->second);
   const build_pipeline_decision decision =
       record_build_pipeline_decision(index_name, build_config);
+  const bool segmented = should_build_segmented(build_config, decision);
+  const uint64_t segment_row_limit =
+      m_build_pipeline_snapshots[index_name].effective_segment_row_limit;
   std::vector<vector_index_metadata_store::segment_task_row> segment_tasks;
+  standalone_entry_store::raw_segment_compaction compaction;
   std::unique_ptr<backend> rebuilt =
-      should_build_segmented(build_config, decision)
+      segmented
           ? build_segmented_backend_from_source(
-                index_name, build_config, m_entry_store,
-                &m_standalone_store, &segment_tasks)
+                index_name, build_config, m_entry_store, &m_standalone_store,
+                segment_row_limit, &compaction, &segment_tasks)
           : build_backend_from_config(index_name, build_config);
-  if (should_build_segmented(build_config, decision)) {
+  if (segmented) {
     m_segment_task_rows[index_name] = segment_tasks;
   } else {
     m_segment_task_rows[index_name].clear();
   }
   if (rebuilt == nullptr) {
+    m_standalone_store.discard_levelled_compaction(&compaction);
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_BACKEND_CREATE_FAILED);
     set_bulk_load_error(error, "LOAD VECTOR DATA could not create backend");
     return false;
   }
-  if (!should_build_segmented(build_config, decision) &&
+  if (!segmented &&
       !rebuild_backend_from_source(m_entry_store, m_standalone_store,
                                    index_name, build_config, rebuilt.get())) {
+    m_standalone_store.discard_levelled_compaction(&compaction);
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_REPLAY_STATE_FAILED);
+    m_last_failed_build_diagnostics[index_name] =
+        rebuilt->build_diagnostics();
     set_bulk_load_rebuild_error(error, rebuilt.get());
     return false;
   }
 
-  DBUG_EXECUTE_IF("vector_segment_task_before_publish", return false;);
+  DBUG_EXECUTE_IF("vector_segment_task_before_publish", {
+    m_standalone_store.discard_levelled_compaction(&compaction);
+    lifecycle_it->second = lifecycle_before_rebuild;
+    set_bulk_load_error(error,
+                        "LOAD VECTOR DATA could not publish rebuilt backend");
+    return false;
+  });
+  if (segmented && !m_standalone_store.publish_levelled_compaction(
+                       index_name, &compaction)) {
+    m_standalone_store.discard_levelled_compaction(&compaction);
+    lifecycle_it->second = lifecycle_before_rebuild;
+    set_bulk_load_error(error,
+                        "LOAD VECTOR DATA could not publish compacted input");
+    return false;
+  }
   index_it->second = std::move(rebuilt);
-  mark_lifecycle_ready(&lifecycle_it->second);
+  mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
+  m_standalone_store.finalize_levelled_compaction(&compaction);
   return true;
 }
 
@@ -4291,7 +5131,7 @@ bool index_service::recover_index(const std::string &index_name) {
   }
 
   index_it->second = std::move(recovered);
-  mark_lifecycle_ready(&lifecycle_it->second);
+  mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;
 }
@@ -4630,12 +5470,14 @@ bool index_service::rebuild_all_indexes(size_t *rebuilt_count) {
 
     const build_pipeline_decision decision =
         record_build_pipeline_decision(index_name, build_config);
+    const uint64_t segment_row_limit =
+        m_build_pipeline_snapshots[index_name].effective_segment_row_limit;
     std::vector<vector_index_metadata_store::segment_task_row> segment_tasks;
     std::unique_ptr<backend> rebuilt =
         should_build_segmented(build_config, decision)
             ? build_segmented_backend_from_source(
                   index_name, build_config, m_entry_store, &m_standalone_store,
-                  &segment_tasks)
+                  segment_row_limit, nullptr, &segment_tasks)
             : build_backend_from_config(index_name, build_config);
     if (should_build_segmented(build_config, decision)) {
       m_segment_task_rows[index_name] = segment_tasks;
@@ -4659,7 +5501,7 @@ bool index_service::rebuild_all_indexes(size_t *rebuilt_count) {
     m_indexes[entry.first] = std::move(entry.second);
     maybe_unload_runtime(entry.first);
     if (lifecycle_it != m_lifecycle_infos.end()) {
-      mark_lifecycle_ready(&lifecycle_it->second);
+      mark_index_ready(entry.first, &lifecycle_it->second);
     }
   }
   *rebuilt_count = rebuilt_backends.size();
@@ -4709,7 +5551,7 @@ bool index_service::recover_all_indexes(size_t *recovered_count) {
       mark_recover_fallback(&lifecycle_it->second, false);
     }
     if (lifecycle_it != m_lifecycle_infos.end()) {
-      mark_lifecycle_ready(&lifecycle_it->second);
+      mark_index_ready(entry.first, &lifecycle_it->second);
     }
   }
 
@@ -4810,7 +5652,12 @@ bool index_service::describe_index(
     *external_manifest_generation = backend->external_manifest_generation();
   }
   if (build_diagnostics != nullptr) {
-    *build_diagnostics = backend->build_diagnostics();
+    const auto failed_diagnostics_it =
+        m_last_failed_build_diagnostics.find(index_name);
+    *build_diagnostics =
+        failed_diagnostics_it == m_last_failed_build_diagnostics.end()
+            ? backend->build_diagnostics()
+            : failed_diagnostics_it->second;
   }
   return true;
 }
@@ -5021,10 +5868,6 @@ bool index_service::restore_committed_state(const committed_state &state) {
 
     if (config.consistency_mode == index_consistency_mode::kStandalone) {
       if (!restored_entry_store.register_index(index_name)) return false;
-      if (!restored_standalone_store.rebuild_backend_input(index_name,
-                                                           backend.get())) {
-        return false;
-      }
     } else if (state_it != state.end()) {
       for (const auto &doc_entry : state_it->second) {
         if (doc_entry.second.size() != backend->dimension()) return false;
@@ -5044,7 +5887,9 @@ bool index_service::restore_committed_state(const committed_state &state) {
   m_indexes = std::move(restored_backends);
   m_entry_store = std::move(restored_entry_store);
   m_standalone_store = std::move(restored_standalone_store);
+  m_standalone_rebuilds.clear();
   m_segment_task_rows.clear();
+  m_last_failed_build_diagnostics.clear();
   for (const auto &entry : m_index_configs) {
     m_segment_task_rows[entry.first] = {};
     maybe_unload_runtime(entry.first);
@@ -5127,7 +5972,7 @@ bool index_service::restore_index_config(const std::string &index_name,
       index_it->second->diskann_shuffle_build();
   config_it->second.diskann_use_bfs_cache =
       index_it->second->diskann_use_bfs_cache();
-  mark_lifecycle_ready(&lifecycle_it->second);
+  mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;
 }
@@ -5165,7 +6010,7 @@ bool index_service::set_index_consistency_mode(
   index_it->second = std::move(rebuilt);
   config_it->second = next_config;
   config_it->second.backend_variant = index_it->second->backend_variant();
-  mark_lifecycle_ready(&lifecycle_it->second);
+  mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;
 }
@@ -5331,7 +6176,7 @@ bool index_service::bulk_upsert_from_reader(
     return false;
   }
   index_it->second = std::move(rebuilt);
-  mark_lifecycle_ready(&lifecycle_it->second);
+  mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;
 }
@@ -5558,7 +6403,7 @@ bool index_service::install_rebuilt_index(
 
   index_it->second = std::move(rebuilt_backend);
   if (!m_entry_store.replace_index(index_name, entries)) return false;
-  mark_lifecycle_ready(&lifecycle_it->second);
+  mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;
 }
@@ -5580,7 +6425,7 @@ bool index_service::install_recovered_index(
   if (used_recover_fallback) {
     mark_recover_fallback(&lifecycle_it->second, false);
   }
-  mark_lifecycle_ready(&lifecycle_it->second);
+  mark_index_ready(index_name, &lifecycle_it->second);
   maybe_unload_runtime(index_name);
   return true;
 }

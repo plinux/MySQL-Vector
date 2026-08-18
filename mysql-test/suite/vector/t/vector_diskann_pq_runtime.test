@@ -125,6 +125,34 @@ SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
   '$.native_pq_runtime_official_pq_used') AS official_pq_used,
   JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
   '$.native_pq_runtime_bridge')) AS native_bridge,
+  CAST(JSON_UNQUOTE(JSON_EXTRACT(
+    VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+    '$.native_pq_runtime_effective_threads')) AS UNSIGNED) > 0
+    AS has_effective_threads,
+  CAST(JSON_UNQUOTE(JSON_EXTRACT(
+    VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+    '$.native_pq_runtime_encode_block_rows')) AS UNSIGNED) >= 4096
+    AS has_encode_block_rows,
+  CAST(JSON_UNQUOTE(JSON_EXTRACT(
+    VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+    '$.native_pq_runtime_memory_estimate')) AS UNSIGNED) > 0
+    AS has_memory_estimate,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+    '$.native_pq_runtime_memory_budget') IS NOT NULL AS has_memory_budget,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+    '$.native_pq_runtime_memory_adjustment')) IN
+      ('unlimited', 'none', 'reduced_threads', 'reduced_block_rows',
+       'reduced_threads_and_block_rows') AS has_memory_adjustment,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+    '$.native_pq_runtime_train_ms') IS NOT NULL AS has_train_ms,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+    '$.native_pq_runtime_encode_ms') IS NOT NULL AS has_encode_ms,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+    '$.native_pq_runtime_artifact_validation_ms') IS NOT NULL
+    AS has_validation_ms,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_pq_runtime_diskpq'),
+    '$.native_pq_runtime_centroid_scan_kernel')) IN
+      ('scalar_fallback', 'avx2', 'avx512') AS has_centroid_scan_kernel,
   JSON_CONTAINS(
     VEC_INDEX_SEARCH('idx_diskann_pq_runtime_diskpq',
                      VEC_FROMTEXT('[1,0,0,0]'), 1),

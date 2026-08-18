@@ -727,10 +727,26 @@ TEST(VectorIndexBackendTest,
   info.build_diagnostics.native_pq_runtime_selected_path = "elkan_avx512";
   info.build_diagnostics.native_pq_runtime_elapsed_ms = 7;
   info.build_diagnostics.native_pq_runtime_raw_reader_ms = 1;
+  info.build_diagnostics.native_pq_runtime_train_ms = 2;
+  info.build_diagnostics.native_pq_runtime_encode_ms = 3;
+  info.build_diagnostics.native_pq_runtime_artifact_validation_ms = 1;
+  info.build_diagnostics.native_pq_runtime_centroid_scan_kernel = "avx512";
   info.build_diagnostics.native_pq_runtime_distance_calls = 99;
   info.build_diagnostics.native_pq_runtime_train_rows = 42;
   info.build_diagnostics.native_pq_runtime_compressed_rows = 42;
   info.build_diagnostics.native_pq_runtime_artifacts_written = true;
+  info.build_diagnostics.native_pq_runtime_validation_failed = true;
+  info.build_diagnostics.native_pq_runtime_validation_failed_doc_id = "7";
+  info.build_diagnostics.native_pq_runtime_validation_best_doc_id = "9";
+  info.build_diagnostics.native_pq_runtime_validation_result_count = 10;
+  info.build_diagnostics.native_pq_runtime_validation_best_search_distance =
+      "0.25";
+  info.build_diagnostics.native_pq_runtime_validation_best_exact_distance =
+      "0.5";
+  info.build_diagnostics.native_pq_runtime_validation_self_pq_distance = "0.75";
+  info.build_diagnostics.native_pq_runtime_validation_pivots_checksum = "101";
+  info.build_diagnostics.native_pq_runtime_validation_compressed_checksum =
+      "202";
   info.build_diagnostics.fallback_reason = "offline_unavailable";
   info.build_segment_effective_row_limit = 65536;
   info.build_segment_target_size = 1048576;
@@ -847,6 +863,22 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "native_pq_runtime_raw_reader_ms");
   ASSERT_NE(nullptr, native_raw_reader);
   EXPECT_EQ(1U, native_raw_reader->uint_value);
+  const auto *native_train_ms =
+      find_status_field(fields, "native_pq_runtime_train_ms");
+  ASSERT_NE(nullptr, native_train_ms);
+  EXPECT_EQ(2U, native_train_ms->uint_value);
+  const auto *native_encode_ms =
+      find_status_field(fields, "native_pq_runtime_encode_ms");
+  ASSERT_NE(nullptr, native_encode_ms);
+  EXPECT_EQ(3U, native_encode_ms->uint_value);
+  const auto *native_validation_ms =
+      find_status_field(fields, "native_pq_runtime_artifact_validation_ms");
+  ASSERT_NE(nullptr, native_validation_ms);
+  EXPECT_EQ(1U, native_validation_ms->uint_value);
+  const auto *native_centroid_scan_kernel =
+      find_status_field(fields, "native_pq_runtime_centroid_scan_kernel");
+  ASSERT_NE(nullptr, native_centroid_scan_kernel);
+  EXPECT_EQ("avx512", native_centroid_scan_kernel->string_value);
   const auto *native_distance_calls =
       find_status_field(fields, "native_pq_runtime_distance_calls");
   ASSERT_NE(nullptr, native_distance_calls);
@@ -863,6 +895,22 @@ TEST(VectorIndexBackendTest,
       find_status_field(fields, "native_pq_runtime_artifacts_written");
   ASSERT_NE(nullptr, native_artifacts);
   EXPECT_TRUE(native_artifacts->bool_value);
+  const auto *validation_failed =
+      find_status_field(fields, "native_pq_runtime_validation_failed");
+  ASSERT_NE(nullptr, validation_failed);
+  EXPECT_TRUE(validation_failed->bool_value);
+  const auto *validation_failed_doc =
+      find_status_field(fields, "native_pq_runtime_validation_failed_doc_id");
+  ASSERT_NE(nullptr, validation_failed_doc);
+  EXPECT_EQ("7", validation_failed_doc->string_value);
+  const auto *validation_result_count =
+      find_status_field(fields, "native_pq_runtime_validation_result_count");
+  ASSERT_NE(nullptr, validation_result_count);
+  EXPECT_EQ(10U, validation_result_count->uint_value);
+  const auto *validation_pivots_checksum =
+      find_status_field(fields, "native_pq_runtime_validation_pivots_checksum");
+  ASSERT_NE(nullptr, validation_pivots_checksum);
+  EXPECT_EQ("101", validation_pivots_checksum->string_value);
   const auto *segment_effective_disk_pq_dims =
       find_status_field(fields, "diskann_segment_effective_disk_pq_dims");
   ASSERT_NE(nullptr, segment_effective_disk_pq_dims);
@@ -1031,6 +1079,229 @@ TEST(VectorIndexBackendTest, DiskAnnSearchAdviceCoversTuningBranches) {
       diagnostics, 10, diagnostics.search_result_budget);
   EXPECT_EQ("not_applicable", advice.advice);
   EXPECT_EQ("not_segmented_diskann_search", advice.reason);
+}
+
+TEST(VectorIndexBackendTest,
+     BackendHealthFieldsRecognizeEveryNativeAndSearchDiagnostic) {
+  using diagnostics = vector_index::backend_build_diagnostics;
+  const auto expect_diagnostic = [](const char *field_name, auto set_value) {
+    SCOPED_TRACE(field_name);
+    vector_index_registry::index_info info;
+    info.provider = "diskann";
+    set_value(&info.build_diagnostics);
+    if (std::string_view(field_name).find("native_pq_runtime_validation_") ==
+        0) {
+      info.build_diagnostics.native_pq_runtime_validation_failed = true;
+    }
+    vector_index_status_fields::field_values fields;
+    vector_index_status_fields::collect_backend_health_fields(info, &fields);
+    EXPECT_NE(nullptr, find_status_field(fields, field_name));
+  };
+
+  const std::pair<const char *, uint64_t diagnostics::*> uint_fields[] = {
+      {"native_pq_runtime_elapsed_ms",
+       &diagnostics::native_pq_runtime_elapsed_ms},
+      {"native_pq_runtime_raw_reader_ms",
+       &diagnostics::native_pq_runtime_raw_reader_ms},
+      {"native_pq_runtime_train_ms", &diagnostics::native_pq_runtime_train_ms},
+      {"native_pq_runtime_encode_ms",
+       &diagnostics::native_pq_runtime_encode_ms},
+      {"native_pq_runtime_artifact_validation_ms",
+       &diagnostics::native_pq_runtime_artifact_validation_ms},
+      {"native_pq_runtime_distance_calls",
+       &diagnostics::native_pq_runtime_distance_calls},
+      {"native_pq_runtime_train_rows",
+       &diagnostics::native_pq_runtime_train_rows},
+      {"native_pq_runtime_compressed_rows",
+       &diagnostics::native_pq_runtime_compressed_rows},
+      {"native_pq_runtime_encode_block_rows",
+       &diagnostics::native_pq_runtime_encode_block_rows},
+      {"native_pq_runtime_memory_estimate",
+       &diagnostics::native_pq_runtime_memory_estimate},
+      {"native_pq_runtime_memory_budget",
+       &diagnostics::native_pq_runtime_memory_budget},
+      {"native_pq_runtime_bridge_ms",
+       &diagnostics::native_pq_runtime_bridge_ms},
+      {"native_pq_runtime_graph_ms", &diagnostics::native_pq_runtime_graph_ms},
+      {"native_pq_runtime_cache_ms", &diagnostics::native_pq_runtime_cache_ms},
+      {"native_pq_runtime_validation_result_count",
+       &diagnostics::native_pq_runtime_validation_result_count},
+      {"scheduler_search_fanout_segments",
+       &diagnostics::search_fanout_segments},
+      {"scheduler_search_fanout_threads", &diagnostics::search_fanout_threads},
+      {"scheduler_search_global_top_k", &diagnostics::search_global_top_k},
+      {"scheduler_search_per_segment_top_k",
+       &diagnostics::search_per_segment_top_k},
+      {"scheduler_search_result_budget", &diagnostics::search_result_budget},
+      {"scheduler_search_candidate_count",
+       &diagnostics::search_candidate_count},
+      {"scheduler_search_query_count", &diagnostics::search_query_count},
+      {"scheduler_search_segment_min_entries",
+       &diagnostics::search_segment_min_entries},
+      {"scheduler_search_segment_max_entries",
+       &diagnostics::search_segment_max_entries},
+      {"scheduler_search_segment_total_entries",
+       &diagnostics::search_segment_total_entries},
+      {"scheduler_search_diskann_search_list",
+       &diagnostics::search_diskann_search_list},
+      {"scheduler_search_diskann_beamwidth",
+       &diagnostics::search_diskann_beamwidth},
+      {"scheduler_search_effective_complexity",
+       &diagnostics::search_effective_complexity},
+      {"scheduler_search_total_candidate_rows",
+       &diagnostics::search_total_candidate_rows}};
+  for (const auto &field : uint_fields) {
+    expect_diagnostic(field.first,
+                      [member = field.second](diagnostics *value) {
+                        value->*member = 1;
+                      });
+  }
+
+  const std::pair<const char *, std::string diagnostics::*> string_fields[] = {
+      {"native_pq_runtime_selected_path",
+       &diagnostics::native_pq_runtime_selected_path},
+      {"native_pq_runtime_centroid_scan_kernel",
+       &diagnostics::native_pq_runtime_centroid_scan_kernel},
+      {"native_pq_runtime_memory_adjustment",
+       &diagnostics::native_pq_runtime_memory_adjustment},
+      {"native_pq_runtime_bridge", &diagnostics::native_pq_runtime_bridge},
+      {"native_pq_runtime_artifact_validation",
+       &diagnostics::native_pq_runtime_artifact_validation},
+      {"native_pq_runtime_validation_failed_doc_id",
+       &diagnostics::native_pq_runtime_validation_failed_doc_id},
+      {"native_pq_runtime_validation_best_doc_id",
+       &diagnostics::native_pq_runtime_validation_best_doc_id},
+      {"native_pq_runtime_validation_best_search_distance",
+       &diagnostics::native_pq_runtime_validation_best_search_distance},
+      {"native_pq_runtime_validation_best_exact_distance",
+       &diagnostics::native_pq_runtime_validation_best_exact_distance},
+      {"native_pq_runtime_validation_self_pq_distance",
+       &diagnostics::native_pq_runtime_validation_self_pq_distance},
+      {"native_pq_runtime_validation_pivots_checksum",
+       &diagnostics::native_pq_runtime_validation_pivots_checksum},
+      {"native_pq_runtime_validation_compressed_checksum",
+       &diagnostics::native_pq_runtime_validation_compressed_checksum},
+      {"scheduler_search_profile", &diagnostics::search_profile},
+      {"scheduler_search_profile_reason", &diagnostics::search_profile_reason}};
+  for (const auto &field : string_fields) {
+    expect_diagnostic(field.first,
+                      [member = field.second](diagnostics *value) {
+                        value->*member = "value";
+                      });
+  }
+
+  const std::pair<const char *, bool diagnostics::*> bool_fields[] = {
+      {"native_pq_runtime_artifacts_written",
+       &diagnostics::native_pq_runtime_artifacts_written},
+      {"native_pq_runtime_artifacts_consumed",
+       &diagnostics::native_pq_runtime_artifacts_consumed},
+      {"native_pq_runtime_official_pq_used",
+       &diagnostics::native_pq_runtime_official_pq_used},
+      {"native_pq_runtime_validation_failed",
+       &diagnostics::native_pq_runtime_validation_failed}};
+  for (const auto &field : bool_fields) {
+    expect_diagnostic(field.first,
+                      [member = field.second](diagnostics *value) {
+                        value->*member = true;
+                      });
+  }
+  expect_diagnostic("native_pq_runtime_effective_threads",
+                    [](diagnostics *value) {
+                      value->native_pq_runtime_effective_threads = 1;
+                    });
+}
+
+TEST(VectorIndexBackendTest, DiskAnnSearchAdviceCoversFallbackInputs) {
+  vector_index::backend_build_diagnostics diagnostics;
+  diagnostics.search_fanout_segments = 4;
+  diagnostics.search_query_count = 2;
+  diagnostics.search_candidate_count = 256;
+  diagnostics.search_diskann_search_list = 1600;
+  diagnostics.search_effective_complexity = 1600;
+  diagnostics.search_per_segment_top_k = 64;
+  diagnostics.search_segment_max_entries = 65536;
+
+  const auto expect_not_applicable =
+      [](vector_index::backend_build_diagnostics candidate) {
+        const auto advice =
+            vector_index_observability::derive_diskann_search_advice(
+                candidate, 10, 0);
+        EXPECT_EQ("not_applicable", advice.advice);
+        EXPECT_EQ("not_segmented_diskann_search", advice.reason);
+      };
+  auto missing_diagnostic = diagnostics;
+  missing_diagnostic.search_query_count = 0;
+  expect_not_applicable(missing_diagnostic);
+  missing_diagnostic = diagnostics;
+  missing_diagnostic.search_candidate_count = 0;
+  expect_not_applicable(missing_diagnostic);
+  missing_diagnostic = diagnostics;
+  missing_diagnostic.search_diskann_search_list = 0;
+  expect_not_applicable(missing_diagnostic);
+
+  auto advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 10, 0);
+  EXPECT_EQ("no_action", advice.advice);
+
+  diagnostics.search_result_budget = 1;
+  advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 10, 0);
+  EXPECT_EQ("increase_vector_search_batch_result_count", advice.advice);
+
+  diagnostics.search_result_budget = 4096;
+  diagnostics.search_global_top_k = 10;
+  diagnostics.search_per_segment_top_k = 20;
+  advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 0, 0);
+  EXPECT_EQ("increase_search_complexity", advice.advice);
+
+  diagnostics.search_per_segment_top_k = 64;
+  diagnostics.search_candidate_count = 100;
+  diagnostics.search_effective_complexity = 0;
+  diagnostics.search_result_budget = 4096;
+  advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 10, 4096);
+  EXPECT_EQ("increase_search_complexity", advice.advice);
+  EXPECT_EQ(3200U, advice.suggested_complexity);
+
+  diagnostics.search_candidate_count = 256;
+  diagnostics.search_effective_complexity = 1600;
+  diagnostics.search_per_segment_top_k = 64;
+  diagnostics.search_segment_max_entries = 100000;
+  diagnostics.search_profile = "HIGH_RECALL";
+  advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 10, 4096);
+  EXPECT_EQ("no_action", advice.advice);
+
+  diagnostics.search_profile = "high_recalx";
+  advice = vector_index_observability::derive_diskann_search_advice(
+      diagnostics, 10, 4096);
+  EXPECT_EQ("use_smaller_segments_or_high_recall_profile", advice.advice);
+
+  vector_index_registry::index_info info;
+  info.lifecycle_state = "ready";
+  info.supports_mutations = false;
+  EXPECT_FALSE(vector_index_observability::is_writable(info));
+}
+
+TEST(VectorIndexBackendTest, StatusValueCoversTypedAndUnknownFields) {
+  vector_index_status_fields::field_value field;
+  field.kind = vector_index_status_fields::field_kind::k_string;
+  field.string_value = "ready";
+  EXPECT_EQ("ready", vector_index_status_fields::status_value(field));
+
+  field.kind = vector_index_status_fields::field_kind::k_nullable_string;
+  field.string_value.clear();
+  EXPECT_TRUE(vector_index_status_fields::status_value(field).empty());
+
+  field.kind = vector_index_status_fields::field_kind::k_bool;
+  field.bool_value = false;
+  EXPECT_EQ("0", vector_index_status_fields::status_value(field));
+  field.bool_value = true;
+  EXPECT_EQ("1", vector_index_status_fields::status_value(field));
+
+  field.kind = static_cast<vector_index_status_fields::field_kind>(999);
+  EXPECT_TRUE(vector_index_status_fields::status_value(field).empty());
 }
 
 TEST(VectorIndexBackendTest,

@@ -103,6 +103,27 @@ class standalone_entry_store {
  public:
   using entry_visitor = std::function<bool(uint64_t, const vector_data &)>;
 
+  /**
+    Staged replacement for a raw standalone segment set.
+
+    Compaction writes the replacement files before changing the persisted
+    manifest. The caller can therefore build a shadow runtime from `segments`
+    and publish both only after the build succeeds.
+  */
+  struct raw_segment_compaction {
+    bool needed{false};
+    bool published{false};
+    uint64_t source_generation{0};
+    uint64_t source_next_segment_id{0};
+    std::string source_build_source;
+    uint64_t next_generation{0};
+    uint64_t next_segment_id{0};
+    std::vector<raw_vector_segment> source_segments;
+    std::vector<raw_vector_segment> segments;
+    std::vector<std::string> created_files;
+    std::vector<std::string> replaced_files;
+  };
+
   bool register_index(const std::string &index_name, size_t dimension);
   bool drop_index(const std::string &index_name);
   bool rename_index(const std::string &old_index_name,
@@ -122,6 +143,16 @@ class standalone_entry_store {
   bool erase(const std::string &index_name, uint64_t doc_id,
              size_t cache_budget);
   bool prepare_raw_segments_for_rebuild(const std::string &index_name);
+  bool stage_levelled_compaction(const std::string &index_name,
+                                 uint64_t row_limit,
+                                 raw_segment_compaction *compaction);
+  bool publish_levelled_compaction(const std::string &index_name,
+                                   raw_segment_compaction *compaction);
+  bool rollback_levelled_compaction(const std::string &index_name,
+                                    raw_segment_compaction *compaction);
+  void finalize_levelled_compaction(
+      raw_segment_compaction *compaction) const;
+  void discard_levelled_compaction(raw_segment_compaction *compaction) const;
   bool read_rebuild_raw_segments(
       const std::string &index_name,
       const raw_vector_segment_visitor &visitor) const;
@@ -176,6 +207,14 @@ class standalone_entry_store {
                        size_t cache_budget);
   bool compact_to_raw_segment(const std::string &index_name,
                               index_state *state);
+  bool write_compacted_raw_segment(
+      const std::string &index_name,
+      const std::vector<raw_vector_segment> &source_segments,
+      uint64_t segment_id, uint64_t generation,
+      raw_vector_segment *compacted_segment) const;
+  bool assign_raw_segments(
+      index_state *state,
+      const std::vector<raw_vector_segment> &raw_segments) const;
   bool materialized_rebuild_fits_budget(const index_state &state) const;
   bool read_raw_segments(const index_state &state,
                          const raw_vector_segment_visitor &visitor) const;
@@ -312,6 +351,34 @@ class index_service {
     uint64_t effective_segment_row_limit{0};
   };
 
+  struct standalone_rebuild_plan {
+    bool prepared{false};
+    bool built{false};
+    bool published{false};
+    bool segmented{false};
+    bool had_previous_pipeline{false};
+    bool had_previous_segment_tasks{false};
+    bool had_previous_failed_build_diagnostics{false};
+    bool has_failed_build_diagnostics{false};
+    std::string index_name;
+    index_config source_config;
+    index_config build_config;
+    uint64_t source_lifecycle_version{0};
+    uint64_t source_generation{0};
+    backend_ptr previous_runtime;
+    lifecycle_info previous_lifecycle;
+    build_pipeline_snapshot previous_pipeline;
+    build_pipeline_snapshot pipeline;
+    std::vector<vector_index_metadata_store::segment_task_row>
+        previous_segment_tasks;
+    std::vector<vector_index_metadata_store::segment_task_row> segment_tasks;
+    backend_build_diagnostics previous_failed_build_diagnostics;
+    backend_build_diagnostics failed_build_diagnostics;
+    standalone_entry_store::raw_segment_compaction compaction;
+    std::vector<raw_vector_segment> raw_segments;
+    std::unique_ptr<backend> rebuilt_backend;
+  };
+
   struct index_observability_state {
     bool truth_store_enabled{true};
     size_t authoritative_entry_count{0};
@@ -338,6 +405,18 @@ class index_service {
   bool begin_bulk_load(const std::string &index_name);
   bool rebuild_index(const std::string &index_name,
                      std::string *error = nullptr);
+  bool prepare_standalone_rebuild(const std::string &index_name,
+                                  standalone_rebuild_plan *plan,
+                                  std::string *error = nullptr);
+  bool build_standalone_rebuild(standalone_rebuild_plan *plan,
+                                std::string *error = nullptr);
+  bool publish_standalone_rebuild(standalone_rebuild_plan *plan,
+                                  std::string *error = nullptr);
+  bool rollback_standalone_rebuild(standalone_rebuild_plan *plan);
+  void discard_standalone_rebuild(standalone_rebuild_plan *plan);
+  void finalize_standalone_rebuild(standalone_rebuild_plan *plan);
+  void record_standalone_rebuild_tasks(
+      const standalone_rebuild_plan &plan);
   bool recover_index(const std::string &index_name);
   bool rebuild_all_indexes(size_t *rebuilt_count);
   bool recover_all_indexes(size_t *recovered_count);
@@ -425,6 +504,7 @@ class index_service {
       uint64_t txn_id, const std::string &index_name, const vector_data &query,
       size_t top_k, std::vector<search_result> *results) const;
   bool ensure_runtime_loaded_for_search(const std::string &index_name);
+  bool runtime_loaded_for_search(const std::string &index_name) const;
   bool rebuild_runtime_from_store_for_search(const std::string &index_name);
   bool describe_index(const std::string &index_name, index_config *config,
                       bool *supports_mutations, size_t *entry_count,
@@ -537,6 +617,9 @@ class index_service {
   std::unordered_map<
       std::string, std::vector<vector_index_metadata_store::segment_task_row>>
       m_segment_task_rows;
+  std::unordered_map<std::string, backend_build_diagnostics>
+      m_last_failed_build_diagnostics;
+  std::unordered_set<std::string> m_standalone_rebuilds;
   std::unordered_map<uint64_t, std::vector<pending_change>> m_pending_changes;
   std::unordered_map<uint64_t, std::vector<savepoint_marker>> m_savepoints;
 
@@ -557,6 +640,11 @@ class index_service {
   bool replace_committed_entries_impl(const std::string &index_name,
                                       const committed_entries &entries,
                                       bool preserve_lifecycle);
+  void mark_index_ready(const std::string &index_name,
+                        lifecycle_info *lifecycle);
+  bool build_runtime_from_current_policy(
+      const std::string &index_name, const index_config &persisted_config,
+      std::unique_ptr<backend> *runtime);
   bool ensure_runtime_loaded(const std::string &index_name);
   void maybe_unload_runtime(const std::string &index_name);
   size_t diskann_exact_rerank_segment_count(
@@ -577,6 +665,9 @@ class index_service {
       const std::string &index_name, const index_config &config) const;
   build_pipeline_decision record_build_pipeline_decision(
       const std::string &index_name, const index_config &config);
+  build_pipeline_decision make_build_pipeline_decision(
+      const std::string &index_name, const index_config &config,
+      build_pipeline_snapshot *snapshot) const;
 };
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING

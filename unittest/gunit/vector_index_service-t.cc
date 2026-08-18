@@ -61,12 +61,16 @@ TEST(VectorIndexServiceHelperTest, MergesSegmentBuildDiagnostics) {
   vector_index::backend_build_diagnostics first;
   first.diskann_pq_runtime = "native_strict";
   first.native_pq_runtime_selected_path = "avx2";
+  first.native_pq_runtime_centroid_scan_kernel = "avx2";
+  first.native_pq_runtime_memory_adjustment = "none";
   first.native_pq_runtime_bridge = "cpp_main";
   first.native_pq_runtime_artifact_validation = "ok";
   first.native_pq_runtime_artifacts_written = true;
   first.native_pq_runtime_artifacts_consumed = true;
   first.native_pq_runtime_official_pq_used = false;
   first.effective_disk_pq_dims = 64;
+  first.native_pq_runtime_effective_threads = 8;
+  first.native_pq_runtime_train_ms = 11;
   vector_index::detail::merge_segment_build_diagnostics(100, first,
                                                          &aggregate);
 
@@ -75,8 +79,11 @@ TEST(VectorIndexServiceHelperTest, MergesSegmentBuildDiagnostics) {
   EXPECT_EQ(1U, aggregate.build_invocations);
   EXPECT_EQ("native_strict", aggregate.diskann_pq_runtime);
   EXPECT_EQ("avx2", aggregate.native_pq_runtime_selected_path);
+  EXPECT_EQ("avx2", aggregate.native_pq_runtime_centroid_scan_kernel);
+  EXPECT_EQ("none", aggregate.native_pq_runtime_memory_adjustment);
   EXPECT_EQ("cpp_main", aggregate.native_pq_runtime_bridge);
   EXPECT_EQ("ok", aggregate.native_pq_runtime_artifact_validation);
+  EXPECT_EQ(11U, aggregate.native_pq_runtime_train_ms);
 
   vector_index::backend_build_diagnostics second = first;
   second.row_count = 90;
@@ -84,10 +91,23 @@ TEST(VectorIndexServiceHelperTest, MergesSegmentBuildDiagnostics) {
   second.build_invocations = 3;
   second.diskann_pq_runtime = "official";
   second.native_pq_runtime_selected_path = "scalar_fallback";
+  second.native_pq_runtime_centroid_scan_kernel = "scalar_fallback";
+  second.native_pq_runtime_memory_adjustment = "reduced_threads";
   second.native_pq_runtime_bridge = "fallback";
   second.native_pq_runtime_artifact_validation = "failed";
   second.native_pq_runtime_official_pq_used = true;
+  second.native_pq_runtime_validation_failed = true;
+  second.native_pq_runtime_validation_failed_doc_id = "17";
+  second.native_pq_runtime_validation_best_doc_id = "19";
+  second.native_pq_runtime_validation_result_count = 8;
+  second.native_pq_runtime_validation_best_search_distance = "0.25";
+  second.native_pq_runtime_validation_best_exact_distance = "0.5";
+  second.native_pq_runtime_validation_self_pq_distance = "0.75";
+  second.native_pq_runtime_validation_pivots_checksum = "101";
+  second.native_pq_runtime_validation_compressed_checksum = "202";
   second.effective_disk_pq_dims = 128;
+  second.native_pq_runtime_effective_threads = 4;
+  second.native_pq_runtime_train_ms = 13;
   second.fallback_reason = "bridge_failed";
   vector_index::detail::merge_segment_build_diagnostics(100, second,
                                                          &aggregate);
@@ -97,12 +117,26 @@ TEST(VectorIndexServiceHelperTest, MergesSegmentBuildDiagnostics) {
   EXPECT_EQ(4U, aggregate.build_invocations);
   EXPECT_EQ("mixed", aggregate.diskann_pq_runtime);
   EXPECT_EQ("mixed", aggregate.native_pq_runtime_selected_path);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_centroid_scan_kernel);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_memory_adjustment);
   EXPECT_EQ("mixed", aggregate.native_pq_runtime_bridge);
   EXPECT_EQ("mixed", aggregate.native_pq_runtime_artifact_validation);
+  EXPECT_EQ(24U, aggregate.native_pq_runtime_train_ms);
   EXPECT_EQ(128U, aggregate.effective_disk_pq_dims);
+  EXPECT_EQ(8U, aggregate.native_pq_runtime_effective_threads);
   EXPECT_TRUE(aggregate.native_pq_runtime_artifacts_written);
   EXPECT_TRUE(aggregate.native_pq_runtime_artifacts_consumed);
   EXPECT_TRUE(aggregate.native_pq_runtime_official_pq_used);
+  EXPECT_TRUE(aggregate.native_pq_runtime_validation_failed);
+  EXPECT_EQ("17", aggregate.native_pq_runtime_validation_failed_doc_id);
+  EXPECT_EQ("19", aggregate.native_pq_runtime_validation_best_doc_id);
+  EXPECT_EQ(8U, aggregate.native_pq_runtime_validation_result_count);
+  EXPECT_EQ("0.25",
+            aggregate.native_pq_runtime_validation_best_search_distance);
+  EXPECT_EQ("0.5", aggregate.native_pq_runtime_validation_best_exact_distance);
+  EXPECT_EQ("0.75", aggregate.native_pq_runtime_validation_self_pq_distance);
+  EXPECT_EQ("101", aggregate.native_pq_runtime_validation_pivots_checksum);
+  EXPECT_EQ("202", aggregate.native_pq_runtime_validation_compressed_checksum);
   EXPECT_EQ("bridge_failed", aggregate.fallback_reason);
 
   vector_index::backend_build_diagnostics empty_strings;
@@ -110,6 +144,8 @@ TEST(VectorIndexServiceHelperTest, MergesSegmentBuildDiagnostics) {
       1, empty_strings, &aggregate);
   EXPECT_EQ("mixed", aggregate.diskann_pq_runtime);
   EXPECT_EQ("mixed", aggregate.native_pq_runtime_selected_path);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_centroid_scan_kernel);
+  EXPECT_EQ("mixed", aggregate.native_pq_runtime_memory_adjustment);
   EXPECT_EQ("mixed", aggregate.native_pq_runtime_bridge);
   EXPECT_EQ("mixed", aggregate.native_pq_runtime_artifact_validation);
 }
@@ -709,6 +745,52 @@ void expect_pipeline_snapshot(
   EXPECT_EQ(row_count, snapshot.row_count);
   EXPECT_EQ(payload_size, snapshot.payload_size);
   EXPECT_EQ(raw_segment_count, snapshot.raw_segment_count);
+}
+
+bool prepare_levelled_compaction_index(vector_index::index_service *service,
+                                       const std::string &root,
+                                       const std::string &index_name,
+                                       const char *provider,
+                                       std::string *failure) {
+  if (failure != nullptr) failure->clear();
+  if (service == nullptr || provider == nullptr) {
+    if (failure != nullptr) *failure = "invalid setup arguments";
+    return false;
+  }
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 8, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F, 4.0F, 0.0F, 5.0F,
+                       0.0F, 6.0F, 0.0F, 7.0F, 0.0F, 8.0F, 0.0F});
+  write_raw_docid_file(docid_path, {1, 2, 3, 4, 5, 6, 7, 8});
+
+  if (!service->register_index_from_strings(index_name, 2, "euclidean",
+                                            "memory", provider)) {
+    if (failure != nullptr) *failure = "index registration failed";
+    return false;
+  }
+  if (!service->set_index_consistency_mode(
+          index_name, vector_index::index_consistency_mode::kStandalone)) {
+    if (failure != nullptr) *failure = "standalone mode setup failed";
+    return false;
+  }
+
+  vector_index::index_service::bulk_load_options options;
+  uint64_t loaded_rows = 0;
+  std::string error;
+  if (!service->bulk_upsert_from_raw_files(index_name, vector_path, docid_path,
+                                           options, &loaded_rows, &error)) {
+    if (failure != nullptr) {
+      *failure = error.empty() ? "raw bulk load failed" : error;
+    }
+    return false;
+  }
+  if (loaded_rows != 8) {
+    if (failure != nullptr) *failure = "unexpected loaded row count";
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -1930,6 +2012,7 @@ TEST(VectorIndexServiceTest, BuildPipelineHonorsMultipleRawSegments) {
     GTEST_SKIP() << "No memory provider is available for segmented tests";
   }
   opt_vector_build_pipeline_max_tasks = 2;
+  opt_vector_build_segment_max_rows = 1;
   vector_index::reset_runtime_worker_pool_for_testing();
   const std::string root =
       std::string(testing::TempDir()) + "/pipeline_raw_segments_t";
@@ -2101,6 +2184,421 @@ TEST(VectorIndexServiceTest, BuildPipelineSchedulesFourRawSegmentTasks) {
   std::filesystem::remove_all(root, ec);
 }
 
+TEST(VectorIndexServiceTest,
+     LevelledCompactionPublishesFewerSegmentsAndKeepsOldRuntimeAlive) {
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+  opt_vector_build_segment_max_rows = 1;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/levelled_compaction_publish_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::index_service service;
+  std::string setup_error;
+  ASSERT_TRUE(prepare_levelled_compaction_index(
+      &service, root, "idx_levelled_publish", provider, &setup_error))
+      << setup_error;
+  ASSERT_EQ(8U, service.standalone_raw_segment_count("idx_levelled_publish"));
+  ASSERT_TRUE(service.rebuild_index("idx_levelled_publish"));
+
+  vector_index::index_service::backend_ptr old_runtime;
+  ASSERT_TRUE(service.snapshot_search_backend_loaded(
+      "idx_levelled_publish", {8.0F, 0.0F}, &old_runtime));
+  ASSERT_NE(nullptr, old_runtime);
+
+  opt_vector_build_segment_max_rows = 4;
+  ASSERT_TRUE(service.rebuild_index("idx_levelled_publish"));
+  EXPECT_EQ(2U, service.standalone_raw_segment_count("idx_levelled_publish"));
+  EXPECT_EQ("raw_segments_compacted",
+            service.standalone_build_source("idx_levelled_publish"));
+
+  std::vector<vector_index::search_result> old_result;
+  {
+    std::shared_lock<std::shared_mutex> runtime_guard(
+        old_runtime->runtime_mutex());
+    ASSERT_TRUE(old_runtime->search({8.0F, 0.0F}, 1, &old_result));
+  }
+  ASSERT_EQ(1U, old_result.size());
+  EXPECT_EQ(8U, old_result[0].doc_id);
+
+  std::vector<vector_index::search_result> current_result;
+  ASSERT_TRUE(
+      service.search("idx_levelled_publish", {8.0F, 0.0F}, 1, &current_result));
+  ASSERT_EQ(1U, current_result.size());
+  EXPECT_EQ(8U, current_result[0].doc_id);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest,
+     LevelledCompactionPublishFailureKeepsManifestAndRuntime) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+  opt_vector_build_segment_max_rows = 1;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/levelled_compaction_rollback_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::index_service service;
+  std::string setup_error;
+  ASSERT_TRUE(prepare_levelled_compaction_index(
+      &service, root, "idx_levelled_rollback", provider, &setup_error))
+      << setup_error;
+  ASSERT_TRUE(service.rebuild_index("idx_levelled_rollback"));
+
+  vector_index::index_service::backend_ptr old_runtime;
+  ASSERT_TRUE(service.snapshot_search_backend_loaded(
+      "idx_levelled_rollback", {8.0F, 0.0F}, &old_runtime));
+  ASSERT_NE(nullptr, old_runtime);
+
+  opt_vector_build_segment_max_rows = 4;
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug,
+                             "+d,vector_standalone_compaction_before_publish");
+    EXPECT_FALSE(service.rebuild_index("idx_levelled_rollback"));
+  }
+  EXPECT_EQ(8U, service.standalone_raw_segment_count("idx_levelled_rollback"));
+  EXPECT_EQ("raw_segments_direct",
+            service.standalone_build_source("idx_levelled_rollback"));
+
+  std::vector<vector_index::search_result> result;
+  {
+    std::shared_lock<std::shared_mutex> runtime_guard(
+        old_runtime->runtime_mutex());
+    ASSERT_TRUE(old_runtime->search({8.0F, 0.0F}, 1, &result));
+  }
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(8U, result[0].doc_id);
+  ASSERT_TRUE(
+      service.search("idx_levelled_rollback", {8.0F, 0.0F}, 1, &result));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest,
+     LevelledCompactionBackendFailureKeepsManifestAndRuntime) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+  opt_vector_build_segment_max_rows = 1;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/levelled_compaction_build_fail_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::index_service service;
+  std::string setup_error;
+  ASSERT_TRUE(prepare_levelled_compaction_index(
+      &service, root, "idx_levelled_build_fail", provider, &setup_error))
+      << setup_error;
+  ASSERT_TRUE(service.rebuild_index("idx_levelled_build_fail"));
+
+  vector_index::index_service::backend_ptr old_runtime;
+  ASSERT_TRUE(service.snapshot_search_backend_loaded(
+      "idx_levelled_build_fail", {8.0F, 0.0F}, &old_runtime));
+  ASSERT_NE(nullptr, old_runtime);
+
+  opt_vector_build_segment_max_rows = 4;
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_segment_backend_build_failure");
+    EXPECT_FALSE(service.rebuild_index("idx_levelled_build_fail"));
+  }
+  EXPECT_EQ(8U,
+            service.standalone_raw_segment_count("idx_levelled_build_fail"));
+  EXPECT_EQ("raw_segments_direct",
+            service.standalone_build_source("idx_levelled_build_fail"));
+
+  std::vector<vector_index::search_result> result;
+  {
+    std::shared_lock<std::shared_mutex> runtime_guard(
+        old_runtime->runtime_mutex());
+    ASSERT_TRUE(old_runtime->search({8.0F, 0.0F}, 1, &result));
+  }
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(8U, result[0].doc_id);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest,
+     FailedStandaloneRebuildRetainsCandidateDiagnostics) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "Debug failure injection requires a debug build";
+#endif
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for rebuild tests";
+  }
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kDirect);
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_failed_diagnostics_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  vector_index::index_service service;
+  std::string error;
+  ASSERT_TRUE(prepare_levelled_compaction_index(
+      &service, root, "idx_failed_diagnostics", provider, &error))
+      << error;
+
+  vector_index::index_service::standalone_rebuild_plan plan;
+  ASSERT_TRUE(service.prepare_standalone_rebuild(
+      "idx_failed_diagnostics", &plan, &error))
+      << error;
+  bool build_ok = false;
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(
+        debug, "+d,vector_standalone_rebuild_after_backend_build_failure");
+    build_ok = service.build_standalone_rebuild(&plan, &error);
+  }
+  EXPECT_FALSE(build_ok);
+  service.discard_standalone_rebuild(&plan);
+
+  vector_index::index_service::index_config config;
+  vector_index::backend_build_diagnostics diagnostics;
+  ASSERT_TRUE(service.describe_index(
+      "idx_failed_diagnostics", &config, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      &diagnostics));
+  EXPECT_GT(diagnostics.build_invocations, 0U);
+  EXPECT_EQ("debug_forced_post_build_failure", diagnostics.fallback_reason);
+
+  ASSERT_TRUE(service.rename_index("idx_failed_diagnostics",
+                                   "idx_renamed_diagnostics"));
+  EXPECT_FALSE(service.describe_index(
+      "idx_failed_diagnostics", &config, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      &diagnostics));
+  ASSERT_TRUE(service.describe_index(
+      "idx_renamed_diagnostics", &config, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      &diagnostics));
+  EXPECT_EQ("debug_forced_post_build_failure", diagnostics.fallback_reason);
+
+  ASSERT_TRUE(service.rebuild_index("idx_renamed_diagnostics", &error))
+      << error;
+  ASSERT_TRUE(service.describe_index(
+      "idx_renamed_diagnostics", &config, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      &diagnostics));
+  EXPECT_NE("debug_forced_post_build_failure", diagnostics.fallback_reason);
+  ASSERT_TRUE(service.drop_index("idx_renamed_diagnostics"));
+  EXPECT_FALSE(service.describe_index(
+      "idx_renamed_diagnostics", &config, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      &diagnostics));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest, LevelledCompactionManifestReloadsAfterRestart) {
+  build_pipeline_options_guard guard;
+  const char *provider = segmented_memory_provider_for_testing();
+  if (provider == nullptr) {
+    GTEST_SKIP() << "No memory provider is available for segmented tests";
+  }
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+  opt_vector_build_segment_max_rows = 1;
+  opt_vector_build_segment_target_size = 1024 * 1024;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/levelled_compaction_restart_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  {
+    vector_index::index_service service;
+    std::string setup_error;
+    ASSERT_TRUE(prepare_levelled_compaction_index(
+        &service, root, "idx_levelled_restart", provider, &setup_error))
+        << setup_error;
+    ASSERT_TRUE(service.rebuild_index("idx_levelled_restart"));
+    opt_vector_build_segment_max_rows = 4;
+    ASSERT_TRUE(service.rebuild_index("idx_levelled_restart"));
+    ASSERT_EQ(2U, service.standalone_raw_segment_count("idx_levelled_restart"));
+  }
+
+  vector_index::index_service reloaded;
+  ASSERT_TRUE(reloaded.register_index_from_strings(
+      "idx_levelled_restart", 2, "euclidean", "memory", provider));
+  ASSERT_TRUE(reloaded.set_index_consistency_mode(
+      "idx_levelled_restart",
+      vector_index::index_consistency_mode::kStandalone));
+  EXPECT_EQ(2U, reloaded.standalone_raw_segment_count("idx_levelled_restart"));
+  EXPECT_EQ("raw_segments_compacted",
+            reloaded.standalone_build_source("idx_levelled_restart"));
+  ASSERT_TRUE(reloaded.rebuild_index("idx_levelled_restart"));
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(
+      reloaded.search("idx_levelled_restart", {8.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(8U, result[0].doc_id);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     LevelledCompactionGenerationConflictRejectsStagedFiles) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/levelled_compaction_conflict_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 8, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F, 4.0F, 0.0F, 5.0F,
+                       0.0F, 6.0F, 0.0F, 7.0F, 0.0F, 8.0F, 0.0F});
+  write_raw_docid_file(docid_path, {1, 2, 3, 4, 5, 6, 7, 8});
+
+  vector_index::standalone_entry_store store;
+  ASSERT_TRUE(store.register_index("idx_levelled_conflict", 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files("idx_levelled_conflict", vector_path,
+                                          docid_path, 8, 2, 1));
+
+  vector_index::standalone_entry_store::raw_segment_compaction compaction;
+  ASSERT_TRUE(
+      store.stage_levelled_compaction("idx_levelled_conflict", 1, &compaction));
+  EXPECT_FALSE(compaction.needed);
+  EXPECT_EQ(8U, compaction.segments.size());
+  EXPECT_TRUE(compaction.created_files.empty());
+  ASSERT_TRUE(
+      store.stage_levelled_compaction("idx_levelled_conflict", 4, &compaction));
+  ASSERT_TRUE(compaction.needed);
+  ASSERT_EQ(2U, compaction.segments.size());
+  const std::vector<std::string> staged_files = compaction.created_files;
+
+  ASSERT_TRUE(store.upsert("idx_levelled_conflict", 9, {9.0F, 0.0F},
+                           std::numeric_limits<size_t>::max()));
+  EXPECT_FALSE(
+      store.publish_levelled_compaction("idx_levelled_conflict", &compaction));
+  store.discard_levelled_compaction(&compaction);
+
+  EXPECT_EQ(8U, store.raw_segment_count("idx_levelled_conflict"));
+  EXPECT_EQ(9U, store.entry_count("idx_levelled_conflict"));
+  for (const std::string &path : staged_files) {
+    EXPECT_FALSE(std::filesystem::exists(path));
+  }
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorStandaloneEntryStoreTest,
+     LevelledCompactionDefersCleanupUntilFinalizeAndSupportsRollback) {
+  const std::string root =
+      std::string(testing::TempDir()) + "/levelled_compaction_finalize_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 8, 2,
+                      {1.0F, 0.0F, 2.0F, 0.0F, 3.0F, 0.0F, 4.0F, 0.0F,
+                       5.0F, 0.0F, 6.0F, 0.0F, 7.0F, 0.0F, 8.0F, 0.0F});
+  write_raw_docid_file(docid_path, {1, 2, 3, 4, 5, 6, 7, 8});
+
+  vector_index::standalone_entry_store store;
+  const std::string index_name = "idx_levelled_finalize";
+  ASSERT_TRUE(store.register_index(index_name, 2));
+  ASSERT_TRUE(store.bulk_upsert_raw_files(index_name, vector_path, docid_path,
+                                          8, 2, 1));
+
+  vector_index::standalone_entry_store::raw_segment_compaction compaction;
+  ASSERT_TRUE(store.stage_levelled_compaction(index_name, 4, &compaction));
+  ASSERT_TRUE(compaction.needed);
+  const std::vector<std::string> source_files = compaction.replaced_files;
+  const std::vector<std::string> first_staged_files = compaction.created_files;
+  ASSERT_TRUE(store.publish_levelled_compaction(index_name, &compaction));
+  EXPECT_EQ(2U, store.raw_segment_count(index_name));
+  for (const std::string &path : source_files) {
+    EXPECT_TRUE(std::filesystem::exists(path));
+  }
+
+  ASSERT_TRUE(store.rollback_levelled_compaction(index_name, &compaction));
+  EXPECT_EQ(8U, store.raw_segment_count(index_name));
+  for (const std::string &path : source_files) {
+    EXPECT_TRUE(std::filesystem::exists(path));
+  }
+  for (const std::string &path : first_staged_files) {
+    EXPECT_FALSE(std::filesystem::exists(path));
+  }
+
+  ASSERT_TRUE(store.stage_levelled_compaction(index_name, 4, &compaction));
+  ASSERT_TRUE(compaction.needed);
+  const std::vector<std::string> final_source_files = compaction.replaced_files;
+  const std::vector<std::string> final_staged_files = compaction.created_files;
+  ASSERT_TRUE(store.publish_levelled_compaction(index_name, &compaction));
+  store.finalize_levelled_compaction(&compaction);
+  EXPECT_EQ(2U, store.raw_segment_count(index_name));
+  for (const std::string &path : final_source_files) {
+    EXPECT_FALSE(std::filesystem::exists(path));
+  }
+  for (const std::string &path : final_staged_files) {
+    EXPECT_TRUE(std::filesystem::exists(path));
+  }
+
+  vector_index::vector_data vector;
+  bool found = false;
+  ASSERT_TRUE(store.find_entry(index_name, 8, &vector, &found));
+  ASSERT_TRUE(found);
+  EXPECT_EQ((vector_index::vector_data{8.0F, 0.0F}), vector);
+
+  std::filesystem::remove_all(root, ec);
+}
+
 TEST(VectorIndexServiceTest, SegmentedSearchHandlesNestedParallelBackend) {
   build_pipeline_options_guard guard;
   const char *provider = segmented_memory_provider_for_testing();
@@ -2112,6 +2610,7 @@ TEST(VectorIndexServiceTest, SegmentedSearchHandlesNestedParallelBackend) {
   opt_vector_build_pipeline_mode =
       static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
   opt_vector_build_pipeline_max_tasks = 2;
+  opt_vector_build_segment_max_rows = 1;
   vector_index::reset_runtime_worker_pool_for_testing();
 
   const std::string root =
@@ -2185,6 +2684,7 @@ TEST(VectorIndexServiceTest, DiskAnnRawSegmentsBuildSingleBackend) {
   opt_vector_build_pipeline_mode =
       static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
   opt_vector_build_pipeline_max_tasks = 2;
+  opt_vector_build_segment_max_rows = 4;
   opt_vector_diskann_segmented_serving = false;
   vector_index::reset_runtime_worker_pool_for_testing();
   const std::string root =
@@ -2436,6 +2936,21 @@ TEST(VectorIndexServiceTest, SegmentedRebuildKeepsTasksOnPrePublishFailure) {
     EXPECT_FALSE(service.rebuild_index("idx_segment_fail"));
   }
 
+  vector_index::index_service::index_config config;
+  size_t entry_count = 0;
+  size_t committed_entry_count = 0;
+  std::string lifecycle_state;
+  ASSERT_TRUE(service.describe_index(
+      "idx_segment_fail", &config, nullptr, &entry_count,
+      &committed_entry_count, &lifecycle_state));
+  EXPECT_EQ("bulk_loading", lifecycle_state);
+  EXPECT_EQ(0U, entry_count);
+  EXPECT_EQ(1U, committed_entry_count);
+
+  std::vector<vector_index::search_result> result;
+  EXPECT_FALSE(
+      service.search("idx_segment_fail", {3.0F, 0.0F}, 1, &result));
+
   std::vector<vector_index_metadata_store::segment_task_row> rows;
   ASSERT_TRUE(service.snapshot_segment_tasks("idx_segment_fail", &rows));
   ASSERT_EQ(1U, rows.size());
@@ -2443,6 +2958,23 @@ TEST(VectorIndexServiceTest, SegmentedRebuildKeepsTasksOnPrePublishFailure) {
             rows[0].state);
   EXPECT_EQ(1U, service.standalone_raw_segment_count("idx_segment_fail"));
   EXPECT_EQ(1U, rows[0].row_count);
+
+  ASSERT_TRUE(service.rebuild_index("idx_segment_fail"));
+  ASSERT_TRUE(service.search("idx_segment_fail", {3.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(33U, result[0].doc_id);
+
+  {
+    VECTOR_SCOPED_DEBUG_FLAG(debug, "+d,vector_segment_task_before_publish");
+    EXPECT_FALSE(service.rebuild_index("idx_segment_fail"));
+  }
+  ASSERT_TRUE(service.describe_index(
+      "idx_segment_fail", &config, nullptr, &entry_count,
+      &committed_entry_count, &lifecycle_state));
+  EXPECT_EQ("ready", lifecycle_state);
+  ASSERT_TRUE(service.search("idx_segment_fail", {3.0F, 0.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(33U, result[0].doc_id);
 
   std::filesystem::remove_all(root, ec);
 }
@@ -4696,10 +5228,27 @@ TEST(VectorIndexServiceTest,
       "idx_standalone_spill",
       vector_index::index_consistency_mode::kStandalone));
   ASSERT_TRUE(recovered.restore_committed_state(committed_state));
+
+  vector_index::backend_build_diagnostics build_diagnostics;
+  ASSERT_TRUE(recovered.describe_index(
+      "idx_standalone_spill", &config, nullptr, &entry_count,
+      &committed_entry_count, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, &build_diagnostics));
+  EXPECT_EQ(0U, entry_count);
+  EXPECT_EQ(1U, committed_entry_count);
+  EXPECT_EQ(0U, build_diagnostics.build_invocations);
+
   ASSERT_TRUE(recovered.search("idx_standalone_spill", {1.0F, 0.0F}, 2,
                                &result));
   ASSERT_EQ(1U, result.size());
   EXPECT_EQ(1U, result[0].doc_id);
+  ASSERT_TRUE(recovered.describe_index(
+      "idx_standalone_spill", &config, nullptr, &entry_count,
+      &committed_entry_count, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, &build_diagnostics));
+  EXPECT_EQ(1U, entry_count);
+  EXPECT_EQ(1U, committed_entry_count);
+  EXPECT_EQ(1U, build_diagnostics.build_invocations);
 }
 
 TEST(VectorIndexServiceTest, RegisterIndexFromStringsParsesOptions) {
@@ -6053,6 +6602,168 @@ TEST(VectorIndexServiceTest, LazyExternalRuntimeSysvarControlsReload) {
   exercise_value(false);
 
   vector_index::reset_faiss_external_snapshot_root_for_testing();
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest,
+     LazyExternalRuntimeReloadsStandaloneFromStandaloneStore) {
+  BoolGuard lazy_runtime_guard(&opt_vector_lazy_external_runtime, true);
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_lazy_runtime_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 0.0F, 1.0F});
+  write_raw_docid_file(docid_path, {31, 42});
+
+  vector_index::index_service service;
+  const std::string index_name = "idx_standalone_lazy_runtime";
+  ASSERT_TRUE(service.register_index_from_strings(
+      index_name, 2, "euclidean", "external", "diskann"));
+  ASSERT_TRUE(service.set_index_consistency_mode(
+      index_name, vector_index::index_consistency_mode::kStandalone));
+
+  vector_index::index_service::bulk_load_options options;
+  options.rebuild_after_load = true;
+  uint64_t loaded_rows = 0;
+  std::string error;
+  ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+      index_name, vector_path, docid_path, options, &loaded_rows, &error))
+      << error;
+  ASSERT_EQ(2U, loaded_rows);
+
+  vector_index::index_service::index_config config;
+  size_t entry_count = 0;
+  size_t committed_entry_count = 0;
+  ASSERT_TRUE(service.describe_index(index_name, &config, nullptr, &entry_count,
+                                     &committed_entry_count));
+  EXPECT_EQ(0U, entry_count);
+  EXPECT_EQ(2U, committed_entry_count);
+
+  ASSERT_TRUE(service.ensure_runtime_loaded_for_search(index_name));
+  ASSERT_TRUE(service.describe_index(index_name, &config, nullptr, &entry_count,
+                                     &committed_entry_count));
+  EXPECT_EQ(2U, entry_count);
+  EXPECT_EQ(2U, committed_entry_count);
+
+  ASSERT_TRUE(service.rebuild_runtime_from_store_for_search(index_name));
+  ASSERT_TRUE(service.describe_index(index_name, &config, nullptr, &entry_count,
+                                     &committed_entry_count));
+  EXPECT_EQ(2U, entry_count);
+  EXPECT_EQ(2U, committed_entry_count);
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search_loaded(index_name, {0.0F, 1.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(42U, result[0].doc_id);
+
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST(VectorIndexServiceTest,
+     LazyExternalRuntimeReappliesSegmentedBuildPolicy) {
+#ifdef __APPLE__
+  GTEST_SKIP() << "DiskANN native runtime is validated on Linux";
+#endif
+  if (!vector_index::diskann_api_load_for_testing() ||
+      !vector_index::diskann_vendored_runtime_api_load_for_testing()) {
+    GTEST_SKIP() << "DiskANN runtime unavailable in current build";
+  }
+  install_diskann_offline_test_adapter();
+  if (!vector_index::diskann_offline_api_manifest_build_load_for_testing()) {
+    GTEST_SKIP() << "DiskANN offline manifest adapter unavailable in current "
+                    "build/runtime";
+  }
+
+  build_pipeline_options_guard pipeline_guard;
+  BoolGuard lazy_runtime_guard(&opt_vector_lazy_external_runtime, true);
+  opt_vector_build_pipeline_mode =
+      static_cast<ulong>(vector_index::build_pipeline_mode::kSegmented);
+  opt_vector_build_segment_max_rows = 4;
+  opt_vector_build_pipeline_max_tasks = 2;
+  opt_vector_diskann_segmented_serving = true;
+
+  const std::string root =
+      std::string(testing::TempDir()) + "/standalone_lazy_segmented_t";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  ASSERT_FALSE(ec);
+  faiss_snapshot_root_guard root_guard(root);
+
+  const std::string vector_path = root + "/source.fbin";
+  const std::string docid_path = root + "/source.u64";
+  write_raw_fbin_file(vector_path, 8, 2,
+                      {1.0F, 1.0F, 2.0F, 2.0F, 3.0F, 3.0F, 4.0F, 4.0F,
+                       9.0F, 9.0F, 8.0F, 8.0F, 7.0F, 7.0F, 6.0F, 6.0F});
+  write_raw_docid_file(docid_path, {10, 20, 30, 40, 90, 80, 70, 60});
+
+  const std::string index_name = "idx_standalone_lazy_segmented";
+  vector_index::index_service::index_config persisted_config;
+  {
+    vector_index::index_service service;
+    vector_index::index_service::index_config config;
+    config.dimension = 2;
+    config.metric = vector_index::metric_type::kEuclidean;
+    config.mode = vector_index::backend_mode::kExternal;
+    config.provider = vector_index::backend_provider::kDiskAnn;
+    config.consistency_mode =
+        vector_index::index_consistency_mode::kStandalone;
+    config.diskann_build_mode_value =
+        vector_index::diskann_build_mode::kOffline;
+    config.diskann_build_mode_specified = true;
+    ASSERT_TRUE(service.register_index(index_name, config));
+
+    vector_index::index_service::bulk_load_options options;
+    options.rebuild_after_load = true;
+    uint64_t loaded_rows = 0;
+    std::string error;
+    ASSERT_TRUE(service.bulk_upsert_from_raw_files(
+        index_name, vector_path, docid_path, options, &loaded_rows, &error))
+        << error;
+    ASSERT_EQ(8U, loaded_rows);
+    ASSERT_TRUE(service.describe_index(index_name, &persisted_config, nullptr,
+                                       nullptr, nullptr));
+    EXPECT_EQ("segmented", persisted_config.backend_variant);
+  }
+
+  vector_index::index_service service;
+  ASSERT_TRUE(service.register_index(index_name, persisted_config));
+
+  auto expect_segmented_runtime = [&]() {
+    vector_index::index_service::index_config config;
+    size_t entry_count = 0;
+    ASSERT_TRUE(service.describe_index(index_name, &config, nullptr,
+                                       &entry_count, nullptr));
+    EXPECT_EQ("segmented", config.backend_variant);
+    EXPECT_EQ(8U, entry_count);
+
+    vector_index::index_service::build_pipeline_snapshot pipeline;
+    ASSERT_TRUE(service.describe_build_pipeline(index_name, &pipeline));
+    EXPECT_EQ("segmented", pipeline.mode);
+    EXPECT_EQ("segmented", pipeline.decision);
+
+    std::vector<vector_index_metadata_store::segment_task_row> tasks;
+    ASSERT_TRUE(service.snapshot_segment_tasks(index_name, &tasks));
+    EXPECT_EQ(2U, tasks.size());
+  };
+
+  ASSERT_TRUE(service.ensure_runtime_loaded_for_search(index_name));
+  expect_segmented_runtime();
+
+  ASSERT_TRUE(service.rebuild_runtime_from_store_for_search(index_name));
+  expect_segmented_runtime();
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(service.search_loaded(index_name, {8.0F, 8.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(80U, result[0].doc_id);
+
   std::filesystem::remove_all(root, ec);
 }
 

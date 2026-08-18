@@ -83,6 +83,14 @@ bool ensure_metadata_loaded_for_search() {
 }
 
 bool ensure_runtime_loaded_for_search(const std::string &index_name) {
+  {
+    std::shared_lock<std::shared_mutex> guard(g_registry_mutex);
+    if (g_metadata_loaded &&
+        g_index_service.runtime_loaded_for_search(index_name)) {
+      return true;
+    }
+  }
+
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_loaded_locked()) return false;
   return g_index_service.ensure_runtime_loaded_for_search(index_name);
