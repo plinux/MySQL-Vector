@@ -25,6 +25,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <utility>
 
 #include "my_byteorder.h"
 #include "my_dbug.h"
@@ -34,6 +35,7 @@
 #include "sql/sql_class.h"
 #include "sql/table.h"
 #include "sql/vector/vector_utils.h"
+#include "sql/vector/vector_trx_participant.h"
 
 namespace vector_itemfunc_internal {
 
@@ -192,15 +194,39 @@ bool check_vector_all_indexes_access(THD *thd, Access_bitmask privilege,
   return false;
 }
 
-bool maybe_binlog_vector_write_query(THD *thd) {
+bool stage_vector_statement_publication(
+    THD *thd, vector_index_truth_store::publication_operation operation,
+    const std::string &index_name, const std::string &payload,
+    bool catalog_exclusive) {
+  if (thd == nullptr ||
+      vector_trx_participant::in_user_multi_statement_transaction(thd)) {
+    return false;
+  }
+  vector_index_truth_store::publication_intent intent;
+  if (!vector_index_registry::make_statement_publication_intent(
+          operation, index_name, payload, &intent)) {
+    return false;
+  }
+  std::vector<vector_index_truth_store::publication_intent> intents;
+  intents.push_back(std::move(intent));
+  return vector_trx_participant::stage_statement_publication(
+      thd, std::move(intents), catalog_exclusive);
+}
+
+bool maybe_binlog_vector_transactional_write_query(THD *thd) {
   DBUG_EXECUTE_IF("vector_item_fail_binlog_write", return false;);
   if (thd == nullptr) return false;
-  if (!mysql_bin_log.is_open()) return true;
-  if ((thd->variables.option_bits & OPTION_BIN_LOG) == 0) return true;
-  if (thd->slave_thread || thd->in_sub_stmt) return true;
-  return !mysql_bin_log.write_stmt_directly(thd, thd->query().str,
-                                            thd->query().length,
-                                            SQLCOM_SELECT);
+  if (!mysql_bin_log.is_open() ||
+      (thd->variables.option_bits & OPTION_BIN_LOG) == 0 ||
+      thd->slave_thread || thd->in_sub_stmt) {
+    return true;
+  }
+  return thd->binlog_query(THD::STMT_QUERY_TYPE, thd->query().str,
+                           thd->query().length, false, false, false, 0) == 0;
+}
+
+bool maybe_binlog_vector_write_query(THD *thd) {
+  return maybe_binlog_vector_transactional_write_query(thd);
 }
 
 bool decode_vector_arg(Item *arg, String *buf, std::vector<float> *out) {

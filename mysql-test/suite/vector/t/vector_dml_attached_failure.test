@@ -17,7 +17,7 @@ CREATE VECTOR INDEX ON t_dml_attached_failure(v) WITH (2);
 SET GLOBAL debug = '+d,vector_truth_fail_attached_changelog';
 --enable_query_log
 
---error ER_INTERNAL_ERROR
+--error ER_ERROR_DURING_COMMIT
 INSERT INTO t_dml_attached_failure VALUES (1, VEC_FROMTEXT('[1,1]'));
 
 --disable_query_log

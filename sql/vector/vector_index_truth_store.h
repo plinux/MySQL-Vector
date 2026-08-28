@@ -50,6 +50,54 @@ struct quarantine_record {
   std::string payload;
 };
 
+/** Durable operation kind carried by one publication intent. */
+enum class publication_operation : uint8_t {
+  kTransactionalDml = 1,
+  kStandaloneUpsert = 2,
+  kStandaloneErase = 3,
+  kBulkLoad = 4,
+  kCreateIndex = 5,
+  kDropIndex = 6,
+  kUpdateConfig = 7,
+  kRebuildIndex = 8,
+  kRecoverIndex = 9,
+  kBeginBulkLoad = 10,
+  kBulkBuildIndex = 11,
+};
+
+/** Persisted state of a publication intent visible after transaction commit. */
+enum class publication_intent_state : uint8_t {
+  /** The target token is exact and can be acknowledged directly. */
+  kReadyToPublish = 1,
+  /** The target is derived by publishing the operation payload. */
+  kTargetToBeObserved = 2,
+};
+
+/** Complete identity and generation tuple used by publication CAS. */
+struct publication_token {
+  bool exists{false};
+  uint64_t index_identity{0};
+  uint64_t truth_generation{0};
+  uint64_t config_generation{0};
+  uint64_t artifact_generation{0};
+  uint64_t runtime_generation{0};
+  uint64_t lifecycle_version{0};
+  uint64_t source_generation{0};
+};
+
+/** Per-index durable intent committed before a private candidate is published. */
+struct publication_intent {
+  std::string index_name;
+  uint64_t publication_id{0};
+  uint64_t txn_id{0};
+  publication_operation operation{publication_operation::kTransactionalDml};
+  publication_token expected;
+  publication_token target;
+  std::string payload;
+  publication_intent_state state{
+      publication_intent_state::kReadyToPublish};
+};
+
 /**
   Truth-store abstraction for persisted vector index state.
 
@@ -84,21 +132,84 @@ class truth_store {
   */
   virtual bool supports_attached_dml() const { return false; }
 
-  /**
-    Apply committed projection and changelog rows in the caller's transaction.
+  /** Whether this backend durably coordinates per-index publication intents. */
+  virtual bool supports_publication_intents() const { return false; }
 
-    Backends that do not share the user's InnoDB transaction must keep the
-    default failure result. The SQL DML path must not fall back to a separate
-    persistence transaction.
+  /** Ensure the caller's MySQL transaction owns the backing store engine. */
+  virtual bool ensure_attached_transaction(THD *) { return false; }
 
-    @param thd current user thread
-    @param rows exact durable rows allocated for this statement
-    @return true when both projection and changelog writes were staged
-  */
-  virtual bool apply_attached_dml(
+  /** Apply committed projection rows in the caller's InnoDB transaction. */
+  virtual bool apply_attached_committed(
       THD *,
       const std::vector<vector_index_metadata_store::change_log_row> &) {
     return false;
+  }
+
+  /** Append publication-bound changelog rows in the caller's transaction. */
+  virtual bool append_attached_change_log(
+      THD *,
+      const std::vector<vector_index_metadata_store::change_log_row> &) {
+    return false;
+  }
+
+  /** Insert an intent in the caller-owned MySQL/InnoDB transaction. */
+  virtual bool insert_attached_publication_intent(
+      THD *, const publication_intent &) {
+    return false;
+  }
+
+  /**
+    Append changelog rows and intents while the caller's transaction prepares.
+
+    Production backends must not register a new MySQL statement participant
+    from this callback. The default implementation preserves focused test
+    stores that model the two operations independently.
+  */
+  virtual bool prepare_attached_publication(
+      THD *thd,
+      const std::vector<vector_index_metadata_store::change_log_row> &rows,
+      const std::vector<publication_intent> &intents) {
+    if (!append_attached_change_log(thd, rows)) return false;
+    for (const auto &intent : intents) {
+      if (!insert_attached_publication_intent(thd, intent)) return false;
+    }
+    return true;
+  }
+
+  /** Load committed intents that require publication or acknowledgement. */
+  virtual bool load_publication_intents(
+      std::vector<publication_intent> *) {
+    return false;
+  }
+
+  /** Acknowledge one exact intent after its target token is visible. */
+  virtual bool delete_publication_intent(const std::string &, uint64_t) {
+    return false;
+  }
+
+  /**
+    Apply projection and changelog rows in one caller-owned transaction.
+
+    This compatibility wrapper remains useful to focused truth-store tests.
+    Production DML stages the projection first and appends publication-bound
+    changelog rows from the transaction before-commit callback.
+  */
+  virtual bool apply_attached_dml(
+      THD *thd,
+      const std::vector<vector_index_metadata_store::change_log_row> &rows) {
+    return apply_attached_committed(thd, rows) &&
+           append_attached_change_log(thd, rows);
+  }
+
+  /**
+    Acknowledge one committed intent in an independent transaction.
+
+    The default preserves test and nontransactional stores whose delete path
+    does not join an owner-thread grouped persist operation.
+  */
+  virtual bool delete_committed_publication_intent(
+      const std::string &index_name, uint64_t publication_id) {
+    return delete_publication_intent(index_name, publication_id);
   }
 
   /**
@@ -213,6 +324,10 @@ class truth_store {
   */
   virtual bool append_change_log_delta(
       const std::vector<vector_index_metadata_store::change_log_row> &) {
+    return false;
+  }
+  /** Delete only changelog sequences already folded into committed truth. */
+  virtual bool erase_change_log_sequences(const std::vector<uint64_t> &) {
     return false;
   }
   virtual bool load_prepared(

@@ -1,0 +1,33 @@
+#
+# WL#Vector: reject publication from an active user transaction
+#
+DROP DATABASE IF EXISTS vector_admin_active_transaction;
+Warnings:
+Note	1008	Can't drop database 'vector_admin_active_transaction'; database doesn't exist
+CREATE DATABASE vector_admin_active_transaction;
+USE vector_admin_active_transaction;
+CREATE TABLE txn_probe (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+START TRANSACTION;
+INSERT INTO txn_probe VALUES (1);
+SELECT VEC_INDEX_CREATE('idx_txn_guard', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+ERROR HY000: Can't execute the given command because you have active locked tables or an active transaction
+ROLLBACK;
+SELECT COUNT(*) FROM txn_probe;
+COUNT(*)
+0
+SET autocommit=0;
+INSERT INTO txn_probe VALUES (2);
+SELECT VEC_INDEX_CREATE('idx_autocommit_guard', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+ERROR HY000: Can't execute the given command because you have active locked tables or an active transaction
+ROLLBACK;
+SET autocommit=1;
+SELECT COUNT(*) FROM txn_probe;
+COUNT(*)
+0
+SELECT VEC_INDEX_CREATE('idx_txn_guard', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+VEC_INDEX_CREATE('idx_txn_guard', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB')
+1
+SELECT VEC_INDEX_DROP('idx_txn_guard');
+VEC_INDEX_DROP('idx_txn_guard')
+1
+DROP DATABASE vector_admin_active_transaction;

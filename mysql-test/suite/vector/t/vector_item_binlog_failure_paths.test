@@ -3,71 +3,251 @@
 --source include/have_vector_diskann.inc
 
 --echo #
---echo # WL#vector-v1: item_vectorfunc binlog helper failure branches
+--echo # WL#Vector: management functions roll back local state on binlog failure
 --echo #
+
+SELECT VEC_INDEX_CREATE('idx_item_binlog_mem', 2, 'COSINE', 'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_CREATE('idx_item_binlog_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_CREATE('idx_item_binlog_faiss', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_CREATE('idx_item_binlog_ivfpq', 4, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_mem', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_faiss', 1, VEC_FROMTEXT('[1,1]'));
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_faiss', 2, VEC_FROMTEXT('[2,2]'));
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_ivfpq', 1, VEC_FROMTEXT('[1,0,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_ivfpq', 2, VEC_FROMTEXT('[0,1,0,0]'));
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_ivfpq', 3, VEC_FROMTEXT('[0,0,1,0]'));
+SELECT VEC_INDEX_UPSERT('idx_item_binlog_ivfpq', 4, VEC_FROMTEXT('[0,0,0,1]'));
+
+SET @before_list = VEC_INDEX_LIST();
+# A failed admin statement can reconstruct an equivalent derived runtime.
+# Exclude only physical revision and rebuild diagnostics from state equality.
+SET @before_mem = CAST(JSON_REMOVE(VEC_INDEX_INFO('idx_item_binlog_mem'),
+  '$.last_apply_latency_ms', '$.external_manifest_generation',
+  '$.backend_build_input_source', '$.backend_build_reader_passes',
+  '$.backend_build_resource_source',
+  '$.backend_build_resource_configured_memory',
+  '$.backend_build_resource_memory_reserve',
+  '$.backend_build_resource_memory_limit',
+  '$.backend_build_resource_memory_current',
+  '$.backend_build_resource_process_rss',
+  '$.backend_build_resource_memory_headroom',
+  '$.backend_build_resource_reserved_memory',
+  '$.backend_build_resource_effective_memory',
+  '$.backend_build_resource_effective_cpu_slots',
+  '$.backend_build_resource_reserved_cpu_slots',
+  '$.backend_build_resource_active_builds',
+  '$.backend_build_resource_waiting_builds',
+  '$.backend_build_effective_threads',
+  '$.backend_build_effective_blas_threads',
+  '$.scheduler_cpu_budget',
+  '$.scheduler_effective_build_threads',
+  '$.scheduler_effective_blas_threads') AS CHAR);
+SET @before_ext = CAST(JSON_REMOVE(VEC_INDEX_INFO('idx_item_binlog_ext'),
+  '$.last_apply_latency_ms', '$.external_manifest_generation',
+  '$.backend_build_input_source', '$.backend_build_reader_passes',
+  '$.backend_build_resource_source',
+  '$.backend_build_resource_configured_memory',
+  '$.backend_build_resource_memory_reserve',
+  '$.backend_build_resource_memory_limit',
+  '$.backend_build_resource_memory_current',
+  '$.backend_build_resource_process_rss',
+  '$.backend_build_resource_memory_headroom',
+  '$.backend_build_resource_reserved_memory',
+  '$.backend_build_resource_effective_memory',
+  '$.backend_build_resource_effective_cpu_slots',
+  '$.backend_build_resource_reserved_cpu_slots',
+  '$.backend_build_resource_active_builds',
+  '$.backend_build_resource_waiting_builds',
+  '$.backend_build_effective_threads',
+  '$.backend_build_effective_blas_threads',
+  '$.scheduler_cpu_budget',
+  '$.scheduler_effective_build_threads',
+  '$.scheduler_effective_blas_threads') AS CHAR);
+SET @before_faiss = CAST(JSON_REMOVE(VEC_INDEX_INFO('idx_item_binlog_faiss'),
+  '$.last_apply_latency_ms', '$.external_manifest_generation',
+  '$.backend_build_input_source', '$.backend_build_reader_passes',
+  '$.backend_build_resource_source',
+  '$.backend_build_resource_configured_memory',
+  '$.backend_build_resource_memory_reserve',
+  '$.backend_build_resource_memory_limit',
+  '$.backend_build_resource_memory_current',
+  '$.backend_build_resource_process_rss',
+  '$.backend_build_resource_memory_headroom',
+  '$.backend_build_resource_reserved_memory',
+  '$.backend_build_resource_effective_memory',
+  '$.backend_build_resource_effective_cpu_slots',
+  '$.backend_build_resource_reserved_cpu_slots',
+  '$.backend_build_resource_active_builds',
+  '$.backend_build_resource_waiting_builds',
+  '$.backend_build_effective_threads',
+  '$.backend_build_effective_blas_threads',
+  '$.scheduler_cpu_budget',
+  '$.scheduler_effective_build_threads',
+  '$.scheduler_effective_blas_threads') AS CHAR);
+SET @before_ivfpq = CAST(JSON_REMOVE(VEC_INDEX_INFO('idx_item_binlog_ivfpq'),
+  '$.last_apply_latency_ms', '$.external_manifest_generation',
+  '$.backend_build_input_source', '$.backend_build_reader_passes',
+  '$.backend_build_resource_source',
+  '$.backend_build_resource_configured_memory',
+  '$.backend_build_resource_memory_reserve',
+  '$.backend_build_resource_memory_limit',
+  '$.backend_build_resource_memory_current',
+  '$.backend_build_resource_process_rss',
+  '$.backend_build_resource_memory_headroom',
+  '$.backend_build_resource_reserved_memory',
+  '$.backend_build_resource_effective_memory',
+  '$.backend_build_resource_effective_cpu_slots',
+  '$.backend_build_resource_reserved_cpu_slots',
+  '$.backend_build_resource_active_builds',
+  '$.backend_build_resource_waiting_builds',
+  '$.backend_build_effective_threads',
+  '$.backend_build_effective_blas_threads',
+  '$.scheduler_cpu_budget',
+  '$.scheduler_effective_build_threads',
+  '$.scheduler_effective_blas_threads') AS CHAR);
 
 --disable_query_log
 SET GLOBAL debug = '+d,vector_item_fail_binlog_write';
 --enable_query_log
 
-SELECT VEC_INDEX_CREATE('idx_item_binlog_fail_mem', 2, 'COSINE', 'MEMORY', 'NATIVE');
-SELECT VEC_INDEX_LIST();
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_mem'), '$.backend_variant');
-
-SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_mem', 1, VEC_FROMTEXT('[1,1]'));
-SELECT VEC_INDEX_SEARCH('idx_item_binlog_fail_mem', VEC_FROMTEXT('[1,1]'), 2);
-SELECT VEC_INDEX_ERASE('idx_item_binlog_fail_mem', 1);
-SELECT VEC_INDEX_SEARCH('idx_item_binlog_fail_mem', VEC_FROMTEXT('[1,1]'), 2);
-
-SELECT VEC_INDEX_CREATE('idx_item_binlog_fail_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
---replace_regex /^diskann_[a-z_]+$/<diskann_variant>/
-SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.backend_variant'));
-SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_item_binlog_fail_ext', 48, 96);
-SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_item_binlog_fail_ext', 80);
-SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_item_binlog_fail_ext', 16);
-SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_item_binlog_fail_ext', 1048576);
-SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_item_binlog_fail_ext', 'offline');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_max_degree');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_build_complexity');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_search_complexity');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_search_beamwidth');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_pq_code_budget_size');
-SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.diskann_build_mode'));
-
-SELECT VEC_INDEX_CREATE('idx_item_binlog_fail_faiss', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
-SELECT VEC_INDEX_SET_SEARCH_EF('idx_item_binlog_fail_faiss', 96);
-SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_item_binlog_fail_faiss', 24, 320);
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.search_ef');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.hnsw_m');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.hnsw_ef_construction');
-SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_faiss', 1, VEC_FROMTEXT('[1,1]'));
-SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_faiss', 2, VEC_FROMTEXT('[2,2]'));
-SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_item_binlog_fail_faiss', 2, 1);
-SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.backend_variant'));
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.faiss_nlist');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_faiss'), '$.faiss_nprobe');
-
-SELECT VEC_INDEX_CREATE('idx_item_binlog_fail_ivfpq', 4, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
-SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 1, VEC_FROMTEXT('[1,0,0,0]'));
-SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 2, VEC_FROMTEXT('[0,1,0,0]'));
-SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 3, VEC_FROMTEXT('[0,0,1,0]'));
-SELECT VEC_INDEX_UPSERT('idx_item_binlog_fail_ivfpq', 4, VEC_FROMTEXT('[0,0,0,1]'));
-SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_item_binlog_fail_ivfpq', 2, 1, 1, 1);
-SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.backend_variant'));
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_nlist');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_nprobe');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_pq_m');
-SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ivfpq'), '$.faiss_pq_bits');
-
-SELECT VEC_INDEX_REBUILD('idx_item_binlog_fail_mem');
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_CREATE('idx_item_binlog_failed_create', 2, 'COSINE', 'MEMORY', 'NATIVE');
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_SET_SEARCH_EF('idx_item_binlog_faiss', 96);
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_SET_HNSW_BUILD_PARAMS('idx_item_binlog_faiss', 24, 320);
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_item_binlog_faiss', 2, 1);
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_SET_FAISS_IVFPQ_PARAMS('idx_item_binlog_ivfpq', 2, 1, 1, 1);
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_item_binlog_ext', 48, 96);
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_item_binlog_ext', 80);
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_item_binlog_ext', 16);
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_item_binlog_ext', 1048576);
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_item_binlog_ext', 'offline');
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_REBUILD('idx_item_binlog_mem');
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_RECOVER('idx_item_binlog_mem');
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_item_binlog_mem');
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_BULK_BUILD('idx_item_binlog_mem');
+--error ER_INTERNAL_ERROR
 SELECT VEC_INDEX_REBUILD_ALL();
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_RECOVER_ALL();
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_DROP('idx_item_binlog_mem');
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_DROP('idx_item_binlog_ext');
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_DROP('idx_item_binlog_faiss');
+--error ER_INTERNAL_ERROR
+SELECT VEC_INDEX_DROP('idx_item_binlog_ivfpq');
 
-SELECT VEC_INDEX_DROP('idx_item_binlog_fail_mem');
-SELECT VEC_INDEX_DROP('idx_item_binlog_fail_ext');
-SELECT VEC_INDEX_DROP('idx_item_binlog_fail_faiss');
-SELECT VEC_INDEX_DROP('idx_item_binlog_fail_ivfpq');
-SELECT VEC_INDEX_LIST();
+SELECT VEC_INDEX_LIST() = @before_list AS list_unchanged;
+SELECT CAST(JSON_REMOVE(VEC_INDEX_INFO('idx_item_binlog_mem'),
+  '$.last_apply_latency_ms', '$.external_manifest_generation',
+  '$.backend_build_input_source', '$.backend_build_reader_passes',
+  '$.backend_build_resource_source',
+  '$.backend_build_resource_configured_memory',
+  '$.backend_build_resource_memory_reserve',
+  '$.backend_build_resource_memory_limit',
+  '$.backend_build_resource_memory_current',
+  '$.backend_build_resource_process_rss',
+  '$.backend_build_resource_memory_headroom',
+  '$.backend_build_resource_reserved_memory',
+  '$.backend_build_resource_effective_memory',
+  '$.backend_build_resource_effective_cpu_slots',
+  '$.backend_build_resource_reserved_cpu_slots',
+  '$.backend_build_resource_active_builds',
+  '$.backend_build_resource_waiting_builds',
+  '$.backend_build_effective_threads',
+  '$.backend_build_effective_blas_threads',
+  '$.scheduler_cpu_budget',
+  '$.scheduler_effective_build_threads',
+  '$.scheduler_effective_blas_threads') AS CHAR) =
+  @before_mem AS memory_unchanged;
+SELECT CAST(JSON_REMOVE(VEC_INDEX_INFO('idx_item_binlog_ext'),
+  '$.last_apply_latency_ms', '$.external_manifest_generation',
+  '$.backend_build_input_source', '$.backend_build_reader_passes',
+  '$.backend_build_resource_source',
+  '$.backend_build_resource_configured_memory',
+  '$.backend_build_resource_memory_reserve',
+  '$.backend_build_resource_memory_limit',
+  '$.backend_build_resource_memory_current',
+  '$.backend_build_resource_process_rss',
+  '$.backend_build_resource_memory_headroom',
+  '$.backend_build_resource_reserved_memory',
+  '$.backend_build_resource_effective_memory',
+  '$.backend_build_resource_effective_cpu_slots',
+  '$.backend_build_resource_reserved_cpu_slots',
+  '$.backend_build_resource_active_builds',
+  '$.backend_build_resource_waiting_builds',
+  '$.backend_build_effective_threads',
+  '$.backend_build_effective_blas_threads',
+  '$.scheduler_cpu_budget',
+  '$.scheduler_effective_build_threads',
+  '$.scheduler_effective_blas_threads') AS CHAR) =
+  @before_ext AS diskann_unchanged;
+SELECT CAST(JSON_REMOVE(VEC_INDEX_INFO('idx_item_binlog_faiss'),
+  '$.last_apply_latency_ms', '$.external_manifest_generation',
+  '$.backend_build_input_source', '$.backend_build_reader_passes',
+  '$.backend_build_resource_source',
+  '$.backend_build_resource_configured_memory',
+  '$.backend_build_resource_memory_reserve',
+  '$.backend_build_resource_memory_limit',
+  '$.backend_build_resource_memory_current',
+  '$.backend_build_resource_process_rss',
+  '$.backend_build_resource_memory_headroom',
+  '$.backend_build_resource_reserved_memory',
+  '$.backend_build_resource_effective_memory',
+  '$.backend_build_resource_effective_cpu_slots',
+  '$.backend_build_resource_reserved_cpu_slots',
+  '$.backend_build_resource_active_builds',
+  '$.backend_build_resource_waiting_builds',
+  '$.backend_build_effective_threads',
+  '$.backend_build_effective_blas_threads',
+  '$.scheduler_cpu_budget',
+  '$.scheduler_effective_build_threads',
+  '$.scheduler_effective_blas_threads') AS CHAR) =
+  @before_faiss AS faiss_unchanged;
+SELECT CAST(JSON_REMOVE(VEC_INDEX_INFO('idx_item_binlog_ivfpq'),
+  '$.last_apply_latency_ms', '$.external_manifest_generation',
+  '$.backend_build_input_source', '$.backend_build_reader_passes',
+  '$.backend_build_resource_source',
+  '$.backend_build_resource_configured_memory',
+  '$.backend_build_resource_memory_reserve',
+  '$.backend_build_resource_memory_limit',
+  '$.backend_build_resource_memory_current',
+  '$.backend_build_resource_process_rss',
+  '$.backend_build_resource_memory_headroom',
+  '$.backend_build_resource_reserved_memory',
+  '$.backend_build_resource_effective_memory',
+  '$.backend_build_resource_effective_cpu_slots',
+  '$.backend_build_resource_reserved_cpu_slots',
+  '$.backend_build_resource_active_builds',
+  '$.backend_build_resource_waiting_builds',
+  '$.backend_build_effective_threads',
+  '$.backend_build_effective_blas_threads',
+  '$.scheduler_cpu_budget',
+  '$.scheduler_effective_build_threads',
+  '$.scheduler_effective_blas_threads') AS CHAR) =
+  @before_ivfpq AS ivfpq_unchanged;
+SELECT VEC_INDEX_SEARCH('idx_item_binlog_mem', VEC_FROMTEXT('[1,1]'), 1);
 
 --disable_query_log
 SET GLOBAL debug = '-d,vector_item_fail_binlog_write';
 --enable_query_log
+
+SELECT VEC_INDEX_DROP('idx_item_binlog_mem');
+SELECT VEC_INDEX_DROP('idx_item_binlog_ext');
+SELECT VEC_INDEX_DROP('idx_item_binlog_faiss');
+SELECT VEC_INDEX_DROP('idx_item_binlog_ivfpq');
+SELECT VEC_INDEX_LIST();

@@ -1,6 +1,8 @@
 #
-# WL#vector-v1: item_vectorfunc persist-failure error branches
+# WL#vector-v1: recover committed statement publications after persist failure
 #
+CALL mtr.add_suppression(
+"Vector runtime publication failed after transaction commit at stage");
 SELECT VEC_INDEX_CREATE('idx_item_pf_a', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
 VEC_INDEX_CREATE('idx_item_pf_a', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
 1
@@ -14,31 +16,59 @@ SELECT VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5);
 VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5)
 [1]
 SELECT VEC_INDEX_CREATE('idx_item_pf_create_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
-ERROR HY000: Incorrect arguments to vec_index_create
-SELECT VEC_INDEX_UPSERT('idx_item_pf_a', 2, VEC_FROMTEXT('[2,2]'));
-ERROR HY000: Incorrect arguments to vec_index_upsert
-SELECT VEC_INDEX_ERASE('idx_item_pf_a', 1);
-ERROR HY000: Incorrect arguments to vec_index_erase
-SELECT VEC_INDEX_REBUILD('idx_item_pf_a');
-ERROR HY000: Incorrect arguments to vector registry could not persist rebuild state
-SELECT VEC_INDEX_RECOVER('idx_item_pf_a');
-ERROR HY000: Incorrect arguments to vec_index_recover
-SELECT VEC_INDEX_REBUILD_ALL();
-ERROR HY000: Incorrect arguments to vec_index_rebuild_all
-SELECT VEC_INDEX_RECOVER_ALL();
-ERROR HY000: Incorrect arguments to vec_index_recover_all
-SELECT VEC_INDEX_DROP('idx_item_pf_b');
-VEC_INDEX_DROP('idx_item_pf_b')
-0
+VEC_INDEX_CREATE('idx_item_pf_create_fail', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE')
+1
 SELECT VEC_INDEX_LIST();
 VEC_INDEX_LIST()
-["idx_item_pf_a","idx_item_pf_b"]
+["idx_item_pf_a","idx_item_pf_b","idx_item_pf_create_fail"]
+SELECT VEC_INDEX_UPSERT('idx_item_pf_a', 2, VEC_FROMTEXT('[2,2]'));
+VEC_INDEX_UPSERT('idx_item_pf_a', 2, VEC_FROMTEXT('[2,2]'))
+1
+SELECT VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[2,2]'), 5);
+VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[2,2]'), 5)
+[2,1]
+SELECT VEC_INDEX_ERASE('idx_item_pf_a', 1);
+VEC_INDEX_ERASE('idx_item_pf_a', 1)
+1
 SELECT VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5);
 VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5)
-[1]
+[2]
+SELECT VEC_INDEX_REBUILD('idx_item_pf_a');
+VEC_INDEX_REBUILD('idx_item_pf_a')
+1
+SELECT VEC_INDEX_INFO('idx_item_pf_a');
+VEC_INDEX_INFO('idx_item_pf_a')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_segment_profile":"manual","build_segment_profile_reason":"manual","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"build_segment_effective_row_limit":134217728,"build_segment_effective_target_size":2147483648,"build_segment_target_size":2147483648,"build_segment_max_rows":4294967295,"build_segment_policy":"size_first","standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"owner_schema":"test","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":0,"diskann_cache_nodes":0,"diskann_accelerate_build":0,"diskann_shuffle_build":0,"diskann_use_bfs_cache":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"index_identity":<num>,"truth_generation":<num>,"config_generation":<num>,"artifact_generation":<num>,"runtime_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SELECT VEC_INDEX_RECOVER('idx_item_pf_a');
+VEC_INDEX_RECOVER('idx_item_pf_a')
+1
+SELECT VEC_INDEX_INFO('idx_item_pf_a');
+VEC_INDEX_INFO('idx_item_pf_a')
+{"dimension":2,"metric":"euclidean","mode":"memory","provider":"native","consistency_mode":"transactional","truth_store_enabled":1,"build_source":"truth_store","build_pipeline_mode":"auto","build_segment_profile":"manual","build_segment_profile_reason":"manual","build_pipeline_decision":"direct","build_pipeline_trigger":"below_threshold","build_pipeline_rows":0,"build_pipeline_payload_size":0,"build_pipeline_raw_segments":0,"build_segment_effective_row_limit":134217728,"build_segment_effective_target_size":2147483648,"build_segment_target_size":2147483648,"build_segment_max_rows":4294967295,"build_segment_policy":"size_first","standalone_ingest_memory_bytes":0,"standalone_segment_count":0,"standalone_segment_bytes":0,"standalone_raw_segment_count":0,"standalone_raw_segment_bytes":0,"backend_variant":null,"owner_schema":"test","schema_name":null,"table_name":null,"column_name":null,"search_ef":0,"hnsw_m":0,"hnsw_ef_construction":0,"hnsw_build_threads":0,"faiss_nlist":0,"faiss_nprobe":0,"faiss_pq_m":0,"faiss_pq_bits":0,"faiss_build_threads":0,"diskann_max_degree":0,"diskann_build_complexity":0,"diskann_build_threads":0,"diskann_build_mode":"auto","diskann_search_complexity":0,"diskann_search_beamwidth":0,"diskann_pq_code_budget_size":0,"diskann_disk_pq_dims":0,"diskann_cache_nodes":0,"diskann_accelerate_build":0,"diskann_shuffle_build":0,"diskann_use_bfs_cache":0,"supports_mutations":1,"lifecycle_state":"ready","lifecycle_version":<num>,"last_error_code":0,"last_error_ts":<num>,"last_apply_latency_ms":<num>,"recover_fallback_count":0,"last_recover_fallback_ts":<num>,"external_manifest_present":<bool>,"external_manifest_generation":<num>,"index_identity":<num>,"truth_generation":<num>,"config_generation":<num>,"artifact_generation":<num>,"runtime_generation":<num>,"pending_apply_count":0,"rebuild_progress":100,"recover_progress":100,"entry_count":1,"committed_entry_count":1}
+SELECT VEC_INDEX_REBUILD_ALL();
+VEC_INDEX_REBUILD_ALL()
+3
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_item_pf_a","idx_item_pf_b","idx_item_pf_create_fail"]
+SELECT VEC_INDEX_RECOVER_ALL();
+VEC_INDEX_RECOVER_ALL()
+3
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_item_pf_a","idx_item_pf_b","idx_item_pf_create_fail"]
+SELECT VEC_INDEX_DROP('idx_item_pf_b');
+VEC_INDEX_DROP('idx_item_pf_b')
+1
+SELECT VEC_INDEX_LIST();
+VEC_INDEX_LIST()
+["idx_item_pf_a","idx_item_pf_create_fail"]
+SELECT VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5);
+VEC_INDEX_SEARCH('idx_item_pf_a', VEC_FROMTEXT('[1,1]'), 5)
+[2]
 SELECT VEC_INDEX_DROP('idx_item_pf_a');
 VEC_INDEX_DROP('idx_item_pf_a')
 1
-SELECT VEC_INDEX_DROP('idx_item_pf_b');
-VEC_INDEX_DROP('idx_item_pf_b')
+SELECT VEC_INDEX_DROP('idx_item_pf_create_fail');
+VEC_INDEX_DROP('idx_item_pf_create_fail')
 1

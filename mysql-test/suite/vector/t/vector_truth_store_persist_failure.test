@@ -77,8 +77,8 @@ SET @artifact_rollback_fail_after = (
 SELECT @persist_after > @persist_before;
 SELECT @commit_fail_after > @commit_fail_before;
 SELECT @runtime_rollback_after > @runtime_rollback_before;
-SELECT @runtime_rollback_fail_after >= @runtime_rollback_fail_before;
+SELECT @runtime_rollback_fail_after = @runtime_rollback_fail_before;
 SELECT @artifact_rollback_after > @artifact_rollback_before;
-SELECT @artifact_rollback_fail_after >= @artifact_rollback_fail_before;
+SELECT @artifact_rollback_fail_after = @artifact_rollback_fail_before;
 
 SELECT VEC_INDEX_DROP('idx_persist_fail');

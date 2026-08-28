@@ -47,6 +47,7 @@
 #include "sql/vector/vector_index_diagnostics.h"
 #include "sql/vector/vector_index_identity.h"
 #include "sql/vector/vector_index_registry_internal.h"
+#include "sql/vector/vector_index_runtime_config.h"
 #include "sql/vector/vector_index_service.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_mapped_search.h"
@@ -78,6 +79,12 @@ std::vector<recovery_action> g_recovery_actions;
 std::unordered_map<uint64_t, thd_txn_context> g_thd_txn_contexts;
 std::unordered_map<std::string, index_binding> g_index_bindings;
 std::unordered_map<std::string, std::string> g_index_owner_schemas;
+
+void fail_stop_registry_locked(const char *reason) {
+  g_registry_health = registry_health_state::kFailed;
+  g_registry_failure_reason =
+      reason == nullptr ? "registry_state_restore_failed" : reason;
+}
 
 namespace {
 
@@ -314,6 +321,7 @@ uint32_t effective_hnsw_build_threads(
       provider_value != vector_index::backend_provider::kHnswlib) {
     return 0;
   }
+  if (options.defaults_resolved) return options.build_threads;
   if (options.build_threads_specified && options.build_threads != 0) {
     return options.build_threads;
   }
@@ -329,6 +337,7 @@ uint32_t effective_diskann_build_threads(
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
+  if (options.defaults_resolved) return options.build_threads;
   if (options.build_threads_specified && options.build_threads != 0) {
     return options.build_threads;
   }
@@ -344,6 +353,7 @@ uint32_t effective_diskann_max_degree(
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
+  if (options.defaults_resolved) return options.diskann_max_degree;
   if (options.diskann_max_degree != 0) return options.diskann_max_degree;
   return static_cast<uint32_t>(opt_vector_diskann_max_degree);
 }
@@ -357,19 +367,23 @@ uint32_t effective_diskann_build_complexity(
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
+  if (options.defaults_resolved) return options.diskann_build_complexity;
   if (options.diskann_build_complexity != 0) {
     return options.diskann_build_complexity;
   }
   return static_cast<uint32_t>(opt_vector_diskann_build_complexity);
 }
 
-uint64_t effective_diskann_pq_code_budget_size(const std::string &provider) {
+uint64_t effective_diskann_pq_code_budget_size(
+    const std::string &provider,
+    const vector_index_registry::create_index_options &options) {
   vector_index::backend_provider provider_value =
       vector_index::backend_provider::kNative;
   if (!vector_index::parse_backend_provider(provider, &provider_value) ||
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
+  if (options.defaults_resolved) return options.diskann_pq_code_budget_size;
   return opt_vector_diskann_pq_code_budget_size;
 }
 
@@ -382,6 +396,7 @@ uint32_t effective_diskann_disk_pq_dims(
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
+  if (options.defaults_resolved) return options.diskann_disk_pq_dims;
   if (options.diskann_disk_pq_dims != 0) return options.diskann_disk_pq_dims;
   return static_cast<uint32_t>(opt_vector_diskann_disk_pq_dims);
 }
@@ -395,6 +410,7 @@ bool effective_diskann_accelerate_build(
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return false;
   }
+  if (options.defaults_resolved) return options.diskann_accelerate_build;
   if (options.diskann_accelerate_build_specified) {
     return options.diskann_accelerate_build;
   }
@@ -410,6 +426,7 @@ bool effective_diskann_shuffle_build(
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return false;
   }
+  if (options.defaults_resolved) return options.diskann_shuffle_build;
   if (options.diskann_shuffle_build_specified) {
     return options.diskann_shuffle_build;
   }
@@ -425,29 +442,36 @@ bool effective_diskann_use_bfs_cache(
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return false;
   }
+  if (options.defaults_resolved) return options.diskann_use_bfs_cache;
   if (options.diskann_use_bfs_cache_specified) {
     return options.diskann_use_bfs_cache;
   }
   return opt_vector_diskann_use_bfs_cache;
 }
 
-uint32_t effective_diskann_search_complexity(const std::string &provider) {
+uint32_t effective_diskann_search_complexity(
+    const std::string &provider,
+    const vector_index_registry::create_index_options &options) {
   vector_index::backend_provider provider_value =
       vector_index::backend_provider::kNative;
   if (!vector_index::parse_backend_provider(provider, &provider_value) ||
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
+  if (options.defaults_resolved) return options.diskann_search_complexity;
   return static_cast<uint32_t>(opt_vector_diskann_search_complexity);
 }
 
-uint32_t effective_diskann_search_beamwidth(const std::string &provider) {
+uint32_t effective_diskann_search_beamwidth(
+    const std::string &provider,
+    const vector_index_registry::create_index_options &options) {
   vector_index::backend_provider provider_value =
       vector_index::backend_provider::kNative;
   if (!vector_index::parse_backend_provider(provider, &provider_value) ||
       provider_value != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
+  if (options.defaults_resolved) return options.diskann_search_beamwidth;
   return static_cast<uint32_t>(opt_vector_diskann_search_beamwidth);
 }
 
@@ -460,6 +484,7 @@ uint32_t effective_faiss_build_threads(
       provider_value != vector_index::backend_provider::kFaiss) {
     return 0;
   }
+  if (options.defaults_resolved) return options.build_threads;
   if (options.build_threads_specified && options.build_threads != 0) {
     return options.build_threads;
   }
@@ -536,6 +561,50 @@ bool prepared_rows_are_valid(
 }
 
 }  // namespace
+
+bool describe_publication_token_locked(
+    const std::string &index_name,
+    vector_index_truth_store::publication_token *token) {
+  if (index_name.empty() || token == nullptr) return false;
+  *token = vector_index_truth_store::publication_token{};
+  if (!g_index_service.index_exists(index_name)) return true;
+
+  vector_index::index_service::index_config config;
+  vector_index::index_service::index_publication_state publication;
+  uint64_t lifecycle_version = 0;
+  if (!g_index_service.describe_index(index_name, &config, nullptr, nullptr,
+                                      nullptr, nullptr, &lifecycle_version) ||
+      !g_index_service.describe_publication_state(index_name, &publication)) {
+    return false;
+  }
+
+  token->exists = true;
+  token->index_identity = publication.index_identity;
+  token->truth_generation = publication.truth_generation;
+  token->config_generation = publication.config_generation;
+  token->artifact_generation = publication.artifact_generation;
+  token->runtime_generation = publication.runtime_generation;
+  token->lifecycle_version = lifecycle_version;
+  token->source_generation =
+      config.consistency_mode ==
+              vector_index::index_consistency_mode::kStandalone
+          ? g_index_service.standalone_source_generation(index_name)
+          : 0;
+  return true;
+}
+
+bool publication_tokens_equal(
+    const vector_index_truth_store::publication_token &lhs,
+    const vector_index_truth_store::publication_token &rhs) {
+  return lhs.exists == rhs.exists &&
+         lhs.index_identity == rhs.index_identity &&
+         lhs.truth_generation == rhs.truth_generation &&
+         lhs.config_generation == rhs.config_generation &&
+         lhs.artifact_generation == rhs.artifact_generation &&
+         lhs.runtime_generation == rhs.runtime_generation &&
+         lhs.lifecycle_version == rhs.lifecycle_version &&
+         lhs.source_generation == rhs.source_generation;
+}
 
 bool xid_matches_row(
     const XID &xid,
@@ -763,13 +832,99 @@ void rename_index_binding_and_owner_schema_locked(
   g_index_owner_schemas[new_index_name] = owner_schema;
 }
 
-bool create_index_locked(const std::string &index_name, size_t dimension,
-                         const std::string &metric, const std::string &mode,
-                         const std::string &provider,
-                         const index_binding *binding,
-                         const std::string &owner_schema,
-                         const vector_index_registry::create_index_options
-                             &options) {
+bool resolve_create_index_definition(
+    const std::string &mode, const std::string &provider,
+    const vector_index_registry::create_index_options &requested_options,
+    std::string *resolved_mode, std::string *resolved_provider,
+    vector_index_registry::create_index_options *resolved_options) {
+  if (resolved_mode == nullptr || resolved_provider == nullptr ||
+      resolved_options == nullptr) {
+    return false;
+  }
+
+  vector_index::backend_provider provider_value;
+  if (provider.empty()) {
+    if (!vector_index::default_backend_provider(&provider_value)) return false;
+  } else if (!vector_index::parse_backend_provider(provider, &provider_value) ||
+             !vector_index::backend_provider_supported(provider_value)) {
+    return false;
+  }
+
+  vector_index::backend_mode mode_value;
+  if (mode.empty()) {
+    if (!vector_index::default_backend_mode_for_provider(provider_value,
+                                                        &mode_value)) {
+      return false;
+    }
+  } else if (!vector_index::parse_backend_mode(mode, &mode_value)) {
+    return false;
+  }
+  if (!vector_index::runtime_provider_accepts_mode(provider_value, mode_value)) {
+    return false;
+  }
+
+  *resolved_provider =
+      vector_index::backend_provider_to_string(provider_value);
+  *resolved_mode = vector_index::backend_mode_to_string(mode_value);
+
+  vector_index_registry::create_index_options resolved = requested_options;
+  switch (provider_value) {
+    case vector_index::backend_provider::kHnswlib:
+      resolved.build_threads =
+          effective_hnsw_build_threads(*resolved_provider, requested_options);
+      break;
+    case vector_index::backend_provider::kFaiss:
+      resolved.build_threads =
+          effective_faiss_build_threads(*resolved_provider, requested_options);
+      break;
+    case vector_index::backend_provider::kDiskAnn:
+      resolved.build_threads =
+          effective_diskann_build_threads(*resolved_provider, requested_options);
+      break;
+    case vector_index::backend_provider::kNative:
+      resolved.build_threads = 0;
+      break;
+  }
+  resolved.build_threads_specified = true;
+  resolved.diskann_max_degree =
+      effective_diskann_max_degree(*resolved_provider, requested_options);
+  resolved.diskann_build_complexity =
+      effective_diskann_build_complexity(*resolved_provider, requested_options);
+  resolved.diskann_pq_code_budget_size =
+      effective_diskann_pq_code_budget_size(*resolved_provider,
+                                            requested_options);
+  resolved.diskann_disk_pq_dims =
+      effective_diskann_disk_pq_dims(*resolved_provider, requested_options);
+  resolved.diskann_accelerate_build =
+      effective_diskann_accelerate_build(*resolved_provider,
+                                         requested_options);
+  resolved.diskann_accelerate_build_specified = true;
+  resolved.diskann_shuffle_build =
+      effective_diskann_shuffle_build(*resolved_provider, requested_options);
+  resolved.diskann_shuffle_build_specified = true;
+  resolved.diskann_use_bfs_cache =
+      effective_diskann_use_bfs_cache(*resolved_provider, requested_options);
+  resolved.diskann_use_bfs_cache_specified = true;
+  resolved.diskann_search_complexity =
+      effective_diskann_search_complexity(*resolved_provider,
+                                          requested_options);
+  resolved.diskann_search_beamwidth =
+      effective_diskann_search_beamwidth(*resolved_provider,
+                                         requested_options);
+  if (!resolved.consistency_mode_specified) {
+    resolved.consistency_mode = vector_index::global_index_consistency_mode();
+  }
+  resolved.consistency_mode_specified = true;
+  resolved.defaults_resolved = true;
+  *resolved_options = std::move(resolved);
+  return true;
+}
+
+bool create_index_locked(
+    const std::string &index_name, size_t dimension, const std::string &metric,
+    const std::string &mode, const std::string &provider,
+    const index_binding *binding, const std::string &owner_schema,
+    const vector_index_registry::create_index_options &options) {
   std::vector<vector_index_metadata_store::metadata_row> metadata_before;
   vector_index::index_service::committed_state committed_before;
   std::vector<vector_index_metadata_store::change_log_row> change_log_before;
@@ -883,7 +1038,7 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
     return false;
   }
   const uint64_t diskann_pq_code_budget_size =
-      effective_diskann_pq_code_budget_size(effective_provider);
+      effective_diskann_pq_code_budget_size(effective_provider, options);
   if (diskann_pq_code_budget_size != 0 &&
       !g_index_service.set_diskann_pq_code_budget_size(
           index_name, diskann_pq_code_budget_size)) {
@@ -944,7 +1099,7 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
     return false;
   }
   const uint32_t diskann_search_complexity =
-      effective_diskann_search_complexity(effective_provider);
+      effective_diskann_search_complexity(effective_provider, options);
   if (diskann_search_complexity != 0 &&
       !g_index_service.set_diskann_search_complexity(
           index_name, diskann_search_complexity)) {
@@ -956,7 +1111,7 @@ bool create_index_locked(const std::string &index_name, size_t dimension,
     return false;
   }
   const uint32_t diskann_search_beamwidth =
-      effective_diskann_search_beamwidth(effective_provider);
+      effective_diskann_search_beamwidth(effective_provider, options);
   if (diskann_search_beamwidth != 0 &&
       !g_index_service.set_diskann_search_beamwidth(index_name,
                                                     diskann_search_beamwidth)) {
@@ -1341,10 +1496,14 @@ bool apply_change_log_rows_locked(
   std::sort(ordered_rows.begin(), ordered_rows.end(),
             [](const vector_index_metadata_store::change_log_row &lhs,
                const vector_index_metadata_store::change_log_row &rhs) {
-              if (lhs.sequence != rhs.sequence)
-                return lhs.sequence < rhs.sequence;
               if (lhs.index_name != rhs.index_name)
                 return lhs.index_name < rhs.index_name;
+              if (lhs.index_identity != rhs.index_identity)
+                return lhs.index_identity < rhs.index_identity;
+              if (lhs.truth_generation != rhs.truth_generation)
+                return lhs.truth_generation < rhs.truth_generation;
+              if (lhs.sequence != rhs.sequence)
+                return lhs.sequence < rhs.sequence;
               if (lhs.doc_id != rhs.doc_id) return lhs.doc_id < rhs.doc_id;
               return static_cast<int>(lhs.op) < static_cast<int>(rhs.op);
             });
@@ -1352,8 +1511,21 @@ bool apply_change_log_rows_locked(
   vector_index::index_service::committed_state state;
   if (!g_index_service.snapshot_committed_state(&state)) return false;
   for (const auto &row : ordered_rows) {
+    if (row.sequence == 0 || row.index_name.empty() ||
+        row.index_identity == 0 || row.publication_id == 0 ||
+        row.truth_generation == 0) {
+      return false;
+    }
+    vector_index::index_service::index_publication_state publication;
+    if (!g_index_service.describe_publication_state(row.index_name,
+                                                    &publication)) {
+      continue;
+    }
+    if (row.index_identity != publication.index_identity) {
+      continue;
+    }
     auto index_it = state.find(row.index_name);
-    if (index_it == state.end()) return false;
+    if (index_it == state.end()) continue;
     if (row.op == vector_index_metadata_store::change_op::kUpsert) {
       index_it->second[row.doc_id] = row.vector;
     } else if (row.op == vector_index_metadata_store::change_op::kErase) {
@@ -1366,8 +1538,14 @@ bool apply_change_log_rows_locked(
 
   std::unordered_map<std::string, uint64_t> truth_generations;
   for (const auto &row : ordered_rows) {
+    vector_index::index_service::index_publication_state publication;
+    if (!g_index_service.describe_publication_state(row.index_name,
+                                                    &publication) ||
+        row.index_identity != publication.index_identity) {
+      continue;
+    }
     uint64_t &generation = truth_generations[row.index_name];
-    generation = std::max(generation, row.sequence);
+    generation = std::max(generation, row.truth_generation);
   }
   for (const auto &entry : truth_generations) {
     vector_index::index_service::index_publication_state publication;
@@ -1456,6 +1634,13 @@ bool allocate_pending_change_log_delta_locked(
       row.op = change.erase ? vector_index_metadata_store::change_op::kErase
                             : vector_index_metadata_store::change_op::kUpsert;
       row.index_name = change.index_name;
+      vector_index::index_service::index_publication_state publication;
+      if (!g_index_service.describe_publication_state(change.index_name,
+                                                      &publication) ||
+          publication.index_identity == 0) {
+        return false;
+      }
+      row.index_identity = publication.index_identity;
       row.doc_id = change.doc_id;
       row.vector = change.vector;
       allocated_rows.push_back(std::move(row));
@@ -1475,6 +1660,17 @@ bool append_pending_change_log_delta_locked(
   std::vector<vector_index_metadata_store::change_log_row> delta;
   if (!allocate_pending_change_log_delta_locked(txn_id, changes, &delta)) {
     return false;
+  }
+  for (auto &row : delta) {
+    vector_index::index_service::index_publication_state publication;
+    if (!g_index_service.describe_publication_state(row.index_name,
+                                                    &publication) ||
+        publication.index_identity != row.index_identity ||
+        publication.truth_generation == 0) {
+      return false;
+    }
+    row.publication_id = publication.truth_generation;
+    row.truth_generation = publication.truth_generation;
   }
   try {
     g_change_log_rows.insert(g_change_log_rows.end(),
@@ -2082,21 +2278,28 @@ bool persist_registry_state_locked() {
   return true;
 }
 
-bool persist_commit_artifacts_locked(
+bool persist_commit_artifacts_impl_locked(
     const std::vector<vector_index_metadata_store::change_log_row>
         *commit_delta_rows,
-    bool include_prepared) {
+    bool include_prepared, bool delta_already_staged) {
   const bool diagnostics_enabled = vector_index_diagnostics::enabled();
   const auto total_start =
       vector_index_diagnostics::now_if(diagnostics_enabled);
   vector_index_truth_store::truth_store *truth_store =
       vector_index_truth_store::get();
-  const bool use_delta_path = commit_delta_rows != nullptr &&
-                              truth_store->is_transactional() &&
-                              truth_store->supports_delta_persist();
+  const bool use_delta_path =
+      truth_store->is_transactional() && truth_store->supports_delta_persist();
+  if (delta_already_staged && !use_delta_path) {
+    truth_store->rollback_persist();
+    vector_status::record_persist_artifact_rollback();
+    vector_status::record_truth_store_persist_failure();
+    vector_status::record_truth_store_delta_persist_failure();
+    return false;
+  }
+  const bool persist_delta = use_delta_path && commit_delta_rows != nullptr;
   persisted_commit_artifacts_snapshot persisted_before;
   uint64_t load_snapshot_ms = 0;
-  if (!use_delta_path) {
+  if (!delta_already_staged && !persist_delta) {
     const auto load_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
     if (!load_persisted_commit_artifacts_snapshot_locked(&persisted_before)) {
@@ -2116,13 +2319,16 @@ bool persist_commit_artifacts_locked(
         diagnostics_enabled, load_start);
   }
 
-  vector_status::record_truth_store_persist_request();
-  if (use_delta_path) vector_status::record_truth_store_delta_persist_request();
+  if (!delta_already_staged) {
+    vector_status::record_truth_store_persist_request();
+    if (persist_delta)
+      vector_status::record_truth_store_delta_persist_request();
+  }
   const auto begin_start =
       vector_index_diagnostics::now_if(diagnostics_enabled);
-  if (!truth_store->begin_persist()) {
+  if (!delta_already_staged && !truth_store->begin_persist()) {
     vector_status::record_truth_store_persist_failure();
-    if (use_delta_path)
+    if (persist_delta)
       vector_status::record_truth_store_delta_persist_failure();
     if (diagnostics_enabled) {
       vector_index_diagnostics::record_event(
@@ -2137,12 +2343,22 @@ bool persist_commit_artifacts_locked(
     return false;
   }
   const uint64_t begin_persist_ms =
-      vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled, begin_start);
+      delta_already_staged
+          ? 0
+          : vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
+                                                     begin_start);
   const auto committed_start =
       vector_index_diagnostics::now_if(diagnostics_enabled);
-  const bool committed_ok =
-      use_delta_path ? persist_committed_delta_locked(*commit_delta_rows)
-                     : persist_committed_locked(nullptr);
+  bool committed_ok = delta_already_staged;
+  if (delta_already_staged) {
+    const size_t row_count = g_index_service.committed_entry_count();
+    vector_status::set_committed_snapshot_rows(row_count);
+    g_manifest_committed_checkpoint = row_count;
+  } else {
+    committed_ok = persist_delta
+                       ? persist_committed_delta_locked(*commit_delta_rows)
+                       : persist_committed_locked(nullptr);
+  }
   const uint64_t committed_ms = vector_index_diagnostics::elapsed_ms_if(
       diagnostics_enabled, committed_start);
   uint64_t changelog_ms = 0;
@@ -2151,17 +2367,24 @@ bool persist_commit_artifacts_locked(
   uint64_t commit_persist_ms = 0;
   const auto changelog_start =
       vector_index_diagnostics::now_if(diagnostics_enabled);
-  const bool changelog_ok =
-      committed_ok ? (use_delta_path
-                          ? persist_change_log_delta_locked(*commit_delta_rows)
-                          : persist_change_log_locked())
-                   : false;
+  bool changelog_ok = delta_already_staged;
+  if (delta_already_staged) {
+    g_manifest_change_log_checkpoint = g_change_log_rows.size();
+  } else if (committed_ok) {
+    changelog_ok = persist_delta
+                       ? persist_change_log_delta_locked(*commit_delta_rows)
+                       : persist_change_log_locked();
+  }
   if (committed_ok)
     changelog_ms = vector_index_diagnostics::elapsed_ms_if(diagnostics_enabled,
                                                            changelog_start);
   bool compact_ok = true;
   uint64_t compact_ms = 0;
-  if (changelog_ok && change_log_compaction_needed_locked()) {
+  // Staged explicit commits already hold publication ownership here. Do not
+  // perform changelog table rewrites in that lock layer: attached DML can hold
+  // the same hidden rows while waiting to publish its runtime state.
+  if (!delta_already_staged && changelog_ok &&
+      change_log_compaction_needed_locked()) {
     const auto compact_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
     compact_ok = compact_change_log_locked();
@@ -2194,16 +2417,17 @@ bool persist_commit_artifacts_locked(
   }
   if (!ok) {
     truth_store->rollback_persist();
-    if (use_delta_path) {
+    if (persist_delta || delta_already_staged) {
       vector_status::record_persist_artifact_rollback();
     } else if (restore_persisted_commit_artifacts_snapshot_locked(
                    persisted_before)) {
       vector_status::record_persist_artifact_rollback();
     } else {
       vector_status::record_persist_artifact_rollback_failure();
+      fail_stop_registry_locked("persisted_commit_artifacts_restore_failed");
     }
     vector_status::record_truth_store_persist_failure();
-    if (use_delta_path)
+    if (persist_delta || delta_already_staged)
       vector_status::record_truth_store_delta_persist_failure();
     if (diagnostics_enabled) {
       vector_index_diagnostics::record_event(
@@ -2223,7 +2447,8 @@ bool persist_commit_artifacts_locked(
            {"compact_ok", compact_ok ? 1U : 0U},
            {"prepared_ok", prepared_ok ? 1U : 0U},
            {"manifest_ok", manifest_ok ? 1U : 0U},
-           {"delta", use_delta_path ? 1U : 0U},
+           {"delta", (persist_delta || delta_already_staged) ? 1U : 0U},
+           {"delta_already_staged", delta_already_staged ? 1U : 0U},
            {"ok", 0}});
     }
     return false;
@@ -2246,10 +2471,30 @@ bool persist_commit_artifacts_locked(
          {"compact_ok", compact_ok ? 1U : 0U},
          {"prepared_ok", prepared_ok ? 1U : 0U},
          {"manifest_ok", manifest_ok ? 1U : 0U},
-         {"delta", use_delta_path ? 1U : 0U},
+         {"delta", (persist_delta || delta_already_staged) ? 1U : 0U},
+         {"delta_already_staged", delta_already_staged ? 1U : 0U},
          {"ok", 1}});
   }
   return true;
+}
+
+bool persist_commit_artifacts_locked(
+    const std::vector<vector_index_metadata_store::change_log_row>
+        *commit_delta_rows,
+    bool include_prepared) {
+  return persist_commit_artifacts_impl_locked(commit_delta_rows,
+                                              include_prepared, false);
+}
+
+bool persist_staged_commit_artifacts_locked(bool include_prepared) {
+  return persist_commit_artifacts_impl_locked(nullptr, include_prepared, true);
+}
+
+bool change_log_compaction_needed_with_delta_locked(size_t delta_rows) {
+  const size_t threshold = change_log_compact_threshold();
+  if (g_change_log_rows.empty() && delta_rows == 0) return false;
+  if (g_change_log_rows.size() >= threshold) return true;
+  return delta_rows >= threshold - g_change_log_rows.size();
 }
 
 thd_txn_context *get_or_create_thd_txn_context_locked(uint64_t thd_id) {
@@ -2550,7 +2795,7 @@ effective_index_options_for_testing effective_options_for_testing(
   effective.diskann_build_complexity =
       effective_diskann_build_complexity(provider, options);
   effective.diskann_pq_code_budget_size =
-      effective_diskann_pq_code_budget_size(provider);
+      effective_diskann_pq_code_budget_size(provider, options);
   effective.diskann_disk_pq_dims =
       effective_diskann_disk_pq_dims(provider, options);
   effective.diskann_accelerate_build =
@@ -2560,9 +2805,9 @@ effective_index_options_for_testing effective_options_for_testing(
   effective.diskann_use_bfs_cache =
       effective_diskann_use_bfs_cache(provider, options);
   effective.diskann_search_complexity =
-      effective_diskann_search_complexity(provider);
+      effective_diskann_search_complexity(provider, options);
   effective.diskann_search_beamwidth =
-      effective_diskann_search_beamwidth(provider);
+      effective_diskann_search_beamwidth(provider, options);
   return effective;
 }
 
@@ -2573,6 +2818,7 @@ void set_change_log_compact_threshold_for_testing(size_t threshold) {
 
 void reset_for_testing() {
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  detail::reset_publication_intent_recovery_for_testing();
   g_index_service.discard_all_pending_changes();
   g_index_service = vector_index::index_service();
   g_metadata_loaded = false;

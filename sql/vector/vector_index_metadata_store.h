@@ -136,6 +136,9 @@ struct change_log_row {
   std::string index_name;
   uint64_t doc_id{0};
   vector_index::vector_data vector;
+  uint64_t index_identity{0};
+  uint64_t publication_id{0};
+  uint64_t truth_generation{0};
 };
 
 /**

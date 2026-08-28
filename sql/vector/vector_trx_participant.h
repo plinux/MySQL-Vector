@@ -24,12 +24,19 @@
 #ifndef SQL_VECTOR_TRX_PARTICIPANT_INCLUDED
 #define SQL_VECTOR_TRX_PARTICIPANT_INCLUDED
 
+#include <vector>
+
+#include "sql/vector/vector_index_truth_store.h"
+
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 #include <cstdint>
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 class THD;
 struct handlerton;
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+struct Trans_param;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 namespace vector_trx_participant {
 
@@ -42,12 +49,35 @@ int deinit_plugin(void *p);
 */
 bool ensure_observer_registered();
 /**
+  Return whether a user statement is inside a multi-statement transaction.
+
+  Replication appliers own transaction state while replaying source events, but
+  that state must not trigger restrictions intended for interactive users.
+
+  @param thd Thread context.
+  @return true only for a user-controlled transaction mode or active
+  multi-statement transaction.
+*/
+bool in_user_multi_statement_transaction(THD *thd);
+/**
   Register the vector participant and its transaction lifecycle observer.
 
   @param thd Thread context.
   @return true when both registrations are available, false otherwise.
 */
 bool register_participant(THD *thd);
+/**
+  Stage one statement-scoped publication for after-commit installation.
+
+  @param thd current user thread
+  @param intents per-index durable operations published after commit
+  @param catalog_exclusive true for CREATE/DROP or stable all-index sets
+  @return true when the participant owns the staged operations
+*/
+bool stage_statement_publication(
+    THD *thd,
+    std::vector<vector_index_truth_store::publication_intent> intents,
+    bool catalog_exclusive, bool require_stable_catalog_set = false);
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 uint64_t thd_id_for_testing(const THD *thd);
 uint64_t stmt_id_for_testing(const THD *thd);
@@ -56,6 +86,10 @@ bool is_real_scope_for_testing(THD *thd, bool all);
 bool is_xa_commit_publication_fallback_for_testing(THD *thd,
                                                    uint64_t thread_id);
 void set_registration_bypass_for_testing(bool bypass);
+int commit_for_testing(THD *thd, bool all);
+int rollback_for_testing(THD *thd, bool all);
+void after_commit_for_testing(Trans_param *param);
+void before_rollback_for_testing(Trans_param *param);
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 }  // namespace vector_trx_participant

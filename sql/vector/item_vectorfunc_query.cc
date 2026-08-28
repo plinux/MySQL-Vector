@@ -134,6 +134,11 @@ String *Item_func_vec_index_info::val_str(String *str [[maybe_unused]]) {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  vector_index_registry::publication_read_guard publication_guard;
+  if (!publication_guard.lock_index(index_name)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
   vector_index_registry::index_info info;
   if (!vector_index_registry::get_index_info(index_name, &info)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
@@ -165,6 +170,11 @@ String *Item_func_vec_index_list::val_str(String *str [[maybe_unused]]) {
   assert_fixed_arg_count(fixed, arg_count, 0);
   null_value = true;
 
+  vector_index_registry::publication_read_guard publication_guard;
+  if (!publication_guard.lock_catalog()) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
   std::vector<std::string> index_names;
   if (!vector_index_registry::list_indexes(&index_names)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
@@ -222,6 +232,12 @@ String *Item_func_vec_index_search::val_str(String *str [[maybe_unused]]) {
 
   std::string index_name;
   to_std_string(name, &index_name);
+  vector_index_registry::publication_read_guard publication_guard;
+  if (!publication_guard.lock_index(index_name)) {
+    record_rejected_searches(1);
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
   if (check_vector_existing_index_access(current_thd, index_name, SELECT_ACL,
                                          func_name(), false)) {
     record_rejected_searches(1);
@@ -282,6 +298,12 @@ String *Item_func_vec_index_search_batch::val_str(
 
   std::string index_name;
   to_std_string(name, &index_name);
+  vector_index_registry::publication_read_guard publication_guard;
+  if (!publication_guard.lock_index(index_name)) {
+    record_rejected_searches(queries.size());
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
   if (check_vector_existing_index_access(current_thd, index_name, SELECT_ACL,
                                          func_name(), false)) {
     record_rejected_searches(queries.size());
@@ -338,6 +360,12 @@ String *Item_func_vec_index_search_with_distance::val_str(
 
   std::string index_name;
   to_std_string(name, &index_name);
+  vector_index_registry::publication_read_guard publication_guard;
+  if (!publication_guard.lock_index(index_name)) {
+    record_rejected_searches(1);
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return error_str();
+  }
   if (check_vector_existing_index_access(current_thd, index_name, SELECT_ACL,
                                          func_name(), false)) {
     record_rejected_searches(1);

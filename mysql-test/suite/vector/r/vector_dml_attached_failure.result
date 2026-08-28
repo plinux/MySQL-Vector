@@ -10,7 +10,7 @@ v VECTOR(2)
 ) ENGINE=InnoDB;
 CREATE VECTOR INDEX ON t_dml_attached_failure(v) WITH (2);
 INSERT INTO t_dml_attached_failure VALUES (1, VEC_FROMTEXT('[1,1]'));
-ERROR HY000: Internal error: Failed to stage vector truth changes
+ERROR HY000: Got error 122 - 'Internal (unspecified) error in handler' during COMMIT
 SELECT COUNT(*) FROM t_dml_attached_failure;
 COUNT(*)
 0

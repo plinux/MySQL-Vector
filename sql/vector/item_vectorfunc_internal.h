@@ -65,6 +65,11 @@ bool check_vector_existing_index_access(
     const char *func_name, bool missing_index_uses_current_db);
 bool check_vector_all_indexes_access(THD *thd, Access_bitmask privilege,
                                          const char *func_name);
+bool stage_vector_statement_publication(
+    THD *thd, vector_index_truth_store::publication_operation operation,
+    const std::string &index_name, const std::string &payload,
+    bool catalog_exclusive);
+bool maybe_binlog_vector_transactional_write_query(THD *thd);
 bool maybe_binlog_vector_write_query(THD *thd);
 bool decode_vector_arg(Item *arg, String *buf, std::vector<float> *out);
 bool decode_txn_and_name(Item *txn_arg, Item *name_arg, String *name_buf,

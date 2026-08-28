@@ -1,0 +1,30 @@
+--source include/have_vector_index.inc
+--source include/have_vector_hnsw.inc
+
+--echo #
+--echo # WL#Vector: reject publication from an active user transaction
+--echo #
+
+DROP DATABASE IF EXISTS vector_admin_active_transaction;
+CREATE DATABASE vector_admin_active_transaction;
+USE vector_admin_active_transaction;
+CREATE TABLE txn_probe (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+
+START TRANSACTION;
+INSERT INTO txn_probe VALUES (1);
+--error ER_LOCK_OR_ACTIVE_TRANSACTION
+SELECT VEC_INDEX_CREATE('idx_txn_guard', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+ROLLBACK;
+
+SELECT COUNT(*) FROM txn_probe;
+SET autocommit=0;
+INSERT INTO txn_probe VALUES (2);
+--error ER_LOCK_OR_ACTIVE_TRANSACTION
+SELECT VEC_INDEX_CREATE('idx_autocommit_guard', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+ROLLBACK;
+SET autocommit=1;
+
+SELECT COUNT(*) FROM txn_probe;
+SELECT VEC_INDEX_CREATE('idx_txn_guard', 2, 'EUCLIDEAN', 'MEMORY', 'HNSWLIB');
+SELECT VEC_INDEX_DROP('idx_txn_guard');
+DROP DATABASE vector_admin_active_transaction;

@@ -211,6 +211,17 @@ VEC_INDEX_SEARCH('idx_ext', VEC_FROMTEXT('[1,1]'), 3)
 []
 SELECT VEC_INDEX_CREATE('idx_bad', 2, 'MANHATTAN', 'MEMORY', 'NATIVE');
 ERROR HY000: Incorrect arguments to vec_index_create
+SELECT VEC_INDEX_CREATE('idx_multi_a', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE'),
+VEC_INDEX_CREATE('idx_multi_b', 2, 'EUCLIDEAN', 'MEMORY', 'NATIVE');
+ERROR HY000: Incorrect arguments to vec_index_create
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_multi_a'))
+AS first_staged_create_rolled_back;
+first_staged_create_rolled_back
+0
+SELECT JSON_CONTAINS(VEC_INDEX_LIST(), JSON_QUOTE('idx_multi_b'))
+AS second_staged_create_rolled_back;
+second_staged_create_rolled_back
+0
 SELECT VEC_INDEX_INFO('missing');
 ERROR HY000: Incorrect arguments to vec_index_info
 SELECT VEC_INDEX_REBUILD('missing');

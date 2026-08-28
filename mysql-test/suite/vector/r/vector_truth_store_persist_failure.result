@@ -85,14 +85,14 @@ SELECT @commit_fail_after > @commit_fail_before;
 SELECT @runtime_rollback_after > @runtime_rollback_before;
 @runtime_rollback_after > @runtime_rollback_before
 1
-SELECT @runtime_rollback_fail_after >= @runtime_rollback_fail_before;
-@runtime_rollback_fail_after >= @runtime_rollback_fail_before
+SELECT @runtime_rollback_fail_after = @runtime_rollback_fail_before;
+@runtime_rollback_fail_after = @runtime_rollback_fail_before
 1
 SELECT @artifact_rollback_after > @artifact_rollback_before;
 @artifact_rollback_after > @artifact_rollback_before
 1
-SELECT @artifact_rollback_fail_after >= @artifact_rollback_fail_before;
-@artifact_rollback_fail_after >= @artifact_rollback_fail_before
+SELECT @artifact_rollback_fail_after = @artifact_rollback_fail_before;
+@artifact_rollback_fail_after = @artifact_rollback_fail_before
 1
 SELECT VEC_INDEX_DROP('idx_persist_fail');
 VEC_INDEX_DROP('idx_persist_fail')

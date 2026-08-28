@@ -39,10 +39,7 @@
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_diskann_generation_store.h"
 #include "sql/vector/vector_index_limits.h"
-
-namespace vector_index_truth_store {
-class truth_store;
-}
+#include "sql/vector/vector_index_truth_store.h"
 
 namespace vector_index_registry::detail {
 
@@ -66,9 +63,12 @@ struct thd_txn_context {
   uint64_t active_stmt_id{0};
   bool stmt_savepoint_active{false};
   bool attached_dml{false};
+  bool publication_prepared{false};
   std::string stmt_savepoint_name;
   std::vector<vector_index_metadata_store::change_log_row>
       durable_change_log_rows;
+  std::vector<vector_index_truth_store::publication_intent>
+      publication_intents;
 };
 
 struct index_binding {
@@ -177,6 +177,8 @@ extern std::unordered_map<uint64_t, thd_txn_context> g_thd_txn_contexts;
 extern std::unordered_map<std::string, index_binding> g_index_bindings;
 extern std::unordered_map<std::string, std::string> g_index_owner_schemas;
 
+void fail_stop_registry_locked(const char *reason);
+
 xa_status_code apply_prepared_xid_locked(const XID &xid, bool commit,
                                          uint64_t thd_id_to_clear);
 
@@ -209,6 +211,13 @@ bool persist_index_config_manifest_locked(
     const vector_index::index_service::index_publication_state &publication);
 bool ensure_metadata_available_locked();
 bool ensure_metadata_loaded_locked();
+bool load_runtime_for_search(const std::string &index_name);
+bool describe_publication_token_locked(
+    const std::string &index_name,
+    vector_index_truth_store::publication_token *token);
+bool publication_tokens_equal(
+    const vector_index_truth_store::publication_token &lhs,
+    const vector_index_truth_store::publication_token &rhs);
 bool fail_stop_truth_artifact_locked(
     vector_index_truth_store::truth_store *truth_store,
     const std::string &artifact_name, const std::string &reason,
@@ -230,6 +239,8 @@ bool persist_commit_artifacts_locked(
     const std::vector<vector_index_metadata_store::change_log_row>
         *commit_delta_rows = nullptr,
     bool include_prepared = false);
+bool persist_staged_commit_artifacts_locked(bool include_prepared = false);
+bool change_log_compaction_needed_with_delta_locked(size_t delta_rows);
 bool capture_runtime_commit_state_locked(commit_runtime_snapshot *snapshot);
 bool rollback_runtime_commit_state_locked(
     const commit_runtime_snapshot &snapshot);
@@ -291,22 +302,40 @@ void set_index_binding_and_owner_schema_locked(
 void rename_index_binding_and_owner_schema_locked(
     const std::string &old_index_name, const std::string &new_index_name,
     const std::string &owner_schema);
-bool create_index_locked(const std::string &index_name, size_t dimension,
-                         const std::string &metric, const std::string &mode,
-                         const std::string &provider,
-                         const index_binding *binding,
-                         const std::string &owner_schema,
-                         const vector_index_registry::create_index_options
-                             &options);
+bool create_index_locked(
+    const std::string &index_name, size_t dimension, const std::string &metric,
+    const std::string &mode, const std::string &provider,
+    const index_binding *binding, const std::string &owner_schema,
+    const vector_index_registry::create_index_options &options);
+
+bool resolve_create_index_definition(
+    const std::string &mode, const std::string &provider,
+    const vector_index_registry::create_index_options &requested_options,
+    std::string *resolved_mode, std::string *resolved_provider,
+    vector_index_registry::create_index_options *resolved_options);
 bool apply_index_tuning_locked(const std::string &index_name,
                                const vector_index_registry::index_info &info);
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
+bool publication_intent_target_matches_for_testing(
+    const vector_index_truth_store::publication_intent &intent,
+    const vector_index_truth_store::publication_token &current);
 bool index_config_matches_for_testing(
     const vector_index::index_service::index_config &lhs,
     const vector_index::index_service::index_config &rhs);
+bool bind_commit_truth_generations_for_testing(
+    std::vector<vector_index_metadata_store::change_log_row> *rows,
+    vector_index::index_service::commit_build_plan *plan);
+bool publish_pending_runtime_for_testing(
+    uint64_t txn_id,
+    const std::vector<vector_index_metadata_store::change_log_row>
+        &durable_rows,
+    bool update_pending_status, std::string *failure_stage = nullptr);
+bool index_bindings_equal_for_testing(const index_binding &lhs,
+                                      const index_binding &rhs);
 void set_standalone_rebuild_build_hook_for_testing(
     std::function<void()> hook);
 void reset_standalone_rebuild_build_hook_for_testing();
+void reset_publication_intent_recovery_for_testing();
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 bool snapshot_metadata_locked(
     std::vector<vector_index_metadata_store::metadata_row> *rows);

@@ -27,6 +27,8 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "my_byteorder.h"
 #include "sql/derror.h"  // ER_THD
@@ -38,6 +40,8 @@
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_limits.h"
+#include "sql/vector/vector_statement_publication.h"
+#include "sql/vector/vector_trx_participant.h"
 #include "sql/vector/vector_utils.h"
 
 using namespace vector_itemfunc_internal;
@@ -58,26 +62,153 @@ static bool eval_string_arg(Item *arg, String *buffer, std::string *value) {
   return true;
 }
 
-static bool capture_admin_state(
-    const char *function_name,
-    vector_index_registry::registry_state_snapshot *snapshot) {
-  if (vector_index_registry::snapshot_runtime_state(snapshot)) return true;
+static bool encode_statement_payload(
+    const vector_statement_publication::operation_payload &payload,
+    const char *function_name, std::string *encoded) {
+  if (vector_statement_publication::encode_operation_payload(payload,
+                                                             encoded)) {
+    return true;
+  }
   my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
   return false;
 }
 
-static bool binlog_or_restore_admin_state(
-    THD *thd, const char *function_name,
-    const vector_index_registry::registry_state_snapshot &snapshot) {
-  if (maybe_binlog_vector_write_query(thd)) return true;
-
-  if (!vector_index_registry::restore_runtime_state(snapshot, true)) {
-    std::string message(function_name);
-    message.append(" rollback failed");
-    my_error(ER_INTERNAL_ERROR, MYF(0), message.c_str());
-  } else if (thd == nullptr || !thd->is_error()) {
-    my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
+static bool stage_and_binlog_statement(
+    vector_index_truth_store::publication_operation operation,
+    const std::string &index_name, const std::string &payload,
+    bool catalog_exclusive, const char *function_name,
+    const char *argument_error = nullptr) {
+  if (current_thd == nullptr ||
+      vector_trx_participant::in_user_multi_statement_transaction(
+          current_thd)) {
+    my_error(ER_LOCK_OR_ACTIVE_TRANSACTION, MYF(0));
+    return false;
   }
+  if (!stage_vector_statement_publication(current_thd, operation, index_name,
+                                          payload, catalog_exclusive)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0),
+             argument_error == nullptr ? function_name : argument_error);
+    return false;
+  }
+  if (maybe_binlog_vector_write_query(current_thd)) return true;
+  if (!current_thd->is_error())
+    my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
+  return false;
+}
+
+static bool stage_config_statement(
+    const std::string &index_name,
+    vector_statement_publication::config_change config,
+    std::vector<uint64_t> values, const char *function_name) {
+  vector_statement_publication::operation_payload payload;
+  payload.config = config;
+  payload.unsigned_values = std::move(values);
+  std::string encoded;
+  return encode_statement_payload(payload, function_name, &encoded) &&
+         stage_and_binlog_statement(
+             vector_index_truth_store::publication_operation::kUpdateConfig,
+             index_name, encoded, false, function_name);
+}
+
+static bool stage_diskann_boolean_config(
+    Item *index_arg, Item *value_arg,
+    vector_statement_publication::config_change config,
+    const char *function_name) {
+  String name_buffer;
+  std::string index_name;
+  bool value = false;
+  if (!eval_string_arg(index_arg, &name_buffer, &index_name) ||
+      !eval_bool01_arg(value_arg, &value)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+    return false;
+  }
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         function_name, false)) {
+    return false;
+  }
+  return stage_config_statement(index_name, config, {value ? 1U : 0U},
+                                function_name);
+}
+
+static bool stage_index_statement(
+    const std::string &index_name,
+    vector_index_truth_store::publication_operation operation,
+    bool catalog_exclusive, const char *function_name,
+    const char *argument_error = nullptr) {
+  return stage_and_binlog_statement(operation, index_name, std::string(),
+                                    catalog_exclusive, function_name,
+                                    argument_error);
+}
+
+static bool stage_unary_index_statement(
+    Item *index_arg, vector_index_truth_store::publication_operation operation,
+    const char *function_name, const char *argument_error = nullptr) {
+  String name_buffer;
+  std::string index_name;
+  if (!eval_string_arg(index_arg, &name_buffer, &index_name)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+    return false;
+  }
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         function_name, false)) {
+    return false;
+  }
+  return stage_index_statement(index_name, operation, false, function_name,
+                               argument_error);
+}
+
+static bool stage_all_index_statements(
+    vector_index_truth_store::publication_operation operation,
+    const char *function_name, size_t *index_count) {
+  if (index_count == nullptr || current_thd == nullptr ||
+      vector_trx_participant::in_user_multi_statement_transaction(
+          current_thd)) {
+    my_error(ER_LOCK_OR_ACTIVE_TRANSACTION, MYF(0));
+    return false;
+  }
+  std::vector<std::string> index_names;
+  if (!vector_index_registry::list_indexes(&index_names)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+    return false;
+  }
+  *index_count = index_names.size();
+  if (index_names.empty()) return true;
+
+  std::vector<vector_index_truth_store::publication_intent> intents;
+  intents.reserve(index_names.size());
+  for (const std::string &index_name : index_names) {
+    vector_index_truth_store::publication_intent intent;
+    if (!vector_index_registry::make_statement_publication_intent(
+            operation, index_name, std::string(), &intent)) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+      return false;
+    }
+    intents.push_back(std::move(intent));
+  }
+  if (!vector_trx_participant::stage_statement_publication(
+          current_thd, std::move(intents), true, true)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+    return false;
+  }
+  if (maybe_binlog_vector_write_query(current_thd)) return true;
+  if (!current_thd->is_error())
+    my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
+  return false;
+}
+
+static bool stage_transactional_changes(
+    std::vector<vector_index::index_service::pending_change_snapshot> changes,
+    const char *function_name) {
+  if (current_thd == nullptr || changes.empty() ||
+      !vector_trx_participant::register_participant(current_thd) ||
+      !vector_index_registry::stage_changes_for_thd_txn(
+          current_thd, static_cast<uint64_t>(current_thd->query_id), changes)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
+    return false;
+  }
+  if (maybe_binlog_vector_transactional_write_query(current_thd)) return true;
+  if (!current_thd->is_error())
+    my_error(ER_INTERNAL_ERROR, MYF(0), function_name);
   return false;
 }
 
@@ -85,7 +216,7 @@ static bool check_truth_recovery_statement_context(THD *thd,
                                                    bool recovery_required) {
   if (!recovery_required) return false;
   if (thd == nullptr || thd->locked_tables_mode != LTM_NONE ||
-      thd->in_multi_stmt_transaction_mode()) {
+      vector_trx_participant::in_user_multi_statement_transaction(thd)) {
     my_error(ER_LOCK_OR_ACTIVE_TRANSACTION, MYF(0));
     return true;
   }
@@ -169,18 +300,18 @@ longlong Item_func_vec_index_create::val_int() {
     options.consistency_mode_specified = true;
     options.consistency_mode = consistency_mode;
   }
-  options.diskann_max_degree =
-      static_cast<uint32_t>(opt_vector_diskann_max_degree);
-  options.diskann_build_complexity =
-      static_cast<uint32_t>(opt_vector_diskann_build_complexity);
-
-  if (!vector_index_registry::create_index(index_name, static_cast<size_t>(dim),
-                                           metric, mode, provider, owner_schema,
-                                           options)) {
+  std::string encoded;
+  if (!vector_index_registry::make_create_statement_payload(
+          static_cast<size_t>(dim), metric, mode, provider, owner_schema,
+          options, &encoded)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+  if (!stage_and_binlog_statement(
+          vector_index_truth_store::publication_operation::kCreateIndex,
+          index_name, encoded, true, func_name())) {
+    return error_int();
+  }
   null_value = false;
   return 1;
 }
@@ -208,11 +339,10 @@ longlong Item_func_vec_index_set_search_ef::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_search_ef(index_name, search_ef)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name, vector_statement_publication::config_change::kSearchEf,
+          {search_ef}, func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -243,12 +373,11 @@ longlong Item_func_vec_index_set_hnsw_build_params::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_hnsw_build_params(
-          index_name, hnsw_m, hnsw_ef_construction)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name,
+          vector_statement_publication::config_change::kHnswBuildParams,
+          {hnsw_m, hnsw_ef_construction}, func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -279,12 +408,11 @@ longlong Item_func_vec_index_set_faiss_ivf_params::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_faiss_ivf_params(
-          index_name, faiss_nlist, faiss_nprobe)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name,
+          vector_statement_publication::config_change::kFaissIvfParams,
+          {faiss_nlist, faiss_nprobe}, func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -321,13 +449,12 @@ longlong Item_func_vec_index_set_faiss_ivfpq_params::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_faiss_ivf_pq_params(
-          index_name, faiss_nlist, faiss_nprobe, faiss_pq_m,
-          faiss_pq_bits)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name,
+          vector_statement_publication::config_change::kFaissIvfPqParams,
+          {faiss_nlist, faiss_nprobe, faiss_pq_m, faiss_pq_bits},
+          func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -366,13 +493,13 @@ longlong Item_func_vec_index_set_diskann_build_params::val_int() {
       arg_count >= 4 && diskann_build_threads_arg != 0
           ? diskann_build_threads_arg
           : static_cast<uint32_t>(opt_vector_diskann_build_threads);
-  if (!vector_index_registry::set_diskann_build_params(
-          index_name, diskann_max_degree, diskann_build_complexity,
-          diskann_build_threads)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name,
+          vector_statement_publication::config_change::kDiskannBuildParams,
+          {diskann_max_degree, diskann_build_complexity,
+           diskann_build_threads},
+          func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -400,12 +527,12 @@ longlong Item_func_vec_index_set_diskann_search_complexity::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_diskann_search_complexity(
-          index_name, diskann_search_complexity)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name,
+          vector_statement_publication::config_change::
+              kDiskannSearchComplexity,
+          {diskann_search_complexity}, func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -433,12 +560,11 @@ longlong Item_func_vec_index_set_diskann_search_beamwidth::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_diskann_search_beamwidth(
-          index_name, diskann_search_beamwidth)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name,
+          vector_statement_publication::config_change::kDiskannSearchBeamwidth,
+          {diskann_search_beamwidth}, func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -466,12 +592,12 @@ longlong Item_func_vec_index_set_diskann_pq_code_budget_size::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_diskann_pq_code_budget_size(
-          index_name, diskann_pq_code_budget_size)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name,
+          vector_statement_publication::config_change::
+              kDiskannPqCodeBudgetSize,
+          {static_cast<uint64_t>(diskann_pq_code_budget_size)}, func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -499,12 +625,11 @@ longlong Item_func_vec_index_set_diskann_disk_pq_dims::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::set_diskann_disk_pq_dims(
-          index_name, diskann_disk_pq_dims)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name,
+          vector_statement_publication::config_change::kDiskannDiskPqDims,
+          {diskann_disk_pq_dims}, func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -519,23 +644,13 @@ longlong Item_func_vec_index_set_diskann_accelerate_build::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
-  String name_buf;
-  std::string index_name;
-  bool accelerate_build = false;
-  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
-      !eval_bool01_arg(args[1], &accelerate_build)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_diskann_boolean_config(
+          args[0], args[1],
+          vector_statement_publication::config_change::
+              kDiskannAccelerateBuild,
+          func_name())) {
     return error_int();
   }
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
-    return error_int();
-  if (!vector_index_registry::set_diskann_accelerate_build(
-          index_name, accelerate_build)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -550,23 +665,12 @@ longlong Item_func_vec_index_set_diskann_shuffle_build::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
-  String name_buf;
-  std::string index_name;
-  bool shuffle_build = false;
-  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
-      !eval_bool01_arg(args[1], &shuffle_build)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_diskann_boolean_config(
+          args[0], args[1],
+          vector_statement_publication::config_change::kDiskannShuffleBuild,
+          func_name())) {
     return error_int();
   }
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
-    return error_int();
-  if (!vector_index_registry::set_diskann_shuffle_build(index_name,
-                                                        shuffle_build)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -581,23 +685,12 @@ longlong Item_func_vec_index_set_diskann_use_bfs_cache::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 2);
   null_value = true;
 
-  String name_buf;
-  std::string index_name;
-  bool use_bfs_cache = false;
-  if (!eval_string_arg(args[0], &name_buf, &index_name) ||
-      !eval_bool01_arg(args[1], &use_bfs_cache)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_diskann_boolean_config(
+          args[0], args[1],
+          vector_statement_publication::config_change::kDiskannUseBfsCache,
+          func_name())) {
     return error_int();
   }
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
-    return error_int();
-  if (!vector_index_registry::set_diskann_use_bfs_cache(index_name,
-                                                        use_bfs_cache)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -647,11 +740,11 @@ longlong Item_func_vec_index_set_diskann_build_mode::val_int() {
     return 0;
   }
 
-  if (!vector_index_registry::set_diskann_build_mode(index_name, build_mode)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_config_statement(
+          index_name,
+          vector_statement_publication::config_change::kDiskannBuildMode,
+          {static_cast<uint64_t>(build_mode)}, func_name()))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
   null_value = false;
   return 1;
 }
@@ -676,10 +769,17 @@ longlong Item_func_vec_index_drop::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, DROP_ACL, func_name(), true))
     return error_int();
-  const bool dropped = vector_index_registry::drop_index(index_name);
-  if (dropped && !maybe_binlog_vector_write_query(current_thd)) return error_int();
+  vector_index_registry::index_info info;
+  if (!vector_index_registry::get_index_info(index_name, &info)) {
+    null_value = false;
+    return 0;
+  }
+  const bool dropped = stage_index_statement(
+      index_name, vector_index_truth_store::publication_operation::kDropIndex,
+      true, func_name());
+  if (!dropped) return error_int();
   null_value = false;
-  return dropped ? 1 : 0;
+  return 1;
 }
 
 bool Item_func_vec_index_rebuild::resolve_type(THD *thd) {
@@ -692,23 +792,11 @@ longlong Item_func_vec_index_rebuild::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
-  String name_buf;
-  std::string index_name;
-  if (!eval_string_arg(args[0], &name_buf, &index_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_unary_index_statement(
+          args[0],
+          vector_index_truth_store::publication_operation::kRebuildIndex,
+          func_name(), "vector index not found or not rebuildable"))
     return error_int();
-  }
-
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
-    return error_int();
-  std::string error;
-  if (!vector_index_registry::rebuild_index(index_name, &error)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0),
-             error.empty() ? func_name() : error.c_str());
-    return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
 
   null_value = false;
   return 1;
@@ -724,21 +812,11 @@ longlong Item_func_vec_index_bulk_load_begin::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
-  String name_buf;
-  std::string index_name;
-  if (!eval_string_arg(args[0], &name_buf, &index_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_unary_index_statement(
+          args[0],
+          vector_index_truth_store::publication_operation::kBeginBulkLoad,
+          func_name()))
     return error_int();
-  }
-
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
-    return error_int();
-  if (!vector_index_registry::begin_bulk_load(index_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
 
   null_value = false;
   return 1;
@@ -754,23 +832,11 @@ longlong Item_func_vec_index_bulk_build::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 1);
   null_value = true;
 
-  String name_buf;
-  std::string index_name;
-  if (!eval_string_arg(args[0], &name_buf, &index_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_unary_index_statement(
+          args[0],
+          vector_index_truth_store::publication_operation::kBulkBuildIndex,
+          func_name()))
     return error_int();
-  }
-
-  if (check_vector_existing_index_access(
-          current_thd, index_name, ALTER_ACL, func_name(), false))
-    return error_int();
-  std::string error;
-  if (!vector_index_registry::bulk_build_index(index_name, &error)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0),
-             error.empty() ? func_name() : error.c_str());
-    return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
 
   null_value = false;
   return 1;
@@ -803,21 +869,20 @@ longlong Item_func_vec_index_recover::val_int() {
                                              repairing_truth_projection)) {
     return error_int();
   }
-  vector_index_registry::registry_state_snapshot before_change;
-  if (!repairing_truth_projection &&
-      !capture_admin_state(func_name(), &before_change)) {
-    return error_int();
-  }
-  if (!vector_index_registry::recover_index(current_thd, index_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (repairing_truth_projection) {
+    if (!vector_index_registry::recover_index(current_thd, index_name)) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+      return error_int();
+    }
+  } else if (!stage_index_statement(
+                 index_name,
+                 vector_index_truth_store::publication_operation::
+                     kRecoverIndex,
+                 false, func_name())) {
     return error_int();
   }
   // Corruption repair is local reconstruction from replicated base-table rows;
   // replaying it on replicas would couple independent derived-artifact health.
-  if (!repairing_truth_projection &&
-      !binlog_or_restore_admin_state(current_thd, func_name(), before_change))
-    return error_int();
-
   null_value = false;
   return 1;
 }
@@ -835,11 +900,10 @@ longlong Item_func_vec_index_rebuild_all::val_int() {
   size_t rebuilt_count = 0;
   if (check_vector_all_indexes_access(current_thd, ALTER_ACL, func_name()))
     return error_int();
-  if (!vector_index_registry::rebuild_all_indexes(&rebuilt_count)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+  if (!stage_all_index_statements(
+          vector_index_truth_store::publication_operation::kRebuildIndex,
+          func_name(), &rebuilt_count))
     return error_int();
-  }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
 
   null_value = false;
   return static_cast<longlong>(rebuilt_count);
@@ -865,19 +929,18 @@ longlong Item_func_vec_index_recover_all::val_int() {
                                              repairing_truth_projection)) {
     return error_int();
   }
-  vector_index_registry::registry_state_snapshot before_change;
-  if (!repairing_truth_projection &&
-      !capture_admin_state(func_name(), &before_change)) {
+  if (repairing_truth_projection) {
+    if (!vector_index_registry::recover_all_indexes(current_thd,
+                                                    &recovered_count)) {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+      return error_int();
+    }
+  } else if (!stage_all_index_statements(
+                 vector_index_truth_store::publication_operation::
+                     kRecoverIndex,
+                 func_name(), &recovered_count)) {
     return error_int();
   }
-  if (!vector_index_registry::recover_all_indexes(current_thd,
-                                                  &recovered_count)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-  if (!repairing_truth_projection &&
-      !binlog_or_restore_admin_state(current_thd, func_name(), before_change))
-    return error_int();
 
   null_value = false;
   return static_cast<longlong>(recovered_count);
@@ -912,12 +975,35 @@ longlong Item_func_vec_index_upsert::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::upsert(index_name, static_cast<uint64_t>(doc_id),
-                                     vector)) {
+  vector_index_registry::index_info info;
+  if (!vector_index_registry::get_index_info(index_name, &info)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+  if (info.consistency_mode == "transactional") {
+    vector_index::index_service::pending_change_snapshot change;
+    change.index_name = index_name;
+    change.doc_id = static_cast<uint64_t>(doc_id);
+    change.vector = std::move(vector);
+    if (!stage_transactional_changes({std::move(change)}, func_name()))
+      return error_int();
+  } else {
+    vector_statement_publication::operation_payload payload;
+    payload.unsigned_values = {static_cast<uint64_t>(doc_id), vector.size()};
+    payload.binary_value.resize(vector.size() * sizeof(float));
+    auto *bytes = reinterpret_cast<uchar *>(payload.binary_value.data());
+    for (size_t i = 0; i < vector.size(); ++i) {
+      float4store(bytes + i * sizeof(float), vector[i]);
+    }
+    std::string encoded;
+    if (!encode_statement_payload(payload, func_name(), &encoded) ||
+        !stage_and_binlog_statement(
+            vector_index_truth_store::publication_operation::
+                kStandaloneUpsert,
+            index_name, encoded, false, func_name())) {
+      return error_int();
+    }
+  }
 
   null_value = false;
   return 1;
@@ -991,50 +1077,51 @@ longlong Item_func_vec_index_upsert_batch::val_int() {
       reinterpret_cast<const uchar *>(docid_blob->ptr());
   const uchar *vector_ptr =
       reinterpret_cast<const uchar *>(vector_blob->ptr());
-  vector_index::index_service::bulk_load_reader reader =
-      [docid_ptr, vector_ptr, row_count,
-       dimension](const vector_index::index_service::bulk_load_visitor
-                      &visitor,
-                  std::string *error) {
-        vector_index::vector_data row;
-        row.resize(dimension);
-        for (size_t row_idx = 0; row_idx < row_count; ++row_idx) {
-          if (current_thd != nullptr && current_thd->killed) {
-            if (error != nullptr) *error = "VEC_INDEX_UPSERT_BATCH killed";
-            return false;
-          }
-          const uint64_t doc_id =
-              uint8korr(docid_ptr + row_idx * sizeof(uint64_t));
-          const uchar *row_ptr =
-              vector_ptr + row_idx * dimension * vector_utils::kVectorElemSize;
-          for (size_t dim_idx = 0; dim_idx < dimension; ++dim_idx) {
-            const float value =
-                float4get(row_ptr + dim_idx * vector_utils::kVectorElemSize);
-            if (!std::isfinite(value)) {
-              if (error != nullptr) {
-                *error = "VEC_INDEX_UPSERT_BATCH non-finite vector value";
-              }
-              return false;
-            }
-            row[dim_idx] = value;
-          }
-          if (!visitor(doc_id, row.data(), row.size())) return false;
-        }
-        return true;
-      };
-
-  vector_index::index_service::bulk_load_options options;
-  options.replace_duplicates = true;
-  options.rebuild_after_load = false;
-  options.source_format = "BINARY_BLOB";
-  std::string error;
-  if (!vector_index_registry::bulk_upsert_from_reader(index_name, reader,
-                                                      options, &error)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0),
-             error.empty() ? func_name() : error.c_str());
-    return error_int();
+  std::vector<vector_index::index_service::pending_change_snapshot> changes;
+  if (info.consistency_mode == "transactional") changes.reserve(row_count);
+  for (size_t row_idx = 0; row_idx < row_count; ++row_idx) {
+    if (current_thd != nullptr && current_thd->killed) {
+      my_error(ER_QUERY_INTERRUPTED, MYF(0));
+      return error_int();
+    }
+    vector_index::vector_data row(dimension);
+    const uchar *row_ptr =
+        vector_ptr + row_idx * dimension * vector_utils::kVectorElemSize;
+    for (size_t dim_idx = 0; dim_idx < dimension; ++dim_idx) {
+      const float value =
+          float4get(row_ptr + dim_idx * vector_utils::kVectorElemSize);
+      if (!std::isfinite(value)) {
+        my_error(ER_WRONG_ARGUMENTS, MYF(0),
+                 "VEC_INDEX_UPSERT_BATCH non-finite vector value");
+        return error_int();
+      }
+      row[dim_idx] = value;
+    }
+    if (info.consistency_mode == "transactional") {
+      vector_index::index_service::pending_change_snapshot change;
+      change.index_name = index_name;
+      change.doc_id = uint8korr(docid_ptr + row_idx * sizeof(uint64_t));
+      change.vector = std::move(row);
+      changes.push_back(std::move(change));
+    }
   }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+
+  if (info.consistency_mode == "transactional") {
+    if (!stage_transactional_changes(std::move(changes), func_name()))
+      return error_int();
+  } else {
+    vector_statement_publication::operation_payload payload;
+    payload.unsigned_values = {1, row_count, dimension, 1};
+    payload.string_values.emplace_back(docid_blob->ptr(), docid_blob->length());
+    payload.binary_value.assign(vector_blob->ptr(), vector_blob->length());
+    std::string encoded;
+    if (!encode_statement_payload(payload, func_name(), &encoded) ||
+        !stage_and_binlog_statement(
+            vector_index_truth_store::publication_operation::kBulkLoad,
+            index_name, encoded, false, func_name())) {
+      return error_int();
+    }
+  }
 
   null_value = false;
   return static_cast<longlong>(row_count);
@@ -1062,12 +1149,29 @@ longlong Item_func_vec_index_erase::val_int() {
   if (check_vector_existing_index_access(
           current_thd, index_name, ALTER_ACL, func_name(), false))
     return error_int();
-  if (!vector_index_registry::erase(index_name,
-                                    static_cast<uint64_t>(doc_id))) {
+  vector_index_registry::index_info info;
+  if (!vector_index_registry::get_index_info(index_name, &info)) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
     return error_int();
   }
-  if (!maybe_binlog_vector_write_query(current_thd)) return error_int();
+  if (info.consistency_mode == "transactional") {
+    vector_index::index_service::pending_change_snapshot change;
+    change.index_name = index_name;
+    change.erase = true;
+    change.doc_id = static_cast<uint64_t>(doc_id);
+    if (!stage_transactional_changes({std::move(change)}, func_name()))
+      return error_int();
+  } else {
+    vector_statement_publication::operation_payload payload;
+    payload.unsigned_values = {static_cast<uint64_t>(doc_id)};
+    std::string encoded;
+    if (!encode_statement_payload(payload, func_name(), &encoded) ||
+        !stage_and_binlog_statement(
+            vector_index_truth_store::publication_operation::kStandaloneErase,
+            index_name, encoded, false, func_name())) {
+      return error_int();
+    }
+  }
 
   null_value = false;
   return 1;

@@ -4683,6 +4683,9 @@ void dict_close(void) {
   if (dict_sys->vector_truth_prepared != nullptr) {
     dict_table_close(dict_sys->vector_truth_prepared, true, false);
   }
+  if (dict_sys->vector_publication_intents != nullptr) {
+    dict_table_close(dict_sys->vector_publication_intents, true, false);
+  }
   if (dict_sys->vector_truth_segment_tasks != nullptr) {
     dict_table_close(dict_sys->vector_truth_segment_tasks, true, false);
   }

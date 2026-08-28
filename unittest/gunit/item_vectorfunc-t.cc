@@ -23,11 +23,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
@@ -38,16 +40,18 @@
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/item.h"
+#include "sql/parse_tree_helpers.h"
+#include "sql/replication.h"
+#include "sql/sql_class.h"
 #include "sql/vector/item_vectorfunc.h"
 #include "sql/vector/item_vectorfunc_internal.h"
-#include "sql/parse_tree_helpers.h"
-#include "sql/sql_class.h"
 #include "sql/vector/sql_vector_load.h"
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
 #include "sql/vector/vector_status.h"
+#include "sql/vector/vector_trx_participant.h"
 #include "sql/vector/vector_utils.h"
 #include "unittest/gunit/test_utils.h"
 #include "unittest/gunit/vector_test_utils.h"
@@ -67,10 +71,12 @@ class ItemVectorFuncFixture : public ::testing::Test {
     ASSERT_FALSE(thd()->set_db({STRING_WITH_LEN("test")}));
     thd()->security_context()->set_master_access(CREATE_ACL | ALTER_ACL |
                                                  DROP_ACL | SELECT_ACL);
+    vector_trx_participant::set_registration_bypass_for_testing(true);
     vector_index_registry::reset_for_testing();
   }
   void TearDown() override {
     vector_index_registry::reset_for_testing();
+    vector_trx_participant::set_registration_bypass_for_testing(false);
     initializer.TearDown();
   }
   THD *thd() { return initializer.thd(); }
@@ -368,6 +374,62 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
  public:
   const char *backend_name() const override { return "controlled"; }
   bool is_transactional() const override { return false; }
+  bool supports_attached_dml() const override { return true; }
+  bool supports_publication_intents() const override { return true; }
+
+  bool apply_attached_committed(
+      THD *thd,
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
+    return thd != nullptr && !rows.empty();
+  }
+
+  bool append_attached_change_log(
+      THD *thd,
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
+    return thd != nullptr && !rows.empty();
+  }
+
+  bool insert_attached_publication_intent(
+      THD *,
+      const vector_index_truth_store::publication_intent &intent) override {
+    attached_publication_intents.push_back(intent);
+    return true;
+  }
+
+  bool load_publication_intents(
+      std::vector<vector_index_truth_store::publication_intent> *intents)
+      override {
+    if (intents == nullptr) return false;
+    *intents = durable_publication_intents;
+    return true;
+  }
+
+  bool delete_publication_intent(const std::string &index_name,
+                                 uint64_t publication_id) override {
+    const auto it = std::find_if(
+        durable_publication_intents.begin(), durable_publication_intents.end(),
+        [&](const auto &intent) {
+          return intent.index_name == index_name &&
+                 intent.publication_id == publication_id;
+        });
+    if (it == durable_publication_intents.end()) return false;
+    durable_publication_intents.erase(it);
+    return true;
+  }
+
+  void commit_attached_publication_intents() {
+    durable_publication_intents.insert(
+        durable_publication_intents.end(),
+        std::make_move_iterator(attached_publication_intents.begin()),
+        std::make_move_iterator(attached_publication_intents.end()));
+    attached_publication_intents.clear();
+  }
+
+  void rollback_attached_publication_intents() {
+    attached_publication_intents.clear();
+  }
 
   bool load_metadata(
       std::vector<vector_index_metadata_store::metadata_row> *rows) override {
@@ -434,6 +496,10 @@ class controlled_truth_store : public vector_index_truth_store::truth_store {
   bool quarantine_segment_tasks() override { return true; }
 
   bool fail_load_metadata{false};
+  std::vector<vector_index_truth_store::publication_intent>
+      attached_publication_intents;
+  std::vector<vector_index_truth_store::publication_intent>
+      durable_publication_intents;
 };
 
 class TruthStoreOverrideGuard {
@@ -451,6 +517,35 @@ class TruthStoreOverrideGuard {
   TruthStoreOverrideGuard(const TruthStoreOverrideGuard &) = delete;
   TruthStoreOverrideGuard &operator=(const TruthStoreOverrideGuard &) = delete;
 };
+
+Trans_param real_transaction_param(THD *thd) {
+  Trans_param param{};
+  param.thread_id = thd->thread_id();
+  param.flags = TRANS_IS_REAL_TRANS;
+  return param;
+}
+
+void commit_statement_publication(THD *thd, controlled_truth_store *store) {
+  ASSERT_NE(nullptr, thd);
+  ASSERT_NE(nullptr, store);
+  ASSERT_EQ(0, vector_trx_participant::commit_for_testing(thd, true));
+  store->commit_attached_publication_intents();
+  Trans_param commit_param = real_transaction_param(thd);
+  vector_trx_participant::after_commit_for_testing(&commit_param);
+  EXPECT_TRUE(store->attached_publication_intents.empty());
+  EXPECT_TRUE(store->durable_publication_intents.empty());
+}
+
+void rollback_statement_publication(THD *thd, controlled_truth_store *store) {
+  ASSERT_NE(nullptr, thd);
+  ASSERT_NE(nullptr, store);
+  Trans_param rollback_param = real_transaction_param(thd);
+  vector_trx_participant::before_rollback_for_testing(&rollback_param);
+  ASSERT_EQ(0, vector_trx_participant::rollback_for_testing(thd, true));
+  store->rollback_attached_publication_intents();
+  EXPECT_TRUE(store->attached_publication_intents.empty());
+  EXPECT_TRUE(store->durable_publication_intents.empty());
+}
 
 std::string as_std_string(const String &value) {
   return std::string(value.ptr(), value.length());
@@ -1144,20 +1239,16 @@ TEST_F(ItemVectorFuncFixture, TxnItemHelpersTreatUnknownTxnAsNoopOrEmpty) {
 TEST_F(ItemVectorFuncFixture, RebuildAllAndRecoverAllItemsCoverErrorAndSuccess) {
   controlled_truth_store store;
   TruthStoreOverrideGuard truth_store_override(&store);
-  const uint64_t rebuild_all_before = vector_status::rebuild_all_requests();
-  const uint64_t recover_all_before = vector_status::recover_all_requests();
 
   auto *rebuild_all = new Item_func_vec_index_rebuild_all(POS());
   fix_item(thd(), rebuild_all);
   EXPECT_GE(rebuild_all->val_int(), 0);
   EXPECT_FALSE(rebuild_all->null_value);
-  EXPECT_EQ(rebuild_all_before + 1, vector_status::rebuild_all_requests());
 
   auto *recover_all = new Item_func_vec_index_recover_all(POS());
   fix_item(thd(), recover_all);
   EXPECT_GE(recover_all->val_int(), 0);
   EXPECT_FALSE(recover_all->null_value);
-  EXPECT_EQ(recover_all_before + 1, vector_status::recover_all_requests());
 
   const std::string index_name = "idx_item_all_" +
                                  std::to_string(reinterpret_cast<uintptr_t>(this));
@@ -1185,6 +1276,9 @@ TEST_F(ItemVectorFuncFixture, RebuildAllAndRecoverAllItemsCoverErrorAndSuccess) 
 }
 
 TEST_F(ItemVectorFuncFixture, IndexAdminItemsCoverSuccessAndErrorPaths) {
+  controlled_truth_store store;
+  TruthStoreOverrideGuard truth_store_override(&store);
+
   {
     Server_initializer::set_expected_error(ER_WRONG_ARGUMENTS);
     auto *item = new Item_func_vec_index_create(
@@ -1206,6 +1300,7 @@ TEST_F(ItemVectorFuncFixture, IndexAdminItemsCoverSuccessAndErrorPaths) {
   fix_item(thd(), create_item);
   EXPECT_EQ(1, create_item->val_int());
   EXPECT_FALSE(create_item->null_value);
+  commit_statement_publication(thd(), &store);
 
   {
     auto *drop_missing = new Item_func_vec_index_drop(
@@ -1264,30 +1359,35 @@ TEST_F(ItemVectorFuncFixture, IndexAdminItemsCoverSuccessAndErrorPaths) {
   fix_item(thd(), rebuild_item);
   EXPECT_EQ(1, rebuild_item->val_int());
   EXPECT_FALSE(rebuild_item->null_value);
+  commit_statement_publication(thd(), &store);
 
   auto *recover_item = new Item_func_vec_index_recover(
       POS(), make_item_list({make_string_item(index_name.c_str())}));
   fix_item(thd(), recover_item);
   EXPECT_EQ(1, recover_item->val_int());
   EXPECT_FALSE(recover_item->null_value);
+  commit_statement_publication(thd(), &store);
 
   auto *bulk_begin_item = new Item_func_vec_index_bulk_load_begin(
       POS(), make_item_list({make_string_item(index_name.c_str())}));
   fix_item(thd(), bulk_begin_item);
   EXPECT_EQ(1, bulk_begin_item->val_int());
   EXPECT_FALSE(bulk_begin_item->null_value);
+  commit_statement_publication(thd(), &store);
 
   auto *bulk_build_item = new Item_func_vec_index_bulk_build(
       POS(), make_item_list({make_string_item(index_name.c_str())}));
   fix_item(thd(), bulk_build_item);
   EXPECT_EQ(1, bulk_build_item->val_int());
   EXPECT_FALSE(bulk_build_item->null_value);
+  commit_statement_publication(thd(), &store);
 
   auto *drop_item = new Item_func_vec_index_drop(
       POS(), make_item_list({make_string_item(index_name.c_str())}));
   fix_item(thd(), drop_item);
   EXPECT_EQ(1, drop_item->val_int());
   EXPECT_FALSE(drop_item->null_value);
+  commit_statement_publication(thd(), &store);
 }
 
 TEST_F(ItemVectorFuncFixture,
@@ -1314,190 +1414,107 @@ TEST_F(ItemVectorFuncFixture,
   ASSERT_FALSE(thd()->set_db({STRING_WITH_LEN("test")}));
 }
 
-TEST_F(ItemVectorFuncFixture,
-       ItemAdminAndTuningApisPropagateInjectedBinlogFailureAfterSuccess) {
-  const std::string native_index =
-      "idx_item_binlog_mem_" + std::to_string(reinterpret_cast<uintptr_t>(this));
-  const std::string hnsw_index = native_index + "_hnsw";
-  const std::string faiss_index = native_index + "_faiss";
-  const std::string faiss_pq_index = native_index + "_faiss_pq";
-  const std::string diskann_index = native_index + "_diskann";
+TEST_F(ItemVectorFuncFixture, ItemAdminApisRollbackInjectedBinlogFailure) {
+  controlled_truth_store store;
+  TruthStoreOverrideGuard truth_store_override(&store);
+
+  const std::string failed_create =
+      "idx_item_binlog_create_" +
+      std::to_string(reinterpret_cast<uintptr_t>(this));
+  const std::string index_name = failed_create + "_existing";
+  const std::string standalone_index = index_name + "_standalone";
+
+  auto expect_binlog_failure = [this, &store](Item *item) {
+    fix_item(thd(), item);
+    Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
+    {
+      VECTOR_SCOPED_DEBUG_FLAG(debug_flag,
+                               "+d,vector_item_fail_binlog_write");
+      EXPECT_EQ(0, item->val_int());
+      EXPECT_FALSE(item->null_value);
+    }
+    rollback_statement_publication(thd(), &store);
+    thd()->clear_error();
+    Server_initializer::set_expected_error(0);
+  };
+
+  expect_binlog_failure(new Item_func_vec_index_create(
+      POS(), make_item_list({make_string_item(failed_create.c_str()),
+                             new Item_int(2), make_string_item("euclidean"),
+                             make_string_item("memory"),
+                             make_string_item("native")})));
+  vector_index_registry::index_info info;
+  EXPECT_FALSE(vector_index_registry::get_index_info(failed_create, &info));
+
   const bool has_hnswlib_tuning = hnswlib_tuning_supported();
-  const bool has_faiss = vector_index::backend_provider_supported(
-      vector_index::backend_provider::kFaiss);
-  const bool has_diskann = vector_index::backend_provider_supported(
-      vector_index::backend_provider::kDiskAnn);
+  ASSERT_TRUE(vector_index_registry::create_index(
+      index_name, 2, "euclidean", "memory",
+      has_hnswlib_tuning ? "hnswlib" : "native"));
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 17, {1.0F, 7.0F}));
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  const uint32_t search_ef_before = info.search_ef;
+  const std::string lifecycle_before = info.lifecycle_state;
 
-  {
-    VECTOR_SCOPED_DEBUG_FLAG(debug_flag, "+d,vector_item_fail_binlog_write");
-
-    auto *create_mem = new Item_func_vec_index_create(
-        POS(), make_item_list({make_string_item(native_index.c_str()),
-                               new Item_int(2), make_string_item("euclidean"),
-                               make_string_item("memory"),
-                               make_string_item("native")}));
-    fix_item(thd(), create_mem);
-    EXPECT_EQ(0, create_mem->val_int());
-    EXPECT_FALSE(create_mem->null_value);
-
-    if (has_hnswlib_tuning) {
-      auto *create_hnsw = new Item_func_vec_index_create(
-          POS(), make_item_list({make_string_item(hnsw_index.c_str()),
-                                 new Item_int(2),
-                                 make_string_item("euclidean"),
-                                 make_string_item("memory"),
-                                 make_string_item("hnswlib")}));
-      fix_item(thd(), create_hnsw);
-      EXPECT_EQ(0, create_hnsw->val_int());
-      EXPECT_FALSE(create_hnsw->null_value);
-    }
-
-    if (has_faiss) {
-      auto *create_faiss = new Item_func_vec_index_create(
-          POS(), make_item_list({make_string_item(faiss_index.c_str()),
-                                 new Item_int(2), make_string_item("euclidean"),
-                                 make_string_item("external"),
-                                 make_string_item("faiss")}));
-      fix_item(thd(), create_faiss);
-      EXPECT_EQ(0, create_faiss->val_int());
-      EXPECT_FALSE(create_faiss->null_value);
-
-      auto *create_faiss_pq = new Item_func_vec_index_create(
-          POS(), make_item_list({make_string_item(faiss_pq_index.c_str()),
-                                 new Item_int(4), make_string_item("euclidean"),
-                                 make_string_item("external"),
-                                 make_string_item("faiss")}));
-      fix_item(thd(), create_faiss_pq);
-      EXPECT_EQ(0, create_faiss_pq->val_int());
-      EXPECT_FALSE(create_faiss_pq->null_value);
-    }
-
-    if (has_diskann) {
-      auto *create_diskann = new Item_func_vec_index_create(
-          POS(), make_item_list({make_string_item(diskann_index.c_str()),
-                                 new Item_int(2), make_string_item("euclidean"),
-                                 make_string_item("external"),
-                                 make_string_item("diskann")}));
-      fix_item(thd(), create_diskann);
-      EXPECT_EQ(0, create_diskann->val_int());
-      EXPECT_FALSE(create_diskann->null_value);
-    }
-
-    if (has_hnswlib_tuning) {
-      auto *set_search_ef = new Item_func_vec_index_set_search_ef(
-          POS(), make_string_item(hnsw_index.c_str()), new Item_int(64));
-      fix_item(thd(), set_search_ef);
-      EXPECT_EQ(0, set_search_ef->val_int());
-      EXPECT_FALSE(set_search_ef->null_value);
-
-      auto *set_hnsw = new Item_func_vec_index_set_hnsw_build_params(
-          POS(), make_item_list({make_string_item(hnsw_index.c_str()),
-                                 new Item_int(16), new Item_int(200)}));
-      fix_item(thd(), set_hnsw);
-      EXPECT_EQ(0, set_hnsw->val_int());
-      EXPECT_FALSE(set_hnsw->null_value);
-    }
-
-    if (has_faiss) {
-      auto *set_faiss_ivf = new Item_func_vec_index_set_faiss_ivf_params(
-          POS(), make_item_list({make_string_item(faiss_index.c_str()),
-                                 new Item_int(2), new Item_int(1)}));
-      fix_item(thd(), set_faiss_ivf);
-      EXPECT_EQ(0, set_faiss_ivf->val_int());
-      EXPECT_FALSE(set_faiss_ivf->null_value);
-
-      auto *set_faiss_ivfpq = new Item_func_vec_index_set_faiss_ivfpq_params(
-          POS(), make_item_list({make_string_item(faiss_pq_index.c_str()),
-                                 new Item_int(2), new Item_int(1),
-                                 new Item_int(1), new Item_int(1)}));
-      fix_item(thd(), set_faiss_ivfpq);
-      EXPECT_EQ(0, set_faiss_ivfpq->val_int());
-      EXPECT_FALSE(set_faiss_ivfpq->null_value);
-    }
-
-    if (has_diskann) {
-      auto *set_diskann_build =
-          new Item_func_vec_index_set_diskann_build_params(
-              POS(), make_item_list({make_string_item(diskann_index.c_str()),
-                                     new Item_int(48), new Item_int(96)}));
-      fix_item(thd(), set_diskann_build);
-      EXPECT_EQ(0, set_diskann_build->val_int());
-      EXPECT_FALSE(set_diskann_build->null_value);
-
-      auto *set_diskann_search =
-          new Item_func_vec_index_set_diskann_search_complexity(
-              POS(), make_string_item(diskann_index.c_str()), new Item_int(80));
-      fix_item(thd(), set_diskann_search);
-      EXPECT_EQ(0, set_diskann_search->val_int());
-      EXPECT_FALSE(set_diskann_search->null_value);
-
-      auto *set_diskann_pq =
-          new Item_func_vec_index_set_diskann_pq_code_budget_size(
-              POS(), make_string_item(diskann_index.c_str()),
-              new Item_int(1048576));
-      fix_item(thd(), set_diskann_pq);
-      EXPECT_EQ(0, set_diskann_pq->val_int());
-      EXPECT_FALSE(set_diskann_pq->null_value);
-    }
-
-    auto *rebuild_item = new Item_func_vec_index_rebuild(
-        POS(), make_item_list({make_string_item(native_index.c_str())}));
-    fix_item(thd(), rebuild_item);
-    EXPECT_EQ(0, rebuild_item->val_int());
-    EXPECT_FALSE(rebuild_item->null_value);
-
-    auto *bulk_begin_item = new Item_func_vec_index_bulk_load_begin(
-        POS(), make_item_list({make_string_item(native_index.c_str())}));
-    fix_item(thd(), bulk_begin_item);
-    EXPECT_EQ(0, bulk_begin_item->val_int());
-    EXPECT_FALSE(bulk_begin_item->null_value);
-
-    auto *bulk_build_item = new Item_func_vec_index_bulk_build(
-        POS(), make_item_list({make_string_item(native_index.c_str())}));
-    fix_item(thd(), bulk_build_item);
-    EXPECT_EQ(0, bulk_build_item->val_int());
-    EXPECT_FALSE(bulk_build_item->null_value);
-
-    auto *drop_mem = new Item_func_vec_index_drop(
-        POS(), make_item_list({make_string_item(native_index.c_str())}));
-    fix_item(thd(), drop_mem);
-    EXPECT_EQ(0, drop_mem->val_int());
-    EXPECT_FALSE(drop_mem->null_value);
-
-    if (has_hnswlib_tuning) {
-      auto *drop_hnsw = new Item_func_vec_index_drop(
-          POS(), make_item_list({make_string_item(hnsw_index.c_str())}));
-      fix_item(thd(), drop_hnsw);
-      EXPECT_EQ(0, drop_hnsw->val_int());
-      EXPECT_FALSE(drop_hnsw->null_value);
-    }
-
-    if (has_faiss) {
-      auto *drop_faiss = new Item_func_vec_index_drop(
-          POS(), make_item_list({make_string_item(faiss_index.c_str())}));
-      fix_item(thd(), drop_faiss);
-      EXPECT_EQ(0, drop_faiss->val_int());
-      EXPECT_FALSE(drop_faiss->null_value);
-
-      auto *drop_faiss_pq = new Item_func_vec_index_drop(
-          POS(), make_item_list({make_string_item(faiss_pq_index.c_str())}));
-      fix_item(thd(), drop_faiss_pq);
-      EXPECT_EQ(0, drop_faiss_pq->val_int());
-      EXPECT_FALSE(drop_faiss_pq->null_value);
-    }
-
-    if (has_diskann) {
-      auto *drop_diskann = new Item_func_vec_index_drop(
-          POS(), make_item_list({make_string_item(diskann_index.c_str())}));
-      fix_item(thd(), drop_diskann);
-      EXPECT_EQ(0, drop_diskann->val_int());
-      EXPECT_FALSE(drop_diskann->null_value);
-    }
+  if (has_hnswlib_tuning) {
+    expect_binlog_failure(new Item_func_vec_index_set_search_ef(
+        POS(), make_string_item(index_name.c_str()), new Item_int(64)));
+    ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+    EXPECT_EQ(search_ef_before, info.search_ef);
   }
+
+  expect_binlog_failure(new Item_func_vec_index_bulk_load_begin(
+      POS(), make_item_list({make_string_item(index_name.c_str())})));
+  ASSERT_TRUE(vector_index_registry::get_index_info(index_name, &info));
+  EXPECT_EQ(lifecycle_before, info.lifecycle_state);
+
+  expect_binlog_failure(new Item_func_vec_index_rebuild(
+      POS(), make_item_list({make_string_item(index_name.c_str())})));
+  expect_binlog_failure(new Item_func_vec_index_recover(
+      POS(), make_item_list({make_string_item(index_name.c_str())})));
+  expect_binlog_failure(new Item_func_vec_index_drop(
+      POS(), make_item_list({make_string_item(index_name.c_str())})));
+
+  std::vector<vector_index::search_result> results;
+  ASSERT_TRUE(
+      vector_index_registry::search(index_name, {1.0F, 7.0F}, 1, &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(17U, results[0].doc_id);
+  ASSERT_TRUE(vector_index_registry::drop_index(index_name));
+
+  vector_index_registry::create_index_options standalone_create_options;
+  standalone_create_options.consistency_mode_specified = true;
+  standalone_create_options.consistency_mode =
+      vector_index::index_consistency_mode::kStandalone;
+  ASSERT_TRUE(vector_index_registry::create_index(
+      standalone_index, 2, "euclidean", "memory", "native",
+      standalone_create_options));
+  vector_index::index_service::bulk_load_reader reader =
+      [](const vector_index::index_service::bulk_load_visitor &visitor,
+         std::string *) {
+        const float values[] = {2.0F, 8.0F};
+        return visitor(28, values, 2);
+      };
+  vector_index::index_service::bulk_load_options load_options;
+  load_options.replace_duplicates = true;
+  load_options.rebuild_after_load = true;
+  std::string load_error;
+  ASSERT_TRUE(vector_index_registry::bulk_upsert_from_reader(
+      standalone_index, reader, load_options, &load_error));
+
+  expect_binlog_failure(new Item_func_vec_index_drop(
+      POS(), make_item_list({make_string_item(standalone_index.c_str())})));
+  results.clear();
+  ASSERT_TRUE(vector_index_registry::search(standalone_index, {2.0F, 8.0F}, 1,
+                                            &results));
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(28U, results[0].doc_id);
+  ASSERT_TRUE(vector_index_registry::drop_index(standalone_index));
 }
 
-TEST_F(ItemVectorFuncFixture,
-       ItemMutationApisPropagateInjectedBinlogFailureAfterSuccess) {
+TEST_F(ItemVectorFuncFixture, ItemMutationApisRollbackInjectedBinlogFailure) {
+  controlled_truth_store store;
+  TruthStoreOverrideGuard truth_store_override(&store);
+
   const std::string index_name =
       "idx_item_mut_binlog_" + std::to_string(reinterpret_cast<uintptr_t>(this));
   ASSERT_TRUE(vector_index_registry::create_index(index_name, 2, "euclidean",
@@ -1511,15 +1528,20 @@ TEST_F(ItemVectorFuncFixture,
                                new Item_int(17),
                                make_binary_vector_item({1.0F, 7.0F})}));
     fix_item(thd(), upsert_item);
+    Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
     EXPECT_EQ(0, upsert_item->val_int());
     EXPECT_FALSE(upsert_item->null_value);
+    rollback_statement_publication(thd(), &store);
+    thd()->clear_error();
+    Server_initializer::set_expected_error(0);
   }
 
   std::vector<vector_index::search_result> results;
   ASSERT_TRUE(
       vector_index_registry::search(index_name, {1.0F, 7.0F}, 1, &results));
-  ASSERT_EQ(1U, results.size());
-  EXPECT_EQ(17U, results[0].doc_id);
+  EXPECT_TRUE(results.empty());
+
+  ASSERT_TRUE(vector_index_registry::upsert(index_name, 17, {1.0F, 7.0F}));
 
   {
     VECTOR_SCOPED_DEBUG_FLAG(debug_flag, "+d,vector_item_fail_binlog_write");
@@ -1528,13 +1550,18 @@ TEST_F(ItemVectorFuncFixture,
         POS(), make_item_list({make_string_item(index_name.c_str()),
                                new Item_int(17)}));
     fix_item(thd(), erase_item);
+    Server_initializer::set_expected_error(ER_INTERNAL_ERROR);
     EXPECT_EQ(0, erase_item->val_int());
     EXPECT_FALSE(erase_item->null_value);
+    rollback_statement_publication(thd(), &store);
+    thd()->clear_error();
+    Server_initializer::set_expected_error(0);
   }
 
   ASSERT_TRUE(
       vector_index_registry::search(index_name, {1.0F, 7.0F}, 1, &results));
-  EXPECT_TRUE(results.empty());
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(17U, results[0].doc_id);
 
   ASSERT_TRUE(vector_index_registry::drop_index(index_name));
 }
@@ -2225,6 +2252,9 @@ TEST_F(ItemVectorFuncFixture, LoadVectorCommandImportsRawFiles) {
   write_raw_fbin_file(vector_path, 2, 2, {1.0F, 0.0F, 0.0F, 1.0F});
   write_raw_docid_file(docid_path, {101, 202});
 
+  controlled_truth_store store;
+  TruthStoreOverrideGuard truth_store_override(&store);
+
   vector_index_registry::create_index_options options;
   options.consistency_mode_specified = true;
   options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
@@ -2240,6 +2270,8 @@ TEST_F(ItemVectorFuncFixture, LoadVectorCommandImportsRawFiles) {
   EXPECT_EQ(SQLCOM_LOAD_VECTOR, command->sql_command_code());
   EXPECT_FALSE(command->execute(thd()));
   EXPECT_FALSE(thd()->is_error());
+  ASSERT_EQ(1U, store.attached_publication_intents.size());
+  commit_statement_publication(thd(), &store);
 
   std::vector<vector_index::search_result> results;
   ASSERT_TRUE(vector_index_registry::search(index_name, {1.0F, 0.0F}, 2,
@@ -2254,6 +2286,8 @@ TEST_F(ItemVectorFuncFixture, UpsertBatchCoversStandaloneReaderEdges) {
   const std::string index_name =
       "idx_upsert_batch_item_" +
       std::to_string(reinterpret_cast<uintptr_t>(this));
+  controlled_truth_store store;
+  TruthStoreOverrideGuard truth_store_override(&store);
   vector_index_registry::create_index_options options;
   options.consistency_mode_specified = true;
   options.consistency_mode = vector_index::index_consistency_mode::kStandalone;
@@ -2269,6 +2303,8 @@ TEST_F(ItemVectorFuncFixture, UpsertBatchCoversStandaloneReaderEdges) {
   fix_item(thd(), success_item);
   EXPECT_EQ(2, success_item->val_int());
   EXPECT_FALSE(success_item->null_value);
+  ASSERT_EQ(1U, store.attached_publication_intents.size());
+  commit_statement_publication(thd(), &store);
 
   std::vector<vector_index::search_result> results;
   ASSERT_TRUE(vector_index_registry::rebuild_index(index_name));
@@ -2307,16 +2343,24 @@ TEST_F(ItemVectorFuncFixture, UpsertBatchCoversStandaloneReaderEdges) {
                              new Item_uint(1)})));
 
   thd()->killed = THD::KILL_QUERY;
-  expect_wrong_arguments(new Item_func_vec_index_upsert_batch(
-      POS(), make_item_list({make_string_item(index_name.c_str()),
-                             make_binary_blob_item(binary_docid_payload({44})),
-                             make_binary_blob_item(binary_vector_payload(
-                                 {4.0F, 4.0F})),
-                             new Item_uint(1)})));
+  auto *interrupted_item = new Item_func_vec_index_upsert_batch(
+      POS(), make_item_list(
+                 {make_string_item(index_name.c_str()),
+                  make_binary_blob_item(binary_docid_payload({44})),
+                  make_binary_blob_item(binary_vector_payload({4.0F, 4.0F})),
+                  new Item_uint(1)}));
+  Server_initializer::set_expected_error(ER_QUERY_INTERRUPTED);
+  fix_item(thd(), interrupted_item);
+  EXPECT_EQ(0, interrupted_item->val_int());
   thd()->killed = THD::NOT_KILLED;
+  thd()->clear_error();
+  Server_initializer::set_expected_error(0);
 }
 
 TEST_F(ItemVectorFuncFixture, ItemTuningItemsRejectUnsupportedBackends) {
+  controlled_truth_store store;
+  TruthStoreOverrideGuard truth_store_override(&store);
+
   const std::string native_index =
       "idx_item_tuning_native_" +
       std::to_string(reinterpret_cast<uintptr_t>(this));
@@ -2366,6 +2410,7 @@ TEST_F(ItemVectorFuncFixture, ItemTuningItemsRejectUnsupportedBackends) {
   fix_item(thd(), native_auto_mode);
   EXPECT_EQ(1, native_auto_mode->val_int());
   EXPECT_FALSE(native_auto_mode->null_value);
+  commit_statement_publication(thd(), &store);
 
   auto *native_serial_mode = new Item_func_vec_index_set_diskann_build_mode(
       POS(), make_string_item(native_index.c_str()), make_string_item("serial"));
@@ -2380,6 +2425,7 @@ TEST_F(ItemVectorFuncFixture, ItemTuningItemsRejectUnsupportedBackends) {
     fix_item(thd(), diskann_serial_mode);
     EXPECT_EQ(1, diskann_serial_mode->val_int());
     EXPECT_FALSE(diskann_serial_mode->null_value);
+    commit_statement_publication(thd(), &store);
   }
 }
 

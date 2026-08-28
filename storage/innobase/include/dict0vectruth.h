@@ -61,6 +61,9 @@ struct change_log_row {
   uint64_t doc_id{0};
   uint32_t dimension{0};
   std::string vector_payload;
+  uint64_t index_identity{0};
+  uint64_t publication_id{0};
+  uint64_t truth_generation{0};
 };
 
 /** Semantic prepared change row exchanged with the vector XA participant. */
@@ -79,6 +82,32 @@ struct prepared_change_row {
   std::string vector_payload;
 };
 
+/** Durable publication intent exchanged with the SQL-layer coordinator. */
+struct publication_intent_row {
+  std::string index_name;
+  uint64_t publication_id{0};
+  uint64_t txn_id{0};
+  uint8_t operation{0};
+  uint8_t expected_exists{0};
+  uint64_t expected_index_identity{0};
+  uint64_t expected_truth_generation{0};
+  uint64_t expected_config_generation{0};
+  uint64_t expected_artifact_generation{0};
+  uint64_t expected_runtime_generation{0};
+  uint64_t expected_lifecycle_version{0};
+  uint64_t expected_source_generation{0};
+  uint8_t target_exists{0};
+  uint64_t target_index_identity{0};
+  uint64_t target_truth_generation{0};
+  uint64_t target_config_generation{0};
+  uint64_t target_artifact_generation{0};
+  uint64_t target_runtime_generation{0};
+  uint64_t target_lifecycle_version{0};
+  uint64_t target_source_generation{0};
+  std::string payload;
+  uint8_t state{0};
+};
+
 Session *begin_session(bool read_write);
 /**
   Open a truth-store session on the InnoDB transaction owned by a THD.
@@ -90,6 +119,16 @@ Session *begin_session(bool read_write);
   @return attached session, or nullptr when no InnoDB transaction is available
 */
 Session *begin_attached_session(THD *thd);
+/**
+  Borrow an already registered InnoDB transaction during handlerton prepare.
+
+  Unlike begin_attached_session(), this function never registers a statement
+  participant. The caller must already have an active InnoDB transaction.
+
+  @param thd thread whose prepared transaction is borrowed
+  @return attached session, or nullptr when InnoDB is not active and registered
+*/
+Session *begin_attached_session_for_prepare(THD *thd);
 void close_session(Session *session);
 bool commit_session(Session *session);
 void rollback_session(Session *session);
@@ -121,10 +160,20 @@ bool save_change_log_rows(const std::vector<change_log_row> &rows,
                           Session *session = nullptr);
 bool append_change_log_delta(const std::vector<change_log_row> &rows,
                              Session *session = nullptr);
+bool erase_change_log_sequences(const std::vector<uint64_t> &sequences,
+                                Session *session = nullptr);
 bool load_prepared_rows(std::vector<prepared_change_row> *rows, bool *found,
                         Session *session = nullptr);
 bool save_prepared_rows(const std::vector<prepared_change_row> &rows,
                         Session *session = nullptr);
+bool load_publication_intents(std::vector<publication_intent_row> *rows,
+                              bool *found, Session *session = nullptr);
+/** Insert and uniquely lock one per-index intent in the caller transaction. */
+bool insert_publication_intent(const publication_intent_row &row,
+                               Session *session);
+bool delete_publication_intent(const std::string &index_name,
+                               uint64_t publication_id,
+                               Session *session = nullptr);
 bool delete_artifact(const char *artifact_name, Session *session = nullptr);
 
 }  // namespace innodb_vector_truth_store

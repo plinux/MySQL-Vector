@@ -23,6 +23,7 @@
 
 #include "sql/vector/vector_index_truth_store.h"
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -34,6 +35,8 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -323,8 +326,9 @@ bool from_innodb_committed_rows(
   return true;
 }
 
-bool to_innodb_change_log_rows(
+bool to_innodb_change_rows(
     const std::vector<vector_index_metadata_store::change_log_row> &rows,
+    bool require_publication_binding,
     std::vector<innodb_vector_truth_store::change_log_row> *out) {
   if (out == nullptr) return false;
   out->clear();
@@ -333,9 +337,19 @@ bool to_innodb_change_log_rows(
     innodb_vector_truth_store::change_log_row stored;
     stored.sequence = row.sequence;
     stored.txn_id = row.txn_id;
+    stored.index_identity = row.index_identity;
+    stored.publication_id = row.publication_id;
+    stored.truth_generation = row.truth_generation;
     stored.index_name = row.index_name;
     stored.doc_id = row.doc_id;
-    if (stored.sequence == 0 || stored.index_name.empty() ||
+    if (stored.sequence == 0 || stored.index_identity == 0 ||
+        (require_publication_binding &&
+         (stored.publication_id == 0 || stored.truth_generation == 0)) ||
+        stored.sequence == std::numeric_limits<uint64_t>::max() ||
+        stored.index_identity == std::numeric_limits<uint64_t>::max() ||
+        stored.publication_id == std::numeric_limits<uint64_t>::max() ||
+        stored.truth_generation == std::numeric_limits<uint64_t>::max() ||
+        stored.index_name.empty() ||
         !encode_truth_op(row.op, &stored.op) ||
         !vector_to_truth_payload(row.vector, &stored.dimension,
                                  &stored.vector_payload)) {
@@ -350,6 +364,32 @@ bool to_innodb_change_log_rows(
   return true;
 }
 
+bool to_innodb_truth_delta_rows(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows,
+    std::vector<innodb_vector_truth_store::change_log_row> *out) {
+  return to_innodb_change_rows(rows, false, out);
+}
+
+bool to_innodb_change_log_rows(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows,
+    std::vector<innodb_vector_truth_store::change_log_row> *out) {
+  return to_innodb_change_rows(rows, true, out);
+}
+
+bool valid_persisted_change_log_rows(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows) {
+  return std::all_of(
+      rows.begin(), rows.end(), [](const auto &row) {
+        return row.sequence != 0 && row.index_identity != 0 &&
+               row.publication_id != 0 && row.truth_generation != 0 &&
+               row.sequence != std::numeric_limits<uint64_t>::max() &&
+               row.index_identity != std::numeric_limits<uint64_t>::max() &&
+               row.publication_id != std::numeric_limits<uint64_t>::max() &&
+               row.truth_generation != std::numeric_limits<uint64_t>::max() &&
+               !row.index_name.empty();
+      });
+}
+
 bool from_innodb_change_log_rows(
     const std::vector<innodb_vector_truth_store::change_log_row> &rows,
     std::vector<vector_index_metadata_store::change_log_row> *out) {
@@ -360,9 +400,18 @@ bool from_innodb_change_log_rows(
     vector_index_metadata_store::change_log_row loaded;
     loaded.sequence = row.sequence;
     loaded.txn_id = row.txn_id;
+    loaded.index_identity = row.index_identity;
+    loaded.publication_id = row.publication_id;
+    loaded.truth_generation = row.truth_generation;
     loaded.index_name = row.index_name;
     loaded.doc_id = row.doc_id;
-    if (loaded.sequence == 0 || loaded.index_name.empty() ||
+    if (loaded.sequence == 0 || loaded.index_identity == 0 ||
+        loaded.publication_id == 0 || loaded.truth_generation == 0 ||
+        loaded.sequence == std::numeric_limits<uint64_t>::max() ||
+        loaded.index_identity == std::numeric_limits<uint64_t>::max() ||
+        loaded.publication_id == std::numeric_limits<uint64_t>::max() ||
+        loaded.truth_generation == std::numeric_limits<uint64_t>::max() ||
+        loaded.index_name.empty() ||
         !decode_truth_op(row.op, &loaded.op) ||
         !truth_payload_to_vector(row.dimension, row.vector_payload,
                                  &loaded.vector)) {
@@ -449,6 +498,170 @@ bool from_innodb_prepared_rows(
       return false;
     }
     out->push_back(std::move(loaded));
+  }
+  return true;
+}
+
+bool valid_publication_operation(
+    vector_index_truth_store::publication_operation operation) {
+  using vector_index_truth_store::publication_operation;
+  switch (operation) {
+    case publication_operation::kTransactionalDml:
+    case publication_operation::kStandaloneUpsert:
+    case publication_operation::kStandaloneErase:
+    case publication_operation::kBulkLoad:
+    case publication_operation::kCreateIndex:
+    case publication_operation::kDropIndex:
+    case publication_operation::kUpdateConfig:
+    case publication_operation::kRebuildIndex:
+    case publication_operation::kRecoverIndex:
+    case publication_operation::kBeginBulkLoad:
+    case publication_operation::kBulkBuildIndex:
+      return true;
+  }
+  return false;
+}
+
+bool valid_publication_token(
+    const vector_index_truth_store::publication_token &token) {
+  const uint64_t max_value = std::numeric_limits<uint64_t>::max();
+  if (!token.exists) {
+    return token.index_identity == 0 && token.truth_generation == 0 &&
+           token.config_generation == 0 && token.artifact_generation == 0 &&
+           token.runtime_generation == 0 && token.lifecycle_version == 0 &&
+           token.source_generation == 0;
+  }
+  return token.index_identity != 0 && token.index_identity != max_value &&
+         token.truth_generation != max_value &&
+         token.config_generation != 0 &&
+         token.config_generation != max_value &&
+         token.artifact_generation != max_value &&
+         token.runtime_generation != max_value &&
+         token.lifecycle_version != 0 &&
+         token.lifecycle_version != max_value &&
+         token.source_generation != max_value;
+}
+
+bool valid_publication_intent(
+    const vector_index_truth_store::publication_intent &intent) {
+  const uint64_t max_value = std::numeric_limits<uint64_t>::max();
+  return !intent.index_name.empty() && intent.publication_id != 0 &&
+         intent.publication_id != max_value &&
+         valid_publication_operation(intent.operation) &&
+         (intent.state == vector_index_truth_store::publication_intent_state::
+                              kReadyToPublish ||
+          intent.state == vector_index_truth_store::publication_intent_state::
+                              kTargetToBeObserved) &&
+         valid_publication_token(intent.expected) &&
+         valid_publication_token(intent.target) &&
+         (intent.state == vector_index_truth_store::publication_intent_state::
+                  kTargetToBeObserved ||
+          intent.expected.exists || intent.target.exists) &&
+         (!intent.expected.exists || !intent.target.exists ||
+          intent.expected.index_identity == intent.target.index_identity);
+}
+
+void to_innodb_publication_token(
+    const vector_index_truth_store::publication_token &token,
+    uint8_t *exists, uint64_t *index_identity, uint64_t *truth_generation,
+    uint64_t *config_generation, uint64_t *artifact_generation,
+    uint64_t *runtime_generation, uint64_t *lifecycle_version,
+    uint64_t *source_generation) {
+  *exists = token.exists ? 1 : 0;
+  *index_identity = token.index_identity;
+  *truth_generation = token.truth_generation;
+  *config_generation = token.config_generation;
+  *artifact_generation = token.artifact_generation;
+  *runtime_generation = token.runtime_generation;
+  *lifecycle_version = token.lifecycle_version;
+  *source_generation = token.source_generation;
+}
+
+bool to_innodb_publication_intent(
+    const vector_index_truth_store::publication_intent &intent,
+    innodb_vector_truth_store::publication_intent_row *stored) {
+  if (stored == nullptr || !valid_publication_intent(intent)) return false;
+  stored->index_name = intent.index_name;
+  stored->publication_id = intent.publication_id;
+  stored->txn_id = intent.txn_id;
+  stored->operation = static_cast<uint8_t>(intent.operation);
+  to_innodb_publication_token(
+      intent.expected, &stored->expected_exists,
+      &stored->expected_index_identity, &stored->expected_truth_generation,
+      &stored->expected_config_generation,
+      &stored->expected_artifact_generation,
+      &stored->expected_runtime_generation,
+      &stored->expected_lifecycle_version,
+      &stored->expected_source_generation);
+  to_innodb_publication_token(
+      intent.target, &stored->target_exists, &stored->target_index_identity,
+      &stored->target_truth_generation, &stored->target_config_generation,
+      &stored->target_artifact_generation,
+      &stored->target_runtime_generation,
+      &stored->target_lifecycle_version,
+      &stored->target_source_generation);
+  stored->payload = intent.payload;
+  stored->state = static_cast<uint8_t>(intent.state);
+  return true;
+}
+
+void from_innodb_publication_token(
+    uint8_t exists, uint64_t index_identity, uint64_t truth_generation,
+    uint64_t config_generation, uint64_t artifact_generation,
+    uint64_t runtime_generation, uint64_t lifecycle_version,
+    uint64_t source_generation,
+    vector_index_truth_store::publication_token *token) {
+  token->exists = exists != 0;
+  token->index_identity = index_identity;
+  token->truth_generation = truth_generation;
+  token->config_generation = config_generation;
+  token->artifact_generation = artifact_generation;
+  token->runtime_generation = runtime_generation;
+  token->lifecycle_version = lifecycle_version;
+  token->source_generation = source_generation;
+}
+
+bool from_innodb_publication_intent(
+    const innodb_vector_truth_store::publication_intent_row &stored,
+    vector_index_truth_store::publication_intent *intent) {
+  if (intent == nullptr || stored.expected_exists > 1 ||
+      stored.target_exists > 1) {
+    return false;
+  }
+  intent->index_name = stored.index_name;
+  intent->publication_id = stored.publication_id;
+  intent->txn_id = stored.txn_id;
+  intent->operation = static_cast<vector_index_truth_store::publication_operation>(
+      stored.operation);
+  from_innodb_publication_token(
+      stored.expected_exists, stored.expected_index_identity,
+      stored.expected_truth_generation, stored.expected_config_generation,
+      stored.expected_artifact_generation, stored.expected_runtime_generation,
+      stored.expected_lifecycle_version, stored.expected_source_generation,
+      &intent->expected);
+  from_innodb_publication_token(
+      stored.target_exists, stored.target_index_identity,
+      stored.target_truth_generation, stored.target_config_generation,
+      stored.target_artifact_generation, stored.target_runtime_generation,
+      stored.target_lifecycle_version, stored.target_source_generation,
+      &intent->target);
+  intent->payload = stored.payload;
+  intent->state =
+      static_cast<vector_index_truth_store::publication_intent_state>(
+          stored.state);
+  return valid_publication_intent(*intent);
+}
+
+bool from_innodb_publication_intents(
+    const std::vector<innodb_vector_truth_store::publication_intent_row> &rows,
+    std::vector<vector_index_truth_store::publication_intent> *intents) {
+  if (intents == nullptr) return false;
+  intents->clear();
+  intents->reserve(rows.size());
+  for (const auto &row : rows) {
+    vector_index_truth_store::publication_intent intent;
+    if (!from_innodb_publication_intent(row, &intent)) return false;
+    intents->push_back(std::move(intent));
   }
   return true;
 }
@@ -692,12 +905,17 @@ bool is_truth_store_table_name(const char *schema_name,
          my_strcasecmp(system_charset_info, table_name,
                        "vector_index_truth_prepared") == 0 ||
          my_strcasecmp(system_charset_info, table_name,
+                       "vector_index_publication_intents") == 0 ||
+         my_strcasecmp(system_charset_info, table_name,
                        "vector_index_truth_segment_tasks") == 0 ||
          my_strcasecmp(system_charset_info, table_name,
                        "vector_index_truth_store_quarantine") == 0;
 }
 
 class mysql_truth_store final : public vector_index_truth_store::truth_store {
+ private:
+  enum class change_log_persist_mode { kReplace, kAppend };
+
  public:
   using vector_index_truth_store::truth_store::for_each_committed;
 
@@ -706,12 +924,43 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   bool is_transactional() const override { return true; }
   bool supports_delta_persist() const override { return true; }
   bool supports_attached_dml() const override { return true; }
+  bool supports_publication_intents() const override { return true; }
 
-  bool apply_attached_dml(
+  bool ensure_attached_transaction(THD *thd) override {
+    innodb_vector_truth_store::Session *session =
+        innodb_vector_truth_store::begin_attached_session(thd);
+    if (session == nullptr) return false;
+    innodb_vector_truth_store::close_session(session);
+    return true;
+  }
+
+  bool apply_attached_committed(
       THD *thd,
       const std::vector<vector_index_metadata_store::change_log_row> &rows)
       override {
     if (thd == nullptr || rows.empty()) return false;
+
+    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+    if (!to_innodb_truth_delta_rows(rows, &stored_rows)) return false;
+
+    innodb_vector_truth_store::Session *session =
+        innodb_vector_truth_store::begin_attached_session(thd);
+    if (session == nullptr) return false;
+
+    const bool committed_ok =
+        innodb_vector_truth_store::apply_committed_delta(stored_rows, session);
+    innodb_vector_truth_store::close_session(session);
+    return committed_ok;
+  }
+
+  bool append_attached_change_log(
+      THD *thd,
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
+    if (thd == nullptr || rows.empty() ||
+        !valid_persisted_change_log_rows(rows)) {
+      return false;
+    }
 
     std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
     if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
@@ -720,51 +969,158 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
         innodb_vector_truth_store::begin_attached_session(thd);
     if (session == nullptr) return false;
 
-    const bool committed_ok =
-        innodb_vector_truth_store::apply_committed_delta(stored_rows, session);
     DBUG_EXECUTE_IF("vector_truth_fail_attached_changelog",
                     innodb_vector_truth_store::close_session(session);
                     return false;);
     const bool changelog_ok =
-        committed_ok && innodb_vector_truth_store::append_change_log_delta(
-                            stored_rows, session);
+        innodb_vector_truth_store::append_change_log_delta(stored_rows,
+                                                           session);
     innodb_vector_truth_store::close_session(session);
-    return committed_ok && changelog_ok;
+    return changelog_ok;
   }
 
-  bool bootstrap_initialize(THD *thd) { return thd != nullptr; }
+  bool insert_attached_publication_intent(
+      THD *thd,
+      const vector_index_truth_store::publication_intent &intent) override {
+    if (thd == nullptr || !valid_publication_intent(intent)) return false;
+
+    innodb_vector_truth_store::publication_intent_row stored;
+    if (!to_innodb_publication_intent(intent, &stored)) return false;
+    innodb_vector_truth_store::Session *session =
+        innodb_vector_truth_store::begin_attached_session(thd);
+    if (session == nullptr) return false;
+
+    DBUG_EXECUTE_IF("vector_truth_fail_attached_publication_intent",
+                    innodb_vector_truth_store::close_session(session);
+                    return false;);
+    const bool inserted =
+        innodb_vector_truth_store::insert_publication_intent(stored, session);
+    innodb_vector_truth_store::close_session(session);
+    return inserted;
+  }
+
+  bool prepare_attached_publication(
+      THD *thd,
+      const std::vector<vector_index_metadata_store::change_log_row> &rows,
+      const std::vector<vector_index_truth_store::publication_intent> &intents)
+      override {
+    if (thd == nullptr || rows.empty() || intents.empty() ||
+        !valid_persisted_change_log_rows(rows)) {
+      return false;
+    }
+
+    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+    if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
+    std::vector<innodb_vector_truth_store::publication_intent_row>
+        stored_intents;
+    stored_intents.reserve(intents.size());
+    for (const auto &intent : intents) {
+      innodb_vector_truth_store::publication_intent_row stored;
+      if (!to_innodb_publication_intent(intent, &stored)) return false;
+      stored_intents.push_back(std::move(stored));
+    }
+
+    innodb_vector_truth_store::Session *session =
+        innodb_vector_truth_store::begin_attached_session_for_prepare(thd);
+    if (session == nullptr) return false;
+
+    DBUG_EXECUTE_IF("vector_truth_fail_attached_changelog",
+                    innodb_vector_truth_store::close_session(session);
+                    return false;);
+    bool prepared = innodb_vector_truth_store::append_change_log_delta(
+        stored_rows, session);
+    for (const auto &intent : stored_intents) {
+      DBUG_EXECUTE_IF("vector_truth_fail_attached_publication_intent",
+                      prepared = false;);
+      if (!prepared || !innodb_vector_truth_store::insert_publication_intent(
+                           intent, session)) {
+        prepared = false;
+        break;
+      }
+    }
+    innodb_vector_truth_store::close_session(session);
+    return prepared;
+  }
+
+  bool load_publication_intents(
+      std::vector<vector_index_truth_store::publication_intent> *intents)
+      override {
+    if (intents == nullptr) return false;
+    std::vector<innodb_vector_truth_store::publication_intent_row> stored_rows;
+    bool found = false;
+    if (!innodb_vector_truth_store::load_publication_intents(
+            &stored_rows, &found, nullptr)) {
+      return false;
+    }
+    if (!found) {
+      intents->clear();
+      return true;
+    }
+    return from_innodb_publication_intents(stored_rows, intents);
+  }
+
+  bool delete_publication_intent(const std::string &index_name,
+                                 uint64_t publication_id) override {
+    if (index_name.empty() || publication_id == 0) return false;
+    DBUG_EXECUTE_IF("vector_truth_fail_delete_publication_intent",
+                    return false;);
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::delete_publication_intent(
+              index_name, publication_id, session);
+        });
+  }
+
+  bool delete_committed_publication_intent(
+      const std::string &index_name, uint64_t publication_id) override {
+    if (index_name.empty() || publication_id == 0) return false;
+    DBUG_EXECUTE_IF("vector_truth_fail_delete_publication_intent",
+                    return false;);
+    return innodb_vector_truth_store::delete_publication_intent(
+        index_name, publication_id, nullptr);
+  }
+
+  bool bootstrap_initialize(THD *thd) {
+    return thd != nullptr;
+  }
 
   bool begin_persist() override {
     std::lock_guard<std::mutex> guard(m_mutex);
-    if (m_persist_session != nullptr) return false;
-    m_persist_session = innodb_vector_truth_store::begin_session(true);
-    return m_persist_session != nullptr;
+    const std::thread::id owner = std::this_thread::get_id();
+    if (m_persist_sessions.find(owner) != m_persist_sessions.end()) {
+      return false;
+    }
+    innodb_vector_truth_store::Session *session =
+        innodb_vector_truth_store::begin_session(true);
+    if (session == nullptr) return false;
+    m_persist_sessions.emplace(owner, session);
+    return true;
   }
 
   bool commit_persist() override {
     std::lock_guard<std::mutex> guard(m_mutex);
-    if (m_persist_session == nullptr) return false;
-    const bool ok =
-        innodb_vector_truth_store::commit_session(m_persist_session);
-    innodb_vector_truth_store::close_session(m_persist_session);
-    m_persist_session = nullptr;
+    const auto it = m_persist_sessions.find(std::this_thread::get_id());
+    if (it == m_persist_sessions.end()) return false;
+    innodb_vector_truth_store::Session *session = it->second;
+    const bool ok = innodb_vector_truth_store::commit_session(session);
+    innodb_vector_truth_store::close_session(session);
+    m_persist_sessions.erase(it);
     return ok;
   }
 
   void rollback_persist() override {
     std::lock_guard<std::mutex> guard(m_mutex);
-    if (m_persist_session != nullptr) {
-      innodb_vector_truth_store::rollback_session(m_persist_session);
-      innodb_vector_truth_store::close_session(m_persist_session);
-      m_persist_session = nullptr;
-    }
+    const auto it = m_persist_sessions.find(std::this_thread::get_id());
+    if (it == m_persist_sessions.end()) return;
+    innodb_vector_truth_store::rollback_session(it->second);
+    innodb_vector_truth_store::close_session(it->second);
+    m_persist_sessions.erase(it);
   }
 
   bool stage_quarantine(const std::string &artifact_name,
                         const std::string &reason, uint64_t generation,
                         std::string *identity) override {
-    if (!ensure_tables() || identity == nullptr ||
-        !is_valid_artifact_name(artifact_name.c_str())) {
+    if (identity == nullptr || !is_valid_artifact_name(artifact_name.c_str())) {
       return false;
     }
     DBUG_EXECUTE_IF("vector_truth_store_fail_stage_quarantine", return false;);
@@ -828,8 +1184,10 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       std::vector<vector_index_metadata_store::committed_row> *rows) override {
     std::vector<innodb_vector_truth_store::committed_row> stored_rows;
     bool found = false;
-    if (!innodb_vector_truth_store::load_committed_rows(&stored_rows, &found,
-                                                        m_persist_session)) {
+    if (!with_persist_session([&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::load_committed_rows(
+              &stored_rows, &found, session);
+        })) {
       return false;
     }
     if (!found) {
@@ -845,13 +1203,17 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
                                    &row)> &visitor) override {
     if (visitor == nullptr || index_name.empty()) return false;
     bool found = false;
-    return innodb_vector_truth_store::visit_committed_rows_for_index(
-        index_name,
-        [&](const innodb_vector_truth_store::committed_row &stored_row) {
-          vector_index_metadata_store::committed_row row;
-          return from_innodb_committed_row(stored_row, &row) && visitor(row);
-        },
-        &found, m_persist_session);
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::visit_committed_rows_for_index(
+              index_name,
+              [&](const innodb_vector_truth_store::committed_row &stored_row) {
+                vector_index_metadata_store::committed_row row;
+                return from_innodb_committed_row(stored_row, &row) &&
+                       visitor(row);
+              },
+              &found, session);
+        });
   }
 
   bool find_committed(const std::string &index_name, uint64_t doc_id,
@@ -859,8 +1221,10 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
                       bool *found) override {
     if (index_name.empty() || row == nullptr || found == nullptr) return false;
     innodb_vector_truth_store::committed_row stored_row;
-    if (!innodb_vector_truth_store::find_committed_row(
-            index_name, doc_id, &stored_row, found, m_persist_session)) {
+    if (!with_persist_session([&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::find_committed_row(
+              index_name, doc_id, &stored_row, found, session);
+        })) {
       return false;
     }
     if (!*found) {
@@ -882,8 +1246,11 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
         diagnostics_enabled, serialize_start);
     const auto save_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
-    const bool ok = innodb_vector_truth_store::save_committed_rows(
-        stored_rows, m_persist_session);
+    const bool ok =
+        with_persist_session([&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::save_committed_rows(stored_rows,
+                                                                session);
+        });
     if (diagnostics_enabled) {
       size_t payload_bytes = 0;
       for (const auto &row : stored_rows)
@@ -904,13 +1271,16 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     const auto serialize_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
     std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
-    if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
+    if (!to_innodb_truth_delta_rows(rows, &stored_rows)) return false;
     const uint64_t serialize_ms = vector_index_diagnostics::elapsed_ms_if(
         diagnostics_enabled, serialize_start);
     const auto save_start =
         vector_index_diagnostics::now_if(diagnostics_enabled);
-    const bool ok = innodb_vector_truth_store::apply_committed_delta(
-        stored_rows, m_persist_session);
+    const bool ok =
+        with_persist_session([&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::apply_committed_delta(stored_rows,
+                                                                  session);
+        });
     if (diagnostics_enabled) {
       size_t payload_bytes = 0;
       for (const auto &row : stored_rows)
@@ -951,8 +1321,10 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       std::vector<vector_index_metadata_store::change_log_row> *rows) override {
     std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
     bool found = false;
-    if (!innodb_vector_truth_store::load_change_log_rows(&stored_rows, &found,
-                                                         m_persist_session)) {
+    if (!with_persist_session([&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::load_change_log_rows(
+              &stored_rows, &found, session);
+        })) {
       return false;
     }
     if (!found) {
@@ -965,55 +1337,26 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   bool save_change_log(
       const std::vector<vector_index_metadata_store::change_log_row> &rows)
       override {
-    const bool diagnostics_enabled = vector_index_diagnostics::enabled();
-    const auto serialize_start =
-        vector_index_diagnostics::now_if(diagnostics_enabled);
-    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
-    if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
-    const uint64_t serialize_ms = vector_index_diagnostics::elapsed_ms_if(
-        diagnostics_enabled, serialize_start);
-    const auto save_start =
-        vector_index_diagnostics::now_if(diagnostics_enabled);
-    const bool ok = innodb_vector_truth_store::save_change_log_rows(
-        stored_rows, m_persist_session);
-    if (diagnostics_enabled) {
-      size_t payload_bytes = 0;
-      for (const auto &row : stored_rows)
-        payload_bytes += row.vector_payload.size();
-      record_artifact_persist_event(backend_name(), kChangeLogArtifactName,
-                                    rows.size(), payload_bytes, serialize_ms,
-                                    vector_index_diagnostics::elapsed_ms_if(
-                                        diagnostics_enabled, save_start),
-                                    ok);
-    }
-    return ok;
+    return persist_change_log(rows, change_log_persist_mode::kReplace);
   }
 
   bool append_change_log_delta(
       const std::vector<vector_index_metadata_store::change_log_row> &rows)
       override {
-    const bool diagnostics_enabled = vector_index_diagnostics::enabled();
-    const auto serialize_start =
-        vector_index_diagnostics::now_if(diagnostics_enabled);
-    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
-    if (!to_innodb_change_log_rows(rows, &stored_rows)) return false;
-    const uint64_t serialize_ms = vector_index_diagnostics::elapsed_ms_if(
-        diagnostics_enabled, serialize_start);
-    const auto save_start =
-        vector_index_diagnostics::now_if(diagnostics_enabled);
-    const bool ok = innodb_vector_truth_store::append_change_log_delta(
-        stored_rows, m_persist_session);
-    if (diagnostics_enabled) {
-      size_t payload_bytes = 0;
-      for (const auto &row : stored_rows)
-        payload_bytes += row.vector_payload.size();
-      record_artifact_persist_event(backend_name(), "changelog_delta",
-                                    rows.size(), payload_bytes, serialize_ms,
-                                    vector_index_diagnostics::elapsed_ms_if(
-                                        diagnostics_enabled, save_start),
-                                    ok);
+    return persist_change_log(rows, change_log_persist_mode::kAppend);
+  }
+
+  bool erase_change_log_sequences(
+      const std::vector<uint64_t> &sequences) override {
+    if (std::any_of(sequences.begin(), sequences.end(),
+                    [](uint64_t sequence) { return sequence == 0; })) {
+      return false;
     }
-    return ok;
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::erase_change_log_sequences(
+              sequences, session);
+        });
   }
 
   bool load_prepared(
@@ -1021,8 +1364,10 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       override {
     std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
     bool structured_found = false;
-    if (!innodb_vector_truth_store::load_prepared_rows(
-            &stored_rows, &structured_found, m_persist_session)) {
+    if (!with_persist_session([&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::load_prepared_rows(
+              &stored_rows, &structured_found, session);
+        })) {
       return false;
     }
     if (!structured_found) {
@@ -1038,8 +1383,11 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     DBUG_EXECUTE_IF("vector_truth_store_fail_save", return false;);
     std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
     if (!to_innodb_prepared_rows(rows, &stored_rows)) return false;
-    return innodb_vector_truth_store::save_prepared_rows(stored_rows,
-                                                         m_persist_session);
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::save_prepared_rows(stored_rows,
+                                                               session);
+        });
   }
 
   bool load_segment_tasks(
@@ -1079,11 +1427,11 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
 
   void shutdown() {
     std::lock_guard<std::mutex> guard(m_mutex);
-    if (m_persist_session != nullptr) {
-      innodb_vector_truth_store::rollback_session(m_persist_session);
-      innodb_vector_truth_store::close_session(m_persist_session);
-      m_persist_session = nullptr;
+    for (const auto &entry : m_persist_sessions) {
+      innodb_vector_truth_store::rollback_session(entry.second);
+      innodb_vector_truth_store::close_session(entry.second);
     }
+    m_persist_sessions.clear();
   }
 
   bool debug_get_artifact(const char *artifact_name, std::string *payload) {
@@ -1117,6 +1465,59 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   }
 
  private:
+  // Grouped InnoDB sessions are thread-affine. Keep each owner call under the
+  // mutex so commit, rollback, or shutdown cannot close it concurrently.
+  template <typename Fn>
+  bool with_persist_session(Fn &&operation) {
+    std::unique_lock<std::mutex> guard(m_mutex);
+    const auto it = m_persist_sessions.find(std::this_thread::get_id());
+    if (it == m_persist_sessions.end()) {
+      guard.unlock();
+      return operation(nullptr);
+    }
+    return operation(it->second);
+  }
+
+  bool persist_change_log(
+      const std::vector<vector_index_metadata_store::change_log_row> &rows,
+      change_log_persist_mode mode) {
+    const bool diagnostics_enabled = vector_index_diagnostics::enabled();
+    const auto serialize_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
+    if (!valid_persisted_change_log_rows(rows) ||
+        !to_innodb_change_log_rows(rows, &stored_rows)) {
+      return false;
+    }
+    const uint64_t serialize_ms = vector_index_diagnostics::elapsed_ms_if(
+        diagnostics_enabled, serialize_start);
+    const auto save_start =
+        vector_index_diagnostics::now_if(diagnostics_enabled);
+    const bool ok =
+        with_persist_session([&](innodb_vector_truth_store::Session *session) {
+          if (mode == change_log_persist_mode::kReplace) {
+            return innodb_vector_truth_store::save_change_log_rows(stored_rows,
+                                                                   session);
+          }
+          return innodb_vector_truth_store::append_change_log_delta(stored_rows,
+                                                                    session);
+        });
+    if (diagnostics_enabled) {
+      size_t payload_bytes = 0;
+      for (const auto &row : stored_rows)
+        payload_bytes += row.vector_payload.size();
+      const char *artifact_name = mode == change_log_persist_mode::kReplace
+                                      ? kChangeLogArtifactName
+                                      : "changelog_delta";
+      record_artifact_persist_event(backend_name(), artifact_name, rows.size(),
+                                    payload_bytes, serialize_ms,
+                                    vector_index_diagnostics::elapsed_ms_if(
+                                        diagnostics_enabled, save_start),
+                                    ok);
+    }
+    return ok;
+  }
+
   bool load_row_artifact_payload(const char *artifact_name,
                                  std::string *payload, bool *found) {
     if (payload == nullptr || found == nullptr ||
@@ -1127,8 +1528,11 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     switch (row_artifact_kind_from_name(artifact_name)) {
       case row_artifact_kind::kCommitted: {
         std::vector<innodb_vector_truth_store::committed_row> stored_rows;
-        if (!innodb_vector_truth_store::load_committed_rows(
-                &stored_rows, found, m_persist_session)) {
+        if (!with_persist_session(
+                [&](innodb_vector_truth_store::Session *session) {
+                  return innodb_vector_truth_store::load_committed_rows(
+                      &stored_rows, found, session);
+                })) {
           return false;
         }
         if (!*found) {
@@ -1143,8 +1547,11 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       }
       case row_artifact_kind::kChangeLog: {
         std::vector<innodb_vector_truth_store::change_log_row> stored_rows;
-        if (!innodb_vector_truth_store::load_change_log_rows(
-                &stored_rows, found, m_persist_session)) {
+        if (!with_persist_session(
+                [&](innodb_vector_truth_store::Session *session) {
+                  return innodb_vector_truth_store::load_change_log_rows(
+                      &stored_rows, found, session);
+                })) {
           return false;
         }
         if (!*found) {
@@ -1164,8 +1571,10 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     }
 
     std::vector<innodb_vector_truth_store::prepared_change_row> stored_rows;
-    if (!innodb_vector_truth_store::load_prepared_rows(&stored_rows, found,
-                                                       m_persist_session)) {
+    if (!with_persist_session([&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::load_prepared_rows(
+              &stored_rows, found, session);
+        })) {
       return false;
     }
     if (!*found) {
@@ -1195,8 +1604,11 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
           if (!payload.empty())
             stored_rows.push_back(make_debug_committed_row(payload));
         }
-        return innodb_vector_truth_store::save_committed_rows(
-            stored_rows, m_persist_session);
+        return with_persist_session(
+            [&](innodb_vector_truth_store::Session *session) {
+              return innodb_vector_truth_store::save_committed_rows(stored_rows,
+                                                                    session);
+            });
       }
       case row_artifact_kind::kChangeLog: {
         std::vector<vector_index_metadata_store::change_log_row> rows;
@@ -1209,8 +1621,11 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
           if (!payload.empty())
             stored_rows.push_back(make_debug_change_log_row(payload));
         }
-        return innodb_vector_truth_store::save_change_log_rows(
-            stored_rows, m_persist_session);
+        return with_persist_session(
+            [&](innodb_vector_truth_store::Session *session) {
+              return innodb_vector_truth_store::save_change_log_rows(stored_rows,
+                                                                     session);
+            });
       }
       case row_artifact_kind::kPrepared:
         break;
@@ -1228,8 +1643,11 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       if (!payload.empty())
         stored_rows.push_back(make_debug_prepared_row(payload));
     }
-    return innodb_vector_truth_store::save_prepared_rows(stored_rows,
-                                                         m_persist_session);
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::save_prepared_rows(stored_rows,
+                                                               session);
+        });
   }
 
   bool clear_row_artifact(const char *artifact_name) {
@@ -1267,8 +1685,6 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
     return load_structured_artifact(artifact_name, payload, found);
   }
 
-  bool ensure_tables() { return true; }
-
   bool load_structured_artifact(const char *artifact_name, std::string *payload,
                                 bool *found) {
     DBUG_EXECUTE_IF("vector_truth_store_fail_load_structured_artifact",
@@ -1279,21 +1695,30 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
       return true;
     };);
     if (payload == nullptr || found == nullptr) return false;
-    return innodb_vector_truth_store::load_artifact(artifact_name, payload,
-                                                    found, m_persist_session);
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::load_artifact(
+              artifact_name, payload, found, session);
+        });
   }
 
   bool save_structured_artifact(const char *artifact_name,
                                 const std::string &payload) {
-    return innodb_vector_truth_store::save_artifact(artifact_name, payload,
-                                                    m_persist_session);
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::save_artifact(artifact_name, payload,
+                                                          session);
+        });
   }
 
   bool delete_structured_artifact(const char *artifact_name) {
     DBUG_EXECUTE_IF("vector_truth_store_fail_delete_structured_artifact",
                     return false;);
-    return innodb_vector_truth_store::delete_artifact(artifact_name,
-                                                      m_persist_session);
+    return with_persist_session(
+        [&](innodb_vector_truth_store::Session *session) {
+          return innodb_vector_truth_store::delete_artifact(artifact_name,
+                                                            session);
+        });
   }
 
   bool load_artifact(const char *artifact_name, std::string *payload) {
@@ -1312,10 +1737,9 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   }
 
   bool quarantine_artifact(const char *artifact_name) {
-    if (!ensure_tables()) return false;
-
     std::string identity;
-    if (!stage_quarantine(artifact_name, "legacy_quarantine", 0, &identity))
+    if (!stage_quarantine(artifact_name, "segment_tasks_load_failed", 0,
+                          &identity))
       return false;
     if (!delete_structured_artifact(artifact_name)) {
       (void)update_quarantine_state(
@@ -1328,7 +1752,8 @@ class mysql_truth_store final : public vector_index_truth_store::truth_store {
   }
 
   mutable std::mutex m_mutex;
-  innodb_vector_truth_store::Session *m_persist_session{nullptr};
+  std::unordered_map<std::thread::id, innodb_vector_truth_store::Session *>
+      m_persist_sessions;
 };
 
 class file_truth_store final : public vector_index_truth_store::truth_store {
@@ -1733,6 +2158,12 @@ bool to_innodb_change_log_rows_impl(
     const std::vector<vector_index_metadata_store::change_log_row> &rows,
     std::vector<innodb_vector_truth_store::change_log_row> *out) {
   return to_innodb_change_log_rows(rows, out);
+}
+
+bool to_innodb_truth_delta_rows_impl(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows,
+    std::vector<innodb_vector_truth_store::change_log_row> *out) {
+  return to_innodb_truth_delta_rows(rows, out);
 }
 
 bool from_innodb_change_log_rows_impl(

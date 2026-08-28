@@ -33,11 +33,44 @@
 #include "sql/vector/vector_index_backend.h"
 #include "sql/vector/vector_index_metadata_store.h"
 #include "sql/vector/vector_index_service.h"
+#include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_statement_publication.h"
 #include "sql/xa.h"
 
 class THD;
 
 namespace vector_index_registry {
+
+/**
+  Recovery-aware publication ownership for vector search and observability.
+
+  The guard completes durable-intent recovery before taking the underlying
+  read reservation, then verifies that no recovery request appeared while it
+  waited. Registry calls made during its lifetime reuse that verified recovery
+  boundary instead of recursively upgrading the same reservation to a writer.
+*/
+class publication_read_guard {
+ public:
+  publication_read_guard() = default;
+  publication_read_guard(const publication_read_guard &) = delete;
+  publication_read_guard &operator=(const publication_read_guard &) = delete;
+  publication_read_guard(publication_read_guard &&) = delete;
+  publication_read_guard &operator=(publication_read_guard &&) = delete;
+  ~publication_read_guard();
+
+  /** Acquire one index reader after completing pending intent recovery. */
+  bool lock_index(const std::string &index_name);
+
+  /** Acquire the catalog reader after completing pending intent recovery. */
+  bool lock_catalog();
+
+  /** True when this guard owns a verified publication read boundary. */
+  bool owns_lock() const;
+
+ private:
+  vector_statement_publication::read_guard m_guard;
+  bool m_read_scope_active{false};
+};
 
 /** Global serving health derived from durable truth-store recovery. */
 enum class registry_health_state { kReady, kRecoveryRequired, kFailed };
@@ -140,11 +173,16 @@ struct global_status_summary {
 };
 
 struct create_index_options {
+  /** True when all inherited creation defaults have been captured. */
+  bool defaults_resolved{false};
   bool build_threads_specified{false};
   uint32_t build_threads{0};
   uint32_t diskann_max_degree{0};
   uint32_t diskann_build_complexity{0};
+  uint64_t diskann_pq_code_budget_size{0};
   uint32_t diskann_disk_pq_dims{0};
+  uint32_t diskann_search_complexity{0};
+  uint32_t diskann_search_beamwidth{0};
   bool diskann_accelerate_build_specified{false};
   bool diskann_accelerate_build{false};
   bool diskann_shuffle_build_specified{false};
@@ -245,6 +283,7 @@ bool bulk_upsert_from_raw_files(
     const std::string &docid_filename,
     const vector_index::index_service::bulk_load_options &options,
     uint64_t *loaded_rows, std::string *error);
+bool entry_exists(const std::string &index_name, uint64_t doc_id, bool *found);
 bool bulk_build_index(const std::string &index_name,
                       std::string *error = nullptr);
 bool rebuild_index(const std::string &index_name, std::string *error = nullptr);
@@ -303,11 +342,58 @@ bool recover_all_indexes(THD *thd, size_t *recovered_count);
 bool get_index_info(const std::string &index_name, index_info *info);
 bool get_global_status_summary(global_status_summary *summary);
 bool list_indexes(std::vector<std::string> *index_names);
+
+/**
+  List current indexes while the caller owns the publication catalog.
+
+  This internal staging helper deliberately skips publication-intent recovery,
+  because recovery would recursively acquire the catalog reservation.
+*/
+bool list_indexes_for_publication_catalog_guard(
+    std::vector<std::string> *index_names);
 bool metadata_loaded();
 registry_health_state registry_health();
 std::string registry_failure_reason();
 size_t committed_vector_memory_bytes();
 size_t total_pending_vector_memory_bytes();
+
+/** Build a durable, per-index statement publication intent. */
+bool make_statement_publication_intent(
+    vector_index_truth_store::publication_operation operation,
+    const std::string &index_name, const std::string &payload,
+    vector_index_truth_store::publication_intent *intent);
+
+/**
+  Resolve inherited CREATE defaults and encode a deterministic intent payload.
+
+  Recovery must not re-read mutable global defaults after the statement has
+  committed. This helper therefore captures provider, mode, consistency and
+  provider-specific creation parameters before the intent is persisted.
+*/
+bool make_create_statement_payload(
+    size_t dimension, const std::string &metric, const std::string &mode,
+    const std::string &provider, const std::string &owner_schema,
+    const create_index_options &options, std::string *payload);
+
+/** Recheck the expected CAS token while publication ownership is held. */
+bool validate_statement_publication_intent(
+    const vector_index_truth_store::publication_intent &intent);
+
+/** Publish or idempotently recognize one committed statement intent. */
+bool publish_statement_publication_intent(
+    const vector_index_truth_store::publication_intent &intent,
+    std::string *failure_stage = nullptr);
+
+/** Delete a successfully published durable statement intent. */
+bool acknowledge_statement_publication_intent(
+    const vector_index_truth_store::publication_intent &intent,
+    std::string *failure_stage = nullptr);
+
+/** Request a retry of committed publication intents on the next safe entry. */
+void schedule_publication_intent_recovery();
+
+/** Publish and acknowledge committed intents before exposing registry state. */
+bool ensure_publication_intents_recovered();
 
 uint64_t begin_txn();
 bool commit_txn(uint64_t txn_id);
@@ -337,6 +423,19 @@ bool stage_changes_for_thd_txn(
     THD *thd, uint64_t statement_id,
     const std::vector<vector_index::index_service::pending_change_snapshot>
         &changes);
+
+/** Return the ordered set of indexes touched by a THD transaction. */
+bool pending_index_names_for_thd_txn(uint64_t thd_id,
+                                     std::vector<std::string> *index_names);
+
+/**
+  Bind publication generations and append changelog rows before InnoDB commit.
+
+  The caller must hold exclusive statement-publication ownership for every
+  index returned by pending_index_names_for_thd_txn() until after commit or
+  rollback completes.
+*/
+bool prepare_thd_txn_publication(THD *thd, uint64_t thd_id);
 
 bool commit_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id);
 bool rollback_stmt_for_thd_txn(uint64_t thd_id, uint64_t statement_id);

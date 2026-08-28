@@ -150,6 +150,12 @@ TEST(VectorIndexTruthStoreTest, TruthStoreDefaultsCoverNoopAndDeltaFallbacks) {
   dummy_truth_store store;
   EXPECT_FALSE(store.supports_delta_persist());
   EXPECT_FALSE(store.supports_attached_dml());
+  EXPECT_FALSE(store.supports_publication_intents());
+  EXPECT_FALSE(store.apply_attached_committed(nullptr, {}));
+  EXPECT_FALSE(store.append_attached_change_log(nullptr, {}));
+  EXPECT_FALSE(store.insert_attached_publication_intent(nullptr, {}));
+  EXPECT_FALSE(store.load_publication_intents(nullptr));
+  EXPECT_FALSE(store.delete_publication_intent("idx", 1));
   EXPECT_FALSE(store.apply_attached_dml(nullptr, {}));
   EXPECT_TRUE(store.begin_persist());
   EXPECT_TRUE(store.commit_persist());
@@ -527,8 +533,12 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
         vector_index_metadata_store::change_op::kUpsert,
         "idx",
         1,
-        {1.0F}},
-       {2, 9, vector_index_metadata_store::change_op::kErase, "idx", 1, {}}},
+        {1.0F},
+        42,
+        1,
+        1},
+       {2, 9, vector_index_metadata_store::change_op::kErase, "idx", 1, {},
+        42, 1, 1}},
       &stored_change_log));
   ASSERT_EQ(2U, stored_change_log.size());
   EXPECT_EQ(1U, stored_change_log[0].op);
@@ -540,10 +550,14 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
         vector_index_metadata_store::change_op::kUpsert,
         "idx",
         1,
-        {1.0F}}},
+        {1.0F},
+        42,
+        1,
+        1}},
       &stored_change_log));
   EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(
-      {{1, 9, vector_index_metadata_store::change_op::kUpsert, "", 1, {1.0F}}},
+      {{1, 9, vector_index_metadata_store::change_op::kUpsert, "", 1,
+        {1.0F}, 42, 1, 1}},
       &stored_change_log));
   EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(
       {{1,
@@ -551,7 +565,10 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
         static_cast<vector_index_metadata_store::change_op>(99),
         "idx",
         1,
-        {1.0F}}},
+        {1.0F},
+        42,
+        1,
+        1}},
       &stored_change_log));
   EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(
       {{1,
@@ -559,8 +576,30 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
         vector_index_metadata_store::change_op::kErase,
         "idx",
         1,
-        {1.0F}}},
+        {1.0F},
+        42,
+        1,
+        1}},
       &stored_change_log));
+  EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(
+      {{1, 9, vector_index_metadata_store::change_op::kUpsert, "idx", 1,
+        {1.0F}, 0, 1, 1}},
+      &stored_change_log));
+
+  const std::vector<vector_index_metadata_store::change_log_row>
+      unbound_truth_delta{{1,
+                           9,
+                           vector_index_metadata_store::change_op::kUpsert,
+                           "idx",
+                           1,
+                           {1.0F},
+                           42,
+                           0,
+                           0}};
+  EXPECT_TRUE(detail::to_innodb_truth_delta_rows_impl(unbound_truth_delta,
+                                                       &stored_change_log));
+  EXPECT_FALSE(detail::to_innodb_change_log_rows_impl(unbound_truth_delta,
+                                                       &stored_change_log));
 
   std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
   EXPECT_FALSE(detail::from_innodb_change_log_rows_impl({}, nullptr));
@@ -569,15 +608,29 @@ TEST(VectorIndexTruthStoreTest, RelationalRowCodecsCoverValidationBranches) {
   ASSERT_EQ(2U, change_log_rows.size());
   EXPECT_TRUE(change_log_rows[1].vector.empty());
   EXPECT_FALSE(detail::from_innodb_change_log_rows_impl(
-      {{0, 9, 1, "idx", 1, 1, fp32_payload(1)}}, &change_log_rows));
+      {{0, 9, 1, "idx", 1, 1, fp32_payload(1), 42, 1, 1}},
+      &change_log_rows));
   EXPECT_FALSE(detail::from_innodb_change_log_rows_impl(
-      {{1, 9, 1, "", 1, 1, fp32_payload(1)}}, &change_log_rows));
+      {{1, 9, 1, "", 1, 1, fp32_payload(1), 42, 1, 1}},
+      &change_log_rows));
   EXPECT_FALSE(detail::from_innodb_change_log_rows_impl(
-      {{1, 9, 99, "idx", 1, 1, fp32_payload(1)}}, &change_log_rows));
+      {{1, 9, 99, "idx", 1, 1, fp32_payload(1), 42, 1, 1}},
+      &change_log_rows));
   EXPECT_FALSE(detail::from_innodb_change_log_rows_impl(
-      {{1, 9, 1, "idx", 1, 2, fp32_payload(1)}}, &change_log_rows));
+      {{1, 9, 1, "idx", 1, 2, fp32_payload(1), 42, 1, 1}},
+      &change_log_rows));
   EXPECT_FALSE(detail::from_innodb_change_log_rows_impl(
-      {{1, 9, 2, "idx", 1, 1, fp32_payload(1)}}, &change_log_rows));
+      {{1, 9, 2, "idx", 1, 1, fp32_payload(1), 42, 1, 1}},
+      &change_log_rows));
+  EXPECT_FALSE(detail::from_innodb_change_log_rows_impl(
+      {{1, 9, 1, "idx", 1, 1, fp32_payload(1), 0, 1, 1}},
+      &change_log_rows));
+  EXPECT_FALSE(detail::from_innodb_change_log_rows_impl(
+      {{1, 9, 1, "idx", 1, 1, fp32_payload(1), 42, 0, 1}},
+      &change_log_rows));
+  EXPECT_FALSE(detail::from_innodb_change_log_rows_impl(
+      {{1, 9, 1, "idx", 1, 1, fp32_payload(1), 42, 1, 0}},
+      &change_log_rows));
 
   std::vector<innodb_vector_truth_store::prepared_change_row> stored_prepared;
   EXPECT_FALSE(detail::to_innodb_prepared_rows_impl({}, nullptr));
@@ -1395,7 +1448,10 @@ TEST(VectorIndexTruthStoreTest, FileStoreRoundTripMethods) {
        vector_index_metadata_store::change_op::kUpsert,
        "idx_truth",
        11,
-       {1.0F, 2.0F}}};
+       {1.0F, 2.0F},
+       42,
+       1,
+       1}};
   ASSERT_TRUE(store->save_change_log(change_log_rows));
   std::vector<vector_index_metadata_store::change_log_row> loaded_change_log;
   ASSERT_TRUE(store->load_change_log(&loaded_change_log));

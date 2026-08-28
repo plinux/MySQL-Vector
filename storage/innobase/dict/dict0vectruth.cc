@@ -37,15 +37,19 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "data0type.h"
 #include "dict0dict.h"
 #include "ha_prototypes.h"
+#include "ha_innodb.h"
+#include "lock0lock.h"
 #include "my_dbug.h"
 #include "pars0pars.h"
 #include "que0que.h"
 #include "rem0cmp.h"
 #include "row0ins.h"
+#include "row0mysql.h"
 #include "row0row.h"
 #include "row0sel.h"
 #include "row0upd.h"
 #include "row0vers.h"
+#include "sql/handler.h"
 #include "trx0rec.h"
 #include "trx0roll.h"
 #include "trx0sys.h"
@@ -71,6 +75,7 @@ constexpr const char *kCommittedArtifactName = "committed";
 constexpr const char *kManifestArtifactName = "manifest";
 constexpr const char *kChangeLogArtifactName = "changelog";
 constexpr const char *kPreparedArtifactName = "prepared";
+constexpr const char *kPublicationIntentsArtifactName = "publication_intents";
 constexpr const char *kSegmentTasksArtifactName = "segment_tasks";
 constexpr const char *kQuarantineStoreArtifactName = "quarantine_store";
 
@@ -82,6 +87,8 @@ constexpr const char *kChangeLogTableName =
     "mysql/vector_index_truth_changelog";
 constexpr const char *kPreparedTableName =
     "mysql/vector_index_truth_prepared";
+constexpr const char *kPublicationIntentsTableName =
+    "mysql/vector_index_publication_intents";
 constexpr const char *kSegmentTasksTableName =
     "mysql/vector_index_truth_segment_tasks";
 constexpr const char *kQuarantineTableName =
@@ -190,6 +197,13 @@ dict_table_t *hidden_table_for_artifact(const char *artifact_name) {
           kPreparedTableName, false, false, DICT_ERR_IGNORE_NONE);
     }
     return dict_sys->vector_truth_prepared;
+  }
+  if (strcmp(artifact_name, kPublicationIntentsArtifactName) == 0) {
+    if (dict_sys->vector_publication_intents == nullptr) {
+      dict_sys->vector_publication_intents = dict_table_open_on_name(
+          kPublicationIntentsTableName, false, false, DICT_ERR_IGNORE_NONE);
+    }
+    return dict_sys->vector_publication_intents;
   }
   if (strcmp(artifact_name, kSegmentTasksArtifactName) == 0) {
     if (dict_sys->vector_truth_segment_tasks == nullptr) {
@@ -580,6 +594,12 @@ class Singleton_payload_table_buffer {
 
 class Row_truth_table_buffer {
  public:
+  ~Row_truth_table_buffer() {
+    if (m_replace_heap != nullptr) mem_heap_free(m_replace_heap);
+    if (m_dynamic_heap != nullptr) mem_heap_free(m_dynamic_heap);
+    if (m_heap != nullptr) mem_heap_free(m_heap);
+  }
+
   bool get_committed(
       dict_table_t *table,
       std::vector<innodb_vector_truth_store::committed_row> *rows,
@@ -737,7 +757,7 @@ class Row_truth_table_buffer {
       dict_table_t *table,
       std::vector<innodb_vector_truth_store::change_log_row> *rows,
       bool *found, innodb_vector_truth_store::Session *session) {
-    if (!init(table, 7, 1) || rows == nullptr || found == nullptr) {
+    if (!init(table, 10, 1) || rows == nullptr || found == nullptr) {
       return false;
     }
     std::lock_guard<std::mutex> guard(m_mutex);
@@ -746,11 +766,14 @@ class Row_truth_table_buffer {
           innodb_vector_truth_store::change_log_row row;
           if (!read_uint64_field(rec, 0, &row.sequence) ||
               !read_uint64_field(rec, 1, &row.txn_id) ||
-              !read_uint8_field(rec, 2, &row.op) ||
-              !read_string_field(rec, 3, &row.index_name) ||
-              !read_uint64_field(rec, 4, &row.doc_id) ||
-              !read_uint32_field(rec, 5, &row.dimension) ||
-              !read_blob_field(rec, 6, &row.vector_payload)) {
+              !read_uint64_field(rec, 2, &row.index_identity) ||
+              !read_uint64_field(rec, 3, &row.publication_id) ||
+              !read_uint64_field(rec, 4, &row.truth_generation) ||
+              !read_uint8_field(rec, 5, &row.op) ||
+              !read_string_field(rec, 6, &row.index_name) ||
+              !read_uint64_field(rec, 7, &row.doc_id) ||
+              !read_uint32_field(rec, 8, &row.dimension) ||
+              !read_blob_field(rec, 9, &row.vector_payload)) {
             return false;
           }
           rows->push_back(std::move(row));
@@ -767,17 +790,20 @@ class Row_truth_table_buffer {
       dict_table_t *table,
       const std::vector<innodb_vector_truth_store::change_log_row> &rows,
       innodb_vector_truth_store::Session *session) {
-    if (!init(table, 7, 1)) return false;
+    if (!init(table, 10, 1)) return false;
     std::lock_guard<std::mutex> guard(m_mutex);
     if (!remove_all_locked(session)) return false;
     for (const auto &row : rows) {
       set_replace_uint64(0, row.sequence);
       set_replace_uint64(1, row.txn_id);
-      set_replace_uint8(2, row.op);
-      set_replace_string(3, row.index_name);
-      set_replace_uint64(4, row.doc_id);
-      set_replace_uint32(5, row.dimension);
-      set_replace_string(6, row.vector_payload);
+      set_replace_uint64(2, row.index_identity);
+      set_replace_uint64(3, row.publication_id);
+      set_replace_uint64(4, row.truth_generation);
+      set_replace_uint8(5, row.op);
+      set_replace_string(6, row.index_name);
+      set_replace_uint64(7, row.doc_id);
+      set_replace_uint32(8, row.dimension);
+      set_replace_string(9, row.vector_payload);
       init_tuple_system_fields(session);
       if (!insert_replace_tuple_locked(session)) return false;
     }
@@ -788,18 +814,35 @@ class Row_truth_table_buffer {
       dict_table_t *table,
       const std::vector<innodb_vector_truth_store::change_log_row> &rows,
       innodb_vector_truth_store::Session *session) {
-    if (!init(table, 7, 1)) return false;
+    if (!init(table, 10, 1)) return false;
     std::lock_guard<std::mutex> guard(m_mutex);
     for (const auto &row : rows) {
       set_replace_uint64(0, row.sequence);
       set_replace_uint64(1, row.txn_id);
-      set_replace_uint8(2, row.op);
-      set_replace_string(3, row.index_name);
-      set_replace_uint64(4, row.doc_id);
-      set_replace_uint32(5, row.dimension);
-      set_replace_string(6, row.vector_payload);
+      set_replace_uint64(2, row.index_identity);
+      set_replace_uint64(3, row.publication_id);
+      set_replace_uint64(4, row.truth_generation);
+      set_replace_uint8(5, row.op);
+      set_replace_string(6, row.index_name);
+      set_replace_uint64(7, row.doc_id);
+      set_replace_uint32(8, row.dimension);
+      set_replace_string(9, row.vector_payload);
       init_tuple_system_fields(session);
       if (!insert_replace_tuple_locked(session)) return false;
+    }
+    return true;
+  }
+
+  bool erase_change_log_sequences(
+      dict_table_t *table, const std::vector<uint64_t> &sequences,
+      innodb_vector_truth_store::Session *session) {
+    if (!init(table, 10, 1)) return false;
+    std::lock_guard<std::mutex> guard(m_mutex);
+    if (!lock_table_for_write_locked(session)) return false;
+    for (const uint64_t sequence : sequences) {
+      if (sequence == 0) return false;
+      set_search_uint64(0, sequence);
+      if (!remove_current_search_key_locked(session)) return false;
     }
     return true;
   }
@@ -863,6 +906,113 @@ class Row_truth_table_buffer {
       if (!insert_replace_tuple_locked(session)) return false;
     }
     return true;
+  }
+
+  bool get_publication_intents(
+      dict_table_t *table,
+      std::vector<innodb_vector_truth_store::publication_intent_row> *rows,
+      bool *found, innodb_vector_truth_store::Session *session) {
+    if (!init(table, 22, 1) || rows == nullptr || found == nullptr) {
+      return false;
+    }
+    std::lock_guard<std::mutex> guard(m_mutex);
+    rows->clear();
+    if (!scan_rows_locked(
+            [&](const rec_t *rec) {
+              innodb_vector_truth_store::publication_intent_row row;
+              if (!read_string_field(rec, 0, &row.index_name) ||
+                  !read_uint64_field(rec, 1, &row.publication_id) ||
+                  !read_uint64_field(rec, 2, &row.txn_id) ||
+                  !read_uint8_field(rec, 3, &row.operation) ||
+                  !read_uint8_field(rec, 4, &row.expected_exists) ||
+                  !read_uint64_field(rec, 5,
+                                     &row.expected_index_identity) ||
+                  !read_uint64_field(rec, 6,
+                                     &row.expected_truth_generation) ||
+                  !read_uint64_field(rec, 7,
+                                     &row.expected_config_generation) ||
+                  !read_uint64_field(rec, 8,
+                                     &row.expected_artifact_generation) ||
+                  !read_uint64_field(rec, 9,
+                                     &row.expected_runtime_generation) ||
+                  !read_uint64_field(rec, 10,
+                                     &row.expected_lifecycle_version) ||
+                  !read_uint64_field(rec, 11,
+                                     &row.expected_source_generation) ||
+                  !read_uint8_field(rec, 12, &row.target_exists) ||
+                  !read_uint64_field(rec, 13, &row.target_index_identity) ||
+                  !read_uint64_field(rec, 14,
+                                     &row.target_truth_generation) ||
+                  !read_uint64_field(rec, 15,
+                                     &row.target_config_generation) ||
+                  !read_uint64_field(rec, 16,
+                                     &row.target_artifact_generation) ||
+                  !read_uint64_field(rec, 17,
+                                     &row.target_runtime_generation) ||
+                  !read_uint64_field(rec, 18,
+                                     &row.target_lifecycle_version) ||
+                  !read_uint64_field(rec, 19,
+                                     &row.target_source_generation) ||
+                  !read_blob_field(rec, 20, &row.payload) ||
+                  !read_uint8_field(rec, 21, &row.state)) {
+                return false;
+              }
+              rows->push_back(std::move(row));
+              return true;
+            },
+            session)) {
+      return false;
+    }
+    *found = !rows->empty();
+    return true;
+  }
+
+  bool insert_publication_intent(
+      dict_table_t *table,
+      const innodb_vector_truth_store::publication_intent_row &row,
+      innodb_vector_truth_store::Session *session) {
+    if (!init(table, 22, 1) || row.index_name.empty() ||
+        row.publication_id == 0 || session == nullptr) {
+      return false;
+    }
+    std::lock_guard<std::mutex> guard(m_mutex);
+    set_replace_string(0, row.index_name);
+    set_replace_uint64(1, row.publication_id);
+    set_replace_uint64(2, row.txn_id);
+    set_replace_uint8(3, row.operation);
+    set_replace_uint8(4, row.expected_exists);
+    set_replace_uint64(5, row.expected_index_identity);
+    set_replace_uint64(6, row.expected_truth_generation);
+    set_replace_uint64(7, row.expected_config_generation);
+    set_replace_uint64(8, row.expected_artifact_generation);
+    set_replace_uint64(9, row.expected_runtime_generation);
+    set_replace_uint64(10, row.expected_lifecycle_version);
+    set_replace_uint64(11, row.expected_source_generation);
+    set_replace_uint8(12, row.target_exists);
+    set_replace_uint64(13, row.target_index_identity);
+    set_replace_uint64(14, row.target_truth_generation);
+    set_replace_uint64(15, row.target_config_generation);
+    set_replace_uint64(16, row.target_artifact_generation);
+    set_replace_uint64(17, row.target_runtime_generation);
+    set_replace_uint64(18, row.target_lifecycle_version);
+    set_replace_uint64(19, row.target_source_generation);
+    set_replace_string(20, row.payload);
+    set_replace_uint8(21, row.state);
+    init_tuple_system_fields(session);
+    return insert_locking_tuple_locked(session);
+  }
+
+  bool delete_publication_intent(
+      dict_table_t *table, const std::string &index_name,
+      uint64_t publication_id,
+      innodb_vector_truth_store::Session *session) {
+    if (!init(table, 22, 1) || index_name.empty() || publication_id == 0 ||
+        session == nullptr) {
+      return false;
+    }
+    std::lock_guard<std::mutex> guard(m_mutex);
+    set_search_field(0, index_name);
+    return delete_publication_intent_locked(publication_id, session);
   }
 
  private:
@@ -995,6 +1145,58 @@ class Row_truth_table_buffer {
     }
     if (error != DB_SUCCESS) {
       ib::error() << "vector truth store row insert failed for table "
+                  << m_index->table->name << " with error " << error;
+    }
+    mem_heap_empty(m_dynamic_heap);
+    mem_heap_empty(m_replace_heap);
+    return error == DB_SUCCESS;
+  }
+
+  bool lock_table_for_write_locked(
+      innodb_vector_truth_store::Session *session) {
+    ut_ad(session != nullptr);
+    ut_ad(session->thr != nullptr);
+    ut_ad(session->trx != nullptr);
+
+    que_thr_stop_for_mysql_no_error(session->thr, session->trx);
+    const dberr_t error =
+        lock_table_for_trx(m_index->table, session->trx, LOCK_IX);
+    que_thr_move_to_run_state_for_mysql(session->thr, session->trx);
+    if (error != DB_SUCCESS) {
+      ib::error() << "vector publication intent table lock failed for table "
+                  << m_index->table->name << " with error " << error;
+    }
+    return error == DB_SUCCESS;
+  }
+
+  bool insert_locking_tuple_locked(
+      innodb_vector_truth_store::Session *session) {
+    ut_ad(session != nullptr);
+    ut_ad(session->thr != nullptr);
+    ut_ad(session->trx != nullptr);
+    if (!lock_table_for_write_locked(session)) return false;
+
+    dtuple_t *entry = build_replace_entry();
+    trx_savept_t savepoint = trx_savept_take(session->trx);
+    dberr_t error = DB_SUCCESS;
+    bool retry = false;
+    do {
+      error = row_ins_clust_index_entry(m_index, entry, session->thr, false);
+      if (error == DB_SUCCESS) break;
+
+      session->trx->error_state = error;
+      que_thr_stop_for_mysql(session->thr);
+      session->thr->lock_state = QUE_THR_LOCK_ROW;
+      retry = row_mysql_handle_errors(&error, session->trx, session->thr,
+                                      &savepoint);
+      session->thr->lock_state = QUE_THR_LOCK_NOLOCK;
+    } while (retry);
+
+    if (!session->thr->is_active) {
+      que_thr_move_to_run_state_for_mysql(session->thr, session->trx);
+    }
+    if (error != DB_SUCCESS) {
+      ib::error() << "vector publication intent insert failed for table "
                   << m_index->table->name << " with error " << error;
     }
     mem_heap_empty(m_dynamic_heap);
@@ -1195,6 +1397,79 @@ class Row_truth_table_buffer {
     set_search_field(0, index_name);
     set_search_uint64(1, doc_id);
     return remove_current_search_key_locked(session);
+  }
+
+  bool delete_publication_intent_locked(
+      uint64_t publication_id,
+      innodb_vector_truth_store::Session *session) {
+    ut_ad(session != nullptr);
+    ut_ad(session->thr != nullptr);
+    ut_ad(session->trx != nullptr);
+    if (!lock_table_for_write_locked(session)) return false;
+
+    trx_savept_t savepoint = trx_savept_take(session->trx);
+    for (;;) {
+      btr_pcur_t pcur;
+      mtr_t mtr;
+      dberr_t error = DB_SUCCESS;
+      mtr.start();
+      pcur.open(m_index, 0, m_search_tuple, PAGE_CUR_LE,
+                BTR_MODIFY_TREE | BTR_LATCH_FOR_DELETE, &mtr,
+                UT_LOCATION_HERE);
+
+      const bool found =
+          pcur.is_on_user_rec() &&
+          !page_rec_is_infimum(pcur.get_rec()) &&
+          !rec_get_deleted_flag(pcur.get_rec(), true) &&
+          current_matches_search_key_locked(pcur.get_rec());
+      if (!found) {
+        pcur.close();
+        mtr.commit();
+        return true;
+      }
+
+      uint64_t stored_publication_id = 0;
+      if (!read_uint64_field(pcur.get_rec(), 1, &stored_publication_id) ||
+          stored_publication_id != publication_id) {
+        pcur.close();
+        mtr.commit();
+        mem_heap_empty(m_dynamic_heap);
+        return false;
+      }
+
+      ulint *offsets =
+          rec_get_offsets(pcur.get_rec(), m_index, nullptr, ULINT_UNDEFINED,
+                          UT_LOCATION_HERE, &m_dynamic_heap);
+      error = lock_clust_rec_modify_check_and_lock(
+          0, pcur.get_block(), pcur.get_rec(), m_index, offsets,
+          session->thr);
+      if (error == DB_SUCCESS) {
+        error = btr_cur_del_mark_set_clust_rec(
+            0, btr_cur_get_block(pcur.get_btr_cur()),
+            btr_cur_get_rec(pcur.get_btr_cur()), m_index, offsets,
+            session->thr, m_search_tuple, &mtr);
+      }
+
+      pcur.close();
+      mtr.commit();
+      mem_heap_empty(m_dynamic_heap);
+      if (error == DB_SUCCESS) return true;
+
+      session->trx->error_state = error;
+      que_thr_stop_for_mysql(session->thr);
+      session->thr->lock_state = QUE_THR_LOCK_ROW;
+      const bool retry = row_mysql_handle_errors(
+          &error, session->trx, session->thr, &savepoint);
+      session->thr->lock_state = QUE_THR_LOCK_NOLOCK;
+      if (retry) continue;
+
+      if (!session->thr->is_active) {
+        que_thr_move_to_run_state_for_mysql(session->thr, session->trx);
+      }
+      ib::error() << "vector publication intent delete failed for table "
+                  << m_index->table->name << " with error " << error;
+      return false;
+    }
   }
 
   bool remove_key_locked(const std::vector<std::string> &key,
@@ -1501,6 +1776,22 @@ bool do_append_change_log_delta(
   return commit_session_if_owned(session_guard, active_session);
 }
 
+bool do_erase_change_log_sequences(
+    const std::vector<uint64_t> &sequences,
+    innodb_vector_truth_store::Session *session) {
+  dict_table_t *table = hidden_table_for_artifact(kChangeLogArtifactName);
+  if (table == nullptr) return false;
+
+  Session_scope_guard session_guard(session, true);
+  auto *active_session = session_guard.get();
+  if (active_session == nullptr) return false;
+
+  const bool ok = g_changelog_row_buffer.erase_change_log_sequences(
+      table, sequences, active_session);
+  if (!ok) return false;
+  return commit_session_if_owned(session_guard, active_session);
+}
+
 bool do_load_prepared_rows(
     std::vector<innodb_vector_truth_store::prepared_change_row> *rows,
     bool *found, innodb_vector_truth_store::Session *session) {
@@ -1532,6 +1823,49 @@ bool do_save_prepared_rows(
   const bool ok =
       g_prepared_row_buffer.replace_prepared(table, rows, active_session);
   if (!ok) return false;
+  return commit_session_if_owned(session_guard, active_session);
+}
+
+bool do_load_publication_intents(
+    std::vector<innodb_vector_truth_store::publication_intent_row> *rows,
+    bool *found, innodb_vector_truth_store::Session *session) {
+  if (rows == nullptr || found == nullptr) return false;
+  dict_table_t *table =
+      hidden_table_for_artifact(kPublicationIntentsArtifactName);
+  if (table == nullptr) return false;
+
+  Row_truth_table_buffer buffer;
+  return buffer.get_publication_intents(table, rows, found, session);
+}
+
+bool do_insert_publication_intent(
+    const innodb_vector_truth_store::publication_intent_row &row,
+    innodb_vector_truth_store::Session *session) {
+  if (session == nullptr) return false;
+  dict_table_t *table =
+      hidden_table_for_artifact(kPublicationIntentsArtifactName);
+  if (table == nullptr) return false;
+
+  Row_truth_table_buffer buffer;
+  return buffer.insert_publication_intent(table, row, session);
+}
+
+bool do_delete_publication_intent(
+    const std::string &index_name, uint64_t publication_id,
+    innodb_vector_truth_store::Session *session) {
+  dict_table_t *table =
+      hidden_table_for_artifact(kPublicationIntentsArtifactName);
+  if (table == nullptr) return false;
+
+  Session_scope_guard session_guard(session, true);
+  auto *active_session = session_guard.get();
+  if (active_session == nullptr) return false;
+
+  Row_truth_table_buffer buffer;
+  if (!buffer.delete_publication_intent(table, index_name, publication_id,
+                                        active_session)) {
+    return false;
+  }
   return commit_session_if_owned(session_guard, active_session);
 }
 
@@ -1592,7 +1926,27 @@ Session *begin_session(bool read_write) {
 
 Session *begin_attached_session(THD *thd) {
   if (thd == nullptr) return nullptr;
-  return create_session(check_trx_exists(thd), false);
+  trx_t *trx = check_trx_exists(thd);
+  handlerton *hton = ha_resolve_by_legacy_type(thd, DB_TYPE_INNODB);
+  if (trx == nullptr || hton == nullptr) return nullptr;
+  if (!trx_is_started(trx)) {
+    // Match InnoDB handler writes: mark the autocommit statement as locking
+    // before starting its read-write transaction.
+    ++trx->will_lock;
+  }
+  trx_start_if_not_started_xa(trx, true, UT_LOCATION_HERE);
+  innobase_register_trx(hton, thd, trx);
+  return create_session(trx, false);
+}
+
+Session *begin_attached_session_for_prepare(THD *thd) {
+  if (thd == nullptr) return nullptr;
+  trx_t *trx = check_trx_exists(thd);
+  if (trx == nullptr || !trx_is_started(trx) ||
+      !trx_is_registered_for_2pc(trx)) {
+    return nullptr;
+  }
+  return create_session(trx, false);
 }
 
 void close_session(Session *session) {
@@ -1702,6 +2056,11 @@ bool append_change_log_delta(const std::vector<change_log_row> &rows,
   return do_append_change_log_delta(rows, session);
 }
 
+bool erase_change_log_sequences(const std::vector<uint64_t> &sequences,
+                                Session *session) {
+  return do_erase_change_log_sequences(sequences, session);
+}
+
 bool load_prepared_rows(std::vector<prepared_change_row> *rows, bool *found,
                         Session *session) {
   return do_load_prepared_rows(rows, found, session);
@@ -1710,6 +2069,21 @@ bool load_prepared_rows(std::vector<prepared_change_row> *rows, bool *found,
 bool save_prepared_rows(const std::vector<prepared_change_row> &rows,
                         Session *session) {
   return do_save_prepared_rows(rows, session);
+}
+
+bool load_publication_intents(std::vector<publication_intent_row> *rows,
+                              bool *found, Session *session) {
+  return do_load_publication_intents(rows, found, session);
+}
+
+bool insert_publication_intent(const publication_intent_row &row,
+                               Session *session) {
+  return do_insert_publication_intent(row, session);
+}
+
+bool delete_publication_intent(const std::string &index_name,
+                               uint64_t publication_id, Session *session) {
+  return do_delete_publication_intent(index_name, publication_id, session);
 }
 
 bool delete_artifact(const char *artifact_name, Session *session) {

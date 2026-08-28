@@ -151,6 +151,17 @@ void assign_metadata_owner_for_test(
   for (auto &row : *rows) row.owner_schema = owner_schema;
 }
 
+void assign_change_log_publication_for_test(
+    std::vector<vector_index_metadata_store::change_log_row> *rows,
+    uint64_t index_identity = 41, uint64_t truth_generation = 101) {
+  ASSERT_NE(nullptr, rows);
+  for (auto &row : *rows) {
+    row.index_identity = index_identity;
+    row.publication_id = truth_generation;
+    row.truth_generation = truth_generation;
+  }
+}
+
 }  // namespace
 
 class MetadataStoreTest : public ::testing::Test {
@@ -292,11 +303,14 @@ TEST_F(MetadataStoreTest, DeserializersSkipBlankLinesAroundRows) {
 
   std::vector<vector_index_metadata_store::change_log_row> changelog_rows;
   ASSERT_TRUE(vector_index_metadata_store::deserialize_change_log_rows(
-      "mysql-vector-changelog-v1\n\n1\t99\tupsert\t" + index_hex +
-          "\t7\t" + vector_hex + "\n\n",
+      "mysql-vector-changelog-v1\n\n1\t99\t41\t101\t101\tupsert\t" +
+          index_hex + "\t7\t" + vector_hex + "\n\n",
       &changelog_rows));
   ASSERT_EQ(1U, changelog_rows.size());
   EXPECT_EQ(99U, changelog_rows[0].txn_id);
+  EXPECT_EQ(41U, changelog_rows[0].index_identity);
+  EXPECT_EQ(101U, changelog_rows[0].publication_id);
+  EXPECT_EQ(101U, changelog_rows[0].truth_generation);
 
   std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows;
   ASSERT_TRUE(vector_index_metadata_store::deserialize_prepared_rows(
@@ -824,6 +838,7 @@ TEST_F(MetadataStoreTest, DefaultDataHomeStoreRoundTripWithoutOverride) {
        {7.0F, 8.0F}},
       {12, 2, vector_index_metadata_store::change_op::kErase,
        "idx_default_home", 7, {}}};
+  assign_change_log_publication_for_test(&change_log_rows);
   ASSERT_TRUE(vector_index_metadata_store::save_change_log(change_log_rows));
   std::vector<vector_index_metadata_store::change_log_row> loaded_change_log;
   ASSERT_TRUE(vector_index_metadata_store::load_change_log(&loaded_change_log));
@@ -924,6 +939,7 @@ TEST_F(MetadataStoreTest, DefaultDataHomeEmptyUsesRelativeStoreDirectory) {
   std::vector<vector_index_metadata_store::change_log_row> changelog_rows{
       {1, 1, vector_index_metadata_store::change_op::kUpsert,
        "idx_empty_home", 1, {1.0F, 2.0F}}};
+  assign_change_log_publication_for_test(&changelog_rows);
   ASSERT_TRUE(vector_index_metadata_store::save_change_log(changelog_rows));
 
   std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows{
@@ -1017,6 +1033,7 @@ TEST_F(MetadataStoreTest, RelativePathRoundTripUsesEmptyParentBranch) {
   std::vector<vector_index_metadata_store::change_log_row> changelog_rows{
       {1, 11, vector_index_metadata_store::change_op::kUpsert, "idx_rel", 7,
        {1.0F, 2.0F}}};
+  assign_change_log_publication_for_test(&changelog_rows);
   ASSERT_TRUE(vector_index_metadata_store::save_change_log(changelog_rows));
   std::vector<vector_index_metadata_store::change_log_row> loaded_changelog;
   ASSERT_TRUE(vector_index_metadata_store::load_change_log(&loaded_changelog));
@@ -1307,6 +1324,7 @@ TEST_F(MetadataStoreTest, ChangeLogSerializationRoundTrip) {
        {1.0F, 2.0F}},
       {2, 99, vector_index_metadata_store::change_op::kErase, "idx_truth", 11,
        {}}};
+  assign_change_log_publication_for_test(&rows);
 
   std::string payload;
   ASSERT_TRUE(
@@ -1317,6 +1335,9 @@ TEST_F(MetadataStoreTest, ChangeLogSerializationRoundTrip) {
       vector_index_metadata_store::deserialize_change_log_rows(payload, &loaded));
   ASSERT_EQ(rows.size(), loaded.size());
   EXPECT_EQ(rows[0].sequence, loaded[0].sequence);
+  EXPECT_EQ(rows[0].index_identity, loaded[0].index_identity);
+  EXPECT_EQ(rows[0].publication_id, loaded[0].publication_id);
+  EXPECT_EQ(rows[0].truth_generation, loaded[0].truth_generation);
   EXPECT_EQ(rows[0].vector, loaded[0].vector);
   EXPECT_EQ(rows[1].op, loaded[1].op);
   EXPECT_TRUE(loaded[1].vector.empty());
@@ -2702,6 +2723,7 @@ TEST_F(MetadataStoreTest, SaveThenLoadChangeLogRoundTrip) {
        "idx_mem",
        202,
        {}}};
+  assign_change_log_publication_for_test(&rows);
 
   ASSERT_TRUE(vector_index_metadata_store::save_change_log(rows));
 
@@ -2710,6 +2732,9 @@ TEST_F(MetadataStoreTest, SaveThenLoadChangeLogRoundTrip) {
   ASSERT_EQ(2U, loaded.size());
   EXPECT_EQ(1U, loaded[0].sequence);
   EXPECT_EQ(88U, loaded[0].txn_id);
+  EXPECT_EQ(41U, loaded[0].index_identity);
+  EXPECT_EQ(101U, loaded[0].publication_id);
+  EXPECT_EQ(101U, loaded[0].truth_generation);
   EXPECT_EQ(vector_index_metadata_store::change_op::kUpsert, loaded[0].op);
   EXPECT_EQ("idx_mem", loaded[0].index_name);
   EXPECT_EQ(101U, loaded[0].doc_id);
@@ -2741,6 +2766,7 @@ TEST_F(MetadataStoreTest,
   std::vector<vector_index_metadata_store::change_log_row> rows{
       {1, 1, vector_index_metadata_store::change_op::kUpsert,
        "idx_blocked", 1, {1.0F, 2.0F}}};
+  assign_change_log_publication_for_test(&rows);
   EXPECT_FALSE(vector_index_metadata_store::save_change_log(rows));
 
   vector_index_metadata_store::set_path_for_testing(m_path);
@@ -2751,6 +2777,7 @@ TEST_F(MetadataStoreTest, SaveEmptyChangeLogRemovesStoreFile) {
   std::vector<vector_index_metadata_store::change_log_row> rows{
       {1, 1, vector_index_metadata_store::change_op::kUpsert, "idx_changelog", 1,
        {1.0F, 2.0F}}};
+  assign_change_log_publication_for_test(&rows);
   ASSERT_TRUE(vector_index_metadata_store::save_change_log(rows));
 
   std::ifstream exists_before(m_change_log_path);
@@ -2768,6 +2795,7 @@ TEST_F(MetadataStoreTest, SaveEmptyChangeLogFailsWhenRemovalIsInjected) {
   std::vector<vector_index_metadata_store::change_log_row> rows{
       {1, 1, vector_index_metadata_store::change_op::kUpsert, "idx_changelog", 1,
        {1.0F, 2.0F}}};
+  assign_change_log_publication_for_test(&rows);
   ASSERT_TRUE(vector_index_metadata_store::save_change_log(rows));
   rows.clear();
   {
@@ -2794,7 +2822,7 @@ TEST_F(MetadataStoreTest, LoadChangeLogRejectsUnknownOperationToken) {
                      std::ios::out | std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(file.good());
   file << "mysql-vector-changelog-v1\n";
-  file << "1\t88\tnoop\t6964785f626164\t101\t0000803f\n";
+  file << "1\t88\t41\t101\t101\tnoop\t6964785f626164\t101\t0000803f\n";
   file.close();
   ASSERT_TRUE(file);
 
@@ -2807,7 +2835,7 @@ TEST_F(MetadataStoreTest, LoadChangeLogRejectsZeroSequence) {
                      std::ios::out | std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(file.good());
   file << "mysql-vector-changelog-v1\n";
-  file << "0\t88\tupsert\t6964785f626164\t101\t0000803f\n";
+  file << "0\t88\t41\t101\t101\tupsert\t6964785f626164\t101\t0000803f\n";
   file.close();
   ASSERT_TRUE(file);
 
@@ -2820,7 +2848,7 @@ TEST_F(MetadataStoreTest, LoadChangeLogRejectsInvalidIndexHex) {
                      std::ios::out | std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(file.good());
   file << "mysql-vector-changelog-v1\n";
-  file << "1\t88\tupsert\tzz\t101\t0000803f\n";
+  file << "1\t88\t41\t101\t101\tupsert\tzz\t101\t0000803f\n";
   file.close();
   ASSERT_TRUE(file);
 
@@ -2833,7 +2861,7 @@ TEST_F(MetadataStoreTest, LoadChangeLogRejectsEraseWithVectorPayload) {
                      std::ios::out | std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(file.good());
   file << "mysql-vector-changelog-v1\n";
-  file << "1\t88\terase\t6964785f626164\t101\t0000803f\n";
+  file << "1\t88\t41\t101\t101\terase\t6964785f626164\t101\t0000803f\n";
   file.close();
   ASSERT_TRUE(file);
 
@@ -2846,7 +2874,8 @@ TEST_F(MetadataStoreTest, LoadChangeLogRejectsOverflowSequence) {
                      std::ios::out | std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(file.good());
   file << "mysql-vector-changelog-v1\n";
-  file << "18446744073709551616\t88\tupsert\t6964785f626164\t101\t0000803f\n";
+  file << "18446744073709551616\t88\t41\t101\t101\tupsert\t"
+          "6964785f626164\t101\t0000803f\n";
   file.close();
   ASSERT_TRUE(file);
 
@@ -2859,8 +2888,8 @@ TEST_F(MetadataStoreTest, LoadChangeLogRejectsExhaustedSequence) {
                      std::ios::out | std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(file.good());
   file << "mysql-vector-changelog-v1\n";
-  file << "18446744073709551615\t88\tupsert\t6964785f626164\t101\t"
-          "0000803f\n";
+  file << "18446744073709551615\t88\t41\t101\t101\tupsert\t"
+          "6964785f626164\t101\t0000803f\n";
   file.close();
   ASSERT_TRUE(file);
 
@@ -2874,18 +2903,36 @@ TEST_F(MetadataStoreTest, DeserializeChangeLogRejectsInvalidFields) {
   std::vector<vector_index_metadata_store::change_log_row> loaded;
 
   EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
-      header + "1\t88\tupsert\t\t101\t0000803f\n", &loaded));
+      header + "1\t88\t41\t101\t101\tupsert\t\t101\t0000803f\n",
+      &loaded));
   EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
-      header + "1\tnot_a_txn\tupsert\t" + index_hex +
+      header + "1\tnot_a_txn\t41\t101\t101\tupsert\t" + index_hex +
           "\t101\t0000803f\n",
       &loaded));
   EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
-      header + "1\t88\tupsert\t" + index_hex + "\tnot_a_doc\t0000803f\n",
+      header + "1\t88\t41\t101\t101\tupsert\t" + index_hex +
+          "\tnot_a_doc\t0000803f\n",
       &loaded));
   EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
-      header + "1\t88\tupsert\t" + index_hex + "\t101\t0\n", &loaded));
+      header + "1\t88\t41\t101\t101\tupsert\t" + index_hex +
+          "\t101\t0\n",
+      &loaded));
   EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
-      header + "1\t88\tupsert\t" + index_hex + "\t101\t00\n", &loaded));
+      header + "1\t88\t41\t101\t101\tupsert\t" + index_hex +
+          "\t101\t00\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
+      header + "1\t88\t0\t101\t101\tupsert\t" + index_hex +
+          "\t101\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
+      header + "1\t88\t41\t0\t101\tupsert\t" + index_hex +
+          "\t101\t0000803f\n",
+      &loaded));
+  EXPECT_FALSE(vector_index_metadata_store::deserialize_change_log_rows(
+      header + "1\t88\t41\t101\t0\tupsert\t" + index_hex +
+          "\t101\t0000803f\n",
+      &loaded));
 }
 
 TEST_F(MetadataStoreTest, SaveChangeLogRejectsInvalidRows) {
@@ -2896,6 +2943,7 @@ TEST_F(MetadataStoreTest, SaveChangeLogRejectsInvalidRows) {
        "idx_bad",
        1,
        {1.0F, 2.0F}}};
+  assign_change_log_publication_for_test(&bad_rows);
   EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
 
   bad_rows[0].sequence = 1;
@@ -2910,6 +2958,16 @@ TEST_F(MetadataStoreTest, SaveChangeLogRejectsInvalidRows) {
   bad_rows[0].sequence = std::numeric_limits<uint64_t>::max();
   bad_rows[0].op = vector_index_metadata_store::change_op::kErase;
   bad_rows[0].vector.clear();
+  EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
+
+  bad_rows[0].sequence = 1;
+  bad_rows[0].index_identity = 0;
+  EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
+  bad_rows[0].index_identity = 41;
+  bad_rows[0].publication_id = 0;
+  EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
+  bad_rows[0].publication_id = 101;
+  bad_rows[0].truth_generation = 0;
   EXPECT_FALSE(vector_index_metadata_store::save_change_log(bad_rows));
 }
 

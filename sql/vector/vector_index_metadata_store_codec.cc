@@ -397,7 +397,7 @@ bool deserialize_change_log_rows_impl(const std::string &payload,
 
     std::vector<std::string> fields;
     split_tab_fields(line, &fields);
-    if (fields.size() != 6) return false;
+    if (fields.size() != 9) return false;
 
     change_log_row row;
     if (!parse_uint64(fields[0], &row.sequence) || row.sequence == 0 ||
@@ -405,14 +405,29 @@ bool deserialize_change_log_rows_impl(const std::string &payload,
       return false;
     }
     if (!parse_uint64(fields[1], &row.txn_id)) return false;
-    if (!parse_change_op(fields[2], &row.op)) return false;
-    if (!decode_hex(fields[3], &row.index_name) || row.index_name.empty()) {
+    if (!parse_uint64(fields[2], &row.index_identity) ||
+        row.index_identity == 0 ||
+        row.index_identity == std::numeric_limits<uint64_t>::max()) {
       return false;
     }
-    if (!parse_uint64(fields[4], &row.doc_id)) return false;
+    if (!parse_uint64(fields[3], &row.publication_id) ||
+        row.publication_id == 0 ||
+        row.publication_id == std::numeric_limits<uint64_t>::max()) {
+      return false;
+    }
+    if (!parse_uint64(fields[4], &row.truth_generation) ||
+        row.truth_generation == 0 ||
+        row.truth_generation == std::numeric_limits<uint64_t>::max()) {
+      return false;
+    }
+    if (!parse_change_op(fields[5], &row.op)) return false;
+    if (!decode_hex(fields[6], &row.index_name) || row.index_name.empty()) {
+      return false;
+    }
+    if (!parse_uint64(fields[7], &row.doc_id)) return false;
 
     std::string vector_bytes;
-    if (!decode_hex(fields[5], &vector_bytes)) return false;
+    if (!decode_hex(fields[8], &vector_bytes)) return false;
     if ((vector_bytes.size() % sizeof(float)) != 0) return false;
     row.vector.resize(vector_bytes.size() / sizeof(float));
     if (!vector_bytes.empty()) {
@@ -434,6 +449,12 @@ bool serialize_change_log_rows_impl(const std::vector<change_log_row> &rows,
   for (const change_log_row &row : rows) {
     if (row.sequence == 0 ||
         row.sequence == std::numeric_limits<uint64_t>::max() ||
+        row.index_identity == 0 ||
+        row.index_identity == std::numeric_limits<uint64_t>::max() ||
+        row.publication_id == 0 ||
+        row.publication_id == std::numeric_limits<uint64_t>::max() ||
+        row.truth_generation == 0 ||
+        row.truth_generation == std::numeric_limits<uint64_t>::max() ||
         row.index_name.empty()) {
       return false;
     }
@@ -445,8 +466,10 @@ bool serialize_change_log_rows_impl(const std::vector<change_log_row> &rows,
     if (bytes > 0) vector_bytes.assign(data, bytes);
 
     stream << row.sequence << "\t" << row.txn_id << "\t"
-           << change_op_to_string(row.op) << "\t" << encode_hex(row.index_name)
-           << "\t" << row.doc_id << "\t" << encode_hex(vector_bytes) << "\n";
+           << row.index_identity << "\t" << row.publication_id << "\t"
+           << row.truth_generation << "\t" << change_op_to_string(row.op)
+           << "\t" << encode_hex(row.index_name) << "\t" << row.doc_id
+           << "\t" << encode_hex(vector_bytes) << "\n";
   }
   if (!stream) return false;
   *payload = stream.str();

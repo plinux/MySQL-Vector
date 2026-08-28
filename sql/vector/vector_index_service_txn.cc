@@ -717,6 +717,8 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
 
   std::unordered_set<std::string> touched_backends;
   auto restore_entry_store = [&]() {
+    DBUG_EXECUTE_IF("vector_service_fail_commit_entry_store_restore",
+                    return false;);
     bool restored = true;
     for (const commit_index_plan &index_plan : plan->indexes) {
       for (const commit_entry_before_image &before_image :
@@ -733,6 +735,8 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
     return restored;
   };
   auto restore_touched_backends = [&]() {
+    DBUG_EXECUTE_IF("vector_service_fail_commit_backend_restore",
+                    return false;);
     bool restored = true;
     for (const std::string &index_name : touched_backends) {
       const auto plan_it = index_plans.find(index_name);
@@ -764,8 +768,9 @@ bool index_service::apply_commit_build_plan(uint64_t txn_id,
     mark_failure_for_index(index_name, ERROR_BACKEND_APPLY_FAILED);
     const bool entry_store_restored = restore_entry_store();
     const bool backends_restored = restore_touched_backends();
-    (void)entry_store_restored;
-    (void)backends_restored;
+    if (!entry_store_restored || !backends_restored) {
+      plan->failure_stage += ":rollback_incomplete";
+    }
     return false;
   };
 
@@ -1509,6 +1514,7 @@ bool index_service::snapshot_pending_state(
 
 bool index_service::restore_pending_state(uint64_t txn_id,
                                           const pending_state_snapshot &state) {
+  DBUG_EXECUTE_IF("vector_service_fail_restore_pending_state", return false;);
   if (!restore_pending_changes(txn_id, state.changes)) return false;
   if (state.savepoints.empty()) {
     m_savepoints.erase(txn_id);

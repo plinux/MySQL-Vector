@@ -716,6 +716,7 @@ IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
     vector/vector_index_metadata_store.cc
     vector/vector_index_registry.cc
     vector/vector_index_registry_lifecycle.cc
+    vector/vector_index_registry_txn.cc
     vector/vector_index_runtime_thread_pool.cc
     vector/vector_mapped_search.cc
     vector/vector_index_service.cc

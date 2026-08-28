@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,7 @@
 #include "sql/vector/vector_index_metadata_store.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_statement_publication.h"
 #include "sql/vector/vector_trx_participant.h"
 #include "unittest/gunit/base_mock_field.h"
 #include "unittest/gunit/fake_table.h"
@@ -59,14 +61,53 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
   const char *backend_name() const override { return "memory"; }
   bool is_transactional() const override { return true; }
   bool supports_attached_dml() const override { return true; }
+  bool supports_publication_intents() const override { return true; }
 
-  bool apply_attached_dml(
+  bool apply_attached_committed(
       THD *,
       const std::vector<vector_index_metadata_store::change_log_row> &rows)
       override {
-    ++apply_attached_dml_calls;
-    if (fail_apply_attached_dml) return false;
+    ++apply_attached_committed_calls;
+    if (fail_apply_attached_committed) return false;
     attached_rows.insert(attached_rows.end(), rows.begin(), rows.end());
+    return true;
+  }
+
+  bool append_attached_change_log(
+      THD *,
+      const std::vector<vector_index_metadata_store::change_log_row> &rows)
+      override {
+    attached_change_log_rows.insert(attached_change_log_rows.end(), rows.begin(),
+                                    rows.end());
+    return true;
+  }
+
+  bool insert_attached_publication_intent(
+      THD *,
+      const vector_index_truth_store::publication_intent &intent) override {
+    attached_publication_intents.push_back(intent);
+    return true;
+  }
+
+  bool load_publication_intents(
+      std::vector<vector_index_truth_store::publication_intent> *intents)
+      override {
+    if (fail_load_publication_intents || intents == nullptr) return false;
+    *intents = publication_intents;
+    return true;
+  }
+
+  bool delete_publication_intent(const std::string &index_name,
+                                 uint64_t publication_id) override {
+    if (fail_delete_publication_intent) return false;
+    const auto it = std::find_if(
+        publication_intents.begin(), publication_intents.end(),
+        [&](const auto &intent) {
+          return intent.index_name == index_name &&
+                 intent.publication_id == publication_id;
+        });
+    if (it == publication_intents.end()) return false;
+    publication_intents.erase(it);
     return true;
   }
 
@@ -85,12 +126,22 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
         it->vector = row.vector;
       }
     }
-    change_log_rows.insert(change_log_rows.end(), attached_rows.begin(),
-                           attached_rows.end());
+    change_log_rows.insert(change_log_rows.end(),
+                           attached_change_log_rows.begin(),
+                           attached_change_log_rows.end());
+    publication_intents.insert(publication_intents.end(),
+                               attached_publication_intents.begin(),
+                               attached_publication_intents.end());
     attached_rows.clear();
+    attached_change_log_rows.clear();
+    attached_publication_intents.clear();
   }
 
-  void rollback_attached_dml() { attached_rows.clear(); }
+  void rollback_attached_dml() {
+    attached_rows.clear();
+    attached_change_log_rows.clear();
+    attached_publication_intents.clear();
+  }
 
   bool load_metadata(
       std::vector<vector_index_metadata_store::metadata_row> *rows) override {
@@ -163,10 +214,18 @@ class in_memory_truth_store final : public vector_index_truth_store::truth_store
   std::vector<vector_index_metadata_store::committed_row> committed_rows;
   std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
   std::vector<vector_index_metadata_store::change_log_row> attached_rows;
+  std::vector<vector_index_metadata_store::change_log_row>
+      attached_change_log_rows;
   std::vector<vector_index_metadata_store::prepared_change_row> prepared_rows;
+  std::vector<vector_index_truth_store::publication_intent>
+      attached_publication_intents;
+  std::vector<vector_index_truth_store::publication_intent>
+      publication_intents;
   vector_index_metadata_store::manifest_row manifest_row;
-  bool fail_apply_attached_dml{false};
-  uint64_t apply_attached_dml_calls{0};
+  bool fail_apply_attached_committed{false};
+  bool fail_load_publication_intents{false};
+  bool fail_delete_publication_intent{false};
+  uint64_t apply_attached_committed_calls{0};
 };
 
 std::string binary_vector_payload(std::initializer_list<float> values) {
@@ -258,9 +317,32 @@ class VectorDmlSyncFixture : public ::testing::Test {
         table->field[0]->field_name));
   }
 
+  void PrepareAttachedPublication() {
+    const uint64_t thd_id = static_cast<uint64_t>(thd()->thread_id());
+    std::vector<std::string> index_names;
+    ASSERT_TRUE(vector_index_registry::pending_index_names_for_thd_txn(
+        thd_id, &index_names));
+    ASSERT_FALSE(index_names.empty());
+    ASSERT_TRUE(publication_guard_.lock_indexes(index_names));
+    ASSERT_TRUE(
+        vector_index_registry::prepare_thd_txn_publication(thd(), thd_id));
+    ASSERT_EQ(index_names.size(), store_.attached_publication_intents.size());
+  }
+
+  void PublishAttachedTransaction() {
+    store_.commit_attached_dml();
+    ASSERT_FALSE(store_.publication_intents.empty());
+    ASSERT_TRUE(vector_index_registry::publish_thd_txn(
+        static_cast<uint64_t>(thd()->thread_id())));
+    ASSERT_TRUE(store_.publication_intents.empty());
+    publication_guard_ =
+        vector_statement_publication::publication_guard();
+  }
+
   vector_gunit::NativeProviderGuard native_provider_guard_;
   Server_initializer initializer_;
   in_memory_truth_store store_;
+  vector_statement_publication::publication_guard publication_guard_;
 };
 
 }  // namespace
@@ -643,14 +725,13 @@ TEST_F(VectorDmlSyncFixture, StagePreparedChangesCoversSuccessAndFailure) {
 
   thd()->set_query_id(101);
   EXPECT_FALSE(vector_dml_sync::stage_prepared_changes(thd(), changes));
-  EXPECT_EQ(1U, store_.apply_attached_dml_calls);
+  EXPECT_EQ(1U, store_.apply_attached_committed_calls);
   ASSERT_EQ(2U, store_.attached_rows.size());
   EXPECT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(
       static_cast<uint64_t>(thd()->thread_id()),
       static_cast<uint64_t>(thd()->query_id)));
-  store_.commit_attached_dml();
-  EXPECT_TRUE(vector_index_registry::publish_thd_txn(
-      static_cast<uint64_t>(thd()->thread_id())));
+  PrepareAttachedPublication();
+  PublishAttachedTransaction();
   // A non-XA after-commit callback may observe an already-consumed context.
   // It must not replay unrelated durable changelog rows.
   store_.change_log_rows.push_back(
@@ -674,7 +755,7 @@ TEST_F(VectorDmlSyncFixture, StagePreparedChangesCoversSuccessAndFailure) {
   thd()->clear_error();
   Server_initializer::set_expected_error(0);
 
-  store_.fail_apply_attached_dml = true;
+  store_.fail_apply_attached_committed = true;
   thd()->set_query_id(103);
   vector_dml_sync::prepared_changes persist_failure;
   persist_failure.push_back(
@@ -685,6 +766,73 @@ TEST_F(VectorDmlSyncFixture, StagePreparedChangesCoversSuccessAndFailure) {
   Server_initializer::set_expected_error(0);
   EXPECT_EQ(0U, vector_index_registry::total_pending_vector_memory_bytes());
   EXPECT_TRUE(store_.attached_rows.empty());
+}
+
+TEST_F(VectorDmlSyncFixture,
+       AttachedPublicationPreservesMaximumUnsignedDocumentId) {
+  auto table = MakeVectorTable("db_unsigned", "t_unsigned");
+  CreateMappedIndexForTable(table.get());
+
+  vector_dml_sync::prepared_changes changes;
+  changes.push_back({mapped_index_name(table.get()),
+                     std::numeric_limits<uint64_t>::max(), false,
+                     {8.0F, 8.0F}});
+  thd()->set_query_id(111);
+  ASSERT_FALSE(vector_dml_sync::stage_prepared_changes(thd(), changes));
+  ASSERT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(
+      static_cast<uint64_t>(thd()->thread_id()),
+      static_cast<uint64_t>(thd()->query_id)));
+  PrepareAttachedPublication();
+
+  store_.commit_attached_dml();
+  std::string failure_stage;
+  ASSERT_TRUE(vector_index_registry::publish_thd_txn(
+      static_cast<uint64_t>(thd()->thread_id()), false, &failure_stage))
+      << failure_stage;
+  EXPECT_TRUE(failure_stage.empty());
+  publication_guard_ = vector_statement_publication::publication_guard();
+
+  std::vector<vector_index::search_result> result;
+  ASSERT_TRUE(vector_index_registry::search(mapped_index_name(table.get()),
+                                            {8.0F, 8.0F}, 1, &result));
+  ASSERT_EQ(1U, result.size());
+  EXPECT_EQ(std::numeric_limits<uint64_t>::max(), result.front().doc_id);
+}
+
+TEST_F(VectorDmlSyncFixture,
+       TransactionalDmlRecoversCommittedStatementIntentBeforeStaging) {
+  vector_index_registry::create_index_options standalone_options;
+  standalone_options.consistency_mode_specified = true;
+  standalone_options.consistency_mode =
+      vector_index::index_consistency_mode::kStandalone;
+  ASSERT_TRUE(vector_index_registry::create_index(
+      "idx_pending_statement_recovery", 2, "euclidean", "memory", "native",
+      standalone_options));
+
+  vector_index_truth_store::publication_intent intent;
+  ASSERT_TRUE(vector_index_registry::make_statement_publication_intent(
+      vector_index_truth_store::publication_operation::kBeginBulkLoad,
+      "idx_pending_statement_recovery", std::string(), &intent));
+  store_.publication_intents.push_back(intent);
+  vector_index_registry::schedule_publication_intent_recovery();
+
+  auto table = MakeVectorTable("db_recovery_order", "t_recovery_order");
+  CreateMappedIndexForTable(table.get());
+  vector_dml_sync::prepared_changes changes;
+  changes.push_back(
+      {mapped_index_name(table.get()), 91, false, {9.0F, 1.0F}});
+  thd()->set_query_id(401);
+  ASSERT_FALSE(vector_dml_sync::stage_prepared_changes(thd(), changes));
+
+  EXPECT_TRUE(store_.publication_intents.empty());
+  vector_index_registry::index_info info;
+  ASSERT_TRUE(vector_index_registry::get_index_info(
+      "idx_pending_statement_recovery", &info));
+  EXPECT_EQ("bulk_loading", info.lifecycle_state);
+
+  ASSERT_TRUE(vector_index_registry::rollback_thd_txn(
+      static_cast<uint64_t>(thd()->thread_id())));
+  store_.rollback_attached_dml();
 }
 
 TEST_F(VectorDmlSyncFixture, StageUpdateRowCoversSuccessPath) {
@@ -707,9 +855,8 @@ TEST_F(VectorDmlSyncFixture, StageUpdateRowCoversSuccessPath) {
   EXPECT_TRUE(vector_index_registry::commit_stmt_for_thd_txn(
       static_cast<uint64_t>(thd()->thread_id()),
       static_cast<uint64_t>(thd()->query_id)));
-  store_.commit_attached_dml();
-  EXPECT_TRUE(vector_index_registry::publish_thd_txn(
-      static_cast<uint64_t>(thd()->thread_id())));
+  PrepareAttachedPublication();
+  PublishAttachedTransaction();
 
   std::vector<vector_index::search_result> result;
   ASSERT_TRUE(vector_index_registry::search(mapped_index_name(table.get()),

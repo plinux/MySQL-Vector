@@ -223,10 +223,14 @@ bool snapshot_index_config_locked(
 }
 
 vector_index_metadata_store::change_log_row make_backfill_delta_row(
-    const std::string &index_name, uint64_t sequence, uint64_t doc_id,
+    const std::string &index_name, uint64_t sequence, uint64_t index_identity,
+    uint64_t truth_generation, uint64_t doc_id,
     const vector_index::vector_data &vector) {
   vector_index_metadata_store::change_log_row row;
   row.sequence = sequence;
+  row.index_identity = index_identity;
+  row.publication_id = truth_generation;
+  row.truth_generation = truth_generation;
   row.op = vector_index_metadata_store::change_op::kUpsert;
   row.index_name = index_name;
   row.doc_id = doc_id;
@@ -341,12 +345,6 @@ bool persist_drop_committed_entries_locked(
 void refresh_committed_checkpoint_from_runtime_locked() {
   g_manifest_committed_checkpoint = g_index_service.committed_entry_count();
   vector_status::set_committed_snapshot_rows(g_manifest_committed_checkpoint);
-}
-
-void fail_stop_registry_locked(const char *reason) {
-  g_registry_health = registry_health_state::kFailed;
-  g_registry_failure_reason =
-      reason == nullptr ? "registry_state_restore_failed" : reason;
 }
 
 bool rollback_pending_artifacts_locked() {
@@ -525,8 +523,12 @@ bool backfill_token_matches_locked(const std::string &index_name,
 bool allocate_backfill_change_log_locked(
     const std::string &index_name,
     const vector_index::index_service::committed_entries &entries,
+    uint64_t index_identity, uint64_t truth_generation,
     std::vector<vector_index_metadata_store::change_log_row> *rows) {
-  if (rows == nullptr || index_name.empty()) return false;
+  if (rows == nullptr || index_name.empty() || index_identity == 0 ||
+      truth_generation == 0) {
+    return false;
+  }
   rows->clear();
   if (entries.empty()) return true;
   if (entries.size() >
@@ -545,8 +547,9 @@ bool allocate_backfill_change_log_locked(
     for (uint64_t doc_id : doc_ids) {
       const auto entry_it = entries.find(doc_id);
       if (entry_it == entries.end()) return false;
-      rows->push_back(make_backfill_delta_row(index_name, sequence++, doc_id,
-                                              entry_it->second));
+      rows->push_back(make_backfill_delta_row(
+          index_name, sequence++, index_identity, truth_generation, doc_id,
+          entry_it->second));
     }
     g_next_change_log_sequence = sequence;
     g_change_log_rows.insert(g_change_log_rows.end(), rows->begin(),
@@ -1815,8 +1818,90 @@ bool bulk_upsert_from_raw_files(
   return persist_registry_state_or_rollback_locked(snapshot, true);
 }
 
+bool entry_exists(const std::string &index_name, uint64_t doc_id,
+                  bool *found) {
+  if (found == nullptr || !ensure_publication_intents_recovered()) return false;
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  return ensure_metadata_available_locked() &&
+         g_index_service.entry_exists(index_name, doc_id, found);
+}
+
 bool bulk_build_index(const std::string &index_name, std::string *error) {
   return rebuild_index(index_name, error);
+}
+
+namespace {
+
+enum class rebuilt_runtime_lifecycle { kAdvance, kPreserve };
+
+bool publish_rebuilt_runtime(
+    const lifecycle_backend_plan &plan,
+    std::unique_ptr<vector_index::backend> rebuilt,
+    rebuilt_runtime_lifecycle lifecycle, std::string *error) {
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_loaded_locked()) {
+    set_rebuild_error(error, "vector registry metadata is unavailable");
+    return false;
+  }
+  if (!validate_backend_plan_locked(plan)) {
+    set_rebuild_error(error, "vector index changed during rebuild");
+    return false;
+  }
+
+  runtime_state_snapshot snapshot;
+  if (!capture_runtime_state_locked(&snapshot)) {
+    set_rebuild_error(error, "vector registry could not capture state");
+    return false;
+  }
+  vector_index::diskann_artifact_identity artifact_identity;
+  if (!make_diskann_artifact_identity_locked(
+          plan.index_name, plan.config, plan.publication,
+          plan.entries.size(), &artifact_identity)) {
+    return false;
+  }
+  const bool installed =
+      lifecycle == rebuilt_runtime_lifecycle::kPreserve
+          ? g_index_service.install_runtime_for_search(
+                plan.index_name, plan.entries, std::move(rebuilt),
+                &artifact_identity)
+          : g_index_service.install_rebuilt_index(
+                plan.index_name, plan.entries, std::move(rebuilt),
+                &artifact_identity);
+  if (!installed) {
+    set_rebuild_error(error, "vector registry could not publish rebuilt index");
+    return rollback_runtime_state_and_fail_locked(snapshot);
+  }
+  if (!persist_metadata_manifest_or_rollback_locked(snapshot, false)) {
+    set_rebuild_error(error, "vector registry could not persist rebuild state");
+    return false;
+  }
+  if (!finalize_pending_artifacts_locked()) {
+    fail_stop_registry_locked("artifact_generation_finalize_failed");
+    set_rebuild_error(error,
+                      "vector registry could not finalize rebuilt artifact");
+    return false;
+  }
+  return evict_committed_cache_to_budget_locked();
+}
+
+}  // namespace
+
+bool detail::load_runtime_for_search(const std::string &index_name) {
+  lifecycle_backend_plan plan;
+  {
+    std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+    if (!ensure_metadata_loaded_locked() ||
+        !snapshot_backend_plan_locked(index_name, &plan)) {
+      return false;
+    }
+  }
+  if (uses_standalone_source(plan)) return rebuild_index(index_name);
+
+  vector_status::record_rebuild_request();
+  std::unique_ptr<vector_index::backend> rebuilt = build_rebuilt_backend(plan);
+  return rebuilt != nullptr &&
+         publish_rebuilt_runtime(plan, std::move(rebuilt),
+                                 rebuilt_runtime_lifecycle::kPreserve, nullptr);
 }
 
 bool rebuild_index(const std::string &index_name, std::string *error) {
@@ -1843,39 +1928,8 @@ bool rebuild_index(const std::string &index_name, std::string *error) {
     set_rebuild_error(error, "vector index backend rebuild failed");
     return false;
   }
-
-  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
-  if (!ensure_metadata_loaded_locked()) {
-    set_rebuild_error(error, "vector registry metadata is unavailable");
-    return false;
-  }
-  if (!validate_backend_plan_locked(plan)) {
-    set_rebuild_error(error, "vector index changed during rebuild");
-    return false;
-  }
-
-  runtime_state_snapshot snapshot;
-  if (!capture_runtime_state_locked(&snapshot)) {
-    set_rebuild_error(error, "vector registry could not capture state");
-    return false;
-  }
-  vector_index::diskann_artifact_identity artifact_identity;
-  if (!make_diskann_artifact_identity_locked(
-          plan.index_name, plan.config, plan.publication,
-          plan.entries.size(), &artifact_identity)) {
-    return false;
-  }
-  const bool ok = g_index_service.install_rebuilt_index(
-      index_name, plan.entries, std::move(rebuilt), &artifact_identity);
-  if (!ok) {
-    set_rebuild_error(error, "vector registry could not publish rebuilt index");
-    return rollback_runtime_state_and_fail_locked(snapshot);
-  }
-  if (!persist_registry_state_or_rollback_locked(snapshot, true)) {
-    set_rebuild_error(error, "vector registry could not persist rebuild state");
-    return false;
-  }
-  return evict_committed_cache_to_budget_locked();
+  return publish_rebuilt_runtime(plan, std::move(rebuilt),
+                                 rebuilt_runtime_lifecycle::kAdvance, error);
 }
 
 bool replace_committed_entries(
@@ -2040,8 +2094,10 @@ bool publish_backfill(
       capture_manifest_state_locked();
 
   std::vector<vector_index_metadata_store::change_log_row> change_log_rows;
-  if (!allocate_backfill_change_log_locked(index_name, entries,
-                                           &change_log_rows)) {
+  if (token.truth_generation == std::numeric_limits<uint64_t>::max() ||
+      !allocate_backfill_change_log_locked(
+          index_name, entries, token.index_identity,
+          token.truth_generation + 1, &change_log_rows)) {
     return rollback_backfill_publish_locked(
         runtime_before, manifest_before,
         "backfill_change_log_allocation_restore_failed");
@@ -2051,7 +2107,7 @@ bool publish_backfill(
   publication.index_identity = token.index_identity;
   publication.truth_generation = change_log_rows.empty()
                                      ? token.truth_generation
-                                     : change_log_rows.back().sequence;
+                                     : change_log_rows.back().truth_generation;
   publication.config_generation = token.config_generation;
   publication.artifact_generation =
       artifact_present ? publication.truth_generation : 0;
@@ -2151,6 +2207,11 @@ bool recover_truth_projection_for_testing(
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_available_locked()) return false;
   return publish_truth_recovery_locked(&prepared);
+}
+
+bool detail::index_bindings_equal_for_testing(const index_binding &lhs,
+                                              const index_binding &rhs) {
+  return index_bindings_equal(lhs, rhs);
 }
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
@@ -2630,7 +2691,7 @@ bool recover_all_indexes(THD *thd, size_t *recovered_count) {
 }
 
 bool get_index_info(const std::string &index_name, index_info *info) {
-  if (info == nullptr) return false;
+  if (info == nullptr || !ensure_publication_intents_recovered()) return false;
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_available_locked()) return false;
@@ -2638,7 +2699,9 @@ bool get_index_info(const std::string &index_name, index_info *info) {
 }
 
 bool get_global_status_summary(global_status_summary *summary) {
-  if (summary == nullptr) return false;
+  if (summary == nullptr || !ensure_publication_intents_recovered()) {
+    return false;
+  }
 
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_available_locked()) return false;
@@ -2721,6 +2784,14 @@ bool get_global_status_summary(global_status_summary *summary) {
 }
 
 bool list_indexes(std::vector<std::string> *index_names) {
+  if (!ensure_publication_intents_recovered()) return false;
+  std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
+  if (!ensure_metadata_available_locked()) return false;
+  return g_index_service.list_indexes(index_names);
+}
+
+bool list_indexes_for_publication_catalog_guard(
+    std::vector<std::string> *index_names) {
   std::lock_guard<std::shared_mutex> guard(g_registry_mutex);
   if (!ensure_metadata_available_locked()) return false;
   return g_index_service.list_indexes(index_names);

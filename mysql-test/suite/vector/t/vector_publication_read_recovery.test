@@ -1,0 +1,63 @@
+--source include/have_vector_debug_native.inc
+
+--echo #
+--echo # WL#Vector: publication reads recover durable intents before locking
+--echo #
+
+CALL mtr.add_suppression(
+  "Vector runtime publication failed after transaction commit at stage");
+
+SELECT VEC_INDEX_CREATE('idx_publication_read_recovery', 2,
+                        'EUCLIDEAN', 'MEMORY', 'NATIVE');
+
+--disable_query_log
+SET SESSION debug = '+d,vector_truth_fail_delete_publication_intent';
+SET GLOBAL debug = '+d,vector_truth_fail_delete_publication_intent';
+--enable_query_log
+SELECT VEC_INDEX_UPSERT('idx_publication_read_recovery', 1, '[1,0]');
+--disable_query_log
+SET SESSION debug = '-d,vector_truth_fail_delete_publication_intent';
+SET GLOBAL debug = '-d,vector_truth_fail_delete_publication_intent';
+--enable_query_log
+SELECT VEC_INDEX_SEARCH('idx_publication_read_recovery',
+                        VEC_FROMTEXT('[1,0]'), 1);
+
+--disable_query_log
+SET SESSION debug = '+d,vector_truth_fail_delete_publication_intent';
+SET GLOBAL debug = '+d,vector_truth_fail_delete_publication_intent';
+--enable_query_log
+SELECT VEC_INDEX_UPSERT('idx_publication_read_recovery', 2, '[0,1]');
+--disable_query_log
+SET SESSION debug = '-d,vector_truth_fail_delete_publication_intent';
+SET GLOBAL debug = '-d,vector_truth_fail_delete_publication_intent';
+--enable_query_log
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_publication_read_recovery'),
+                    '$.entry_count') AS entry_count;
+
+--disable_query_log
+SET SESSION debug = '+d,vector_truth_fail_delete_publication_intent';
+SET GLOBAL debug = '+d,vector_truth_fail_delete_publication_intent';
+--enable_query_log
+SELECT VEC_INDEX_UPSERT('idx_publication_read_recovery', 3, '[1,1]');
+--disable_query_log
+SET SESSION debug = '-d,vector_truth_fail_delete_publication_intent';
+SET GLOBAL debug = '-d,vector_truth_fail_delete_publication_intent';
+--enable_query_log
+SELECT VEC_INDEX_SEARCH_BATCH(
+  'idx_publication_read_recovery',
+  CONCAT(VEC_FROMTEXT('[1,0]'), VEC_FROMTEXT('[0,1]')), 2, 3);
+
+--disable_query_log
+SET SESSION debug = '+d,vector_truth_fail_delete_publication_intent';
+SET GLOBAL debug = '+d,vector_truth_fail_delete_publication_intent';
+--enable_query_log
+SELECT VEC_INDEX_CREATE('idx_publication_catalog_recovery', 2,
+                        'EUCLIDEAN', 'MEMORY', 'NATIVE');
+--disable_query_log
+SET SESSION debug = '-d,vector_truth_fail_delete_publication_intent';
+SET GLOBAL debug = '-d,vector_truth_fail_delete_publication_intent';
+--enable_query_log
+SELECT VEC_INDEX_LIST();
+
+SELECT VEC_INDEX_DROP('idx_publication_catalog_recovery');
+SELECT VEC_INDEX_DROP('idx_publication_read_recovery');

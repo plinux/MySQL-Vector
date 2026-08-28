@@ -23,10 +23,14 @@
 
 #include "sql/vector/vector_trx_participant.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/plugin.h"
@@ -37,6 +41,8 @@
 #include "sql/sql_lex.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_statement_publication.h"
+#include "sql/xa.h"
 
 namespace {
 
@@ -45,6 +51,16 @@ unsigned char vector_trx_token = 0;
 
 std::mutex publication_mutex;
 std::unordered_set<my_thread_id> publication_threads;
+std::unordered_map<my_thread_id,
+                   std::unique_ptr<vector_statement_publication::publication_guard>>
+    publication_guards;
+struct statement_publication_context {
+  uint64_t statement_id{0};
+  bool catalog_exclusive{false};
+  std::vector<vector_index_truth_store::publication_intent> intents;
+};
+std::unordered_map<my_thread_id, statement_publication_context>
+    statement_publications;
 std::mutex observer_registration_mutex;
 bool observer_registered = false;
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
@@ -77,6 +93,58 @@ bool is_real_vector_scope(THD *thd, bool all) {
   return all || !in_multi_stmt_vector_trx(thd);
 }
 
+bool prepare_vector_publication(THD *thd) {
+  if (thd == nullptr || !has_vector_trx_context(thd)) return true;
+
+  bool has_publication_guard = false;
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    has_publication_guard = publication_guards.find(thd->thread_id()) !=
+                            publication_guards.end();
+  }
+
+  std::vector<std::string> index_names;
+  if (!vector_index_registry::pending_index_names_for_thd_txn(
+          vector_thd_id(thd), &index_names)) {
+    return false;
+  }
+  // The handlerton prepare callback and the binlog observer can both reach
+  // this function for the same commit. Once the guard exists, publication
+  // metadata and index ownership have already been prepared.
+  if (has_publication_guard) return true;
+
+  bool catalog_exclusive = false;
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    const auto statement_it = statement_publications.find(thd->thread_id());
+    if (statement_it != statement_publications.end()) {
+      if (statement_it->second.statement_id != vector_stmt_id(thd)) {
+        return false;
+      }
+      catalog_exclusive = statement_it->second.catalog_exclusive;
+      for (const auto &intent : statement_it->second.intents) {
+        index_names.push_back(intent.index_name);
+      }
+    }
+  }
+  if (index_names.empty()) return true;
+
+  auto publication_guard =
+      std::make_unique<vector_statement_publication::publication_guard>();
+  const bool locked = catalog_exclusive
+                          ? publication_guard->lock_catalog()
+                          : publication_guard->lock_indexes(index_names);
+  if (!locked || !vector_index_registry::prepare_thd_txn_publication(
+                     thd, vector_thd_id(thd))) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> guard(publication_mutex);
+  return publication_guards
+      .emplace(thd->thread_id(), std::move(publication_guard))
+      .second;
+}
+
 /*
   SQL transaction entry points own vector savepoint state. They also observe
   savepoints created before this hidden handlerton joins the transaction.
@@ -98,9 +166,16 @@ int vector_trx_prepare(handlerton *, THD *thd, bool all) {
   if (!has_vector_trx_context(thd) || !is_real_vector_scope(thd, all)) {
     return 0;
   }
-  return vector_index_registry::detach_thd_txn_for_prepare(vector_thd_id(thd))
-             ? 0
-             : HA_ERR_INTERNAL_ERROR;
+  if (!prepare_vector_publication(thd)) return HA_ERR_INTERNAL_ERROR;
+  if (!is_xa_prepare(thd)) return 0;
+  if (!vector_index_registry::detach_thd_txn_for_prepare(vector_thd_id(thd))) {
+    return HA_ERR_INTERNAL_ERROR;
+  }
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    publication_guards.erase(thd->thread_id());
+  }
+  return 0;
 }
 
 int vector_trx_set_prepared_in_tc(handlerton *, THD *) {
@@ -111,6 +186,7 @@ int vector_trx_set_prepared_in_tc(handlerton *, THD *) {
 int vector_trx_commit(handlerton *, THD *thd, bool all) {
   if (!has_vector_trx_context(thd)) return 0;
   if (is_real_vector_scope(thd, all)) {
+    if (!prepare_vector_publication(thd)) return HA_ERR_INTERNAL_ERROR;
     {
       std::lock_guard<std::mutex> guard(publication_mutex);
       publication_threads.insert(thd->thread_id());
@@ -137,6 +213,10 @@ int vector_trx_rollback(handlerton *, THD *thd, bool all) {
              : vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
   }
   if (ok && is_real_vector_scope(thd, all)) {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    publication_threads.erase(thd->thread_id());
+    publication_guards.erase(thd->thread_id());
+    statement_publications.erase(thd->thread_id());
     thd_set_ha_data(thd, vector_trx_hton, nullptr);
   }
   return ok ? 0 : HA_ERR_INTERNAL_ERROR;
@@ -147,6 +227,8 @@ int vector_trx_close_connection(handlerton *, THD *thd) {
     {
       std::lock_guard<std::mutex> guard(publication_mutex);
       publication_threads.erase(thd->thread_id());
+      publication_guards.erase(thd->thread_id());
+      statement_publications.erase(thd->thread_id());
     }
     (void)vector_index_registry::rollback_thd_txn(vector_thd_id(thd));
     thd_set_ha_data(thd, vector_trx_hton, nullptr);
@@ -159,24 +241,67 @@ void vector_trx_after_commit(void *arg) {
   if (param == nullptr || (param->flags & TRANS_IS_REAL_TRANS) == 0) return;
 
   bool publish = false;
+  statement_publication_context statement_publication;
+  bool publish_statement = false;
+  std::unique_ptr<vector_statement_publication::publication_guard>
+      publication_guard;
   {
     std::lock_guard<std::mutex> guard(publication_mutex);
     publish = publication_threads.erase(param->thread_id) != 0;
+    auto guard_it = publication_guards.find(param->thread_id);
+    if (guard_it != publication_guards.end()) {
+      publication_guard = std::move(guard_it->second);
+      publication_guards.erase(guard_it);
+    }
+    auto statement_it = statement_publications.find(param->thread_id);
+    if (statement_it != statement_publications.end()) {
+      statement_publication = std::move(statement_it->second);
+      statement_publications.erase(statement_it);
+      publish_statement = true;
+    }
   }
   const bool recover_detached_xa =
       is_xa_commit_publication_fallback(current_thd, param->thread_id);
-  if (!publish && !recover_detached_xa) {
+  if (!publish && !recover_detached_xa && !publish_statement) {
     return;
   }
   std::string failure_stage;
-  if (!vector_index_registry::publish_thd_txn(
-          static_cast<uint64_t>(param->thread_id), recover_detached_xa,
-          &failure_stage)) {
+  bool publication_ok = true;
+  if (publish || recover_detached_xa) {
+    publication_ok = vector_index_registry::publish_thd_txn(
+        static_cast<uint64_t>(param->thread_id), recover_detached_xa,
+        &failure_stage);
+  }
+  if (publication_ok && publish_statement) {
+    for (const auto &intent : statement_publication.intents) {
+      if (!vector_index_registry::publish_statement_publication_intent(
+              intent, &failure_stage) ||
+          !vector_index_registry::acknowledge_statement_publication_intent(
+              intent, &failure_stage)) {
+        publication_ok = false;
+        vector_index_registry::schedule_publication_intent_recovery();
+        break;
+      }
+    }
+  }
+  if (!publication_ok) {
     const std::string message =
         "Vector runtime publication failed after transaction commit at stage '" +
         (failure_stage.empty() ? "unknown" : failure_stage) + "'";
     LogErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG, message.c_str());
   }
+}
+
+int vector_trx_observe_before_commit(Trans_param *param) {
+  if (param == nullptr || (param->flags & TRANS_IS_REAL_TRANS) == 0) return 0;
+
+  THD *thd = current_thd;
+  if (thd == nullptr || thd->thread_id() != param->thread_id ||
+      !has_vector_trx_context(thd)) {
+    return 0;
+  }
+
+  return prepare_vector_publication(thd) ? 0 : 1;
 }
 
 void vector_trx_before_rollback(void *arg) {
@@ -186,6 +311,8 @@ void vector_trx_before_rollback(void *arg) {
   {
     std::lock_guard<std::mutex> guard(publication_mutex);
     publication_threads.erase(param->thread_id);
+    publication_guards.erase(param->thread_id);
+    statement_publications.erase(param->thread_id);
   }
   (void)vector_index_registry::rollback_thd_txn(
       static_cast<uint64_t>(param->thread_id));
@@ -204,7 +331,7 @@ int vector_trx_observe_after_commit(Trans_param *param) {
 Trans_observer vector_trx_observer{
     sizeof(Trans_observer),
     nullptr,
-    nullptr,
+    vector_trx_observe_before_commit,
     vector_trx_observe_before_rollback,
     vector_trx_observe_after_commit,
     nullptr,
@@ -231,6 +358,8 @@ int vector_trx_init(void *p) {
   {
     std::lock_guard<std::mutex> guard(publication_mutex);
     publication_threads.clear();
+    publication_guards.clear();
+    statement_publications.clear();
   }
   {
     std::lock_guard<std::mutex> guard(observer_registration_mutex);
@@ -266,6 +395,8 @@ int vector_trx_deinit(void *) {
   {
     std::lock_guard<std::mutex> guard(publication_mutex);
     publication_threads.clear();
+    publication_guards.clear();
+    statement_publications.clear();
   }
   vector_trx_hton = nullptr;
   return 0;
@@ -299,6 +430,22 @@ bool is_xa_commit_publication_fallback_for_testing(THD *thd,
 void set_registration_bypass_for_testing(bool bypass) {
   registration_bypass_for_testing = bypass;
 }
+
+int commit_for_testing(THD *thd, bool all) {
+  return vector_trx_commit(nullptr, thd, all);
+}
+
+int rollback_for_testing(THD *thd, bool all) {
+  return vector_trx_rollback(nullptr, thd, all);
+}
+
+void after_commit_for_testing(Trans_param *param) {
+  vector_trx_after_commit(param);
+}
+
+void before_rollback_for_testing(Trans_param *param) {
+  vector_trx_before_rollback(param);
+}
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 bool ensure_observer_registered() {
@@ -306,6 +453,12 @@ bool ensure_observer_registered() {
   if (registration_bypass_for_testing) return true;
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
   return ensure_observer_registered_impl();
+}
+
+bool in_user_multi_statement_transaction(THD *thd) {
+  return thd != nullptr && !thd->slave_thread && !thd->is_binlog_applier() &&
+         (thd->in_multi_stmt_transaction_mode() ||
+          thd->in_active_multi_stmt_transaction());
 }
 
 bool register_participant(THD *thd) {
@@ -321,9 +474,106 @@ bool register_participant(THD *thd) {
     thd_set_ha_data(thd, vector_trx_hton, &vector_trx_token);
   }
 
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  if (truth_store->supports_attached_dml() &&
+      !truth_store->ensure_attached_transaction(thd)) {
+    return false;
+  }
+
   trans_register_ha(thd, false, vector_trx_hton, nullptr);
+  // Publication metadata uses the attached InnoDB transaction. Mark this
+  // participant read-write so its prepare callback runs before InnoDB enters
+  // the prepared state.
+  thd->get_ha_data(vector_trx_hton->slot)->ha_info[0].set_trx_read_write();
   if (thd->in_multi_stmt_transaction_mode()) {
     trans_register_ha(thd, true, vector_trx_hton, nullptr);
+    thd->get_ha_data(vector_trx_hton->slot)->ha_info[1].set_trx_read_write();
+  }
+  return true;
+}
+
+bool stage_statement_publication(
+    THD *thd,
+    std::vector<vector_index_truth_store::publication_intent> intents,
+    bool catalog_exclusive, bool require_stable_catalog_set) {
+  if (thd == nullptr || intents.empty() ||
+      in_user_multi_statement_transaction(thd)) {
+    return false;
+  }
+
+  std::unordered_set<std::string> seen_index_names;
+  seen_index_names.reserve(intents.size());
+  std::vector<std::string> index_names;
+  index_names.reserve(intents.size());
+  for (const auto &intent : intents) {
+    if (intent.index_name.empty() || intent.publication_id == 0 ||
+        !seen_index_names.insert(intent.index_name).second) {
+      return false;
+    }
+    index_names.push_back(intent.index_name);
+  }
+  std::sort(index_names.begin(), index_names.end());
+
+  std::vector<std::string> pending_dml_indexes;
+  if (!vector_index_registry::pending_index_names_for_thd_txn(
+          vector_thd_id(thd), &pending_dml_indexes) ||
+      !pending_dml_indexes.empty()) {
+    return false;
+  }
+
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    if (statement_publications.find(thd->thread_id()) !=
+        statement_publications.end()) {
+      return false;
+    }
+  }
+
+  if (!register_participant(thd)) return false;
+
+  auto publication_guard =
+      std::make_unique<vector_statement_publication::publication_guard>();
+  const bool locked = catalog_exclusive
+                          ? publication_guard->lock_catalog()
+                          : publication_guard->lock_indexes(index_names);
+  if (!locked) return false;
+
+  if (require_stable_catalog_set) {
+    if (!catalog_exclusive) return false;
+    std::vector<std::string> current_index_names;
+    if (!vector_index_registry::list_indexes_for_publication_catalog_guard(
+            &current_index_names) ||
+        !vector_statement_publication::index_sets_equal(current_index_names,
+                                                        index_names)) {
+      return false;
+    }
+  }
+
+  vector_index_truth_store::truth_store *truth_store =
+      vector_index_truth_store::get();
+  if (!truth_store->supports_publication_intents()) return false;
+  for (const auto &intent : intents) {
+    if (!vector_index_registry::validate_statement_publication_intent(intent) ||
+        !truth_store->insert_attached_publication_intent(thd, intent)) {
+      return false;
+    }
+  }
+
+  statement_publication_context context;
+  context.statement_id = vector_stmt_id(thd);
+  context.catalog_exclusive = catalog_exclusive;
+  context.intents = std::move(intents);
+  {
+    std::lock_guard<std::mutex> guard(publication_mutex);
+    if (!statement_publications.emplace(thd->thread_id(), std::move(context))
+             .second ||
+        !publication_guards
+             .emplace(thd->thread_id(), std::move(publication_guard))
+             .second) {
+      statement_publications.erase(thd->thread_id());
+      return false;
+    }
   }
   return true;
 }

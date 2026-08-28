@@ -5,6 +5,9 @@
 --echo # WL#vector-v1: FAISS IVF nprobe update avoids external rebuild
 --echo #
 
+CALL mtr.add_suppression(
+  "Vector runtime publication failed after transaction commit at stage");
+
 SELECT VEC_INDEX_CREATE('idx_faiss_ivf_nprobe', 2, 'EUCLIDEAN', 'EXTERNAL', 'FAISS');
 SELECT VEC_INDEX_UPSERT('idx_faiss_ivf_nprobe', 1, VEC_FROMTEXT('[1,1]'));
 SELECT VEC_INDEX_UPSERT('idx_faiss_ivf_nprobe', 9, VEC_FROMTEXT('[9,9]'));
@@ -17,11 +20,16 @@ SET SESSION debug = '+d,vector_backend_fail_faiss_external_rebuild';
 SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf_nprobe', 2, 2);
 SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nprobe')
   AS faiss_nprobe_after_runtime_update;
---error ER_WRONG_ARGUMENTS
 SELECT VEC_INDEX_SET_FAISS_IVF_PARAMS('idx_faiss_ivf_nprobe', 1, 1);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_INFO('idx_faiss_ivf_nprobe');
 
 --disable_query_log
 SET SESSION debug = '-d,vector_backend_fail_faiss_external_rebuild';
 --enable_query_log
 
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nlist')
+         AS faiss_nlist_after_recovery,
+       JSON_EXTRACT(VEC_INDEX_INFO('idx_faiss_ivf_nprobe'), '$.faiss_nprobe')
+         AS faiss_nprobe_after_recovery;
 SELECT VEC_INDEX_DROP('idx_faiss_ivf_nprobe');

@@ -63,16 +63,23 @@ void init_changelog_rows_table(Object_table_impl *table) {
       0, "FIELD_SEQUENCE", "sequence BIGINT UNSIGNED NOT NULL");
   table->target_table_definition()->add_field(
       1, "FIELD_TXN_ID", "txn_id BIGINT UNSIGNED NOT NULL");
-  table->target_table_definition()->add_field(2, "FIELD_OP",
+  table->target_table_definition()->add_field(
+      2, "FIELD_INDEX_IDENTITY", "index_identity BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      3, "FIELD_PUBLICATION_ID", "publication_id BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      4, "FIELD_TRUTH_GENERATION",
+      "truth_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(5, "FIELD_OP",
                                               "op TINYINT UNSIGNED NOT NULL");
   table->target_table_definition()->add_field(
-      3, "FIELD_INDEX_NAME", "index_name VARBINARY(255) NOT NULL");
+      6, "FIELD_INDEX_NAME", "index_name VARBINARY(255) NOT NULL");
   table->target_table_definition()->add_field(
-      4, "FIELD_DOC_ID", "doc_id BIGINT UNSIGNED NOT NULL");
+      7, "FIELD_DOC_ID", "doc_id BIGINT UNSIGNED NOT NULL");
   table->target_table_definition()->add_field(
-      5, "FIELD_DIMENSION", "dimension INT UNSIGNED NOT NULL");
+      8, "FIELD_DIMENSION", "dimension INT UNSIGNED NOT NULL");
   table->target_table_definition()->add_field(
-      6, "FIELD_VECTOR_PAYLOAD", "vector_payload LONGBLOB NOT NULL");
+      9, "FIELD_VECTOR_PAYLOAD", "vector_payload LONGBLOB NOT NULL");
   table->target_table_definition()->add_index(
       0, "INDEX_PK_SEQUENCE", "PRIMARY KEY (sequence)");
 }
@@ -106,6 +113,71 @@ void init_prepared_rows_table(Object_table_impl *table) {
       11, "FIELD_VECTOR_PAYLOAD", "vector_payload LONGBLOB NOT NULL");
   table->target_table_definition()->add_index(
       0, "INDEX_PK_TXN_ROW", "PRIMARY KEY (txn_id, row_no)");
+}
+
+void init_publication_intents_table(Object_table_impl *table) {
+  table->target_table_definition()->set_table_name(
+      "vector_index_publication_intents");
+  table->target_table_definition()->add_field(
+      0, "FIELD_INDEX_NAME", "index_name VARBINARY(255) NOT NULL");
+  table->target_table_definition()->add_field(
+      1, "FIELD_PUBLICATION_ID", "publication_id BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      2, "FIELD_TXN_ID", "txn_id BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      3, "FIELD_OPERATION", "operation TINYINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      4, "FIELD_EXPECTED_EXISTS", "expected_exists TINYINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      5, "FIELD_EXPECTED_INDEX_IDENTITY",
+      "expected_index_identity BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      6, "FIELD_EXPECTED_TRUTH_GENERATION",
+      "expected_truth_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      7, "FIELD_EXPECTED_CONFIG_GENERATION",
+      "expected_config_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      8, "FIELD_EXPECTED_ARTIFACT_GENERATION",
+      "expected_artifact_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      9, "FIELD_EXPECTED_RUNTIME_GENERATION",
+      "expected_runtime_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      10, "FIELD_EXPECTED_LIFECYCLE_VERSION",
+      "expected_lifecycle_version BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      11, "FIELD_EXPECTED_SOURCE_GENERATION",
+      "expected_source_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      12, "FIELD_TARGET_EXISTS", "target_exists TINYINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      13, "FIELD_TARGET_INDEX_IDENTITY",
+      "target_index_identity BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      14, "FIELD_TARGET_TRUTH_GENERATION",
+      "target_truth_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      15, "FIELD_TARGET_CONFIG_GENERATION",
+      "target_config_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      16, "FIELD_TARGET_ARTIFACT_GENERATION",
+      "target_artifact_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      17, "FIELD_TARGET_RUNTIME_GENERATION",
+      "target_runtime_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      18, "FIELD_TARGET_LIFECYCLE_VERSION",
+      "target_lifecycle_version BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      19, "FIELD_TARGET_SOURCE_GENERATION",
+      "target_source_generation BIGINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_field(
+      20, "FIELD_PAYLOAD", "payload LONGBLOB NOT NULL");
+  table->target_table_definition()->add_field(
+      21, "FIELD_STATE", "state TINYINT UNSIGNED NOT NULL");
+  table->target_table_definition()->add_index(
+      0, "INDEX_PK_INDEX_NAME", "PRIMARY KEY (index_name)");
 }
 
 }  // namespace
@@ -157,6 +229,17 @@ Vector_index_truth_prepared::Vector_index_truth_prepared() {
 const Vector_index_truth_prepared &Vector_index_truth_prepared::instance() {
   static Vector_index_truth_prepared *s_instance =
       new Vector_index_truth_prepared();
+  return *s_instance;
+}
+
+Vector_index_publication_intents::Vector_index_publication_intents() {
+  init_publication_intents_table(this);
+}
+
+const Vector_index_publication_intents &
+Vector_index_publication_intents::instance() {
+  static Vector_index_publication_intents *s_instance =
+      new Vector_index_publication_intents();
   return *s_instance;
 }
 

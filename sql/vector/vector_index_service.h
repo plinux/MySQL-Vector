@@ -135,13 +135,11 @@ class standalone_entry_store {
               const vector_data &vector, size_t cache_budget);
   bool bulk_upsert(const std::string &index_name,
                    const committed_entries &entries);
-  bool bulk_upsert_raw_files(const std::string &index_name,
-                             const std::string &vector_filename,
-                             const std::string &docid_filename,
-                             uint64_t row_count, size_t dimension,
-                             uint64_t row_limit,
-                             std::unordered_set<uint64_t> *loaded_doc_ids =
-                                 nullptr);
+  bool bulk_upsert_raw_files(
+      const std::string &index_name, const std::string &vector_filename,
+      const std::string &docid_filename, uint64_t row_count, size_t dimension,
+      uint64_t row_limit,
+      std::unordered_set<uint64_t> *loaded_doc_ids = nullptr);
   bool erase(const std::string &index_name, uint64_t doc_id,
              size_t cache_budget);
   bool prepare_raw_segments_for_rebuild(const std::string &index_name);
@@ -152,8 +150,7 @@ class standalone_entry_store {
                                    raw_segment_compaction *compaction);
   bool rollback_levelled_compaction(const std::string &index_name,
                                     raw_segment_compaction *compaction);
-  void finalize_levelled_compaction(
-      raw_segment_compaction *compaction) const;
+  void finalize_levelled_compaction(raw_segment_compaction *compaction) const;
   void discard_levelled_compaction(raw_segment_compaction *compaction) const;
   bool read_rebuild_raw_segments(
       const std::string &index_name,
@@ -249,8 +246,7 @@ class standalone_entry_store {
                      const index_state &state) const;
   bool replay_segments(const index_state &state,
                        committed_entries *entries) const;
-  bool load_entries(const index_state &state,
-                    committed_entries *entries) const;
+  bool load_entries(const index_state &state, committed_entries *entries) const;
   std::string segment_directory(const std::string &index_name) const;
   std::string manifest_path(const std::string &index_name) const;
   std::string segment_path(const std::string &index_name,
@@ -386,12 +382,10 @@ class index_service {
     std::string failure_stage;
   };
 
-  using bulk_load_visitor =
-      std::function<bool(uint64_t doc_id, const float *values,
-                         size_t dimension)>;
+  using bulk_load_visitor = std::function<bool(
+      uint64_t doc_id, const float *values, size_t dimension)>;
   using bulk_load_reader =
-      std::function<bool(const bulk_load_visitor &visitor,
-                         std::string *error)>;
+      std::function<bool(const bulk_load_visitor &visitor, std::string *error)>;
 
   struct bulk_load_options {
     bool replace_duplicates{false};
@@ -477,16 +471,14 @@ class index_service {
   bool build_standalone_rebuild(standalone_rebuild_plan *plan,
                                 std::string *error = nullptr);
   bool prepare_standalone_rebuild_artifact(
-      standalone_rebuild_plan *plan,
-      const diskann_artifact_identity &identity,
+      standalone_rebuild_plan *plan, const diskann_artifact_identity &identity,
       std::string *error = nullptr);
   bool publish_standalone_rebuild(standalone_rebuild_plan *plan,
                                   std::string *error = nullptr);
   bool rollback_standalone_rebuild(standalone_rebuild_plan *plan);
   bool discard_standalone_rebuild(standalone_rebuild_plan *plan);
   bool finalize_standalone_rebuild(standalone_rebuild_plan *plan);
-  void record_standalone_rebuild_tasks(
-      const standalone_rebuild_plan &plan);
+  void record_standalone_rebuild_tasks(const standalone_rebuild_plan &plan);
   bool recover_index(const std::string &index_name);
   bool rebuild_all_indexes(size_t *rebuilt_count);
   bool recover_all_indexes(size_t *recovered_count);
@@ -514,8 +506,8 @@ class index_service {
                                      uint32_t diskann_search_complexity);
   bool set_diskann_search_beamwidth(const std::string &index_name,
                                     uint32_t diskann_search_beamwidth);
-  bool set_diskann_pq_code_budget_size(
-      const std::string &index_name, uint64_t diskann_pq_code_budget_size);
+  bool set_diskann_pq_code_budget_size(const std::string &index_name,
+                                       uint64_t diskann_pq_code_budget_size);
   bool set_diskann_disk_pq_dims(const std::string &index_name,
                                 uint32_t diskann_disk_pq_dims);
   bool set_diskann_accelerate_build(const std::string &index_name,
@@ -526,9 +518,8 @@ class index_service {
                                  bool diskann_use_bfs_cache);
   bool restore_index_config(const std::string &index_name,
                             const index_config &config);
-  bool set_index_consistency_mode(
-      const std::string &index_name,
-      index_consistency_mode consistency_mode);
+  bool set_index_consistency_mode(const std::string &index_name,
+                                  index_consistency_mode consistency_mode);
 
   bool stage_upsert(uint64_t txn_id, const std::string &index_name,
                     uint64_t doc_id, const vector_data &vector);
@@ -554,8 +545,7 @@ class index_service {
                     const std::vector<vector_data> &queries, size_t top_k,
                     std::vector<std::vector<search_result>> *results) const;
   bool search_loaded(const std::string &index_name, const vector_data &query,
-                     size_t top_k,
-                     std::vector<search_result> *results) const;
+                     size_t top_k, std::vector<search_result> *results) const;
   bool snapshot_search_backend_loaded(const std::string &index_name,
                                       const vector_data &query,
                                       backend_ptr *runtime,
@@ -591,9 +581,10 @@ class index_service {
   bool search_with_pending(uint64_t txn_id, const std::string &index_name,
                            const vector_data &query, size_t top_k,
                            std::vector<search_result> *results) const;
-  bool search_with_pending_loaded(
-      uint64_t txn_id, const std::string &index_name, const vector_data &query,
-      size_t top_k, std::vector<search_result> *results) const;
+  bool search_with_pending_loaded(uint64_t txn_id,
+                                  const std::string &index_name,
+                                  const vector_data &query, size_t top_k,
+                                  std::vector<search_result> *results) const;
   bool ensure_runtime_loaded_for_search(const std::string &index_name);
   bool runtime_loaded_for_search(const std::string &index_name) const;
   bool rebuild_runtime_from_store_for_search(const std::string &index_name);
@@ -622,9 +613,8 @@ class index_service {
       const std::unordered_map<std::string, index_publication_state> &states);
   bool rollback_artifact_publication(const std::string &index_name);
   bool finalize_artifact_publication(const std::string &index_name);
-  bool recover_artifact_publication(
-      const std::string &index_name,
-      const diskann_artifact_identity &identity);
+  bool recover_artifact_publication(const std::string &index_name,
+                                    const diskann_artifact_identity &identity);
   bool artifact_publication_matches(
       const std::string &index_name,
       const diskann_artifact_identity &identity) const;
@@ -649,6 +639,7 @@ class index_service {
                           uint64_t recover_fallback_count = 0,
                           uint64_t last_recover_fallback_ts = 0);
   bool list_indexes(std::vector<std::string> *index_names) const;
+  bool index_exists(const std::string &index_name) const;
   bool snapshot_committed_state(committed_state *state) const;
   size_t committed_entry_count() const;
   size_t committed_vector_memory_bytes() const;
@@ -661,6 +652,10 @@ class index_service {
   size_t standalone_raw_segment_count(const std::string &index_name) const;
   size_t standalone_raw_segment_bytes(const std::string &index_name) const;
   std::string standalone_build_source(const std::string &index_name) const;
+  uint64_t standalone_source_generation(
+      const std::string &index_name) const;
+  bool entry_exists(const std::string &index_name, uint64_t doc_id,
+                    bool *found) const;
   bool restore_committed_state(const committed_state &state);
   bool restore_committed_state_for_startup(const committed_state &state);
   bool direct_upsert(const std::string &index_name, uint64_t doc_id,
@@ -679,11 +674,14 @@ class index_service {
                                  const committed_entries &entries);
   bool replace_committed_entries_preserve_lifecycle(
       const std::string &index_name, const committed_entries &entries);
-  bool install_rebuilt_index(const std::string &index_name,
-                             const committed_entries &entries,
-                             std::unique_ptr<backend> rebuilt_backend,
-                             const diskann_artifact_identity *artifact_identity =
-                                 nullptr);
+  bool install_rebuilt_index(
+      const std::string &index_name, const committed_entries &entries,
+      std::unique_ptr<backend> rebuilt_backend,
+      const diskann_artifact_identity *artifact_identity = nullptr);
+  bool install_runtime_for_search(
+      const std::string &index_name, const committed_entries &entries,
+      std::unique_ptr<backend> rebuilt_backend,
+      const diskann_artifact_identity *artifact_identity = nullptr);
   bool install_recovered_index(const std::string &index_name,
                                const committed_entries &entries,
                                std::unique_ptr<backend> recovered_backend,
@@ -705,6 +703,10 @@ class index_service {
                              const pending_state_snapshot &state);
 
  private:
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  friend class index_service_test_peer;
+#endif  // EXTRA_CODE_FOR_UNIT_TESTING
+
   enum class change_type { kUpsert, kErase };
 
   struct pending_change {
@@ -729,8 +731,8 @@ class index_service {
   uint64_t m_next_index_identity{1};
   std::unordered_map<std::string, build_pipeline_snapshot>
       m_build_pipeline_snapshots;
-  std::unordered_map<
-      std::string, std::vector<vector_index_metadata_store::segment_task_row>>
+  std::unordered_map<std::string,
+                     std::vector<vector_index_metadata_store::segment_task_row>>
       m_segment_task_rows;
   std::unordered_map<std::string, backend_build_diagnostics>
       m_last_failed_build_diagnostics;
@@ -757,31 +759,37 @@ class index_service {
                                       const committed_entries &entries,
                                       bool preserve_lifecycle);
   bool synchronize_runtime_publication(const std::string &index_name);
+  bool install_rebuilt_index_impl(
+      const std::string &index_name, const committed_entries &entries,
+      std::unique_ptr<backend> rebuilt_backend,
+      const diskann_artifact_identity *artifact_identity,
+      bool preserve_lifecycle);
   void mark_index_ready(const std::string &index_name,
                         lifecycle_info *lifecycle);
-  bool build_runtime_from_current_policy(
-      const std::string &index_name, const index_config &persisted_config,
-      std::unique_ptr<backend> *runtime);
+  bool build_runtime_from_current_policy(const std::string &index_name,
+                                         const index_config &persisted_config,
+                                         std::unique_ptr<backend> *runtime);
   bool restore_committed_state_impl(const committed_state &state,
                                     bool defer_diskann_artifacts);
   bool ensure_runtime_loaded(const std::string &index_name);
   void maybe_unload_runtime(const std::string &index_name);
-  size_t diskann_exact_rerank_segment_count(
-      const std::string &index_name, const index_config &config) const;
-  size_t diskann_exact_rerank_candidate_top_k(
-      const std::string &index_name, const index_config &config, size_t top_k,
-      size_t query_count) const;
+  size_t diskann_exact_rerank_segment_count(const std::string &index_name,
+                                            const index_config &config) const;
+  size_t diskann_exact_rerank_candidate_top_k(const std::string &index_name,
+                                              const index_config &config,
+                                              size_t top_k,
+                                              size_t query_count) const;
   bool exact_rerank_search_results(
       const std::string &index_name, const index_config &config,
       const vector_data &query, const std::vector<search_result> &candidates,
-      size_t top_k, std::vector<search_result> *results,
-      bool *reranked) const;
-  bool load_exact_rerank_vectors(
-      const std::string &index_name, const index_config &config,
-      const std::unordered_set<uint64_t> &doc_ids, committed_entries *vectors,
-      bool *complete) const;
-  build_input_stats collect_build_input_stats(
-      const std::string &index_name, const index_config &config) const;
+      size_t top_k, std::vector<search_result> *results, bool *reranked) const;
+  bool load_exact_rerank_vectors(const std::string &index_name,
+                                 const index_config &config,
+                                 const std::unordered_set<uint64_t> &doc_ids,
+                                 committed_entries *vectors,
+                                 bool *complete) const;
+  build_input_stats collect_build_input_stats(const std::string &index_name,
+                                              const index_config &config) const;
   build_pipeline_decision record_build_pipeline_decision(
       const std::string &index_name, const index_config &config);
   build_pipeline_decision make_build_pipeline_decision(
@@ -809,6 +817,21 @@ size_t diskann_exact_rerank_candidate_top_k_for_testing(
     size_t segment_count, uint32_t search_complexity,
     diskann_search_profile search_profile, size_t result_budget,
     size_t candidate_target);
+bool pending_change_snapshots_equal_for_testing(
+    const std::vector<index_service::pending_change_snapshot> &lhs,
+    const std::vector<index_service::pending_change_snapshot> &rhs);
+bool pending_budget_allows_for_testing(size_t current_bytes,
+                                       size_t additional_bytes);
+bool rerank_candidates_with_vectors_for_testing(
+    const vector_data &query, metric_type metric,
+    const std::vector<search_result> &candidates,
+    const committed_entries &candidate_vectors, size_t top_k,
+    std::vector<search_result> *results, bool *reranked);
+committed_entry_reader make_commit_rebuild_reader_for_testing(
+    const committed_entries &candidate_entries);
+bool apply_entry_store_change_for_testing(
+    vector_entry_store *entry_store,
+    const index_service::pending_change_snapshot &change);
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 }  // namespace vector_index

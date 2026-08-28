@@ -1,6 +1,8 @@
 #
 # WL#Vector: segmented build task recovery guard
 #
+CALL mtr.add_suppression(
+"Vector runtime publication failed after transaction commit at stage 'LOAD VECTOR DATA could not publish rebuilt backend'");
 SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
 SET GLOBAL vector_build_pipeline_mode = 'segmented';
 SELECT VEC_INDEX_CREATE('idx_segmented_recovery', 2, 'EUCLIDEAN', 'MEMORY',
@@ -11,23 +13,21 @@ VEC_INDEX_CREATE('idx_segmented_recovery', 2, 'EUCLIDEAN', 'MEMORY',
 SELECT VEC_INDEX_UPSERT('idx_segmented_recovery', 1, '[1,0]');
 VEC_INDEX_UPSERT('idx_segmented_recovery', 1, '[1,0]')
 1
-SET GLOBAL debug = '+d,vector_segment_task_before_publish';
+SET SESSION debug = '+d,vector_segment_task_before_publish';
 SELECT VEC_INDEX_BULK_BUILD('idx_segmented_recovery');
-ERROR HY000: Incorrect arguments to LOAD VECTOR DATA could not publish rebuilt backend
-SET GLOBAL debug = '-d,vector_segment_task_before_publish';
-SELECT VEC_INDEX_SEARCH('idx_segmented_recovery', VEC_FROMTEXT('[1,0]'), 1);
-ERROR HY000: Incorrect arguments to vec_index_search
-SELECT VEC_INDEX_BULK_BUILD('idx_segmented_recovery') AS successful_build;
-successful_build
+VEC_INDEX_BULK_BUILD('idx_segmented_recovery')
 1
+SELECT VEC_INDEX_INFO('idx_segmented_recovery');
+ERROR HY000: Incorrect arguments to vec_index_info
+SET SESSION debug = '-d,vector_segment_task_before_publish';
 SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_segmented_recovery'),
 '$.build_pipeline_decision')) AS decision;
 decision
 segmented
 SELECT JSON_CONTAINS(
 VEC_INDEX_SEARCH('idx_segmented_recovery', VEC_FROMTEXT('[1,0]'), 1),
-CAST(1 AS JSON)) AS doc_visible_after_rebuild;
-doc_visible_after_rebuild
+CAST(1 AS JSON)) AS doc_visible_after_recovery;
+doc_visible_after_recovery
 1
 SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
 SELECT VEC_INDEX_DROP('idx_segmented_recovery');

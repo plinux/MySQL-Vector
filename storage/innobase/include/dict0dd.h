@@ -305,6 +305,7 @@ const innodb_dd_table_t innodb_dd_table[] = {
     INNODB_DD_TABLE("vector_index_truth_manifest", 1),
     INNODB_DD_TABLE("vector_index_truth_changelog", 1),
     INNODB_DD_TABLE("vector_index_truth_prepared", 1),
+    INNODB_DD_TABLE("vector_index_publication_intents", 1),
     INNODB_DD_TABLE("vector_index_truth_segment_tasks", 1),
     INNODB_DD_TABLE("vector_index_truth_store_quarantine", 1),
 #endif

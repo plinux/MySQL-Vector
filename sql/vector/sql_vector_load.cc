@@ -26,6 +26,9 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "m_ctype.h"
 #include "my_byteorder.h"
@@ -43,6 +46,8 @@
 #include "sql/vector/item_vectorfunc_internal.h"
 #include "sql/vector/vector_index_registry.h"
 #include "sql/vector/vector_load_file.h"
+#include "sql/vector/vector_statement_publication.h"
+#include "sql/vector/vector_trx_participant.h"
 #endif
 
 namespace {
@@ -135,12 +140,6 @@ bool begin_load_vector_stmt(THD *thd, const char *function_name,
   return true;
 }
 
-bool write_load_vector_stmt(THD *thd, String *statement) {
-  statement->append(STRING_WITH_LEN(")"));
-  return thd->binlog_query(THD::STMT_QUERY_TYPE, statement->ptr(),
-                           statement->length(), false, false, false, 0) == 0;
-}
-
 bool write_load_vector_batch_event(THD *thd, const std::string &index_name,
                                    const std::string &docid_blob,
                                    const std::string &vector_blob,
@@ -160,7 +159,9 @@ bool write_load_vector_batch_event(THD *thd, const std::string &index_name,
   statement.append(vector_hex.c_str(), vector_hex.length());
   statement.append(STRING_WITH_LEN("', "));
   statement.append_ulonglong(static_cast<ulonglong>(row_count));
-  return write_load_vector_stmt(thd, &statement);
+  statement.append(STRING_WITH_LEN(")"));
+  return thd->binlog_query(THD::STMT_QUERY_TYPE, statement.ptr(),
+                           statement.length(), false, false, false, 0) == 0;
 }
 
 bool write_load_vector_rebuild_event(THD *thd, const std::string &index_name,
@@ -170,7 +171,9 @@ bool write_load_vector_rebuild_event(THD *thd, const std::string &index_name,
                               &statement, error)) {
     return false;
   }
-  return write_load_vector_stmt(thd, &statement);
+  statement.append(STRING_WITH_LEN(")"));
+  return thd->binlog_query(THD::STMT_QUERY_TYPE, statement.ptr(),
+                           statement.length(), false, false, false, 0) == 0;
 }
 
 bulk_load_reader make_csv_load_reader(const std::string &vector_filename,
@@ -273,6 +276,108 @@ bool binlog_load_vector_rows(
   }
   return true;
 }
+
+bool stage_transactional_load_rows(THD *thd, const std::string &index_name,
+                                   const bulk_load_reader &reader,
+                                   uint64_t *loaded_rows,
+                                   std::string *error) {
+  constexpr size_t k_stage_chunk_rows = 256;
+  if (thd == nullptr || !reader || loaded_rows == nullptr ||
+      !vector_trx_participant::register_participant(thd)) {
+    return false;
+  }
+
+  std::vector<vector_index::index_service::pending_change_snapshot> changes;
+  changes.reserve(k_stage_chunk_rows);
+  const auto flush_changes = [&]() {
+    if (changes.empty()) return true;
+    const bool ok = vector_index_registry::stage_changes_for_thd_txn(
+        thd, static_cast<uint64_t>(thd->query_id), changes);
+    changes.clear();
+    return ok;
+  };
+
+  std::string reader_error;
+  const bool read_ok = reader(
+      [&](uint64_t doc_id, const float *values, size_t dimension) {
+        if (thd->killed || values == nullptr || dimension == 0) return false;
+        vector_index::index_service::pending_change_snapshot change;
+        change.index_name = index_name;
+        change.doc_id = doc_id;
+        change.vector.assign(values, values + dimension);
+        changes.push_back(std::move(change));
+        ++(*loaded_rows);
+        return changes.size() < k_stage_chunk_rows || flush_changes();
+      },
+      &reader_error);
+  if (!read_ok || !flush_changes()) {
+    if (error != nullptr && error->empty()) {
+      *error = reader_error.empty()
+                   ? "LOAD VECTOR DATA could not stage transactional rows"
+                   : reader_error;
+    }
+    return false;
+  }
+  return true;
+}
+
+bool validate_load_rows(const bulk_load_reader &reader,
+                        const std::string &index_name, size_t dimension,
+                        bool replace_duplicates, uint64_t *loaded_rows,
+                        std::string *error) {
+  if (!reader || index_name.empty() || loaded_rows == nullptr ||
+      dimension == 0) {
+    return false;
+  }
+  std::unordered_set<uint64_t> seen_doc_ids;
+  std::string validation_error;
+  std::string reader_error;
+  const bool ok = reader(
+      [&](uint64_t doc_id, const float *values, size_t read_dimension) {
+        if (current_thd != nullptr && current_thd->killed) {
+          validation_error = "LOAD VECTOR DATA interrupted";
+          return false;
+        }
+        if (values == nullptr) {
+          validation_error = "LOAD VECTOR DATA invalid vector row";
+          return false;
+        }
+        if (read_dimension != dimension) {
+          validation_error = "LOAD VECTOR DATA dimension mismatch";
+          return false;
+        }
+        if (!replace_duplicates) {
+          if (!seen_doc_ids.insert(doc_id).second) {
+            validation_error = "LOAD VECTOR DATA duplicate doc_id in file";
+            return false;
+          }
+          bool found = false;
+          if (!vector_index_registry::entry_exists(index_name, doc_id,
+                                                   &found)) {
+            validation_error =
+                "LOAD VECTOR DATA could not read index state";
+            return false;
+          }
+          if (found) {
+            validation_error = "LOAD VECTOR DATA duplicate doc_id in index";
+            return false;
+          }
+        }
+        ++(*loaded_rows);
+        return true;
+      },
+      &reader_error);
+  if (!ok && error != nullptr) {
+    if (!validation_error.empty()) {
+      *error = validation_error;
+    } else if (!reader_error.empty()) {
+      *error = reader_error;
+    } else {
+      *error = "LOAD VECTOR DATA input validation failed";
+    }
+  }
+  return ok;
+}
 #endif
 
 }  // namespace
@@ -334,45 +439,57 @@ bool Sql_cmd_load_vector_index::execute(THD *thd) {
     return true;
   }
 
-  vector_index::index_service::bulk_load_options options;
-  options.replace_duplicates = m_replace_duplicates;
-  options.rebuild_after_load = m_rebuild_after_load;
-  options.source_format = format_fbin ? "FBIN" : "CSV";
   const bool is_standalone = info.consistency_mode == "standalone";
 
   uint64_t loaded_rows = 0;
   std::string error;
-  bool ok = false;
-  if (format_fbin) {
-    ok = !thd->killed &&
-         vector_index_registry::bulk_upsert_from_raw_files(
-             m_index_name, m_vector_filename, m_docid_filename, options,
-             &loaded_rows, &error);
-  } else {
-    bulk_load_reader reader = make_csv_load_reader(m_vector_filename, &loaded_rows);
-    ok = !thd->killed &&
-         vector_index_registry::bulk_upsert_from_reader(m_index_name, reader,
-                                                        options, &error);
+  const bulk_load_reader load_reader =
+      format_fbin
+          ? make_fbin_load_reader(m_vector_filename, m_docid_filename,
+                                  info.dimension)
+          : make_csv_load_reader(m_vector_filename, nullptr);
+  uint64_t validated_rows = 0;
+  if (!validate_load_rows(load_reader, m_index_name, info.dimension,
+                          m_replace_duplicates, &validated_rows, &error)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0),
+             error.empty() ? k_load_vector_data_command : error.c_str());
+    return true;
   }
-  if (!ok) {
+  bool staged = false;
+  if (is_standalone) {
+    if (vector_trx_participant::in_user_multi_statement_transaction(thd)) {
+      my_error(ER_LOCK_OR_ACTIVE_TRANSACTION, MYF(0));
+      return true;
+    }
+    loaded_rows = validated_rows;
+    vector_statement_publication::operation_payload payload;
+    payload.unsigned_values = {2, m_replace_duplicates ? 1U : 0U,
+                               m_rebuild_after_load ? 1U : 0U,
+                               info.dimension};
+    payload.string_values = {m_vector_filename, m_docid_filename,
+                             format_fbin ? "FBIN" : "CSV"};
+    std::string encoded;
+    staged = vector_statement_publication::encode_operation_payload(
+                 payload, &encoded) &&
+             vector_itemfunc_internal::stage_vector_statement_publication(
+                 thd, vector_index_truth_store::publication_operation::
+                          kBulkLoad,
+                 m_index_name, encoded, false);
+  } else {
+    staged = stage_transactional_load_rows(thd, m_index_name, load_reader,
+                                           &loaded_rows, &error);
+  }
+  if (!staged) {
     my_error(ER_WRONG_ARGUMENTS, MYF(0),
              error.empty() ? k_load_vector_data_command : error.c_str());
     return true;
   }
 
-  if (should_binlog_load_vector(thd)) {
-    const bulk_load_reader binlog_reader =
-        format_fbin
-            ? make_fbin_load_reader(m_vector_filename, m_docid_filename,
-                                    info.dimension)
-            : make_csv_load_reader(m_vector_filename, nullptr);
-    if (!binlog_load_vector_rows(thd, m_index_name, info.dimension,
-                                 binlog_reader, m_rebuild_after_load,
-                                 is_standalone, &error)) {
-      my_error(ER_WRONG_ARGUMENTS, MYF(0),
-               error.empty() ? k_load_vector_data_command : error.c_str());
-      return true;
-    }
+  if (!binlog_load_vector_rows(thd, m_index_name, info.dimension, load_reader,
+                               m_rebuild_after_load, is_standalone, &error)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0),
+             error.empty() ? k_load_vector_data_command : error.c_str());
+    return true;
   }
 
   my_ok(thd, loaded_rows);

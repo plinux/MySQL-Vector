@@ -48,9 +48,9 @@
 #include "sql/vector/vector_index_runtime_thread_pool.h"
 #include "sql/vector/vector_index_service_internal.h"
 #include "sql/vector/vector_index_truth_store.h"
+#include "sql/vector/vector_load_file.h"
 #include "sql/vector/vector_segment_runtime_scheduler.h"
 #include "sql/vector/vector_segmented_search.h"
-#include "sql/vector/vector_load_file.h"
 #include "sql/vector/vector_status.h"
 
 namespace vector_index {
@@ -69,8 +69,8 @@ using build_clock = std::chrono::steady_clock;
 
 uint64_t elapsed_build_ms(build_clock::time_point start) {
   return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          build_clock::now() - start)
+      std::chrono::duration_cast<std::chrono::milliseconds>(build_clock::now() -
+                                                            start)
           .count());
 }
 
@@ -126,13 +126,14 @@ bool file_size_as_size(const std::string &path, size_t *bytes) {
   return true;
 }
 
-uint64_t raw_segment_row_limit(
-    size_t dimension, const build_pipeline_thresholds &thresholds) {
+uint64_t raw_segment_row_limit(size_t dimension,
+                               const build_pipeline_thresholds &thresholds) {
   return build_segment_row_limit(static_cast<uint64_t>(dimension), thresholds);
 }
 
 bool copy_or_link_file(const std::string &source, const std::string &target) {
-  if (source.empty() || target.empty() || !detail::ensure_parent_directory(target))
+  if (source.empty() || target.empty() ||
+      !detail::ensure_parent_directory(target))
     return false;
 
   remove_file_if_exists(target);
@@ -140,9 +141,8 @@ bool copy_or_link_file(const std::string &source, const std::string &target) {
   std::filesystem::create_hard_link(source, target, ec);
   if (ec) {
     ec.clear();
-    std::filesystem::copy_file(source, target,
-                               std::filesystem::copy_options::overwrite_existing,
-                               ec);
+    std::filesystem::copy_file(
+        source, target, std::filesystem::copy_options::overwrite_existing, ec);
   }
   if (ec) {
     remove_file_if_exists(target);
@@ -212,8 +212,8 @@ bool detect_dense_docid_file(const std::string &path, uint64_t row_count,
 bool vector_payload_bytes(size_t entry_count, size_t dimension, size_t *bytes) {
   if (bytes == nullptr) return false;
   if (dimension != 0 &&
-      entry_count > (std::numeric_limits<size_t>::max() / dimension) /
-                        sizeof(float)) {
+      entry_count >
+          (std::numeric_limits<size_t>::max() / dimension) / sizeof(float)) {
     return false;
   }
   *bytes = entry_count * dimension * sizeof(float);
@@ -245,9 +245,9 @@ void merge_diagnostic_string(const std::string &source, std::string *target) {
 
 }  // namespace
 
-void merge_segment_build_diagnostics(
-    uint64_t segment_row_count, const backend_build_diagnostics &source,
-    backend_build_diagnostics *aggregate) {
+void merge_segment_build_diagnostics(uint64_t segment_row_count,
+                                     const backend_build_diagnostics &source,
+                                     backend_build_diagnostics *aggregate) {
   aggregate->row_count +=
       source.row_count == 0 ? segment_row_count : source.row_count;
   aggregate->segment_count +=
@@ -286,7 +286,8 @@ void merge_segment_build_diagnostics(
                           &aggregate->native_pq_runtime_centroid_scan_kernel);
   aggregate->native_pq_runtime_distance_calls +=
       source.native_pq_runtime_distance_calls;
-  aggregate->native_pq_runtime_train_rows += source.native_pq_runtime_train_rows;
+  aggregate->native_pq_runtime_train_rows +=
+      source.native_pq_runtime_train_rows;
   aggregate->native_pq_runtime_compressed_rows +=
       source.native_pq_runtime_compressed_rows;
   aggregate->native_pq_runtime_encode_block_rows =
@@ -383,9 +384,8 @@ size_t compute_diskann_exact_rerank_candidate_top_k(
 
   candidate_top_k = std::min(candidate_top_k, authoritative_count);
   if (candidate_target != 0) {
-    candidate_top_k =
-        std::max(candidate_top_k,
-                 std::min(candidate_target, authoritative_count));
+    candidate_top_k = std::max(candidate_top_k,
+                               std::min(candidate_target, authoritative_count));
   }
 
   if (result_budget != 0) {
@@ -393,9 +393,8 @@ size_t compute_diskann_exact_rerank_candidate_top_k(
     if (per_query_limit < top_k) return top_k;
     candidate_top_k = std::min(candidate_top_k, per_query_limit);
   }
-  candidate_top_k =
-      std::min(candidate_top_k,
-               static_cast<size_t>(k_max_search_batch_result_count));
+  candidate_top_k = std::min(
+      candidate_top_k, static_cast<size_t>(k_max_search_batch_result_count));
   return std::max(candidate_top_k, top_k);
 }
 
@@ -501,8 +500,7 @@ bool vector_entry_store::upsert(const std::string &index_name, uint64_t doc_id,
   const auto doc_it = entries_it->second.find(doc_id);
   const bool inserted = doc_it == entries_it->second.end();
   const bool changed = inserted || doc_it->second != vector;
-  if (inserted)
-    ++count_it->second;
+  if (inserted) ++count_it->second;
   if (changed) {
     entries_it->second[doc_id] = vector;
     bump_generation(index_name);
@@ -591,8 +589,7 @@ bool vector_entry_store::for_each_committed_entry(
         vector_index_truth_store::get();
     if (truth_store == nullptr) return false;
     return truth_store->for_each_committed(
-        index_name,
-        [&](const vector_index_metadata_store::committed_row &row) {
+        index_name, [&](const vector_index_metadata_store::committed_row &row) {
           return visitor(row.doc_id, row.vector);
         });
   }
@@ -673,8 +670,7 @@ bool vector_entry_store::load_index_from_truth_store(
       vector_index_truth_store::get();
   if (truth_store == nullptr) return false;
   return truth_store->for_each_committed(
-      index_name,
-      [&](const vector_index_metadata_store::committed_row &row) {
+      index_name, [&](const vector_index_metadata_store::committed_row &row) {
         (*entries)[row.doc_id] = row.vector;
         return true;
       });
@@ -797,8 +793,7 @@ bool standalone_entry_store::has_index(const std::string &index_name) const {
 }
 
 bool standalone_entry_store::upsert(const std::string &index_name,
-                                    uint64_t doc_id,
-                                    const vector_data &vector,
+                                    uint64_t doc_id, const vector_data &vector,
                                     size_t cache_budget) {
   auto state_it = m_indexes.find(index_name);
   if (state_it == m_indexes.end() ||
@@ -822,8 +817,8 @@ bool standalone_entry_store::upsert(const std::string &index_name,
   return flush_if_needed(index_name, &state_it->second, cache_budget);
 }
 
-bool standalone_entry_store::bulk_upsert(
-    const std::string &index_name, const committed_entries &entries) {
+bool standalone_entry_store::bulk_upsert(const std::string &index_name,
+                                         const committed_entries &entries) {
   auto state_it = m_indexes.find(index_name);
   if (state_it == m_indexes.end()) return false;
   if (entries.empty()) return true;
@@ -868,9 +863,9 @@ bool standalone_entry_store::bulk_upsert(
       remove_file_if_exists(path);
       return false;
     }
-    file.write(reinterpret_cast<const char *>(entry_it->second.data()),
-               static_cast<std::streamsize>(entry_it->second.size() *
-                                            sizeof(float)));
+    file.write(
+        reinterpret_cast<const char *>(entry_it->second.data()),
+        static_cast<std::streamsize>(entry_it->second.size() * sizeof(float)));
     if (!file.good()) {
       remove_file_if_exists(path);
       return false;
@@ -918,8 +913,7 @@ bool standalone_entry_store::bulk_upsert(
 bool standalone_entry_store::bulk_upsert_raw_files(
     const std::string &index_name, const std::string &vector_filename,
     const std::string &docid_filename, uint64_t row_count, size_t dimension,
-    uint64_t row_limit,
-    std::unordered_set<uint64_t> *loaded_doc_ids) {
+    uint64_t row_limit, std::unordered_set<uint64_t> *loaded_doc_ids) {
   auto state_it = m_indexes.find(index_name);
   if (state_it == m_indexes.end() || dimension != state_it->second.dimension)
     return false;
@@ -1063,9 +1057,8 @@ bool standalone_entry_store::bulk_upsert_raw_files(
       if (!vector_file.is_open() || !docid_file.is_open()) return false;
       return write_plain_value(vector_file,
                                static_cast<uint32_t>(current_segment_rows)) &&
-             write_plain_value(
-                 vector_file,
-                 static_cast<uint32_t>(state_it->second.dimension)) &&
+             write_plain_value(vector_file, static_cast<uint32_t>(
+                                                state_it->second.dimension)) &&
              write_plain_value(docid_file, current_segment_rows);
     };
 
@@ -1087,8 +1080,7 @@ bool standalone_entry_store::bulk_upsert_raw_files(
           if (rows_in_segment == 0 && !open_segment()) return false;
           if (!write_plain_value(docid_file, doc_id)) return false;
           vector_file.write(reinterpret_cast<const char *>(values),
-                            static_cast<std::streamsize>(
-                                vector_bytes_per_row));
+                            static_cast<std::streamsize>(vector_bytes_per_row));
           if (!vector_file.good()) return false;
           ++rows_seen;
           ++rows_in_segment;
@@ -1204,7 +1196,8 @@ bool standalone_entry_store::erase(const std::string &index_name,
 
 bool standalone_entry_store::can_rebuild_direct_from_raw_segments(
     const index_state &state) const {
-  if (!state.memory_entries.empty() || !state.memory_erases.empty()) return false;
+  if (!state.memory_entries.empty() || !state.memory_erases.empty())
+    return false;
   if (state.segments.empty()) return state.entry_count == 0;
 
   size_t raw_rows = 0;
@@ -1693,8 +1686,8 @@ bool standalone_entry_store::consolidate_raw_locator_runs(
   return true;
 }
 
-bool standalone_entry_store::compact_to_raw_segment(const std::string &index_name,
-                                                    index_state *state) {
+bool standalone_entry_store::compact_to_raw_segment(
+    const std::string &index_name, index_state *state) {
   if (state == nullptr) return false;
 
   committed_entries entries;
@@ -1790,8 +1783,7 @@ bool standalone_entry_store::prepare_raw_segments_for_rebuild(
   const bool compacted =
       state_it->second.build_source == "raw_segments_compacted";
   if (!compacted) {
-    state_it->second.build_source =
-        build_source_for_state(state_it->second);
+    state_it->second.build_source = build_source_for_state(state_it->second);
     if (!save_manifest(index_name, state_it->second)) return false;
   }
   return true;
@@ -1972,21 +1964,18 @@ bool standalone_entry_store::find_entries(
             continue;
           }
           const uint64_t row = doc_id - segment.first_doc_id;
-          if (row > (std::numeric_limits<uint64_t>::max() -
-                     fbin_header_bytes) /
+          if (row > (std::numeric_limits<uint64_t>::max() - fbin_header_bytes) /
                         vector_bytes) {
             return false;
           }
           const uint64_t offset = fbin_header_bytes + row * vector_bytes;
-          if (offset >
-              static_cast<uint64_t>(
-                  std::numeric_limits<std::streamoff>::max())) {
+          if (offset > static_cast<uint64_t>(
+                           std::numeric_limits<std::streamoff>::max())) {
             return false;
           }
 
           vector_data vector(state.dimension);
-          vector_file.seekg(static_cast<std::streamoff>(offset),
-                            std::ios::beg);
+          vector_file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
           vector_file.read(reinterpret_cast<char *>(vector.data()),
                            static_cast<std::streamsize>(vector_bytes));
           if (!vector_file.good()) return false;
@@ -2025,15 +2014,13 @@ bool standalone_entry_store::find_entries(
       for (const candidate_row &candidate : raw_candidates[segment_index]) {
         const uint64_t doc_id = candidate.first;
         const uint64_t row = candidate.second;
-        if (row > (std::numeric_limits<uint64_t>::max() -
-                   fbin_header_bytes) /
+        if (row > (std::numeric_limits<uint64_t>::max() - fbin_header_bytes) /
                       vector_bytes) {
           return false;
         }
         const uint64_t offset = fbin_header_bytes + row * vector_bytes;
         if (offset >
-            static_cast<uint64_t>(
-                std::numeric_limits<std::streamoff>::max())) {
+            static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
           return false;
         }
 
@@ -2243,9 +2230,9 @@ bool standalone_entry_store::flush_index(const std::string &index_name,
       remove_file_if_exists(path);
       return false;
     }
-    file.write(reinterpret_cast<const char *>(entry.second->data()),
-               static_cast<std::streamsize>(entry.second->size() *
-                                            sizeof(float)));
+    file.write(
+        reinterpret_cast<const char *>(entry.second->data()),
+        static_cast<std::streamsize>(entry.second->size() * sizeof(float)));
     if (!file.good()) {
       remove_file_if_exists(path);
       return false;
@@ -2337,8 +2324,8 @@ bool standalone_entry_store::load_manifest(const std::string &index_name,
     if (fields.empty()) return false;
 
     if (fields[0] == "dimension") {
-      if (fields.size() != 2 || !detail::parse_uint64(fields[1],
-                                                       &manifest_dimension)) {
+      if (fields.size() != 2 ||
+          !detail::parse_uint64(fields[1], &manifest_dimension)) {
         return false;
       }
       saw_dimension = true;
@@ -2395,8 +2382,7 @@ bool standalone_entry_store::load_manifest(const std::string &index_name,
       }
       segment.dimension = loaded.dimension;
       if (fields[0] == "segment_delta") {
-        if (!detail::parse_uint64(fields[4], &segment.generation))
-          return false;
+        if (!detail::parse_uint64(fields[4], &segment.generation)) return false;
       }
       segment.path =
           (std::filesystem::path(segment_directory(index_name)) / filename)
@@ -2414,7 +2400,8 @@ bool standalone_entry_store::load_manifest(const std::string &index_name,
       const std::filesystem::path vector_filename(fields[1]);
       const std::filesystem::path docid_filename(fields[2]);
       size_t segment_dimension = 0;
-      if (vector_filename.has_parent_path() || docid_filename.has_parent_path() ||
+      if (vector_filename.has_parent_path() ||
+          docid_filename.has_parent_path() ||
           !parse_manifest_size(fields[3], &segment.record_count) ||
           !parse_manifest_size(fields[4], &segment_dimension) ||
           !parse_manifest_size(fields[5], &segment.bytes) ||
@@ -2488,9 +2475,9 @@ bool standalone_entry_store::save_manifest(const std::string &index_name,
        << "generation\t" << state.generation << '\n'
        << "next_segment_id\t" << state.next_segment_id << '\n'
        << "segment_count\t" << state.segments.size() << '\n'
-       << "build_source\t" << (state.build_source.empty()
-                                   ? build_source_for_state(state)
-                                   : state.build_source)
+       << "build_source\t"
+       << (state.build_source.empty() ? build_source_for_state(state)
+                                      : state.build_source)
        << '\n';
   for (const standalone_segment &segment : state.segments) {
     if (segment.kind == standalone_segment_kind::kRawFbin) {
@@ -2498,8 +2485,8 @@ bool standalone_entry_store::save_manifest(const std::string &index_name,
            << std::filesystem::path(segment.vector_path).filename().string()
            << '\t'
            << std::filesystem::path(segment.docid_path).filename().string()
-           << '\t' << segment.record_count << '\t' << segment.dimension
-           << '\t' << segment.bytes << '\t' << segment.generation << '\n';
+           << '\t' << segment.record_count << '\t' << segment.dimension << '\t'
+           << segment.bytes << '\t' << segment.generation << '\n';
     } else {
       file << "segment_delta\t"
            << std::filesystem::path(segment.path).filename().string() << '\t'
@@ -2546,14 +2533,14 @@ bool standalone_entry_store::replay_segments(const index_state &state,
 
       vector_load_file_info info;
       std::string error;
-      if (!read_fbin_vectors(
-              segment.vector_path, segment.docid_path, state.dimension, &info,
-              &error,
-              [entries](uint64_t doc_id, const float *values,
-                        size_t dimension) {
-                (*entries)[doc_id] = vector_data(values, values + dimension);
-                return true;
-              }) ||
+      if (!read_fbin_vectors(segment.vector_path, segment.docid_path,
+                             state.dimension, &info, &error,
+                             [entries](uint64_t doc_id, const float *values,
+                                       size_t dimension) {
+                               (*entries)[doc_id] =
+                                   vector_data(values, values + dimension);
+                               return true;
+                             }) ||
           info.row_count != segment.record_count ||
           info.dimension != state.dimension) {
         return false;
@@ -2574,8 +2561,8 @@ bool standalone_entry_store::replay_segments(const index_state &state,
     uint64_t dimension = 0;
     uint64_t record_count = 0;
     if (!read_plain_value(file, dimension) ||
-        !read_plain_value(file, record_count) ||
-        dimension != state.dimension || record_count != segment.record_count) {
+        !read_plain_value(file, record_count) || dimension != state.dimension ||
+        record_count != segment.record_count) {
       return false;
     }
     for (uint64_t i = 0; i < record_count; ++i) {
@@ -2586,9 +2573,9 @@ bool standalone_entry_store::replay_segments(const index_state &state,
       }
       if (op == kStandaloneSegmentUpsert) {
         vector_data vector(state.dimension);
-        file.read(reinterpret_cast<char *>(vector.data()),
-                  static_cast<std::streamsize>(state.dimension *
-                                               sizeof(float)));
+        file.read(
+            reinterpret_cast<char *>(vector.data()),
+            static_cast<std::streamsize>(state.dimension * sizeof(float)));
         if (!file.good()) return false;
         (*entries)[doc_id] = std::move(vector);
       } else if (op == kStandaloneSegmentErase) {
@@ -2632,8 +2619,8 @@ std::string standalone_entry_store::manifest_path(
   return path.string();
 }
 
-std::string standalone_entry_store::segment_path(
-    const std::string &index_name, uint64_t segment_id) const {
+std::string standalone_entry_store::segment_path(const std::string &index_name,
+                                                 uint64_t segment_id) const {
   const std::string directory = segment_directory(index_name);
   if (directory.empty() || segment_id == 0) return "";
   std::filesystem::path path(directory);
@@ -2681,15 +2668,13 @@ bool index_configs_equal(const index_service::index_config &lhs,
          lhs.diskann_build_mode_value == rhs.diskann_build_mode_value &&
          lhs.diskann_search_complexity == rhs.diskann_search_complexity &&
          lhs.diskann_search_beamwidth == rhs.diskann_search_beamwidth &&
-         lhs.diskann_pq_code_budget_size ==
-             rhs.diskann_pq_code_budget_size &&
+         lhs.diskann_pq_code_budget_size == rhs.diskann_pq_code_budget_size &&
          lhs.diskann_disk_pq_dims == rhs.diskann_disk_pq_dims &&
          lhs.diskann_cache_nodes == rhs.diskann_cache_nodes &&
          lhs.diskann_accelerate_build == rhs.diskann_accelerate_build &&
          lhs.diskann_shuffle_build == rhs.diskann_shuffle_build &&
          lhs.diskann_use_bfs_cache == rhs.diskann_use_bfs_cache &&
-         lhs.diskann_build_mode_specified ==
-             rhs.diskann_build_mode_specified &&
+         lhs.diskann_build_mode_specified == rhs.diskann_build_mode_specified &&
          lhs.diskann_segmented_serving == rhs.diskann_segmented_serving &&
          lhs.consistency_mode == rhs.consistency_mode;
 }
@@ -2833,8 +2818,8 @@ std::unique_ptr<backend> build_backend_from_config(
 
 namespace {
 
-using detail::build_backend_from_config;
 using detail::all_true;
+using detail::build_backend_from_config;
 using detail::index_configs_equal;
 
 constexpr const char *LIFECYCLE_READY = "ready";
@@ -2913,9 +2898,8 @@ void set_bulk_load_rebuild_error(std::string *error,
     set_bulk_load_error(error, "LOAD VECTOR DATA could not rebuild index");
     return;
   }
-  set_bulk_load_error(error,
-                      rebuild_error_from_diagnostics(
-                          rebuilt_backend->build_diagnostics()));
+  set_bulk_load_error(error, rebuild_error_from_diagnostics(
+                                 rebuilt_backend->build_diagnostics()));
 }
 
 bool uses_deferred_standalone_mutations(
@@ -2956,8 +2940,7 @@ void sync_diskann_build_config_from_backend(
   config->diskann_build_threads = index_backend.diskann_build_threads();
   config->diskann_build_blas_threads =
       index_backend.diskann_build_blas_threads();
-  config->diskann_build_mode_value =
-      index_backend.diskann_build_mode_value();
+  config->diskann_build_mode_value = index_backend.diskann_build_mode_value();
   config->diskann_pq_code_budget_size =
       index_backend.diskann_pq_code_budget_size();
   config->diskann_disk_pq_dims = index_backend.diskann_disk_pq_dims();
@@ -3162,8 +3145,7 @@ class segmented_backend final : public backend {
           &segment_results[segment_index]);
     };
 
-    size_t worker_count =
-        segmented_search_threads(m_config, m_segments.size());
+    size_t worker_count = segmented_search_threads(m_config, m_segments.size());
     shared_search_execution execution;
     bool search_ok = false;
     const bool use_shared_search_pool =
@@ -3172,31 +3154,28 @@ class segmented_backend final : public backend {
       search_ok = parallel_for_shared_search_items(
           m_segments.size(),
           shared_segmented_search_thread_budget(m_config, m_segments.size()),
-          [&](size_t item_index, size_t) {
-            return search_segment(item_index);
-          },
+          [&](size_t item_index, size_t) { return search_segment(item_index); },
           &execution);
       worker_count = execution.effective_workers;
     } else {
-      search_ok = parallel_for_ranges_scoped(
-          m_segments.size(), worker_count,
-          [&](size_t begin, size_t end, size_t) {
-            for (size_t i = begin; i < end; ++i) {
-              if (!search_segment(i)) return false;
-            }
-            return true;
-          });
+      search_ok =
+          parallel_for_ranges_scoped(m_segments.size(), worker_count,
+                                     [&](size_t begin, size_t end, size_t) {
+                                       for (size_t i = begin; i < end; ++i) {
+                                         if (!search_segment(i)) return false;
+                                       }
+                                       return true;
+                                     });
     }
-    record_search_budget(
-        worker_count, top_k, 1, budget,
-        use_shared_search_pool ? &execution : nullptr);
+    record_search_budget(worker_count, top_k, 1, budget,
+                         use_shared_search_pool ? &execution : nullptr);
     if (!search_ok) return false;
     return merge_segment_topk(segment_results, merge_top_k, results);
   }
 
-  bool search_batch(const std::vector<vector_data> &queries, size_t top_k,
-                    std::vector<std::vector<search_result>> *results)
-      const override {
+  bool search_batch(
+      const std::vector<vector_data> &queries, size_t top_k,
+      std::vector<std::vector<search_result>> *results) const override {
     return search_batch_impl(queries, top_k, top_k, false, results);
   }
 
@@ -3229,10 +3208,10 @@ class segmented_backend final : public backend {
     return true;
   }
 
-  bool search_batch_impl(const std::vector<vector_data> &queries, size_t top_k,
-                         size_t merge_top_k, bool exact_rerank_candidates,
-                         std::vector<std::vector<search_result>> *results)
-      const {
+  bool search_batch_impl(
+      const std::vector<vector_data> &queries, size_t top_k, size_t merge_top_k,
+      bool exact_rerank_candidates,
+      std::vector<std::vector<search_result>> *results) const {
     if (results == nullptr) return false;
     results->clear();
     for (const auto &query : queries) {
@@ -3257,8 +3236,7 @@ class segmented_backend final : public backend {
 
     std::vector<batch_search_candidates> segment_batch_results(
         m_segments.size());
-    size_t worker_count =
-        segmented_search_threads(m_config, m_segments.size());
+    size_t worker_count = segmented_search_threads(m_config, m_segments.size());
     shared_search_execution execution;
     bool search_ok = false;
     const bool use_shared_search_pool =
@@ -3325,9 +3303,8 @@ class segmented_backend final : public backend {
             return true;
           });
     }
-    record_search_budget(
-        worker_count, top_k, queries.size(), budget,
-        use_shared_search_pool ? &execution : nullptr);
+    record_search_budget(worker_count, top_k, queries.size(), budget,
+                         use_shared_search_pool ? &execution : nullptr);
     if (!search_ok) return false;
     return merge_segment_batch_candidates_topk(segment_batch_results,
                                                merge_top_k, results);
@@ -3372,10 +3349,9 @@ class segmented_backend final : public backend {
     return doc_ids->size() == total_entry_count;
   }
 
-  bool collect_all_candidates_for_rerank(size_t requested_top_k, size_t top_k,
-                                         size_t query_count,
-                                         std::vector<search_result> *results)
-      const {
+  bool collect_all_candidates_for_rerank(
+      size_t requested_top_k, size_t top_k, size_t query_count,
+      std::vector<search_result> *results) const {
     if (results == nullptr) return false;
     const size_t total_entry_count = entry_count();
     if (total_entry_count == 0) return false;
@@ -3462,8 +3438,8 @@ class segmented_backend final : public backend {
     diagnostics.search_total_candidate_rows =
         m_search_total_candidate_rows.load(std::memory_order_relaxed);
     if (diagnostics.search_effective_complexity != 0) {
-      diagnostics.search_profile = diskann_search_profile_name(
-          static_cast<diskann_search_profile>(
+      diagnostics.search_profile =
+          diskann_search_profile_name(static_cast<diskann_search_profile>(
               m_search_profile.load(std::memory_order_relaxed)));
       diagnostics.search_profile_reason = diskann_search_profile_reason_name(
           static_cast<diskann_search_profile_reason>(
@@ -3472,8 +3448,9 @@ class segmented_backend final : public backend {
     return diagnostics;
   }
   bool set_search_ef(uint32_t search_ef) override {
-    if (!apply_to_segments(
-            [&](backend &segment) { return segment.set_search_ef(search_ef); })) {
+    if (!apply_to_segments([&](backend &segment) {
+          return segment.set_search_ef(search_ef);
+        })) {
       return false;
     }
     m_config.search_ef = search_ef;
@@ -3517,9 +3494,9 @@ class segmented_backend final : public backend {
       return false;
     }
     if (!apply_to_segments([&](backend &segment) {
-          return segment.set_diskann_build_params(
-              diskann_max_degree, diskann_build_complexity,
-              diskann_build_threads);
+          return segment.set_diskann_build_params(diskann_max_degree,
+                                                  diskann_build_complexity,
+                                                  diskann_build_threads);
         })) {
       return false;
     }
@@ -3606,8 +3583,7 @@ class segmented_backend final : public backend {
     m_config.diskann_disk_pq_dims = diskann_disk_pq_dims;
     return true;
   }
-  bool set_diskann_accelerate_build(
-      bool diskann_accelerate_build) override {
+  bool set_diskann_accelerate_build(bool diskann_accelerate_build) override {
     if (m_config.provider != backend_provider::kDiskAnn) return false;
     if (!apply_to_segments([&](backend &segment) {
           return segment.set_diskann_accelerate_build(diskann_accelerate_build);
@@ -3713,11 +3689,11 @@ class segmented_backend final : public backend {
         [](backend &segment) { return segment.defer_artifact_publication(); });
   }
   bool has_pending_artifact_publication() const override {
-    return std::any_of(
-        m_segments.begin(), m_segments.end(), [](const auto &segment) {
-          return segment != nullptr &&
-                 segment->has_pending_artifact_publication();
-        });
+    return std::any_of(m_segments.begin(), m_segments.end(),
+                       [](const auto &segment) {
+                         return segment != nullptr &&
+                                segment->has_pending_artifact_publication();
+                       });
   }
   bool prepare_artifact_publication(
       const diskann_artifact_identity &identity) override {
@@ -3773,8 +3749,7 @@ class segmented_backend final : public backend {
   bool finalize_artifact() override {
     bool ok = true;
     for (const auto &segment : m_segments) {
-      if (segment != nullptr &&
-          segment->has_pending_artifact_publication() &&
+      if (segment != nullptr && segment->has_pending_artifact_publication() &&
           !segment->finalize_artifact()) {
         ok = false;
       }
@@ -3877,9 +3852,8 @@ class segmented_backend final : public backend {
           std::min(budget->min_segment_entry_count, segment_entry_count);
       budget->max_segment_entry_count =
           std::max(budget->max_segment_entry_count, segment_entry_count);
-      budget->total_segment_entry_count =
-          saturated_add_size(budget->total_segment_entry_count,
-                             segment_entry_count);
+      budget->total_segment_entry_count = saturated_add_size(
+          budget->total_segment_entry_count, segment_entry_count);
     }
     if (m_segments.empty()) budget->min_segment_entry_count = 0;
 
@@ -3910,8 +3884,7 @@ class segmented_backend final : public backend {
           result_budget);
       if (use_diskann_budget) {
         budget->diskann_search_list = diskann_budget.search_complexity;
-        budget->diskann_effective_complexity =
-            diskann_budget.search_complexity;
+        budget->diskann_effective_complexity = diskann_budget.search_complexity;
         budget->diskann_profile = diskann_budget.profile;
         budget->diskann_profile_reason = diskann_budget.reason;
         budget->diskann_beamwidth =
@@ -3924,21 +3897,18 @@ class segmented_backend final : public backend {
       }
       if (global_candidate_top_k > top_k && !m_segments.empty()) {
         const size_t target_per_segment =
-            saturated_add_size(global_candidate_top_k,
-                               m_segments.size() - 1) /
+            saturated_add_size(global_candidate_top_k, m_segments.size() - 1) /
             m_segments.size();
         const size_t approximate_candidate_limit =
-            use_diskann_budget
-                ? diskann_search_list_slack_top_k(
-                      top_k, diskann_budget.search_complexity, 1)
-                : segment_entry_count;
+            use_diskann_budget ? diskann_search_list_slack_top_k(
+                                     top_k, diskann_budget.search_complexity, 1)
+                               : segment_entry_count;
         const size_t overfetch_factor =
-            use_diskann_budget
-                ? k_diskann_segment_candidate_overfetch_factor
-                : 1;
-        const size_t overfetch_top_k = std::min(
-            saturated_mul_size(target_per_segment, overfetch_factor),
-            approximate_candidate_limit);
+            use_diskann_budget ? k_diskann_segment_candidate_overfetch_factor
+                               : 1;
+        const size_t overfetch_top_k =
+            std::min(saturated_mul_size(target_per_segment, overfetch_factor),
+                     approximate_candidate_limit);
         current_top_k = std::max(current_top_k, overfetch_top_k);
         if (result_budget != 0 && query_count != 0) {
           const size_t budget_denominator =
@@ -3989,8 +3959,8 @@ class segmented_backend final : public backend {
       size_t worker_count, size_t top_k, size_t query_count,
       const search_budget_summary &budget,
       const shared_search_execution *execution = nullptr) const {
-    m_search_fanout_segments.store(
-        static_cast<uint64_t>(m_segments.size()), std::memory_order_relaxed);
+    m_search_fanout_segments.store(static_cast<uint64_t>(m_segments.size()),
+                                   std::memory_order_relaxed);
     m_search_fanout_threads.store(static_cast<uint64_t>(worker_count),
                                   std::memory_order_relaxed);
     m_search_worker_budget.store(
@@ -3998,9 +3968,8 @@ class segmented_backend final : public backend {
                                                    : execution->worker_budget),
         std::memory_order_relaxed);
     m_search_active_requests.store(
-        static_cast<uint64_t>(execution == nullptr
-                                  ? 1
-                                  : execution->active_requests),
+        static_cast<uint64_t>(
+            execution == nullptr ? 1 : execution->active_requests),
         std::memory_order_relaxed);
     m_search_work_items.store(
         static_cast<uint64_t>(execution == nullptr ? m_segments.size()
@@ -4014,8 +3983,9 @@ class segmented_backend final : public backend {
     m_search_result_budget.store(
         static_cast<uint64_t>(opt_vector_search_batch_result_count),
         std::memory_order_relaxed);
-    m_search_candidate_count.store(static_cast<uint64_t>(budget.candidate_count),
-                                   std::memory_order_relaxed);
+    m_search_candidate_count.store(
+        static_cast<uint64_t>(budget.candidate_count),
+        std::memory_order_relaxed);
     m_search_query_count.store(static_cast<uint64_t>(query_count),
                                std::memory_order_relaxed);
     m_search_segment_min_entries.store(
@@ -4116,9 +4086,8 @@ uint32_t configured_segment_blas_threads(
   if (config.provider != backend_provider::kDiskAnn) return 1;
   return config.diskann_build_blas_threads != 0
              ? config.diskann_build_blas_threads
-             : static_cast<uint32_t>(
-                   std::min<ulong>(opt_vector_diskann_build_blas_threads,
-                                   k_max_build_threads));
+             : static_cast<uint32_t>(std::min<ulong>(
+                   opt_vector_diskann_build_blas_threads, k_max_build_threads));
 }
 
 bool diskann_segment_profile_eligible(
@@ -4131,8 +4100,7 @@ bool diskann_segment_profile_eligible(
 }
 
 diskann_segment_profile_result effective_diskann_segment_profile(
-    const index_service::index_config &config,
-    const build_input_stats &stats,
+    const index_service::index_config &config, const build_input_stats &stats,
     const build_pipeline_runtime_config &pipeline_config) {
   return apply_diskann_segment_profile(
       static_cast<uint64_t>(config.dimension), stats.row_count,
@@ -4189,7 +4157,8 @@ index_service::index_config apply_segment_scheduler_plan(
 
 vector_index_metadata_store::segment_task_row make_segment_task_row(
     const std::string &index_name, const raw_vector_segment &segment,
-    uint64_t segment_id, vector_index_metadata_store::segment_task_state state) {
+    uint64_t segment_id,
+    vector_index_metadata_store::segment_task_state state) {
   vector_index_metadata_store::segment_task_row row;
   row.index_name = index_name;
   row.generation = segment.generation;
@@ -4213,11 +4182,11 @@ class raw_segment_snapshot_writer {
                                                std::string *docid_path) {
               if (vector_path == nullptr || docid_path == nullptr) return false;
               std::filesystem::path vector_file_path(directory);
-              vector_file_path /= "truth-store-segment-" +
-                                  std::to_string(segment_id) + ".fbin";
+              vector_file_path /=
+                  "truth-store-segment-" + std::to_string(segment_id) + ".fbin";
               std::filesystem::path docid_file_path(directory);
-              docid_file_path /= "truth-store-segment-" +
-                                 std::to_string(segment_id) + ".u64";
+              docid_file_path /=
+                  "truth-store-segment-" + std::to_string(segment_id) + ".u64";
               *vector_path = vector_file_path.string();
               *docid_path = docid_file_path.string();
               return true;
@@ -4370,9 +4339,8 @@ bool write_entries_to_raw_segments(size_t dimension, uint64_t first_segment_id,
   segments->clear();
   if (entries.empty()) return true;
 
-  raw_segment_snapshot_writer writer(dimension, first_segment_id,
-                                     first_generation,
-                                     std::move(path_provider));
+  raw_segment_snapshot_writer writer(
+      dimension, first_segment_id, first_generation, std::move(path_provider));
   std::vector<uint64_t> doc_ids;
   doc_ids.reserve(entries.size());
   for (const auto &entry : entries) doc_ids.push_back(entry.first);
@@ -4406,7 +4374,8 @@ bool export_truth_store_snapshot_to_raw_segments(
   snapshot->cleanup();
   *snapshot = raw_segment_snapshot{};
 
-  std::filesystem::path directory(detail::external_snapshot_directory(index_name));
+  std::filesystem::path directory(
+      detail::external_snapshot_directory(index_name));
   if (directory.empty()) return false;
   directory /= "transactional-offline-raw-tmp";
 
@@ -4448,15 +4417,15 @@ bool build_one_segment_backend(
       task_row == nullptr) {
     return false;
   }
-  const uint64_t segment_id = segment.generation == 0 ? ordinal : segment.generation;
+  const uint64_t segment_id =
+      segment.generation == 0 ? ordinal : segment.generation;
   *task_row = make_segment_task_row(
       index_name, segment, segment_id,
       vector_index_metadata_store::segment_task_state::kBuilding);
   task_row->attempt = 1;
 
-  std::unique_ptr<backend> segment_backend =
-      build_backend_from_config(segment_backend_index_name(index_name, segment_id),
-                                config);
+  std::unique_ptr<backend> segment_backend = build_backend_from_config(
+      segment_backend_index_name(index_name, segment_id), config);
   if (segment_backend == nullptr ||
       !segment_backend->defer_artifact_publication()) {
     task_row->state = vector_index_metadata_store::segment_task_state::kFailed;
@@ -4512,10 +4481,9 @@ std::unique_ptr<backend> build_segmented_backend_from_raw_segments(
     const raw_vector_segment &segment = raw_segments[i];
     const uint64_t segment_id =
         segment.generation == 0 ? i + 1 : segment.generation;
-    segment_task_rows.push_back(
-        make_segment_task_row(index_name, segment, segment_id,
-                              vector_index_metadata_store::
-                                  segment_task_state::kPending));
+    segment_task_rows.push_back(make_segment_task_row(
+        index_name, segment, segment_id,
+        vector_index_metadata_store::segment_task_state::kPending));
   }
   DBUG_EXECUTE_IF("vector_segment_backend_build_failure", {
     if (!segment_task_rows.empty()) {
@@ -4533,8 +4501,7 @@ std::unique_ptr<backend> build_segmented_backend_from_raw_segments(
         global_build_pipeline_runtime_config();
     segment_scheduler_plan scheduler_plan;
     if (!make_segment_scheduler_plan(
-            make_segment_scheduler_input(config, raw_segments,
-                                         pipeline_config),
+            make_segment_scheduler_input(config, raw_segments, pipeline_config),
             &scheduler_plan)) {
       if (!keep_raw_input_paths) clear_raw_input_paths(&segment_task_rows);
       if (task_rows != nullptr) *task_rows = segment_task_rows;
@@ -4592,7 +4559,8 @@ std::unique_ptr<backend> build_segmented_backend_from_raw_segments(
 
   backend_build_diagnostics aggregate;
   aggregate.runtime = kSegmentedBackendVariant;
-  aggregate.input_source = input_source == nullptr ? "raw_segments" : input_source;
+  aggregate.input_source =
+      input_source == nullptr ? "raw_segments" : input_source;
 
   if (raw_segments.empty()) {
     if (!keep_raw_input_paths) clear_raw_input_paths(&segment_task_rows);
@@ -4751,8 +4719,8 @@ bool entry_store_vectors_match_dimension(const vector_entry_store &entry_store,
                                          const std::string &index_name,
                                          size_t dimension) {
   return entry_store.for_each_committed_entry(
-      index_name, [dimension](uint64_t doc_id [[maybe_unused]],
-                              const vector_data &vector) {
+      index_name,
+      [dimension](uint64_t doc_id [[maybe_unused]], const vector_data &vector) {
         return vector.size() == dimension;
       });
 }
@@ -4885,8 +4853,7 @@ bool index_service::ensure_runtime_loaded(const std::string &index_name) {
   const bool generation_matches = publication_it->second.runtime_generation ==
                                   publication_it->second.truth_generation;
   const bool standalone =
-      config_it->second.consistency_mode ==
-      index_consistency_mode::kStandalone;
+      config_it->second.consistency_mode == index_consistency_mode::kStandalone;
   const bool source_backed_runtime =
       standalone || (lazy_external_runtime_enabled() &&
                      config_it->second.mode == backend_mode::kExternal);
@@ -4939,21 +4906,19 @@ bool index_service::runtime_loaded_for_search(
   }
 
   const bool standalone =
-      config_it->second.consistency_mode ==
-      index_consistency_mode::kStandalone;
+      config_it->second.consistency_mode == index_consistency_mode::kStandalone;
   const bool source_backed_runtime =
       standalone || (lazy_external_runtime_enabled() &&
                      config_it->second.mode == backend_mode::kExternal);
   if (!source_backed_runtime) return true;
 
-  const size_t source_count =
-      standalone ? m_standalone_store.entry_count(index_name)
-                 : m_entry_store.entry_count(index_name);
+  const size_t source_count = standalone
+                                  ? m_standalone_store.entry_count(index_name)
+                                  : m_entry_store.entry_count(index_name);
   const size_t runtime_count = index_it->second->entry_count();
   if (runtime_count == source_count) return true;
   return standalone && runtime_count > 0 &&
-         m_standalone_rebuilds.find(index_name) !=
-             m_standalone_rebuilds.end();
+         m_standalone_rebuilds.find(index_name) != m_standalone_rebuilds.end();
 }
 
 bool index_service::rebuild_runtime_from_store_for_search(
@@ -5012,9 +4977,8 @@ build_input_stats index_service::collect_build_input_stats(
           : m_entry_store.entry_count(index_name);
   stats.row_count = static_cast<uint64_t>(rows);
 
-  const size_t payload_bytes =
-      saturated_mul_size(saturated_mul_size(rows, config.dimension),
-                         sizeof(float));
+  const size_t payload_bytes = saturated_mul_size(
+      saturated_mul_size(rows, config.dimension), sizeof(float));
   stats.payload_size = payload_bytes == std::numeric_limits<size_t>::max()
                            ? std::numeric_limits<uint64_t>::max()
                            : static_cast<uint64_t>(payload_bytes);
@@ -5307,9 +5271,9 @@ bool index_service::begin_bulk_load(const std::string &index_name) {
   return true;
 }
 
-bool index_service::prepare_standalone_rebuild(
-    const std::string &index_name, standalone_rebuild_plan *plan,
-    std::string *error) {
+bool index_service::prepare_standalone_rebuild(const std::string &index_name,
+                                               standalone_rebuild_plan *plan,
+                                               std::string *error) {
   if (error != nullptr) error->clear();
   if (plan == nullptr) {
     set_bulk_load_error(error, "invalid standalone rebuild plan");
@@ -5321,8 +5285,7 @@ bool index_service::prepare_standalone_rebuild(
   const auto index_it = m_indexes.find(index_name);
   const auto lifecycle_it = m_lifecycle_infos.find(index_name);
   const auto publication_it = m_publication_states.find(index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end(),
+  if (!all_true(config_it != m_index_configs.end(), index_it != m_indexes.end(),
                 lifecycle_it != m_lifecycle_infos.end(),
                 publication_it != m_publication_states.end(),
                 m_entry_store.has_index(index_name),
@@ -5339,8 +5302,7 @@ bool index_service::prepare_standalone_rebuild(
     set_bulk_load_error(error, "vector index has pending changes");
     return false;
   }
-  if (m_standalone_rebuilds.find(index_name) !=
-      m_standalone_rebuilds.end()) {
+  if (m_standalone_rebuilds.find(index_name) != m_standalone_rebuilds.end()) {
     set_bulk_load_error(error, "vector index rebuild is already active");
     return false;
   }
@@ -5363,8 +5325,7 @@ bool index_service::prepare_standalone_rebuild(
   plan->target_publication.truth_generation = plan->source_generation;
 
   const auto pipeline_it = m_build_pipeline_snapshots.find(index_name);
-  plan->had_previous_pipeline =
-      pipeline_it != m_build_pipeline_snapshots.end();
+  plan->had_previous_pipeline = pipeline_it != m_build_pipeline_snapshots.end();
   if (plan->had_previous_pipeline) {
     plan->previous_pipeline = pipeline_it->second;
   }
@@ -5414,13 +5375,11 @@ bool index_service::build_standalone_rebuild(standalone_rebuild_plan *plan,
   }
   if (plan->raw_segments.empty() &&
       !m_standalone_store.read_rebuild_raw_segments(
-          plan->index_name,
-          [plan](const raw_vector_segment &segment) {
+          plan->index_name, [plan](const raw_vector_segment &segment) {
             plan->raw_segments.push_back(segment);
             return true;
           })) {
-    set_bulk_load_error(error,
-                        "standalone rebuild could not read raw input");
+    set_bulk_load_error(error, "standalone rebuild could not read raw input");
     return false;
   }
 
@@ -5444,21 +5403,19 @@ bool index_service::build_standalone_rebuild(standalone_rebuild_plan *plan,
           };
       bool rebuild_ok =
           plan->rebuilt_backend->rebuild_from_raw_segments(reader);
-      DBUG_EXECUTE_IF(
-          "vector_standalone_rebuild_after_backend_build_failure",
-          rebuild_ok = false;);
+      DBUG_EXECUTE_IF("vector_standalone_rebuild_after_backend_build_failure",
+                      rebuild_ok = false;);
       if (!rebuild_ok) {
         plan->failed_build_diagnostics =
             plan->rebuilt_backend->build_diagnostics();
         plan->has_failed_build_diagnostics = true;
-        DBUG_EXECUTE_IF(
-            "vector_standalone_rebuild_after_backend_build_failure", {
-              plan->failed_build_diagnostics.fallback_reason =
-                  "debug_forced_post_build_failure";
-            });
-        set_bulk_load_error(
-            error,
-            rebuild_error_from_diagnostics(plan->failed_build_diagnostics));
+        DBUG_EXECUTE_IF("vector_standalone_rebuild_after_backend_build_failure",
+                        {
+                          plan->failed_build_diagnostics.fallback_reason =
+                              "debug_forced_post_build_failure";
+                        });
+        set_bulk_load_error(error, rebuild_error_from_diagnostics(
+                                       plan->failed_build_diagnostics));
         plan->rebuilt_backend.reset();
       }
     } else {
@@ -5467,8 +5424,7 @@ bool index_service::build_standalone_rebuild(standalone_rebuild_plan *plan,
   }
   if (plan->rebuilt_backend == nullptr) {
     if (error != nullptr && error->empty()) {
-      set_bulk_load_error(error,
-                          "standalone rebuild could not create backend");
+      set_bulk_load_error(error, "standalone rebuild could not create backend");
     }
     return false;
   }
@@ -5477,8 +5433,8 @@ bool index_service::build_standalone_rebuild(standalone_rebuild_plan *plan,
 }
 
 bool index_service::prepare_standalone_rebuild_artifact(
-    standalone_rebuild_plan *plan,
-    const diskann_artifact_identity &identity, std::string *error) {
+    standalone_rebuild_plan *plan, const diskann_artifact_identity &identity,
+    std::string *error) {
   if (error != nullptr) error->clear();
   if (plan == nullptr || !plan->prepared || !plan->built || plan->published ||
       plan->rebuilt_backend == nullptr || plan->artifact_prepared) {
@@ -5496,11 +5452,11 @@ bool index_service::prepare_standalone_rebuild_artifact(
   return true;
 }
 
-bool index_service::publish_standalone_rebuild(
-    standalone_rebuild_plan *plan, std::string *error) {
+bool index_service::publish_standalone_rebuild(standalone_rebuild_plan *plan,
+                                               std::string *error) {
   if (error != nullptr) error->clear();
-  if (plan == nullptr || !plan->prepared || !plan->built ||
-      plan->published || plan->rebuilt_backend == nullptr) {
+  if (plan == nullptr || !plan->prepared || !plan->built || plan->published ||
+      plan->rebuilt_backend == nullptr) {
     set_bulk_load_error(error, "standalone rebuild plan is not built");
     return false;
   }
@@ -5509,26 +5465,23 @@ bool index_service::publish_standalone_rebuild(
   const auto index_it = m_indexes.find(plan->index_name);
   const auto lifecycle_it = m_lifecycle_infos.find(plan->index_name);
   const auto publication_it = m_publication_states.find(plan->index_name);
-  if (!all_true(config_it != m_index_configs.end(),
-                index_it != m_indexes.end(),
-                lifecycle_it != m_lifecycle_infos.end(),
-                publication_it != m_publication_states.end(),
-                m_standalone_rebuilds.find(plan->index_name) !=
-                    m_standalone_rebuilds.end(),
-                index_configs_equal(config_it->second, plan->source_config),
-                lifecycle_it->second.version ==
-                    plan->source_lifecycle_version,
-                index_it->second == plan->previous_runtime,
-                publication_it->second.index_identity ==
-                    plan->previous_publication.index_identity,
-                publication_it->second.truth_generation ==
-                    plan->previous_publication.truth_generation,
-                publication_it->second.config_generation ==
-                    plan->previous_publication.config_generation,
-                m_standalone_store.generation(plan->index_name) ==
-                    plan->source_generation,
-                !pending_changes_contain_index(m_pending_changes,
-                                               plan->index_name))) {
+  if (config_it == m_index_configs.end() || index_it == m_indexes.end() ||
+      lifecycle_it == m_lifecycle_infos.end() ||
+      publication_it == m_publication_states.end() ||
+      m_standalone_rebuilds.find(plan->index_name) ==
+          m_standalone_rebuilds.end() ||
+      !index_configs_equal(config_it->second, plan->source_config) ||
+      lifecycle_it->second.version != plan->source_lifecycle_version ||
+      index_it->second != plan->previous_runtime ||
+      publication_it->second.index_identity !=
+          plan->previous_publication.index_identity ||
+      publication_it->second.truth_generation !=
+          plan->previous_publication.truth_generation ||
+      publication_it->second.config_generation !=
+          plan->previous_publication.config_generation ||
+      m_standalone_store.generation(plan->index_name) !=
+          plan->source_generation ||
+      pending_changes_contain_index(m_pending_changes, plan->index_name)) {
     set_bulk_load_error(error, "vector index changed during rebuild");
     return false;
   }
@@ -5536,17 +5489,15 @@ bool index_service::publish_standalone_rebuild(
   DBUG_EXECUTE_IF("vector_segment_task_before_publish", {
     set_bulk_load_error(error,
                         "LOAD VECTOR DATA could not publish rebuilt backend");
-      return false;
+    return false;
   });
   if (plan->rebuilt_backend->has_pending_artifact_publication() &&
       !plan->artifact_prepared) {
-    set_bulk_load_error(error,
-                        "standalone rebuild artifact is not prepared");
+    set_bulk_load_error(error, "standalone rebuild artifact is not prepared");
     return false;
   }
-  if (plan->segmented &&
-      !m_standalone_store.publish_levelled_compaction(plan->index_name,
-                                                      &plan->compaction)) {
+  if (plan->segmented && !m_standalone_store.publish_levelled_compaction(
+                             plan->index_name, &plan->compaction)) {
     set_bulk_load_error(error,
                         "LOAD VECTOR DATA could not publish compacted input");
     return false;
@@ -5554,8 +5505,8 @@ bool index_service::publish_standalone_rebuild(
   if (!plan->rebuilt_backend->publish_artifact()) {
     (void)plan->rebuilt_backend->rollback_artifact();
     if (plan->segmented) {
-      (void)m_standalone_store.rollback_levelled_compaction(
-          plan->index_name, &plan->compaction);
+      (void)m_standalone_store.rollback_levelled_compaction(plan->index_name,
+                                                            &plan->compaction);
     }
     set_bulk_load_error(error,
                         "standalone rebuild artifact publication failed");
@@ -5576,8 +5527,8 @@ bool index_service::publish_standalone_rebuild(
       plan->artifact_published = false;
     }
     if (plan->segmented) {
-      (void)m_standalone_store.rollback_levelled_compaction(
-          plan->index_name, &plan->compaction);
+      (void)m_standalone_store.rollback_levelled_compaction(plan->index_name,
+                                                            &plan->compaction);
     }
     set_bulk_load_error(error,
                         "standalone rebuild publication state is unavailable");
@@ -5596,11 +5547,9 @@ void index_service::record_standalone_rebuild_tasks(
   }
 }
 
-bool index_service::rollback_standalone_rebuild(
-    standalone_rebuild_plan *plan) {
+bool index_service::rollback_standalone_rebuild(standalone_rebuild_plan *plan) {
   if (plan == nullptr || !plan->prepared || !plan->published) return false;
-  if (plan->artifact_published &&
-      !plan->rebuilt_backend->rollback_artifact()) {
+  if (plan->artifact_published && !plan->rebuilt_backend->rollback_artifact()) {
     return false;
   }
   if (!m_standalone_store.rollback_levelled_compaction(plan->index_name,
@@ -5634,8 +5583,7 @@ bool index_service::rollback_standalone_rebuild(
   return true;
 }
 
-bool index_service::discard_standalone_rebuild(
-    standalone_rebuild_plan *plan) {
+bool index_service::discard_standalone_rebuild(standalone_rebuild_plan *plan) {
   if (plan == nullptr || plan->published) return false;
   if (plan->rebuilt_backend != nullptr &&
       plan->rebuilt_backend->has_pending_artifact_publication() &&
@@ -5652,11 +5600,9 @@ bool index_service::discard_standalone_rebuild(
   return true;
 }
 
-bool index_service::finalize_standalone_rebuild(
-    standalone_rebuild_plan *plan) {
+bool index_service::finalize_standalone_rebuild(standalone_rebuild_plan *plan) {
   if (plan == nullptr || !plan->published) return false;
-  if (plan->artifact_published &&
-      !plan->rebuilt_backend->finalize_artifact()) {
+  if (plan->artifact_published && !plan->rebuilt_backend->finalize_artifact()) {
     return false;
   }
   m_standalone_store.finalize_levelled_compaction(&plan->compaction);
@@ -5718,8 +5664,7 @@ bool index_service::rebuild_index(const std::string &index_name,
                                    index_name, build_config, rebuilt.get())) {
     m_standalone_store.discard_levelled_compaction(&compaction);
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_REPLAY_STATE_FAILED);
-    m_last_failed_build_diagnostics[index_name] =
-        rebuilt->build_diagnostics();
+    m_last_failed_build_diagnostics[index_name] = rebuilt->build_diagnostics();
     set_bulk_load_rebuild_error(error, rebuilt.get());
     return false;
   }
@@ -5771,10 +5716,9 @@ bool index_service::recover_index(const std::string &index_name) {
 
   std::unique_ptr<backend> recovered =
       build_backend_from_config(index_name, config_it->second);
-  if (recovered == nullptr ||
-      !recover_backend_from_source(m_entry_store, m_standalone_store,
-                                   index_name, config_it->second,
-                                   recovered.get())) {
+  if (recovered == nullptr || !recover_backend_from_source(
+                                  m_entry_store, m_standalone_store, index_name,
+                                  config_it->second, recovered.get())) {
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_BACKEND_RECOVER_FAILED);
     return false;
   }
@@ -5957,8 +5901,8 @@ bool index_service::set_faiss_ivf_pq_params(const std::string &index_name,
       });
 }
 
-bool index_service::set_faiss_build_threads(
-    const std::string &index_name, uint32_t faiss_build_threads) {
+bool index_service::set_faiss_build_threads(const std::string &index_name,
+                                            uint32_t faiss_build_threads) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   if (!all_true(config_it != m_index_configs.end(),
@@ -5977,9 +5921,10 @@ bool index_service::set_faiss_build_threads(
       });
 }
 
-bool index_service::set_diskann_build_params(
-    const std::string &index_name, uint32_t diskann_max_degree,
-    uint32_t diskann_build_complexity, uint32_t diskann_build_threads) {
+bool index_service::set_diskann_build_params(const std::string &index_name,
+                                             uint32_t diskann_max_degree,
+                                             uint32_t diskann_build_complexity,
+                                             uint32_t diskann_build_threads) {
   if (diskann_max_degree == 0 || diskann_build_complexity == 0) return false;
 
   auto config_it = m_index_configs.find(index_name);
@@ -6005,8 +5950,8 @@ bool index_service::set_diskann_build_params(
       });
 }
 
-bool index_service::set_diskann_build_threads(
-    const std::string &index_name, uint32_t diskann_build_threads) {
+bool index_service::set_diskann_build_threads(const std::string &index_name,
+                                              uint32_t diskann_build_threads) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   if (!all_true(config_it != m_index_configs.end(),
@@ -6113,8 +6058,8 @@ bool index_service::set_diskann_pq_code_budget_size(
       });
 }
 
-bool index_service::set_diskann_disk_pq_dims(
-    const std::string &index_name, uint32_t diskann_disk_pq_dims) {
+bool index_service::set_diskann_disk_pq_dims(const std::string &index_name,
+                                             uint32_t diskann_disk_pq_dims) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   if (!all_true(config_it != m_index_configs.end(),
@@ -6155,8 +6100,8 @@ bool index_service::set_diskann_accelerate_build(
       });
 }
 
-bool index_service::set_diskann_shuffle_build(
-    const std::string &index_name, bool diskann_shuffle_build) {
+bool index_service::set_diskann_shuffle_build(const std::string &index_name,
+                                              bool diskann_shuffle_build) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   if (!all_true(config_it != m_index_configs.end(),
@@ -6176,8 +6121,8 @@ bool index_service::set_diskann_shuffle_build(
       });
 }
 
-bool index_service::set_diskann_use_bfs_cache(
-    const std::string &index_name, bool diskann_use_bfs_cache) {
+bool index_service::set_diskann_use_bfs_cache(const std::string &index_name,
+                                              bool diskann_use_bfs_cache) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   if (!all_true(config_it != m_index_configs.end(),
@@ -6364,8 +6309,7 @@ bool index_service::describe_index(
       config_it->second.diskann_build_mode_specified;
   config->diskann_search_complexity = backend->diskann_search_complexity();
   config->diskann_search_beamwidth = backend->diskann_search_beamwidth();
-  config->diskann_pq_code_budget_size =
-      backend->diskann_pq_code_budget_size();
+  config->diskann_pq_code_budget_size = backend->diskann_pq_code_budget_size();
   config->diskann_disk_pq_dims = backend->diskann_disk_pq_dims();
   config->diskann_cache_nodes = backend->diskann_cache_nodes();
   config->diskann_accelerate_build = backend->diskann_accelerate_build();
@@ -6498,8 +6442,7 @@ bool index_service::finalize_artifact_publication(
 }
 
 bool index_service::recover_artifact_publication(
-    const std::string &index_name,
-    const diskann_artifact_identity &identity) {
+    const std::string &index_name, const diskann_artifact_identity &identity) {
   const auto index_it = m_indexes.find(index_name);
   if (index_it == m_indexes.end() || index_it->second == nullptr ||
       !index_it->second->recover_artifact_publication(identity)) {
@@ -6543,8 +6486,8 @@ bool index_service::describe_index_observability(
     return false;
   }
 
-  const bool truth_store_enabled =
-      config_it->second.consistency_mode == index_consistency_mode::kTransactional;
+  const bool truth_store_enabled = config_it->second.consistency_mode ==
+                                   index_consistency_mode::kTransactional;
   state->truth_store_enabled = truth_store_enabled;
   state->authoritative_entry_count =
       truth_store_enabled ? m_entry_store.entry_count(index_name)
@@ -6556,12 +6499,14 @@ bool index_service::describe_index_observability(
   state->standalone_segment_bytes =
       truth_store_enabled ? 0 : m_standalone_store.segment_bytes(index_name);
   state->standalone_raw_segment_count =
-      truth_store_enabled ? 0 : m_standalone_store.raw_segment_count(index_name);
+      truth_store_enabled ? 0
+                          : m_standalone_store.raw_segment_count(index_name);
   state->standalone_raw_segment_bytes =
-      truth_store_enabled ? 0 : m_standalone_store.raw_segment_bytes(index_name);
-  state->build_source =
-      truth_store_enabled ? "truth_store"
-                          : m_standalone_store.build_source(index_name);
+      truth_store_enabled ? 0
+                          : m_standalone_store.raw_segment_bytes(index_name);
+  state->build_source = truth_store_enabled
+                            ? "truth_store"
+                            : m_standalone_store.build_source(index_name);
   return true;
 }
 
@@ -6573,8 +6518,8 @@ bool index_service::set_last_apply_latency_ms(const std::string &index_name,
   return true;
 }
 
-bool index_service::set_lifecycle_state(
-    const std::string &index_name, const std::string &lifecycle_state) {
+bool index_service::set_lifecycle_state(const std::string &index_name,
+                                        const std::string &lifecycle_state) {
   if (lifecycle_state.empty()) return false;
 
   auto lifecycle_it = m_lifecycle_infos.find(index_name);
@@ -6619,6 +6564,10 @@ bool index_service::list_indexes(std::vector<std::string> *index_names) const {
   }
   std::sort(index_names->begin(), index_names->end());
   return true;
+}
+
+bool index_service::index_exists(const std::string &index_name) const {
+  return m_index_configs.find(index_name) != m_index_configs.end();
 }
 
 bool index_service::snapshot_committed_state(committed_state *state) const {
@@ -6689,6 +6638,26 @@ std::string index_service::standalone_build_source(
   return m_standalone_store.build_source(index_name);
 }
 
+uint64_t index_service::standalone_source_generation(
+    const std::string &index_name) const {
+  return m_standalone_store.generation(index_name);
+}
+
+bool index_service::entry_exists(const std::string &index_name,
+                                 uint64_t doc_id, bool *found) const {
+  if (found == nullptr) return false;
+  const auto config_it = m_index_configs.find(index_name);
+  if (config_it == m_index_configs.end()) return false;
+
+  vector_data vector;
+  return config_it->second.consistency_mode ==
+                 index_consistency_mode::kStandalone
+             ? m_standalone_store.find_entry(index_name, doc_id, &vector,
+                                             found)
+             : m_entry_store.find_committed_entry(index_name, doc_id, &vector,
+                                                  found);
+}
+
 bool index_service::describe_build_pipeline(
     const std::string &index_name, build_pipeline_snapshot *snapshot) const {
   if (snapshot == nullptr) return false;
@@ -6713,8 +6682,8 @@ bool index_service::snapshot_segment_tasks(
   return true;
 }
 
-bool index_service::restore_committed_state_impl(
-    const committed_state &state, bool defer_diskann_artifacts) {
+bool index_service::restore_committed_state_impl(const committed_state &state,
+                                                 bool defer_diskann_artifacts) {
   std::unordered_map<std::string, backend_ptr> restored_backends;
   restored_backends.reserve(m_index_configs.size());
   vector_entry_store restored_entry_store;
@@ -6810,8 +6779,7 @@ bool index_service::restore_index_config(const std::string &index_name,
   }
   const bool source_loaded =
       config.consistency_mode == index_consistency_mode::kStandalone
-          ? m_standalone_store.rebuild_backend_input(index_name,
-                                                     restored.get())
+          ? m_standalone_store.rebuild_backend_input(index_name, restored.get())
           : load_backend_from_store(m_entry_store, index_name, restored.get());
   if (!source_loaded) {
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_REPLAY_STATE_FAILED);
@@ -6825,8 +6793,7 @@ bool index_service::restore_index_config(const std::string &index_name,
   config_it->second.hnsw_m = index_it->second->hnsw_m();
   config_it->second.hnsw_ef_construction =
       index_it->second->hnsw_ef_construction();
-  config_it->second.hnsw_build_threads =
-      index_it->second->hnsw_build_threads();
+  config_it->second.hnsw_build_threads = index_it->second->hnsw_build_threads();
   config_it->second.faiss_nlist = index_it->second->faiss_nlist();
   config_it->second.faiss_nprobe = index_it->second->faiss_nprobe();
   config_it->second.faiss_pq_m = index_it->second->faiss_pq_m();
@@ -6899,8 +6866,8 @@ bool index_service::set_index_consistency_mode(
   return true;
 }
 
-bool index_service::direct_upsert(const std::string &index_name, uint64_t doc_id,
-                                  const vector_data &vector) {
+bool index_service::direct_upsert(const std::string &index_name,
+                                  uint64_t doc_id, const vector_data &vector) {
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   auto lifecycle_it = m_lifecycle_infos.find(index_name);
@@ -6938,9 +6905,10 @@ bool index_service::direct_upsert(const std::string &index_name, uint64_t doc_id
   return true;
 }
 
-bool index_service::bulk_upsert_from_reader(
-    const std::string &index_name, const bulk_load_reader &reader,
-    const bulk_load_options &options, std::string *error) {
+bool index_service::bulk_upsert_from_reader(const std::string &index_name,
+                                            const bulk_load_reader &reader,
+                                            const bulk_load_options &options,
+                                            std::string *error) {
   if (error != nullptr) error->clear();
   auto config_it = m_index_configs.find(index_name);
   auto lifecycle_it = m_lifecycle_infos.find(index_name);
@@ -6962,52 +6930,50 @@ bool index_service::bulk_upsert_from_reader(
   committed_entries staged_entries;
   std::unordered_set<uint64_t> seen_doc_ids;
   const size_t expected_dimension = config_it->second.dimension;
-  const bulk_load_visitor visitor =
-      [this, config_it, &index_name, &options, &staged_entries, &seen_doc_ids,
-       expected_dimension, error](uint64_t doc_id, const float *values,
-                                  size_t dimension) {
-        if (values == nullptr) {
-          set_bulk_load_error(error, "LOAD VECTOR DATA returned a null row");
-          return false;
-        }
-        if (dimension != expected_dimension) {
-          set_bulk_load_error(error, "LOAD VECTOR DATA dimension mismatch");
-          return false;
-        }
+  const bulk_load_visitor visitor = [this, config_it, &index_name, &options,
+                                     &staged_entries, &seen_doc_ids,
+                                     expected_dimension, error](
+                                        uint64_t doc_id, const float *values,
+                                        size_t dimension) {
+    if (values == nullptr) {
+      set_bulk_load_error(error, "LOAD VECTOR DATA returned a null row");
+      return false;
+    }
+    if (dimension != expected_dimension) {
+      set_bulk_load_error(error, "LOAD VECTOR DATA dimension mismatch");
+      return false;
+    }
 
-        if (!options.replace_duplicates) {
-          if (!seen_doc_ids.insert(doc_id).second) {
-            set_bulk_load_error(error,
-                                "LOAD VECTOR DATA duplicate doc_id in file");
-            return false;
-          }
-          vector_data existing;
-          bool found = false;
-          const bool lookup_ok =
-              config_it->second.consistency_mode ==
-                      index_consistency_mode::kStandalone
-                  ? m_standalone_store.find_entry(index_name, doc_id,
-                                                  &existing, &found)
-                  : m_entry_store.find_committed_entry(index_name, doc_id,
-                                                       &existing, &found);
-          if (!lookup_ok) {
-            set_bulk_load_error(error,
-                                "LOAD VECTOR DATA could not read index state");
-            return false;
-          }
-          if (found) {
-            set_bulk_load_error(error,
-                                "LOAD VECTOR DATA duplicate doc_id in index");
-            return false;
-          }
-        } else {
-          seen_doc_ids.insert(doc_id);
-        }
+    if (!options.replace_duplicates) {
+      if (!seen_doc_ids.insert(doc_id).second) {
+        set_bulk_load_error(error, "LOAD VECTOR DATA duplicate doc_id in file");
+        return false;
+      }
+      vector_data existing;
+      bool found = false;
+      const bool lookup_ok = config_it->second.consistency_mode ==
+                                     index_consistency_mode::kStandalone
+                                 ? m_standalone_store.find_entry(
+                                       index_name, doc_id, &existing, &found)
+                                 : m_entry_store.find_committed_entry(
+                                       index_name, doc_id, &existing, &found);
+      if (!lookup_ok) {
+        set_bulk_load_error(error,
+                            "LOAD VECTOR DATA could not read index state");
+        return false;
+      }
+      if (found) {
+        set_bulk_load_error(error,
+                            "LOAD VECTOR DATA duplicate doc_id in index");
+        return false;
+      }
+    } else {
+      seen_doc_ids.insert(doc_id);
+    }
 
-        staged_entries[doc_id] =
-            vector_data(values, values + expected_dimension);
-        return true;
-      };
+    staged_entries[doc_id] = vector_data(values, values + expected_dimension);
+    return true;
+  };
 
   std::string reader_error;
   if (!reader(visitor, &reader_error)) {
@@ -7093,9 +7059,8 @@ bool index_service::bulk_upsert_from_raw_files(
     uint64_t row_count = 0;
     const size_t expected_dimension = config_it->second.dimension;
     const bulk_load_reader reader =
-        [vector_filename, docid_filename, expected_dimension,
-         &row_count](const bulk_load_visitor &visitor,
-                     std::string *reader_error) {
+        [vector_filename, docid_filename, expected_dimension, &row_count](
+            const bulk_load_visitor &visitor, std::string *reader_error) {
           return read_fbin_vectors(
               vector_filename, docid_filename, expected_dimension, nullptr,
               reader_error,
@@ -7120,10 +7085,11 @@ bool index_service::bulk_upsert_from_raw_files(
           vector_filename, docid_filename, expected_dimension, &file_info,
           &reader_error,
           [this, &index_name, &options, &seen_doc_ids, expected_dimension,
-           &row_count, error](uint64_t doc_id, const float *values,
-                              size_t dimension) {
+           &row_count,
+           error](uint64_t doc_id, const float *values, size_t dimension) {
             if (values == nullptr) {
-              set_bulk_load_error(error, "LOAD VECTOR DATA returned a null row");
+              set_bulk_load_error(error,
+                                  "LOAD VECTOR DATA returned a null row");
               return false;
             }
             if (dimension != expected_dimension) {
@@ -7132,8 +7098,8 @@ bool index_service::bulk_upsert_from_raw_files(
             }
             if (!options.replace_duplicates) {
               if (!seen_doc_ids.insert(doc_id).second) {
-                set_bulk_load_error(error,
-                                    "LOAD VECTOR DATA duplicate doc_id in file");
+                set_bulk_load_error(
+                    error, "LOAD VECTOR DATA duplicate doc_id in file");
                 return false;
               }
               vector_data existing;
@@ -7164,10 +7130,9 @@ bool index_service::bulk_upsert_from_raw_files(
 
   const build_input_stats raw_stats{
       file_info.row_count,
-      file_info.row_count *
-          static_cast<uint64_t>(file_info.dimension) * sizeof(float),
-      0,
-      false};
+      file_info.row_count * static_cast<uint64_t>(file_info.dimension) *
+          sizeof(float),
+      0, false};
   const build_pipeline_runtime_config pipeline_config =
       global_build_pipeline_runtime_config();
   const diskann_segment_profile_result segment_profile =
@@ -7277,6 +7242,25 @@ bool index_service::install_rebuilt_index(
     const std::string &index_name, const committed_entries &entries,
     std::unique_ptr<backend> rebuilt_backend,
     const diskann_artifact_identity *artifact_identity) {
+  return install_rebuilt_index_impl(index_name, entries,
+                                    std::move(rebuilt_backend),
+                                    artifact_identity, false);
+}
+
+bool index_service::install_runtime_for_search(
+    const std::string &index_name, const committed_entries &entries,
+    std::unique_ptr<backend> rebuilt_backend,
+    const diskann_artifact_identity *artifact_identity) {
+  return install_rebuilt_index_impl(index_name, entries,
+                                    std::move(rebuilt_backend),
+                                    artifact_identity, true);
+}
+
+bool index_service::install_rebuilt_index_impl(
+    const std::string &index_name, const committed_entries &entries,
+    std::unique_ptr<backend> rebuilt_backend,
+    const diskann_artifact_identity *artifact_identity,
+    bool preserve_lifecycle) {
   auto index_it = m_indexes.find(index_name);
   auto lifecycle_it = m_lifecycle_infos.find(index_name);
   if (!all_true(index_it != m_indexes.end(),
@@ -7285,6 +7269,7 @@ bool index_service::install_rebuilt_index(
                 rebuilt_backend != nullptr)) {
     return false;
   }
+  const lifecycle_info lifecycle_before = lifecycle_it->second;
 
   if (rebuilt_backend->has_pending_artifact_publication()) {
     if (artifact_identity == nullptr ||
@@ -7301,7 +7286,11 @@ bool index_service::install_rebuilt_index(
     (void)index_it->second->rollback_artifact();
     return false;
   }
-  mark_index_ready(index_name, &lifecycle_it->second);
+  if (preserve_lifecycle) {
+    lifecycle_it->second = lifecycle_before;
+  } else {
+    mark_index_ready(index_name, &lifecycle_it->second);
+  }
   maybe_unload_runtime(index_name);
   return true;
 }

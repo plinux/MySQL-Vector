@@ -1,6 +1,8 @@
 #
 # WL#vector-v1: backend failure paths keep serving state consistent
 #
+CALL mtr.add_suppression(
+"Vector runtime publication failed after transaction commit at stage");
 SELECT VEC_INDEX_CREATE('idx_hnsw_replace_regress', 2, 'EUCLIDEAN', 'MEMORY',
 'HNSWLIB');
 VEC_INDEX_CREATE('idx_hnsw_replace_regress', 2, 'EUCLIDEAN', 'MEMORY',
@@ -30,10 +32,15 @@ SELECT VEC_INDEX_UPSERT('idx_faiss_rebuild_regress', 1, VEC_FROMTEXT('[1,1]'));
 VEC_INDEX_UPSERT('idx_faiss_rebuild_regress', 1, VEC_FROMTEXT('[1,1]'))
 1
 SELECT VEC_INDEX_UPSERT('idx_faiss_rebuild_regress', 2, VEC_FROMTEXT('[2,2]'));
-ERROR HY000: Incorrect arguments to vec_index_upsert
+VEC_INDEX_UPSERT('idx_faiss_rebuild_regress', 2, VEC_FROMTEXT('[2,2]'))
+1
 SELECT VEC_INDEX_SEARCH('idx_faiss_rebuild_regress', VEC_FROMTEXT('[2,2]'), 2);
-VEC_INDEX_SEARCH('idx_faiss_rebuild_regress', VEC_FROMTEXT('[2,2]'), 2)
-[1]
+ERROR HY000: Incorrect arguments to vec_index_search
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_faiss_rebuild_regress', VEC_FROMTEXT('[2,2]'), 2),
+CAST(2 AS JSON)) AS recovered_doc_visible;
+recovered_doc_visible
+1
 SELECT VEC_INDEX_DROP('idx_faiss_rebuild_regress');
 VEC_INDEX_DROP('idx_faiss_rebuild_regress')
 1

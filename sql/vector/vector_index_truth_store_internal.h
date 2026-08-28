@@ -114,6 +114,9 @@ bool from_innodb_committed_rows_impl(
 bool to_innodb_change_log_rows_impl(
     const std::vector<vector_index_metadata_store::change_log_row> &rows,
     std::vector<innodb_vector_truth_store::change_log_row> *out);
+bool to_innodb_truth_delta_rows_impl(
+    const std::vector<vector_index_metadata_store::change_log_row> &rows,
+    std::vector<innodb_vector_truth_store::change_log_row> *out);
 bool from_innodb_change_log_rows_impl(
     const std::vector<innodb_vector_truth_store::change_log_row> &rows,
     std::vector<vector_index_metadata_store::change_log_row> *out);

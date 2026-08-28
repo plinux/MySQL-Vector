@@ -59,6 +59,12 @@ class Vector_index_truth_prepared : public Object_table_impl {
   static const Vector_index_truth_prepared &instance();
 };
 
+class Vector_index_publication_intents : public Object_table_impl {
+ public:
+  Vector_index_publication_intents();
+  static const Vector_index_publication_intents &instance();
+};
+
 class Vector_index_truth_segment_tasks : public Object_table_impl {
  public:
   Vector_index_truth_segment_tasks();
