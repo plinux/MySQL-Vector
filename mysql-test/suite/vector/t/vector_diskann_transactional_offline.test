@@ -1,0 +1,79 @@
+--source include/have_vector_diskann.inc
+
+--echo #
+--echo # WL#Vector: transactional DISKANN offline rebuild
+--echo #
+
+--disable_query_log
+--disable_result_log
+SET @old_vector_build_pipeline_mode = @@GLOBAL.vector_build_pipeline_mode;
+SET @old_vector_build_pipeline_max_tasks = @@GLOBAL.vector_build_pipeline_max_tasks;
+SET @old_vector_build_segment_max_rows = @@GLOBAL.vector_build_segment_max_rows;
+SET @old_vector_build_segment_target_size = @@GLOBAL.vector_build_segment_target_size;
+SET GLOBAL vector_build_pipeline_mode = 'segmented';
+SET GLOBAL vector_build_pipeline_max_tasks = 2;
+SET GLOBAL vector_build_segment_max_rows = 4;
+SET GLOBAL vector_build_segment_target_size = 1048576;
+
+SELECT VEC_INDEX_CREATE('idx_diskann_txn_offline', 2, 'EUCLIDEAN',
+                        'EXTERNAL', 'DISKANN');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_txn_offline', 4, 16, 1);
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_txn_offline', 'offline');
+SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 10, VEC_FROMTEXT('[1,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 20, VEC_FROMTEXT('[2,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 30, VEC_FROMTEXT('[3,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 40, VEC_FROMTEXT('[4,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 50, VEC_FROMTEXT('[5,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 60, VEC_FROMTEXT('[6,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 70, VEC_FROMTEXT('[7,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_txn_offline', 80, VEC_FROMTEXT('[8,0]'));
+delimiter |;
+CREATE PROCEDURE try_diskann_offline_rebuild()
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET @rebuild_ok = 0;
+  SET @rebuild_ok = 1;
+  SET @rebuild_result = VEC_INDEX_REBUILD('idx_diskann_txn_offline');
+END|
+delimiter ;|
+CALL try_diskann_offline_rebuild();
+DROP PROCEDURE try_diskann_offline_rebuild;
+--let $rebuild_ok=`SELECT @rebuild_ok`
+if (!$rebuild_ok)
+{
+  SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+  SET GLOBAL vector_build_pipeline_max_tasks = @old_vector_build_pipeline_max_tasks;
+  SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+  SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+  SELECT VEC_INDEX_DROP('idx_diskann_txn_offline');
+  --skip Test requires DISKANN offline adapter support
+}
+--enable_result_log
+--enable_query_log
+
+--replace_result diskann_vendored_segmented diskann_segmented diskann_offline_segmented diskann_segmented
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+  '$.diskann_build_mode')) AS build_mode,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+  '$.consistency_mode')) AS consistency_mode,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+  '$.backend_variant')) AS backend_variant,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+  '$.backend_build_input_source')) AS build_input_source,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+  '$.backend_build_segments') AS build_segments,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+  '$.backend_build_invocations') AS build_invocations,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'), '$.entry_count')
+  AS entry_count,
+  JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+  '$.committed_entry_count') AS committed_entry_count;
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_txn_offline', VEC_FROMTEXT('[1,0]'), 8),
+  CAST(10 AS JSON)) AS has_doc_10;
+
+SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+SET GLOBAL vector_build_pipeline_max_tasks = @old_vector_build_pipeline_max_tasks;
+SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+
+SELECT VEC_INDEX_DROP('idx_diskann_txn_offline');

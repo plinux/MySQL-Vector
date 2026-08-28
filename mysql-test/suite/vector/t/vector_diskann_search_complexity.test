@@ -4,7 +4,10 @@
 --echo # WL#vector-v1: configure DISKANN search complexity through SQL functions
 --echo #
 
+SET @old_vector_diskann_cache_nodes = @@GLOBAL.vector_diskann_cache_nodes;
+SET GLOBAL vector_diskann_cache_nodes = 7;
 SELECT VEC_INDEX_CREATE('idx_diskann_search_complexity', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+SET GLOBAL vector_diskann_cache_nodes = @old_vector_diskann_cache_nodes;
 
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann_search_complexity', 80);
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann_search_complexity', 16);
@@ -14,6 +17,21 @@ SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann_search_complexity', 1
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann_search_complexity', 16);
 SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE('idx_diskann_search_complexity', 1048576);
 SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_diskann_search_complexity', 1);
+
+SELECT VEC_INDEX_UPSERT('idx_diskann_search_complexity', 10, VEC_FROMTEXT('[1,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_search_complexity', 20, VEC_FROMTEXT('[2,0]'));
+SELECT VEC_INDEX_UPSERT('idx_diskann_search_complexity', 30, VEC_FROMTEXT('[3,0]'));
+SELECT JSON_LENGTH(VEC_INDEX_SEARCH('idx_diskann_search_complexity',
+                                    VEC_FROMTEXT('[1,0]'), 3)) AS hits_80;
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann_search_complexity', 200);
+SELECT JSON_LENGTH(VEC_INDEX_SEARCH('idx_diskann_search_complexity',
+                                    VEC_FROMTEXT('[1,0]'), 3)) AS hits_200;
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann_search_complexity', 400);
+SELECT JSON_LENGTH(VEC_INDEX_SEARCH('idx_diskann_search_complexity',
+                                    VEC_FROMTEXT('[1,0]'), 3)) AS hits_400;
+SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY('idx_diskann_search_complexity', 800);
+SELECT JSON_LENGTH(VEC_INDEX_SEARCH('idx_diskann_search_complexity',
+                                    VEC_FROMTEXT('[1,0]'), 3)) AS hits_800;
 
 --replace_regex /"backend_variant":"diskann_[a-z_]+"/"backend_variant":"<diskann_variant>"/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
 --source suite/vector/include/vector_normalize_lifecycle.inc
@@ -26,6 +44,8 @@ SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_diskann_search_complexity.diskann_pq_code_budget_size';
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_diskann_search_complexity.diskann_disk_pq_dims';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_cache_nodes';
 
 --source include/restart_mysqld.inc
 
@@ -40,5 +60,7 @@ SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_diskann_search_complexity.diskann_pq_code_budget_size';
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name = 'idx_diskann_search_complexity.diskann_disk_pq_dims';
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name = 'idx_diskann_search_complexity.diskann_cache_nodes';
 
 SELECT VEC_INDEX_DROP('idx_diskann_search_complexity');

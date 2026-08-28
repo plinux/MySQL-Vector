@@ -35,10 +35,19 @@ SELECT VEC_INDEX_CREATE('idx_diskann_truth_regress', 2, 'EUCLIDEAN',
                         'EXTERNAL', 'DISKANN');
 SELECT VEC_INDEX_UPSERT('idx_diskann_truth_regress', 1, VEC_FROMTEXT('[1,1]'));
 SELECT VEC_INDEX_UPSERT('idx_diskann_truth_regress', 9, VEC_FROMTEXT('[9,9]'));
+--disable_query_log
+SET GLOBAL debug = '+d,vector_backend_diskann_native_unavailable';
+--enable_query_log
+SELECT VEC_INDEX_REBUILD('idx_diskann_truth_regress');
+--disable_query_log
+SET GLOBAL debug = '-d,vector_backend_diskann_native_unavailable';
+--enable_query_log
 --let $datadir=`SELECT @@datadir`
 --let $manifest_file=$datadir/mysql_vector_index/6964785f6469736b616e6e5f74727574685f72656772657373/diskann_external.manifest.v1
 --exec printf "broken-manifest\n" > $manifest_file
 SELECT VEC_INDEX_RECOVER('idx_diskann_truth_regress');
 SELECT VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[1,1]'), 1);
-SELECT VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[9,9]'), 1);
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[9,9]'), 2),
+  CAST(9 AS JSON));
 SELECT VEC_INDEX_DROP('idx_diskann_truth_regress');

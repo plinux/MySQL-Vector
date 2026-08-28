@@ -426,7 +426,7 @@ class backend {
     Whether transactional stage/commit can apply mutations to this backend.
 
     Writability is provider- and mode-specific. Some EXTERNAL providers are
-    intentionally read-only placeholders in v1.
+    rebuilt from committed truth rows instead of accepting point mutations.
   */
   virtual bool supports_mutations() const = 0;
 
@@ -449,7 +449,7 @@ class backend {
 };
 
 /**
-  Exact in-memory backend used by v1 MEMORY mode.
+  Exact in-memory backend used by MEMORY mode and debug/native fallback paths.
 */
 class memory_backend final : public backend {
  public:
@@ -478,11 +478,11 @@ class memory_backend final : public backend {
 };
 
 /**
-  Native EXTERNAL backend used as a mutable fallback in v1.
+  Native EXTERNAL backend used as an exact in-process fallback.
 
   This backend keeps vectors in-process while exposing EXTERNAL mode semantics
-  to the SQL layer, so EXTERNAL workflows can be exercised before full on-disk
-  provider integrations are complete.
+  to the SQL layer when a provider-specific external runtime is unavailable or
+  intentionally disabled for tests.
 */
 class external_backend final : public backend {
  public:
@@ -511,9 +511,8 @@ class external_backend final : public backend {
 /**
   Faiss backend integration point.
 
-  v1 keeps this class as an adapter boundary: MEMORY mode is implemented via
-  the in-process exact fallback, and EXTERNAL mode persists serving snapshots
-  through a sidecar manifest + snapshot layout.
+  MEMORY mode uses the in-process exact fallback. EXTERNAL mode can persist
+  serving snapshots through a sidecar manifest + snapshot layout.
 */
 class faiss_backend final : public backend {
  public:
@@ -671,8 +670,15 @@ class diskann_backend final : public backend {
   bool erase(uint64_t doc_id) override;
   bool search(const vector_data &query, size_t top_k,
               std::vector<search_result> *results) const override;
+  bool search_batch(const std::vector<vector_data> &queries, size_t top_k,
+                    std::vector<std::vector<search_result>> *results) const
+      override;
   bool load_committed_entries(
       const std::unordered_map<uint64_t, vector_data> &entries) override;
+  bool rebuild_from_committed_entries_from_reader(
+      const committed_entry_reader &reader) override;
+  bool rebuild_from_raw_segments(
+      const raw_vector_segment_reader &reader) override;
   bool rebuild_from_committed_entries(
       const std::unordered_map<uint64_t, vector_data> &entries) override;
   bool recover() override;
@@ -686,6 +692,7 @@ class diskann_backend final : public backend {
   backend_mode mode() const override { return m_mode; }
   backend_provider provider() const override { return backend_provider::kDiskAnn; }
   std::string backend_variant() const override;
+  backend_build_diagnostics build_diagnostics() const override;
   bool set_diskann_build_params(uint32_t diskann_max_degree,
                              uint32_t diskann_build_complexity,
                              uint32_t diskann_build_threads) override;
@@ -693,7 +700,7 @@ class diskann_backend final : public backend {
   bool set_diskann_build_blas_threads(
       uint32_t diskann_build_blas_threads) override;
   bool set_diskann_build_mode(
-      diskann_build_mode diskann_build_mode_value) override;
+      diskann_build_mode diskann_build_mode) override;
   uint32_t diskann_max_degree() const override;
   uint32_t diskann_build_complexity() const override;
   uint32_t diskann_build_threads() const override;
@@ -720,6 +727,13 @@ class diskann_backend final : public backend {
   bool supports_mutations() const override { return true; }
   bool external_manifest_present() const override;
   uint64_t external_manifest_generation() const override;
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  void clear_committed_snapshot_for_testing();
+  bool native_search_batch_for_testing(
+      const std::vector<vector_data> &queries, size_t begin, size_t end,
+      size_t top_k, std::vector<std::vector<search_result>> *results) const;
+#endif
 
  private:
   size_t m_dimension{0};
@@ -754,9 +768,13 @@ class diskann_backend final : public backend {
   double m_diskann_search_cache_ratio{0.0};
   bool m_native_runtime_enabled{false};
   bool m_external_adapter_active{true};
+  size_t m_entry_count{0};
+  backend_build_diagnostics m_last_build_diagnostics;
 
   bool search_entries_exact(const vector_data &query, size_t top_k,
                             std::vector<search_result> *results) const;
+  void capture_native_build_diagnostics();
+  void clear_build_diagnostics();
 };
 
 /**
@@ -802,11 +820,9 @@ class hnswlib_backend final : public backend {
   bool supports_mutations() const override {
     return m_mode == backend_mode::kMemory;
   }
-#ifdef EXTRA_CODE_FOR_UNIT_TESTING
   bool hnsw_native_available_for_testing() const;
   bool hnsw_exact_fallback_active_for_testing() const;
   size_t hnsw_exact_fallback_entry_count_for_testing() const;
-#endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
  private:
   bool native_available() const;
@@ -856,17 +872,20 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
                                        backend_mode mode,
                                        backend_provider provider,
                                        index_consistency_mode consistency_mode,
-                                       const std::string &index_name);
+                                       const std::string &index_name = "");
 
-/** Return compiled vector-library support rows for INFORMATION_SCHEMA. */
+/**
+  Return compiled vector-library support rows for INFORMATION_SCHEMA.
+*/
 const vector_library_status *vector_library_statuses(size_t *count);
 
 /**
   Check whether a provider can be selected by CREATE VECTOR INDEX.
 
-  The native provider is only selectable in debug builds and only when at least
-  one real vector-search library is compiled, so all-disabled binaries cannot
-  accidentally create debug-native indexes.
+  The native provider is an internal exact/debug implementation. It is only
+  selectable in debug builds where NDEBUG is not defined and at least one real
+  vector-search library is compiled, so it cannot mask all-libraries-disabled
+  binaries.
 */
 bool backend_provider_supported(backend_provider provider);
 
@@ -878,10 +897,17 @@ bool native_provider_supported_for_testing();
 void set_native_provider_supported_for_testing(bool supported);
 #endif
 
-/** Return the global default provider for an omitted provider option. */
+/**
+  Return the default provider for an omitted provider option.
+
+  The default is controlled by the global vector_default_library sysvar. Empty
+  or unsupported values make provider-omitted index creation fail.
+*/
 bool default_backend_provider(backend_provider *provider);
 
-/** Return the default mode for an omitted mode option after provider choice. */
+/**
+  Return the default mode for an omitted mode option after provider resolution.
+*/
 bool default_backend_mode_for_provider(backend_provider provider,
                                        backend_mode *mode);
 
@@ -909,7 +935,9 @@ bool parse_backend_provider(const std::string &value, backend_provider *provider
 /**
   Parse DiskANN build mode option text into enum value.
 
-  Parsing is case-insensitive and ignores leading/trailing spaces.
+  AUTO prefers the offline adapter when it is available and otherwise uses the
+  official Garnet row-by-row insert API. SERIAL forces row-by-row Garnet insert.
+  OFFLINE uses the MySQL DiskANN offline adapter for official disk-index builds.
 */
 bool parse_diskann_build_mode(const std::string &value,
                               diskann_build_mode *build_mode);
@@ -1027,9 +1055,48 @@ bool diskann_offline_api_manifest_build_available_for_testing(
     bool has_handle, bool has_build, bool has_build_from_manifest,
     bool has_load_index, bool has_search, bool has_search_batch,
     bool has_card, bool has_drop_index);
+bool diskann_vendored_runtime_api_load_for_testing();
+uint64_t diskann_vendored_runtime_capabilities_for_testing();
+bool diskann_vendored_build_config_valid_for_testing(
+    const std::string &data_path, const std::string &index_prefix,
+    uint32_t dimension, uint32_t max_degree, uint32_t build_complexity,
+    double build_memory_gb, double search_cache_ratio, std::string *error);
+bool diskann_vendored_search_config_valid_for_testing(
+    uint32_t top_k, uint32_t search_complexity, uint32_t beamwidth,
+    std::string *error);
+bool diskann_vendored_batch_search_available_for_testing();
+bool diskann_vendored_load_config_budget_for_testing(size_t row_count,
+                                                     double *build_memory_gb,
+                                                     uint32_t *pq_chunks,
+                                                     uint32_t *cache_nodes);
+bool diskann_loaded_handle_batch_rejects_null_for_testing();
+double diskann_build_memory_size_gb_for_testing(uint64_t build_memory_size);
+uint64_t diskann_available_build_memory_size_for_testing();
+bool diskann_flatten_memory_budget_allows_for_testing(size_t entry_count,
+                                                      size_t dimension,
+                                                      uint64_t budget_size);
+uint32_t diskann_pq_chunks_for_build_for_testing(size_t dimension,
+                                                 size_t row_count,
+                                                 uint64_t pq_code_budget_size,
+                                                 double pq_code_budget_ratio,
+                                                 uint32_t disk_pq_dims = 0);
+uint32_t diskann_cache_nodes_for_build_for_testing(
+    size_t row_count, size_t dimension, uint32_t explicit_cache_nodes,
+    uint64_t search_cache_size, double search_cache_ratio,
+    uint32_t max_degree = 32, uint32_t disk_pq_dims = 0);
+uint32_t diskann_effective_offline_max_degree_for_testing(size_t row_count,
+                                                          uint32_t max_degree);
+uint32_t diskann_effective_loaded_cache_nodes_for_testing(
+    size_t row_count, uint64_t search_cache_size, double search_cache_ratio);
+const char *diskann_runtime_variant_name_for_testing(int variant);
+bool diskann_write_binary_values_for_testing(const std::string &path,
+                                             uint32_t uint32_value,
+                                             uint64_t uint64_value);
+uint32_t diskann_offline_load_use_bfs_cache_for_testing(uint32_t cache_nodes,
+                                                        bool force_bfs_cache);
 int32_t diskann_metric_code_for_testing(metric_type metric);
 bool parse_diskann_doc_id_for_testing(const uint8_t *data, size_t length,
-                                 uint64_t *doc_id);
+                                      uint64_t *doc_id);
 #endif  // EXTRA_CODE_FOR_UNIT_TESTING
 
 }  // namespace vector_index

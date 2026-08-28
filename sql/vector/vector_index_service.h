@@ -314,7 +314,8 @@ class index_service {
   bool rename_index(const std::string &old_index_name,
                     const std::string &new_index_name);
   bool begin_bulk_load(const std::string &index_name);
-  bool rebuild_index(const std::string &index_name);
+  bool rebuild_index(const std::string &index_name,
+                     std::string *error = nullptr);
   bool recover_index(const std::string &index_name);
   bool rebuild_all_indexes(size_t *rebuilt_count);
   bool recover_all_indexes(size_t *recovered_count);

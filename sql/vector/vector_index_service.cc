@@ -1918,6 +1918,31 @@ void set_bulk_load_error(std::string *error, const std::string &message) {
   if (error != nullptr) *error = message;
 }
 
+std::string rebuild_error_from_diagnostics(
+    const backend_build_diagnostics &diagnostics) {
+  constexpr const char *prefix = "LOAD VECTOR DATA could not rebuild index";
+  if (!diagnostics.native_pq_runtime_artifact_validation.empty() &&
+      diagnostics.native_pq_runtime_artifact_validation != "ok") {
+    return std::string(prefix) + ": " +
+           diagnostics.native_pq_runtime_artifact_validation;
+  }
+  if (!diagnostics.fallback_reason.empty()) {
+    return std::string(prefix) + ": " + diagnostics.fallback_reason;
+  }
+  return prefix;
+}
+
+void set_bulk_load_rebuild_error(std::string *error,
+                                 const backend *rebuilt_backend) {
+  if (rebuilt_backend == nullptr) {
+    set_bulk_load_error(error, "LOAD VECTOR DATA could not rebuild index");
+    return;
+  }
+  set_bulk_load_error(error,
+                      rebuild_error_from_diagnostics(
+                          rebuilt_backend->build_diagnostics()));
+}
+
 bool uses_deferred_standalone_mutations(
     const vector_index::index_service::index_config &config) {
   return config.consistency_mode == index_consistency_mode::kStandalone;
@@ -3013,13 +3038,16 @@ bool index_service::begin_bulk_load(const std::string &index_name) {
   return true;
 }
 
-bool index_service::rebuild_index(const std::string &index_name) {
+bool index_service::rebuild_index(const std::string &index_name,
+                                  std::string *error) {
+  if (error != nullptr) error->clear();
   auto config_it = m_index_configs.find(index_name);
   auto index_it = m_indexes.find(index_name);
   auto lifecycle_it = m_lifecycle_infos.find(index_name);
   if (!all_true(config_it != m_index_configs.end(), index_it != m_indexes.end(),
                 m_entry_store.has_index(index_name),
                 lifecycle_it != m_lifecycle_infos.end())) {
+    set_bulk_load_error(error, "vector index not found");
     return false;
   }
   mark_lifecycle_state(&lifecycle_it->second, LIFECYCLE_REBUILDING);
@@ -3027,6 +3055,7 @@ bool index_service::rebuild_index(const std::string &index_name) {
   // Rebuild currently requires no staged writes against this index.
   if (pending_changes_contain_index(m_pending_changes, index_name)) {
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_PENDING_CHANGES);
+    set_bulk_load_error(error, "vector index has pending changes");
     return false;
   }
 
@@ -3046,6 +3075,7 @@ bool index_service::rebuild_index(const std::string &index_name) {
   }
   if (rebuilt == nullptr) {
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_BACKEND_CREATE_FAILED);
+    set_bulk_load_error(error, "LOAD VECTOR DATA could not create backend");
     return false;
   }
   if (!should_build_segmented(config_it->second, decision) &&
@@ -3053,6 +3083,7 @@ bool index_service::rebuild_index(const std::string &index_name) {
                                    index_name, config_it->second,
                                    rebuilt.get())) {
     mark_lifecycle_failure(&lifecycle_it->second, ERROR_REPLAY_STATE_FAILED);
+    set_bulk_load_rebuild_error(error, rebuilt.get());
     return false;
   }
 
@@ -4059,7 +4090,7 @@ bool index_service::bulk_upsert_from_reader(
       return false;
     }
 
-    if (options.rebuild_after_load) return rebuild_index(index_name);
+    if (options.rebuild_after_load) return rebuild_index(index_name, error);
 
     mark_lifecycle_bulk_loading(&lifecycle_it->second);
     return true;
@@ -4204,7 +4235,7 @@ bool index_service::bulk_upsert_from_raw_files(
   }
   if (loaded_rows != nullptr) *loaded_rows = row_count;
 
-  if (options.rebuild_after_load) return rebuild_index(index_name);
+  if (options.rebuild_after_load) return rebuild_index(index_name, error);
 
   mark_lifecycle_bulk_loading(&lifecycle_it->second);
   return true;

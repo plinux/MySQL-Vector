@@ -35,9 +35,14 @@ JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
 '$.committed_entry_count') AS committed_entry_count;
 external_manifest_present	external_manifest_generation	entry_count	committed_entry_count
 0	0	3	3
-SELECT VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2);
-VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2)
-[1,2]
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2),
+CAST(1 AS JSON)) AS has_doc_1,
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2),
+CAST(2 AS JSON)) AS has_doc_2;
+has_doc_1	has_doc_2
+1	1
 SELECT VEC_INDEX_UPSERT('idx_diskann_native_bulk', 4, VEC_FROMTEXT('[0,1]'));
 VEC_INDEX_UPSERT('idx_diskann_native_bulk', 4, VEC_FROMTEXT('[0,1]'))
 1

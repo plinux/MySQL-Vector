@@ -11,7 +11,8 @@ SELECT VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[1,1]'), 1);
 
 --source include/restart_mysqld.inc
 
---replace_regex /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
+--replace_regex /"backend_variant":"diskann_[a-z_]+"/"backend_variant":"<diskann_variant>"/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_diskann_restore');
 SELECT VEC_INDEX_SEARCH('idx_diskann_restore', VEC_FROMTEXT('[1,1]'), 1);
 SHOW VECTOR STATUS WHERE Section = 'BACKEND_HEALTH'

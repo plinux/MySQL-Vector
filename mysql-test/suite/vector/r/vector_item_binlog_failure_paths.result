@@ -27,7 +27,7 @@ VEC_INDEX_CREATE('idx_item_binlog_fail_ext', 2, 'EUCLIDEAN', 'EXTERNAL', 'DISKAN
 0
 SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.backend_variant'));
 JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_item_binlog_fail_ext'), '$.backend_variant'))
-diskann_garnet
+<diskann_variant>
 SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_item_binlog_fail_ext', 48, 96);
 VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_item_binlog_fail_ext', 48, 96)
 0

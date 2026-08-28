@@ -22,6 +22,8 @@ SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS(
   'test.t_vector_logical_dump_restore_diskann_tuned.v', 48, 96);
 SELECT VEC_INDEX_SET_DISKANN_SEARCH_COMPLEXITY(
   'test.t_vector_logical_dump_restore_diskann_tuned.v', 80);
+SELECT VEC_INDEX_SET_DISKANN_PQ_CODE_BUDGET_SIZE(
+  'test.t_vector_logical_dump_restore_diskann_tuned.v', 1048576);
 
 --exec $MYSQL_DUMP --skip-comments test t_vector_logical_dump_restore_diskann_tuned > $dump_file
 
@@ -33,7 +35,8 @@ SHOW VECTOR STATUS FOR INDEX 'test.t_vector_logical_dump_restore_diskann_tuned.v
      OR Variable_name = 'test.t_vector_logical_dump_restore_diskann_tuned.v.mode'
      OR Variable_name = 'test.t_vector_logical_dump_restore_diskann_tuned.v.diskann_max_degree'
      OR Variable_name = 'test.t_vector_logical_dump_restore_diskann_tuned.v.diskann_build_complexity'
-     OR Variable_name = 'test.t_vector_logical_dump_restore_diskann_tuned.v.diskann_search_complexity';
+     OR Variable_name = 'test.t_vector_logical_dump_restore_diskann_tuned.v.diskann_search_complexity'
+     OR Variable_name = 'test.t_vector_logical_dump_restore_diskann_tuned.v.diskann_pq_code_budget_size';
 SELECT VEC_INDEX_SEARCH('test.t_vector_logical_dump_restore_diskann_tuned.v',
                         VEC_FROMTEXT('[9,9]'), 1);
 

@@ -1,0 +1,33 @@
+#
+# WL#Vector: transactional DISKANN offline rebuild
+#
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+'$.diskann_build_mode')) AS build_mode,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+'$.consistency_mode')) AS consistency_mode,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+'$.backend_variant')) AS backend_variant,
+JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+'$.backend_build_input_source')) AS build_input_source,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+'$.backend_build_segments') AS build_segments,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+'$.backend_build_invocations') AS build_invocations,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'), '$.entry_count')
+AS entry_count,
+JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_txn_offline'),
+'$.committed_entry_count') AS committed_entry_count;
+build_mode	consistency_mode	backend_variant	build_input_source	build_segments	build_invocations	entry_count	committed_entry_count
+offline	transactional	diskann_vendored_offline	entries	1	1	8	8
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_txn_offline', VEC_FROMTEXT('[1,0]'), 8),
+CAST(10 AS JSON)) AS has_doc_10;
+has_doc_10
+1
+SET GLOBAL vector_build_pipeline_mode = @old_vector_build_pipeline_mode;
+SET GLOBAL vector_build_pipeline_max_tasks = @old_vector_build_pipeline_max_tasks;
+SET GLOBAL vector_build_segment_max_rows = @old_vector_build_segment_max_rows;
+SET GLOBAL vector_build_segment_target_size = @old_vector_build_segment_target_size;
+SELECT VEC_INDEX_DROP('idx_diskann_txn_offline');
+VEC_INDEX_DROP('idx_diskann_txn_offline')
+1

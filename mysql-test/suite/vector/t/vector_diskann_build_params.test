@@ -12,6 +12,16 @@ SELECT JSON_CONTAINS(
   CAST(1 AS JSON));
 
 SELECT VEC_INDEX_SET_DISKANN_BUILD_PARAMS('idx_diskann_params', 48, 96);
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_diskann_params', 2);
+SELECT VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD('idx_diskann_params', 1);
+SELECT VEC_INDEX_SET_DISKANN_SHUFFLE_BUILD('idx_diskann_params', 1);
+SELECT VEC_INDEX_SET_DISKANN_USE_BFS_CACHE('idx_diskann_params', 1);
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_params', 'offline');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.diskann_build_mode'));
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_params', 'auto');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.diskann_build_mode'));
 SELECT JSON_CONTAINS(
   VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
   CAST(1 AS JSON));
@@ -20,15 +30,82 @@ SELECT JSON_CONTAINS(
   VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
   CAST(1 AS JSON));
 
---replace_regex /"external_manifest_present":[01]/"external_manifest_present":<bool>/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_error_ts":[0-9]+/"last_error_ts":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+--replace_regex /"backend_variant":"diskann_[a-z_]+"/"backend_variant":"<diskann_variant>"/ /"external_manifest_present":[01]/"external_manifest_present":<bool>/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_error_ts":[0-9]+/"last_error_ts":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_diskann_params');
 SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
   AND Variable_name LIKE 'idx_diskann_params.diskann_%';
 
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_params', 'invalid');
+
+SELECT VEC_INDEX_CREATE('idx_diskann_mode_native', 2, 'EUCLIDEAN',
+                        'MEMORY', 'NATIVE');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_mode_native', 'auto');
+SELECT VEC_INDEX_SET_DISKANN_BUILD_MODE('idx_diskann_mode_native', 'serial');
+SHOW WARNINGS;
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_diskann_mode_native', 0);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SET_DISKANN_DISK_PQ_DIMS('idx_diskann_mode_native', 1);
+SELECT VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD('idx_diskann_mode_native', 0);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SET_DISKANN_ACCELERATE_BUILD('idx_diskann_mode_native', 1);
+SELECT VEC_INDEX_SET_DISKANN_SHUFFLE_BUILD('idx_diskann_mode_native', 0);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SET_DISKANN_SHUFFLE_BUILD('idx_diskann_mode_native', 1);
+SELECT VEC_INDEX_SET_DISKANN_USE_BFS_CACHE('idx_diskann_mode_native', 0);
+--error ER_WRONG_ARGUMENTS
+SELECT VEC_INDEX_SET_DISKANN_USE_BFS_CACHE('idx_diskann_mode_native', 1);
+SELECT VEC_INDEX_DROP('idx_diskann_mode_native');
+
+SET GLOBAL vector_diskann_max_degree=52;
+SET GLOBAL vector_diskann_build_complexity=104;
+SET GLOBAL vector_diskann_build_mode='auto';
+SET GLOBAL vector_diskann_pq_code_budget_size=1048576;
+SET GLOBAL vector_diskann_disk_pq_dims=2;
+SET GLOBAL vector_diskann_accelerate_build=ON;
+SET GLOBAL vector_diskann_shuffle_build=ON;
+SET GLOBAL vector_diskann_use_bfs_cache=ON;
+
+CREATE TABLE t_diskann_global_defaults (
+  id BIGINT NOT NULL PRIMARY KEY,
+  v VECTOR(2) NOT NULL
+) ENGINE=InnoDB;
+INSERT INTO t_diskann_global_defaults VALUES
+  (1, VEC_FROMTEXT('[1,1]')),
+  (2, VEC_FROMTEXT('[2,2]'));
+CREATE VECTOR INDEX ON t_diskann_global_defaults(v)
+  WITH (2, 'EUCLIDEAN', 'EXTERNAL', 'DISKANN');
+
+SELECT JSON_EXTRACT(VEC_INDEX_INFO('test.t_diskann_global_defaults.v'),
+  '$.diskann_max_degree') AS create_max_degree,
+  JSON_EXTRACT(VEC_INDEX_INFO('test.t_diskann_global_defaults.v'),
+  '$.diskann_build_complexity') AS create_build_complexity,
+  JSON_EXTRACT(VEC_INDEX_INFO('test.t_diskann_global_defaults.v'),
+  '$.diskann_pq_code_budget_size') AS create_pq_code_budget_size,
+  JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('test.t_diskann_global_defaults.v'),
+  '$.diskann_build_mode')) AS create_build_mode;
+SHOW VECTOR STATUS WHERE Section = 'INDEX_STATE'
+  AND Variable_name LIKE 'test.t_diskann_global_defaults.v.diskann_%';
+
+DROP VECTOR INDEX ON t_diskann_global_defaults(v);
+DROP TABLE t_diskann_global_defaults;
+SET GLOBAL vector_diskann_max_degree=DEFAULT;
+SET GLOBAL vector_diskann_build_complexity=DEFAULT;
+SET GLOBAL vector_diskann_build_mode=DEFAULT;
+SET GLOBAL vector_diskann_pq_code_budget_size=DEFAULT;
+SET GLOBAL vector_diskann_disk_pq_dims=DEFAULT;
+SET GLOBAL vector_diskann_accelerate_build=DEFAULT;
+SET GLOBAL vector_diskann_shuffle_build=DEFAULT;
+SET GLOBAL vector_diskann_use_bfs_cache=DEFAULT;
+
 --source include/restart_mysqld.inc
 
---replace_regex /"external_manifest_present":[01]/"external_manifest_present":<bool>/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_error_ts":[0-9]+/"last_error_ts":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+--replace_regex /"backend_variant":"diskann_[a-z_]+"/"backend_variant":"<diskann_variant>"/ /"external_manifest_present":[01]/"external_manifest_present":<bool>/ /"external_manifest_generation":[0-9]+/"external_manifest_generation":<num>/ /"last_error_ts":[0-9]+/"last_error_ts":<num>/ /"last_apply_latency_ms":[0-9]+/"last_apply_latency_ms":<num>/
+--source suite/vector/include/vector_normalize_lifecycle.inc
 SELECT VEC_INDEX_INFO('idx_diskann_params');
+SELECT JSON_UNQUOTE(JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_params'),
+  '$.diskann_build_mode'));
 SELECT JSON_CONTAINS(
   VEC_INDEX_SEARCH('idx_diskann_params', VEC_FROMTEXT('[1,1]'), 8),
   CAST(1 AS JSON));

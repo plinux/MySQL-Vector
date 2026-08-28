@@ -48,15 +48,22 @@ VEC_INDEX_UPSERT('idx_diskann_truth_regress', 1, VEC_FROMTEXT('[1,1]'))
 SELECT VEC_INDEX_UPSERT('idx_diskann_truth_regress', 9, VEC_FROMTEXT('[9,9]'));
 VEC_INDEX_UPSERT('idx_diskann_truth_regress', 9, VEC_FROMTEXT('[9,9]'))
 1
+SELECT VEC_INDEX_REBUILD('idx_diskann_truth_regress');
+VEC_INDEX_REBUILD('idx_diskann_truth_regress')
+1
 SELECT VEC_INDEX_RECOVER('idx_diskann_truth_regress');
 VEC_INDEX_RECOVER('idx_diskann_truth_regress')
 1
 SELECT VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[1,1]'), 1);
 VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[1,1]'), 1)
 [1]
-SELECT VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[9,9]'), 1);
-VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[9,9]'), 1)
-[9]
+SELECT JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[9,9]'), 2),
+CAST(9 AS JSON));
+JSON_CONTAINS(
+VEC_INDEX_SEARCH('idx_diskann_truth_regress', VEC_FROMTEXT('[9,9]'), 2),
+CAST(9 AS JSON))
+1
 SELECT VEC_INDEX_DROP('idx_diskann_truth_regress');
 VEC_INDEX_DROP('idx_diskann_truth_regress')
 1

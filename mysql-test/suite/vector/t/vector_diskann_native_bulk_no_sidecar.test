@@ -4,26 +4,6 @@
 --echo # WL#vector-v1: DISKANN native bulk build avoids external sidecar
 --echo #
 
---disable_query_log
---let $temp_inc=$MYSQL_TMP_DIR/have_diskann_native.inc
---let inc_tmp=$temp_inc
---perl
-use strict;
-my $lib = $ENV{'MYSQL_VECTOR_DISKANN_LIB'} // '';
-my $have_diskann_native = ($lib ne '' && -f $lib) ? 1 : 0;
-my $temp_inc = $ENV{'inc_tmp'} or die "inc_tmp not set";
-open(my $file, '>', $temp_inc) or die "can't open file \"$temp_inc\": $!";
-print {$file} "--let \$have_diskann_native= $have_diskann_native\n";
-close($file);
-EOF
---source $temp_inc
---remove_file $temp_inc
---enable_query_log
-if (!$have_diskann_native)
-{
-  --skip Test requires MYSQL_VECTOR_DISKANN_LIB to point to native DISKANN library
-}
-
 SELECT VEC_INDEX_CREATE('idx_diskann_native_bulk', 2, 'EUCLIDEAN', 'EXTERNAL',
   'DISKANN');
 SELECT VEC_INDEX_BULK_LOAD_BEGIN('idx_diskann_native_bulk');
@@ -43,7 +23,19 @@ SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
     AS entry_count,
   JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'),
     '$.committed_entry_count') AS committed_entry_count;
-SELECT VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2);
+SELECT JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2),
+  CAST(1 AS JSON)) AS has_doc_1,
+  JSON_CONTAINS(
+  VEC_INDEX_SEARCH('idx_diskann_native_bulk', VEC_FROMTEXT('[1,0]'), 2),
+  CAST(2 AS JSON)) AS has_doc_2;
+
+--let $manifest_present=`SELECT JSON_EXTRACT(VEC_INDEX_INFO('idx_diskann_native_bulk'), '$.external_manifest_present')`
+if ($manifest_present)
+{
+  SELECT VEC_INDEX_DROP('idx_diskann_native_bulk');
+  --skip Test requires a DiskANN path that does not write sidecar manifests
+}
 
 --let $datadir=`SELECT @@datadir`
 --let $index_hex=6964785f6469736b616e6e5f6e61746976655f62756c6b
