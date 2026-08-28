@@ -312,6 +312,7 @@ IF(HAVE_VECTOR_INDEX)
   LIST(APPEND SERVER_TESTS
     item_vectorfunc
     vector_build_pipeline_policy
+    vector_diskann_artifact_layout
     vector_elkan_kmeans
     vector_index_backend
     vector_index_diagnostics

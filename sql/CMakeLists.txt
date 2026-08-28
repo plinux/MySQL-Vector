@@ -651,6 +651,7 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_backend_hnswlib.cc
     vector/vector_index_backend_diskann.cc
     vector/vector_index_backend_faiss.cc
+    vector/vector_diskann_artifact_layout.cc
     vector/vector_elkan_kmeans.cc
     vector/vector_build_pipeline_policy.cc
     vector/vector_index_build_options.cc
