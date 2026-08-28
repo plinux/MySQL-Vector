@@ -114,6 +114,34 @@ float l2_distance_scalar(const float *lhs, const float *rhs,
   return result;
 }
 
+l2_distance_context make_l2_distance_context(size_t dimension) {
+  l2_distance_context context;
+  context.dimension = dimension;
+  context.function = l2_distance_scalar;
+#if defined(MYSQL_VECTOR_HAS_X86_SIMD)
+  if (dimension >= 16 && cpu_supports_avx512()) {
+    context.kernel = l2_distance_kernel::kAvx512;
+    context.function = l2_distance_avx512;
+  } else if (dimension >= 8 && cpu_supports_avx2()) {
+    context.kernel = l2_distance_kernel::kAvx2;
+    context.function = l2_distance_avx2;
+  }
+#endif
+  return context;
+}
+
+float l2_distance_with_context(const l2_distance_context &context,
+                               const float *lhs, const float *rhs,
+                               l2_distance_stats *stats) {
+  const l2_distance_function function =
+      context.function == nullptr ? l2_distance_scalar : context.function;
+  const l2_distance_kernel kernel = context.function == nullptr
+                                        ? l2_distance_kernel::kScalar
+                                        : context.kernel;
+  record_kernel(stats, kernel);
+  return function(lhs, rhs, context.dimension);
+}
+
 float l2_distance(const float *lhs, const float *rhs, size_t dimension,
                   l2_distance_stats *stats) {
 #if defined(MYSQL_VECTOR_HAS_X86_SIMD)

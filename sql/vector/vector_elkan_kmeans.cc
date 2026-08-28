@@ -23,6 +23,7 @@
 
 #include "sql/vector/vector_elkan_kmeans.h"
 
+#include "sql/vector/vector_pq_centroid_scan.h"
 #include "sql/vector/vector_simd_distance.h"
 
 #include <algorithm>
@@ -46,9 +47,10 @@ bool multiply_size(uint64_t lhs, uint32_t rhs, size_t *out) {
   return true;
 }
 
-float euclidean_distance(const float *lhs, const float *rhs, size_t dimension,
+float euclidean_distance(const l2_distance_context &distance_context,
+                         const float *lhs, const float *rhs,
                          l2_distance_stats *stats) {
-  return std::sqrt(l2_distance(lhs, rhs, dimension, stats));
+  return std::sqrt(l2_distance_with_context(distance_context, lhs, rhs, stats));
 }
 
 const float *row_ptr(const std::vector<float> &points, uint64_t row,
@@ -121,36 +123,44 @@ void initialize_centers(const std::vector<float> &points, uint64_t row_count,
   }
 }
 
-void assign_all_points(const std::vector<float> &points, uint64_t row_count,
+bool assign_all_points(const std::vector<float> &points, uint64_t row_count,
                        const elkan_kmeans_config &config,
                        const std::vector<float> &centers,
                        std::vector<uint32_t> *assignments,
                        std::vector<float> *upper_bounds,
                        std::vector<float> *lower_bounds,
-                       l2_distance_stats *distance_stats) {
+                       pq_centroid_scan_stats *scan_stats, std::string *error) {
+  size_t bound_count = 0;
+  if (!multiply_size(row_count, config.center_count, &bound_count)) {
+    set_error(error, "lower bound size overflow");
+    return false;
+  }
   assignments->assign(static_cast<size_t>(row_count), 0);
   upper_bounds->assign(static_cast<size_t>(row_count), 0.0F);
-  lower_bounds->assign(static_cast<size_t>(row_count) * config.center_count,
-                       0.0F);
+  lower_bounds->assign(bound_count, 0.0F);
+
+  pq_centroid_model centroid_model;
+  if (!make_pq_centroid_model(centers.data(), config.center_count,
+                              config.dimension, pq_centroid_scan_kernel::kAuto,
+                              &centroid_model, error)) {
+    return false;
+  }
 
   for (uint64_t row = 0; row < row_count; ++row) {
-    float best = std::numeric_limits<float>::infinity();
     uint32_t best_center = 0;
-    for (uint32_t center = 0; center < config.center_count; ++center) {
-      const float distance = euclidean_distance(
-          row_ptr(points, row, config.dimension),
-          center_ptr(centers, center, config.dimension), config.dimension,
-          distance_stats);
-      (*lower_bounds)[static_cast<size_t>(row) * config.center_count + center] =
-          distance;
-      if (distance < best) {
-        best = distance;
-        best_center = center;
-      }
+    float best_distance = 0.0F;
+    float *row_lower_bounds =
+        lower_bounds->data() + static_cast<size_t>(row) * config.center_count;
+    if (!scan_pq_centroid_distances(
+            centroid_model, row_ptr(points, row, config.dimension),
+            row_lower_bounds, &best_center, &best_distance, scan_stats)) {
+      set_error(error, "initial centroid scan failed");
+      return false;
     }
     (*assignments)[static_cast<size_t>(row)] = best_center;
-    (*upper_bounds)[static_cast<size_t>(row)] = best;
+    (*upper_bounds)[static_cast<size_t>(row)] = best_distance;
   }
+  return true;
 }
 
 void recompute_sums(const std::vector<float> &points, uint64_t row_count,
@@ -213,6 +223,7 @@ void update_centers(const std::vector<float> &points, uint64_t row_count,
                     const std::vector<float> &upper_bounds,
                     std::vector<float> *centers,
                     std::vector<float> *center_movement,
+                    const l2_distance_context &distance_context,
                     l2_distance_stats *distance_stats) {
   repair_empty_clusters(points, row_count, config, assignments, upper_bounds);
 
@@ -238,8 +249,8 @@ void update_centers(const std::vector<float> &points, uint64_t row_count,
       }
     }
     (*center_movement)[center] = euclidean_distance(
-        center_ptr(*centers, center, config.dimension), new_center,
-        config.dimension, distance_stats);
+        distance_context, center_ptr(*centers, center, config.dimension),
+        new_center, distance_stats);
   }
   *centers = std::move(new_centers);
 }
@@ -248,6 +259,7 @@ void compute_center_half_distances(const std::vector<float> &centers,
                                    const elkan_kmeans_config &config,
                                    std::vector<float> *half_distances,
                                    std::vector<float> *min_half_distance,
+                                   const l2_distance_context &distance_context,
                                    l2_distance_stats *distance_stats) {
   half_distances->assign(static_cast<size_t>(config.center_count) *
                              config.center_count,
@@ -258,9 +270,10 @@ void compute_center_half_distances(const std::vector<float> &centers,
   for (uint32_t left = 0; left < config.center_count; ++left) {
     for (uint32_t right = left + 1; right < config.center_count; ++right) {
       const float half_distance =
-          0.5F * euclidean_distance(center_ptr(centers, left, config.dimension),
-                                    center_ptr(centers, right, config.dimension),
-                                    config.dimension, distance_stats);
+          0.5F *
+          euclidean_distance(
+              distance_context, center_ptr(centers, left, config.dimension),
+              center_ptr(centers, right, config.dimension), distance_stats);
       (*half_distances)[static_cast<size_t>(left) * config.center_count +
                         right] = half_distance;
       (*half_distances)[static_cast<size_t>(right) * config.center_count +
@@ -289,17 +302,15 @@ void apply_center_movement_bounds(const std::vector<uint32_t> &assignments,
   }
 }
 
-bool assign_with_elkan_bounds(const std::vector<float> &points,
-                              uint64_t row_count,
-                              const elkan_kmeans_config &config,
-                              const std::vector<float> &centers,
-                              const std::vector<float> &half_distances,
-                              const std::vector<float> &min_half_distance,
-                              std::vector<uint32_t> *assignments,
-                              std::vector<float> *upper_bounds,
-                              std::vector<float> *lower_bounds,
-                              uint64_t *skipped_distance_calls,
-                              l2_distance_stats *distance_stats) {
+bool assign_with_elkan_bounds(
+    const std::vector<float> &points, uint64_t row_count,
+    const elkan_kmeans_config &config, const std::vector<float> &centers,
+    const std::vector<float> &half_distances,
+    const std::vector<float> &min_half_distance,
+    std::vector<uint32_t> *assignments, std::vector<float> *upper_bounds,
+    std::vector<float> *lower_bounds, uint64_t *skipped_distance_calls,
+    const l2_distance_context &distance_context,
+    l2_distance_stats *distance_stats) {
   bool changed = false;
   for (uint64_t row = 0; row < row_count; ++row) {
     const size_t row_index = static_cast<size_t>(row);
@@ -310,9 +321,9 @@ bool assign_with_elkan_bounds(const std::vector<float> &points,
       continue;
     }
 
-    upper = euclidean_distance(row_ptr(points, row, config.dimension),
-                               center_ptr(centers, assigned, config.dimension),
-                               config.dimension, distance_stats);
+    upper = euclidean_distance(
+        distance_context, row_ptr(points, row, config.dimension),
+        center_ptr(centers, assigned, config.dimension), distance_stats);
     (*upper_bounds)[row_index] = upper;
 
     for (uint32_t center = 0; center < config.center_count; ++center) {
@@ -328,9 +339,8 @@ bool assign_with_elkan_bounds(const std::vector<float> &points,
       }
 
       const float distance = euclidean_distance(
-          row_ptr(points, row, config.dimension),
-          center_ptr(centers, center, config.dimension), config.dimension,
-          distance_stats);
+          distance_context, row_ptr(points, row, config.dimension),
+          center_ptr(centers, center, config.dimension), distance_stats);
       lower = distance;
       if (distance < upper) {
         assigned = center;
@@ -393,19 +403,24 @@ bool run_elkan_kmeans(const float *data, uint64_t row_count,
     return false;
   }
 
+  const l2_distance_context distance_context =
+      make_l2_distance_context(config.dimension);
   l2_distance_stats distance_stats;
+  pq_centroid_scan_stats scan_stats;
   std::vector<float> upper_bounds;
   std::vector<float> lower_bounds;
   initialize_centers(points, row_count, config, &result->centers);
-  assign_all_points(points, row_count, config, result->centers,
-                    &result->assignments, &upper_bounds, &lower_bounds,
-                    &distance_stats);
+  if (!assign_all_points(points, row_count, config, result->centers,
+                         &result->assignments, &upper_bounds, &lower_bounds,
+                         &scan_stats, error)) {
+    return false;
+  }
 
   for (uint32_t iteration = 0; iteration < config.max_iterations; ++iteration) {
     std::vector<float> center_movement;
     update_centers(points, row_count, config, &result->assignments,
                    upper_bounds, &result->centers, &center_movement,
-                   &distance_stats);
+                   distance_context, &distance_stats);
     apply_center_movement_bounds(result->assignments, center_movement,
                                  config.center_count, &upper_bounds,
                                  &lower_bounds);
@@ -413,12 +428,13 @@ bool run_elkan_kmeans(const float *data, uint64_t row_count,
     std::vector<float> half_distances;
     std::vector<float> min_half_distance;
     compute_center_half_distances(result->centers, config, &half_distances,
-                                  &min_half_distance, &distance_stats);
+                                  &min_half_distance, distance_context,
+                                  &distance_stats);
 
     const bool changed = assign_with_elkan_bounds(
         points, row_count, config, result->centers, half_distances,
         min_half_distance, &result->assignments, &upper_bounds, &lower_bounds,
-        &result->skipped_distance_calls, &distance_stats);
+        &result->skipped_distance_calls, distance_context, &distance_stats);
     result->iterations = iteration + 1;
     if (!changed) {
       result->converged = true;
@@ -428,8 +444,14 @@ bool run_elkan_kmeans(const float *data, uint64_t row_count,
 
   std::vector<float> final_movement;
   update_centers(points, row_count, config, &result->assignments, upper_bounds,
-                 &result->centers, &final_movement, &distance_stats);
-  result->distance_calls = distance_stats.calls;
+                 &result->centers, &final_movement, distance_context,
+                 &distance_stats);
+  result->packed_distance_calls = scan_stats.distance_evaluations;
+  result->centroid_scan_kernel =
+      scan_stats.distance_evaluations == 0
+          ? "not_run"
+          : pq_centroid_scan_kernel_name(scan_stats.kernel);
+  result->distance_calls = distance_stats.calls + result->packed_distance_calls;
   if (error != nullptr) error->clear();
   return true;
 }

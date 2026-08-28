@@ -95,6 +95,46 @@ TEST(VectorSimdDistanceTest, SupportsZeroVectorsAndNullStats) {
                                             32, nullptr));
 }
 
+TEST(VectorSimdDistanceTest, ContextSelectsKernelOnceForShortVectors) {
+  constexpr size_t kDimension = 4;
+  const std::vector<float> lhs = make_vector(kDimension, 0.5F, 1.0F);
+  const std::vector<float> rhs = make_vector(kDimension, -0.25F, 0.0F);
+  const float expected = vector_index::l2_distance_scalar(
+      lhs.data() + 1, rhs.data() + 1, kDimension);
+
+  const vector_index::l2_distance_context context =
+      vector_index::make_l2_distance_context(kDimension);
+  EXPECT_EQ(vector_index::l2_distance_kernel::kScalar, context.kernel);
+  vector_index::l2_distance_stats stats;
+  EXPECT_FLOAT_EQ(
+      expected, vector_index::l2_distance_with_context(context, lhs.data() + 1,
+                                                       rhs.data() + 1, &stats));
+  EXPECT_FLOAT_EQ(
+      expected, vector_index::l2_distance_with_context(context, lhs.data() + 1,
+                                                       rhs.data() + 1, &stats));
+  EXPECT_EQ(2U, stats.calls);
+  EXPECT_EQ(context.kernel, stats.kernel);
+}
+
+TEST(VectorSimdDistanceTest, ContextMatchesScalarAcrossDimensions) {
+  constexpr std::array<size_t, 6> dimensions = {1, 4, 8, 16, 31, 128};
+  for (const size_t dimension : dimensions) {
+    const std::vector<float> lhs = make_vector(dimension, 0.75F, -2.0F);
+    const std::vector<float> rhs = make_vector(dimension, -0.5F, 3.0F);
+    const float expected = vector_index::l2_distance_scalar(
+        lhs.data() + 1, rhs.data() + 1, dimension);
+    const vector_index::l2_distance_context context =
+        vector_index::make_l2_distance_context(dimension);
+    vector_index::l2_distance_stats stats;
+    const float actual = vector_index::l2_distance_with_context(
+        context, lhs.data() + 1, rhs.data() + 1, &stats);
+
+    EXPECT_NEAR(expected, actual, 1e-5F) << "dimension=" << dimension;
+    EXPECT_EQ(1U, stats.calls);
+    EXPECT_EQ(context.kernel, stats.kernel);
+  }
+}
+
 TEST(VectorSimdDistanceTest, KernelNamesAreStable) {
   EXPECT_STREQ("scalar", vector_index::l2_distance_kernel_name(
                              vector_index::l2_distance_kernel::kScalar));
@@ -104,6 +144,27 @@ TEST(VectorSimdDistanceTest, KernelNamesAreStable) {
                              vector_index::l2_distance_kernel::kAvx512));
   EXPECT_STREQ("neon", vector_index::l2_distance_kernel_name(
                            vector_index::l2_distance_kernel::kNeon));
+  EXPECT_STREQ("unknown", vector_index::l2_distance_kernel_name(
+                              static_cast<vector_index::l2_distance_kernel>(
+                                  999)));
+}
+
+TEST(VectorSimdDistanceTest, NullContextFunctionFallsBackToScalar) {
+  constexpr size_t kDimension = 4;
+  const std::vector<float> lhs = make_vector(kDimension, 0.5F, 1.0F);
+  const std::vector<float> rhs = make_vector(kDimension, -0.25F, 0.0F);
+  const float expected = vector_index::l2_distance_scalar(
+      lhs.data() + 1, rhs.data() + 1, kDimension);
+
+  vector_index::l2_distance_context context;
+  context.dimension = kDimension;
+  context.function = nullptr;
+  vector_index::l2_distance_stats stats;
+  EXPECT_FLOAT_EQ(
+      expected, vector_index::l2_distance_with_context(context, lhs.data() + 1,
+                                                       rhs.data() + 1, &stats));
+  EXPECT_EQ(vector_index::l2_distance_kernel::kScalar, stats.kernel);
+  EXPECT_EQ(1U, stats.calls);
 }
 
 }  // namespace vector_simd_distance_unittest

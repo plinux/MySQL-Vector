@@ -652,7 +652,10 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_index_backend_diskann.cc
     vector/vector_index_backend_faiss.cc
     vector/vector_diskann_artifact_layout.cc
+    vector/vector_diskann_pq_runtime.cc
     vector/vector_elkan_kmeans.cc
+    vector/vector_pq_centroid_scan.cc
+    vector/vector_simd_distance.cc
     vector/vector_build_pipeline_policy.cc
     vector/vector_index_build_options.cc
     vector/vector_index_ddl_formatter.cc
@@ -678,7 +681,6 @@ IF(HAVE_VECTOR_INDEX)
     vector/vector_dml_sync.cc
     vector/vector_trx_participant.cc
     vector/vector_mapped_search.cc
-    vector/vector_simd_distance.cc
     vector/vector_utils.cc
     vector/item_vectorfunc.cc
     vector/item_vectorfunc_internal.cc
@@ -688,6 +690,13 @@ IF(HAVE_VECTOR_INDEX)
     vector/item_vectorfunc_txn.cc
     vector/item_vectorfunc_formatter.cc
   )
+
+  IF(MYSQL_VECTOR_ENABLE_NATIVE_SIMD)
+    SET_PROPERTY(SOURCE
+      vector/vector_pq_centroid_scan.cc
+      vector/vector_simd_distance.cc
+      APPEND PROPERTY COMPILE_DEFINITIONS MYSQL_VECTOR_ENABLE_NATIVE_SIMD=1)
+  ENDIF()
 ENDIF()
 
 IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
@@ -697,6 +706,7 @@ IF(HAVE_VECTOR_INDEX AND WITH_UNIT_TESTS)
     vector/vector_index_backend_diskann.cc
     vector/vector_index_backend_hnswlib.cc
     vector/vector_index_diagnostics.cc
+    vector/vector_diskann_pq_runtime.cc
     vector/vector_index_metadata_store.cc
     vector/vector_index_registry.cc
     vector/vector_index_registry_lifecycle.cc

@@ -46,7 +46,9 @@ struct elkan_kmeans_result {
   std::vector<uint32_t> assignments;
   std::vector<float> centroid;
   uint64_t distance_calls{0};
+  uint64_t packed_distance_calls{0};
   uint64_t skipped_distance_calls{0};
+  std::string centroid_scan_kernel{"not_run"};
   uint32_t iterations{0};
   bool converged{false};
 };

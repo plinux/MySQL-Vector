@@ -38,6 +38,15 @@ struct l2_distance_stats {
   uint64_t calls{0};
 };
 
+using l2_distance_function = float (*)(const float *, const float *, size_t);
+
+/** L2 kernel selected once for a fixed vector dimension. */
+struct l2_distance_context {
+  size_t dimension{0};
+  l2_distance_kernel kernel{l2_distance_kernel::kScalar};
+  l2_distance_function function{nullptr};
+};
+
 /**
   Compute squared L2 distance with the portable scalar implementation.
 
@@ -63,6 +72,22 @@ float l2_distance_scalar(const float *lhs, const float *rhs, size_t dimension);
 */
 float l2_distance(const float *lhs, const float *rhs, size_t dimension,
                   l2_distance_stats *stats);
+
+/** Create a reusable L2 context without per-distance CPU feature checks. */
+l2_distance_context make_l2_distance_context(size_t dimension);
+
+/**
+  Compute squared L2 distance with a previously selected kernel.
+
+  @param context Reusable dimension and kernel selection.
+  @param lhs First vector.
+  @param rhs Second vector.
+  @param stats Optional diagnostics sink.
+  @return Sum of squared element-wise differences.
+*/
+float l2_distance_with_context(const l2_distance_context &context,
+                               const float *lhs, const float *rhs,
+                               l2_distance_stats *stats);
 
 /** Return a stable, lowercase name for a distance kernel. */
 const char *l2_distance_kernel_name(l2_distance_kernel kernel);

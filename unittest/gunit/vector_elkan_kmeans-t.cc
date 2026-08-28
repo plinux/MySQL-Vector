@@ -169,11 +169,47 @@ TEST(VectorElkanKmeansTest, PrunesDistancesAndMatchesBruteForceAssignment) {
       << error;
   EXPECT_GT(result.skipped_distance_calls, 0U);
   EXPECT_GT(result.distance_calls, 0U);
+  EXPECT_EQ(8U * config.center_count, result.packed_distance_calls);
+  EXPECT_NE("not_run", result.centroid_scan_kernel);
   for (uint64_t row = 0; row < 8; ++row) {
     EXPECT_EQ(brute_force_assignment(data, row, config, result),
               result.assignments[static_cast<size_t>(row)])
         << "row=" << row;
   }
+}
+
+TEST(VectorElkanKmeansTest, ThreadBudgetDoesNotChangeDeterministicResult) {
+  constexpr uint32_t kRows = 64;
+  constexpr uint32_t kDimension = 4;
+  constexpr uint32_t kCenters = 8;
+  std::vector<float> data(static_cast<size_t>(kRows) * kDimension);
+  for (uint32_t row = 0; row < kRows; ++row) {
+    for (uint32_t dim = 0; dim < kDimension; ++dim) {
+      data[static_cast<size_t>(row) * kDimension + dim] =
+          static_cast<float>((row * 17 + dim * 11) % 53) / 53.0F;
+    }
+  }
+
+  vector_index::elkan_kmeans_config serial_config =
+      make_config(kDimension, kCenters);
+  serial_config.seed = 11;
+  serial_config.threads = 1;
+  vector_index::elkan_kmeans_config parallel_config = serial_config;
+  parallel_config.threads = 8;
+
+  vector_index::elkan_kmeans_result serial_result;
+  vector_index::elkan_kmeans_result parallel_result;
+  std::string error;
+  ASSERT_TRUE(vector_index::run_elkan_kmeans(data.data(), kRows, serial_config,
+                                             &serial_result, &error));
+  ASSERT_TRUE(vector_index::run_elkan_kmeans(
+      data.data(), kRows, parallel_config, &parallel_result, &error));
+  EXPECT_EQ(serial_result.assignments, parallel_result.assignments);
+  EXPECT_EQ(serial_result.centers, parallel_result.centers);
+  EXPECT_EQ(serial_result.packed_distance_calls,
+            parallel_result.packed_distance_calls);
+  EXPECT_EQ(serial_result.centroid_scan_kernel,
+            parallel_result.centroid_scan_kernel);
 }
 
 TEST(VectorElkanKmeansTest, RejectsTooFewRows) {
