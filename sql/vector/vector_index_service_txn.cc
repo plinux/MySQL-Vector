@@ -27,7 +27,6 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -66,29 +65,12 @@ namespace {
 using detail::all_true;
 using detail::build_backend_from_config;
 using detail::index_configs_equal;
+using detail::mark_lifecycle_failure;
 
 constexpr const char *LIFECYCLE_BULK_LOADING = "bulk_loading";
 constexpr const char *k_pending_spill_directory = "pending_spill";
 constexpr uint32_t ERROR_BACKEND_APPLY_FAILED = 1006;
 constexpr uint32_t ERROR_MUTATION_NOT_SUPPORTED = 1005;
-
-uint64_t now_unix_epoch_seconds() {
-  return static_cast<uint64_t>(std::time(nullptr));
-}
-
-void mark_lifecycle_state(
-    vector_index::index_service::lifecycle_info *lifecycle, const char *state) {
-  lifecycle->state = state;
-  ++lifecycle->version;
-}
-
-void mark_lifecycle_failure(
-    vector_index::index_service::lifecycle_info *lifecycle,
-    uint32_t error_code) {
-  mark_lifecycle_state(lifecycle, "failed");
-  lifecycle->last_error_code = error_code;
-  lifecycle->last_error_ts = now_unix_epoch_seconds();
-}
 
 std::filesystem::path pending_spill_directory_path() {
   const std::string root = detail::vector_index_root_path();

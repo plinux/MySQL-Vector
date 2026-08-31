@@ -3044,6 +3044,20 @@ std::string standalone_entry_store::raw_docid_path(
   return path.string();
 }
 
+namespace {
+
+uint64_t now_unix_epoch_seconds() {
+  return static_cast<uint64_t>(std::time(nullptr));
+}
+
+void mark_lifecycle_state(index_service::lifecycle_info *lifecycle,
+                          const char *state) {
+  lifecycle->state = state;
+  ++lifecycle->version;
+}
+
+}  // namespace
+
 namespace detail {
 
 bool index_configs_equal(const index_service::index_config &lhs,
@@ -3218,6 +3232,14 @@ std::unique_ptr<backend> build_backend_from_config(
   return backend;
 }
 
+void mark_lifecycle_failure(
+    vector_index::index_service::lifecycle_info *lifecycle,
+    uint32_t error_code) {
+  mark_lifecycle_state(lifecycle, "failed");
+  lifecycle->last_error_code = error_code;
+  lifecycle->last_error_ts = now_unix_epoch_seconds();
+}
+
 }  // namespace detail
 
 namespace {
@@ -3225,6 +3247,7 @@ namespace {
 using detail::all_true;
 using detail::build_backend_from_config;
 using detail::index_configs_equal;
+using detail::mark_lifecycle_failure;
 
 constexpr const char *LIFECYCLE_READY = "ready";
 constexpr const char *LIFECYCLE_BULK_LOADING = "bulk_loading";
@@ -3237,24 +3260,6 @@ constexpr uint32_t ERROR_BACKEND_CREATE_FAILED = 1002;
 constexpr uint32_t ERROR_BACKEND_RECOVER_FAILED = 1003;
 constexpr uint32_t ERROR_REPLAY_STATE_FAILED = 1004;
 constexpr const char *kSegmentedBackendVariant = "segmented";
-
-uint64_t now_unix_epoch_seconds() {
-  return static_cast<uint64_t>(std::time(nullptr));
-}
-
-void mark_lifecycle_state(
-    vector_index::index_service::lifecycle_info *lifecycle, const char *state) {
-  lifecycle->state = state;
-  ++lifecycle->version;
-}
-
-void mark_lifecycle_failure(
-    vector_index::index_service::lifecycle_info *lifecycle,
-    uint32_t error_code) {
-  mark_lifecycle_state(lifecycle, LIFECYCLE_FAILED);
-  lifecycle->last_error_code = error_code;
-  lifecycle->last_error_ts = now_unix_epoch_seconds();
-}
 
 void mark_lifecycle_ready(
     vector_index::index_service::lifecycle_info *lifecycle) {
@@ -5710,9 +5715,7 @@ bool index_service::begin_bulk_load(const std::string &index_name) {
     return false;
   }
 
-  mark_lifecycle_state(&lifecycle_it->second, LIFECYCLE_BULK_LOADING);
-  lifecycle_it->second.last_error_code = ERROR_NONE;
-  lifecycle_it->second.last_error_ts = 0;
+  mark_lifecycle_bulk_loading(&lifecycle_it->second);
   return true;
 }
 

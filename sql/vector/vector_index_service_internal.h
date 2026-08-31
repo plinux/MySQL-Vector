@@ -52,6 +52,11 @@ void merge_segment_build_diagnostics(
     uint64_t segment_row_count, const backend_build_diagnostics &source,
     backend_build_diagnostics *aggregate);
 
+/** Mark a lifecycle transition as failed with the supplied error code. */
+void mark_lifecycle_failure(
+    vector_index::index_service::lifecycle_info *lifecycle,
+    uint32_t error_code);
+
 template <typename... Bools>
 inline bool all_true(Bools... values) {
   return (... && static_cast<bool>(values));
