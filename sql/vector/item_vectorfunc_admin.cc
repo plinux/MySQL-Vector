@@ -25,6 +25,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <string>
 #include <utility>
@@ -97,7 +98,7 @@ static bool stage_and_binlog_statement(
   return false;
 }
 
-static bool stage_config_statement(
+static bool stage_pre_authorized_config_statement(
     const std::string &index_name,
     vector_statement_publication::config_change config,
     std::vector<uint64_t> values, const char *function_name) {
@@ -109,6 +110,18 @@ static bool stage_config_statement(
          stage_and_binlog_statement(
              vector_index_truth_store::publication_operation::kUpdateConfig,
              index_name, encoded, false, function_name);
+}
+
+static bool stage_authorized_config_statement(
+    const std::string &index_name,
+    vector_statement_publication::config_change config,
+    std::initializer_list<uint64_t> values, const char *function_name) {
+  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
+                                         function_name, false)) {
+    return false;
+  }
+  return stage_pre_authorized_config_statement(
+      index_name, config, std::vector<uint64_t>(values), function_name);
 }
 
 static bool stage_diskann_boolean_config(
@@ -123,12 +136,8 @@ static bool stage_diskann_boolean_config(
     my_error(ER_WRONG_ARGUMENTS, MYF(0), function_name);
     return false;
   }
-  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
-                                         function_name, false)) {
-    return false;
-  }
-  return stage_config_statement(index_name, config, {value ? 1U : 0U},
-                                function_name);
+  return stage_authorized_config_statement(index_name, config,
+                                           {value ? 1U : 0U}, function_name);
 }
 
 static bool stage_index_statement(
@@ -340,10 +349,7 @@ longlong Item_func_vec_index_set_search_ef::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
-                                         func_name(), false))
-    return error_int();
-  if (!stage_config_statement(
+  if (!stage_authorized_config_statement(
           index_name, vector_statement_publication::config_change::kSearchEf,
           {search_ef}, func_name()))
     return error_int();
@@ -374,10 +380,7 @@ longlong Item_func_vec_index_set_hnsw_build_params::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
-                                         func_name(), false))
-    return error_int();
-  if (!stage_config_statement(
+  if (!stage_authorized_config_statement(
           index_name,
           vector_statement_publication::config_change::kHnswBuildParams,
           {hnsw_m, hnsw_ef_construction}, func_name()))
@@ -409,10 +412,7 @@ longlong Item_func_vec_index_set_faiss_ivf_params::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
-                                         func_name(), false))
-    return error_int();
-  if (!stage_config_statement(
+  if (!stage_authorized_config_statement(
           index_name,
           vector_statement_publication::config_change::kFaissIvfParams,
           {faiss_nlist, faiss_nprobe}, func_name()))
@@ -450,14 +450,10 @@ longlong Item_func_vec_index_set_faiss_ivfpq_params::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
-                                         func_name(), false))
-    return error_int();
-  if (!stage_config_statement(
+  if (!stage_authorized_config_statement(
           index_name,
           vector_statement_publication::config_change::kFaissIvfPqParams,
-          {faiss_nlist, faiss_nprobe, faiss_pq_m, faiss_pq_bits},
-          func_name()))
+          {faiss_nlist, faiss_nprobe, faiss_pq_m, faiss_pq_bits}, func_name()))
     return error_int();
   null_value = false;
   return 1;
@@ -497,11 +493,10 @@ longlong Item_func_vec_index_set_diskann_build_params::val_int() {
       arg_count >= 4 && diskann_build_threads_arg != 0
           ? diskann_build_threads_arg
           : static_cast<uint32_t>(opt_vector_diskann_build_threads);
-  if (!stage_config_statement(
+  if (!stage_pre_authorized_config_statement(
           index_name,
           vector_statement_publication::config_change::kDiskannBuildParams,
-          {diskann_max_degree, diskann_build_complexity,
-           diskann_build_threads},
+          {diskann_max_degree, diskann_build_complexity, diskann_build_threads},
           func_name()))
     return error_int();
   null_value = false;
@@ -528,13 +523,9 @@ longlong Item_func_vec_index_set_diskann_search_complexity::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
-                                         func_name(), false))
-    return error_int();
-  if (!stage_config_statement(
+  if (!stage_authorized_config_statement(
           index_name,
-          vector_statement_publication::config_change::
-              kDiskannSearchComplexity,
+          vector_statement_publication::config_change::kDiskannSearchComplexity,
           {diskann_search_complexity}, func_name()))
     return error_int();
   null_value = false;
@@ -561,10 +552,7 @@ longlong Item_func_vec_index_set_diskann_search_beamwidth::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
-                                         func_name(), false))
-    return error_int();
-  if (!stage_config_statement(
+  if (!stage_authorized_config_statement(
           index_name,
           vector_statement_publication::config_change::kDiskannSearchBeamwidth,
           {diskann_search_beamwidth}, func_name()))
@@ -593,13 +581,9 @@ longlong Item_func_vec_index_set_diskann_pq_code_budget_size::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
-                                         func_name(), false))
-    return error_int();
-  if (!stage_config_statement(
+  if (!stage_authorized_config_statement(
           index_name,
-          vector_statement_publication::config_change::
-              kDiskannPqCodeBudgetSize,
+          vector_statement_publication::config_change::kDiskannPqCodeBudgetSize,
           {static_cast<uint64_t>(diskann_pq_code_budget_size)}, func_name()))
     return error_int();
   null_value = false;
@@ -626,10 +610,7 @@ longlong Item_func_vec_index_set_diskann_disk_pq_dims::val_int() {
     return error_int();
   }
 
-  if (check_vector_existing_index_access(current_thd, index_name, ALTER_ACL,
-                                         func_name(), false))
-    return error_int();
-  if (!stage_config_statement(
+  if (!stage_authorized_config_statement(
           index_name,
           vector_statement_publication::config_change::kDiskannDiskPqDims,
           {diskann_disk_pq_dims}, func_name()))
@@ -744,7 +725,7 @@ longlong Item_func_vec_index_set_diskann_build_mode::val_int() {
     return 0;
   }
 
-  if (!stage_config_statement(
+  if (!stage_pre_authorized_config_statement(
           index_name,
           vector_statement_publication::config_change::kDiskannBuildMode,
           {static_cast<uint64_t>(build_mode)}, func_name()))
