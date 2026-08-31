@@ -35,6 +35,50 @@
 
 using namespace vector_itemfunc_internal;
 
+namespace {
+
+using txn_completion_operation = bool (*)(THD *, uint64_t);
+
+template <typename ErrorHandler>
+longlong eval_txn_completion(Item_func_vector_mutator *item, Item *txn_arg,
+                             txn_completion_operation operation,
+                             ErrorHandler error_handler) {
+  item->null_value = true;
+
+  ulonglong txn_id = 0;
+  if (!eval_uint_arg(txn_arg, txn_id) ||
+      !operation(current_thd, static_cast<uint64_t>(txn_id))) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), item->func_name());
+    return error_handler();
+  }
+
+  item->null_value = false;
+  return 1;
+}
+
+using named_txn_operation = bool (*)(THD *, uint64_t, const std::string &);
+
+template <typename ErrorHandler>
+longlong eval_named_txn_operation(Item_func_vector_mutator *item, Item *txn_arg,
+                                  Item *name_arg, named_txn_operation operation,
+                                  ErrorHandler error_handler) {
+  item->null_value = true;
+
+  String name_buf;
+  uint64_t txn_id = 0;
+  std::string name;
+  if (!decode_txn_and_name(txn_arg, name_arg, &name_buf, &txn_id, &name) ||
+      !operation(current_thd, txn_id, name)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), item->func_name());
+    return error_handler();
+  }
+
+  item->null_value = false;
+  return 1;
+}
+
+}  // namespace
+
 bool Item_func_vec_index_txn_begin::resolve_type(THD *thd) {
   if (param_type_is_default(thd, 0, 0)) return true;
   set_nullable(false);
@@ -168,22 +212,8 @@ bool Item_func_vec_index_txn_commit::resolve_type(THD *thd) {
 
 longlong Item_func_vec_index_txn_commit::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 1);
-  null_value = true;
-
-  ulonglong txn_id = 0;
-  if (!eval_uint_arg(args[0], txn_id)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  if (!vector_index_registry::commit_txn(current_thd,
-                                         static_cast<uint64_t>(txn_id))) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  null_value = false;
-  return 1;
+  return eval_txn_completion(this, args[0], vector_index_registry::commit_txn,
+                             [this]() { return this->error_int(); });
 }
 
 bool Item_func_vec_index_txn_rollback::resolve_type(THD *thd) {
@@ -194,22 +224,8 @@ bool Item_func_vec_index_txn_rollback::resolve_type(THD *thd) {
 
 longlong Item_func_vec_index_txn_rollback::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 1);
-  null_value = true;
-
-  ulonglong txn_id = 0;
-  if (!eval_uint_arg(args[0], txn_id)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  if (!vector_index_registry::rollback_txn(
-          current_thd, static_cast<uint64_t>(txn_id))) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  null_value = false;
-  return 1;
+  return eval_txn_completion(this, args[0], vector_index_registry::rollback_txn,
+                             [this]() { return this->error_int(); });
 }
 
 bool Item_func_vec_index_txn_savepoint::resolve_type(THD *thd) {
@@ -220,25 +236,9 @@ bool Item_func_vec_index_txn_savepoint::resolve_type(THD *thd) {
 
 longlong Item_func_vec_index_txn_savepoint::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 2);
-  null_value = true;
-
-  String name_buf;
-  uint64_t txn_id = 0;
-  std::string savepoint_name;
-  if (!decode_txn_and_name(args[0], args[1], &name_buf, &txn_id,
-                           &savepoint_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  if (!vector_index_registry::savepoint_txn(current_thd, txn_id,
-                                             savepoint_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  null_value = false;
-  return 1;
+  return eval_named_txn_operation(this, args[0], args[1],
+                                  vector_index_registry::savepoint_txn,
+                                  [this]() { return this->error_int(); });
 }
 
 bool Item_func_vec_index_txn_rollback_to::resolve_type(THD *thd) {
@@ -249,25 +249,9 @@ bool Item_func_vec_index_txn_rollback_to::resolve_type(THD *thd) {
 
 longlong Item_func_vec_index_txn_rollback_to::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 2);
-  null_value = true;
-
-  String name_buf;
-  uint64_t txn_id = 0;
-  std::string savepoint_name;
-  if (!decode_txn_and_name(args[0], args[1], &name_buf, &txn_id,
-                           &savepoint_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  if (!vector_index_registry::rollback_to_savepoint_txn(
-          current_thd, txn_id, savepoint_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  null_value = false;
-  return 1;
+  return eval_named_txn_operation(
+      this, args[0], args[1], vector_index_registry::rollback_to_savepoint_txn,
+      [this]() { return this->error_int(); });
 }
 
 bool Item_func_vec_index_txn_release_savepoint::resolve_type(THD *thd) {
@@ -278,25 +262,9 @@ bool Item_func_vec_index_txn_release_savepoint::resolve_type(THD *thd) {
 
 longlong Item_func_vec_index_txn_release_savepoint::val_int() {
   assert_fixed_arg_count(fixed, arg_count, 2);
-  null_value = true;
-
-  String name_buf;
-  uint64_t txn_id = 0;
-  std::string savepoint_name;
-  if (!decode_txn_and_name(args[0], args[1], &name_buf, &txn_id,
-                           &savepoint_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  if (!vector_index_registry::release_savepoint_txn(
-          current_thd, txn_id, savepoint_name)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return error_int();
-  }
-
-  null_value = false;
-  return 1;
+  return eval_named_txn_operation(this, args[0], args[1],
+                                  vector_index_registry::release_savepoint_txn,
+                                  [this]() { return this->error_int(); });
 }
 
 bool Item_func_vec_debug_truth_store_get_hex::resolve_type(THD *thd) {
