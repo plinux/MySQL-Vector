@@ -40,12 +40,6 @@ using namespace vector_itemfunc_internal;
 
 namespace {
 
-bool eval_scalar_vector_arg(Item *arg, String *buf, const String **value) {
-  *value = arg->val_str(buf);
-  if (*value == nullptr || arg->null_value) return false;
-  return true;
-}
-
 template <typename Operation>
 bool eval_binary_vector_function(Item_real_func *item, Item *lhs_arg,
                                  Item *rhs_arg, Operation operation,
@@ -56,8 +50,8 @@ bool eval_binary_vector_function(Item_real_func *item, Item *lhs_arg,
   String rhs_buf;
   const String *lhs = nullptr;
   const String *rhs = nullptr;
-  if (!eval_scalar_vector_arg(lhs_arg, &lhs_buf, &lhs) ||
-      !eval_scalar_vector_arg(rhs_arg, &rhs_buf, &rhs)) {
+  if (!eval_vector_arg(lhs_arg, &lhs_buf, &lhs) ||
+      !eval_vector_arg(rhs_arg, &rhs_buf, &rhs)) {
     return false;
   }
 
@@ -321,8 +315,8 @@ double Item_func_vec_distance::val_real() {
   String rhs_buf;
   const String *lhs = nullptr;
   const String *rhs = nullptr;
-  if (!eval_scalar_vector_arg(args[0], &lhs_buf, &lhs) ||
-      !eval_scalar_vector_arg(args[1], &rhs_buf, &rhs)) {
+  if (!eval_vector_arg(args[0], &lhs_buf, &lhs) ||
+      !eval_vector_arg(args[1], &rhs_buf, &rhs)) {
     return 0.0;
   }
 
