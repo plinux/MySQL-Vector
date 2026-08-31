@@ -24,8 +24,10 @@
 #ifndef SQL_VECTOR_INDEX_BACKEND_INTERNAL_INCLUDED
 #define SQL_VECTOR_INDEX_BACKEND_INTERNAL_INCLUDED
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "sql/vector/vector_index_backend.h"
 
@@ -42,6 +44,21 @@ extern const char *kFaissExternalSnapshotPrefix;
 extern const char *kDiskAnnExternalSnapshotPrefix;
 extern const char *kFaissExternalSnapshotSuffix;
 
+/**
+  Validate and collect raw FBIN segments for a backend rebuild.
+
+  @param reader Supplies raw segments.
+  @param dimension Expected vector dimension.
+  @param segments Collected validated segments.
+  @param total_rows Total row count across collected segments.
+
+  @retval true All supplied segments are valid and collected.
+  @retval false Arguments, row counts, or FBIN metadata are invalid.
+*/
+bool collect_validated_raw_segments(const raw_vector_segment_reader &reader,
+                                    size_t dimension,
+                                    std::vector<raw_vector_segment> *segments,
+                                    size_t *total_rows);
 bool ensure_parent_directory(const std::string &path);
 bool load_external_manifest_generation_from_file(const std::string &path,
                                                  const char *expected_header,

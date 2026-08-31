@@ -44,6 +44,7 @@
 
 #include "my_dbug.h"
 #include "sql/vector/vector_index_backend_common.h"
+#include "sql/vector/vector_index_backend_internal.h"
 #include "sql/vector/vector_index_build_options.h"
 #include "sql/vector/vector_index_limits.h"
 #include "sql/vector/vector_index_runtime_thread_pool.h"
@@ -1111,23 +1112,8 @@ bool hnswlib_backend::rebuild_from_raw_segments(
 
   std::vector<raw_vector_segment> segments;
   size_t total_rows = 0;
-  if (!reader([this, &segments,
-               &total_rows](const raw_vector_segment &segment) {
-        if (segment.dimension != m_dimension ||
-            segment.row_count > std::numeric_limits<size_t>::max() - total_rows)
-          return false;
-        vector_load_file_info info;
-        std::string error;
-        if (!read_fbin_file_info(segment.vector_path, m_dimension, &info,
-                                 &error) ||
-            info.row_count != segment.row_count ||
-            info.dimension != segment.dimension) {
-          return false;
-        }
-        total_rows += segment.row_count;
-        segments.push_back(segment);
-        return true;
-      })) {
+  if (!detail::collect_validated_raw_segments(reader, m_dimension, &segments,
+                                              &total_rows)) {
     return false;
   }
 

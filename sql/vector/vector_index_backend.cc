@@ -96,6 +96,33 @@ std::mutex g_faiss_external_snapshot_root_mutex;
 std::string g_faiss_external_snapshot_root_override;
 #endif
 
+bool collect_validated_raw_segments(const raw_vector_segment_reader &reader,
+                                    size_t dimension,
+                                    std::vector<raw_vector_segment> *segments,
+                                    size_t *total_rows) {
+  if (!reader || segments == nullptr || total_rows == nullptr) return false;
+
+  segments->clear();
+  *total_rows = 0;
+  return reader([dimension, segments,
+                 total_rows](const raw_vector_segment &segment) {
+    if (segment.dimension != dimension ||
+        segment.row_count > std::numeric_limits<size_t>::max() - *total_rows) {
+      return false;
+    }
+    vector_load_file_info info;
+    std::string error;
+    if (!read_fbin_file_info(segment.vector_path, dimension, &info, &error) ||
+        info.row_count != segment.row_count ||
+        info.dimension != segment.dimension) {
+      return false;
+    }
+    *total_rows += segment.row_count;
+    segments->push_back(segment);
+    return true;
+  });
+}
+
 bool ensure_parent_directory(const std::string &path);
 
 bool load_external_manifest_generation_from_file(const std::string &path,
