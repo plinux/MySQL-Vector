@@ -122,9 +122,9 @@ std::unordered_set<std::string> remove_incomplete_create_metadata_rows(
   return removed_index_names;
 }
 
-void remove_committed_rows_for_indexes(
-    const std::unordered_set<std::string> &index_names,
-    std::vector<vector_index_metadata_store::committed_row> *rows) {
+template <typename Row>
+void remove_rows_for_indexes(const std::unordered_set<std::string> &index_names,
+                             std::vector<Row> *rows) {
   if (index_names.empty() || rows == nullptr) return;
   rows->erase(std::remove_if(rows->begin(), rows->end(),
                              [&index_names](const auto &row) {
@@ -132,42 +132,30 @@ void remove_committed_rows_for_indexes(
                                                      row.index_name);
                              }),
               rows->end());
+}
+
+void remove_committed_rows_for_indexes(
+    const std::unordered_set<std::string> &index_names,
+    std::vector<vector_index_metadata_store::committed_row> *rows) {
+  remove_rows_for_indexes(index_names, rows);
 }
 
 void remove_change_log_rows_for_indexes(
     const std::unordered_set<std::string> &index_names,
     std::vector<vector_index_metadata_store::change_log_row> *rows) {
-  if (index_names.empty() || rows == nullptr) return;
-  rows->erase(std::remove_if(rows->begin(), rows->end(),
-                             [&index_names](const auto &row) {
-                               return has_index_name(index_names,
-                                                     row.index_name);
-                             }),
-              rows->end());
+  remove_rows_for_indexes(index_names, rows);
 }
 
 void remove_prepared_rows_for_indexes(
     const std::unordered_set<std::string> &index_names,
     std::vector<vector_index_metadata_store::prepared_change_row> *rows) {
-  if (index_names.empty() || rows == nullptr) return;
-  rows->erase(std::remove_if(rows->begin(), rows->end(),
-                             [&index_names](const auto &row) {
-                               return has_index_name(index_names,
-                                                     row.index_name);
-                             }),
-              rows->end());
+  remove_rows_for_indexes(index_names, rows);
 }
 
 void remove_segment_task_rows_for_indexes(
     const std::unordered_set<std::string> &index_names,
     std::vector<vector_index_metadata_store::segment_task_row> *rows) {
-  if (index_names.empty() || rows == nullptr) return;
-  rows->erase(std::remove_if(rows->begin(), rows->end(),
-                             [&index_names](const auto &row) {
-                               return has_index_name(index_names,
-                                                     row.index_name);
-                             }),
-              rows->end());
+  remove_rows_for_indexes(index_names, rows);
 }
 
 std::unordered_set<std::string> metadata_index_names(
