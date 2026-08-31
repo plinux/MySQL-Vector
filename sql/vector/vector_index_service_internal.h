@@ -54,7 +54,7 @@ void merge_segment_build_diagnostics(
 
 template <typename... Bools>
 inline bool all_true(Bools... values) {
-  return (... & static_cast<bool>(values));
+  return (... && static_cast<bool>(values));
 }
 
 inline bool can_rebuild_after_search_failure(
