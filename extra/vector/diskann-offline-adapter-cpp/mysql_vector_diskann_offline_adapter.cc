@@ -405,10 +405,6 @@ class scoped_build_thread_controls {
   scoped_openblas_threads m_openblas_threads;
 };
 
-std::filesystem::path raw_data_path(const std::filesystem::path &prefix) {
-  return std::filesystem::path(prefix.string() + "_mysql_vector_raw.fbin");
-}
-
 std::filesystem::path doc_ids_path(const std::filesystem::path &prefix) {
   return std::filesystem::path(prefix.string() + "_mysql_vector_docids.bin");
 }
