@@ -996,15 +996,11 @@ std::unique_ptr<backend> create_backend(size_t dimension, metric_type metric,
       return std::make_unique<faiss_backend>(dimension, metric, mode, index_name);
 
     case backend_provider::kDiskAnn:
-      if (mode == backend_mode::kExternal)
-        return std::make_unique<diskann_backend>(dimension, metric, mode,
-                                                index_name);
-      return nullptr;
+      return std::make_unique<diskann_backend>(dimension, metric, mode,
+                                               index_name);
 
     case backend_provider::kHnswlib:
-      if (mode == backend_mode::kMemory)
-        return std::make_unique<hnswlib_backend>(dimension, metric, mode);
-      return nullptr;
+      return std::make_unique<hnswlib_backend>(dimension, metric, mode);
   }
 
   return nullptr;

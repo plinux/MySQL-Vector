@@ -302,12 +302,9 @@ bool normalize_segment_tasks_for_recovery(
 }
 
 uint32_t effective_hnsw_build_threads(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kHnswlib) {
+  if (provider != vector_index::backend_provider::kHnswlib) {
     return 0;
   }
   if (options.defaults_resolved) return options.build_threads;
@@ -318,12 +315,9 @@ uint32_t effective_hnsw_build_threads(
 }
 
 uint32_t effective_diskann_build_threads(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
   if (options.defaults_resolved) return options.build_threads;
@@ -334,12 +328,9 @@ uint32_t effective_diskann_build_threads(
 }
 
 uint32_t effective_diskann_max_degree(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
   if (options.defaults_resolved) return options.diskann_max_degree;
@@ -348,12 +339,9 @@ uint32_t effective_diskann_max_degree(
 }
 
 uint32_t effective_diskann_build_complexity(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
   if (options.defaults_resolved) return options.diskann_build_complexity;
@@ -364,12 +352,9 @@ uint32_t effective_diskann_build_complexity(
 }
 
 uint64_t effective_diskann_pq_code_budget_size(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
   if (options.defaults_resolved) return options.diskann_pq_code_budget_size;
@@ -377,12 +362,9 @@ uint64_t effective_diskann_pq_code_budget_size(
 }
 
 uint32_t effective_diskann_disk_pq_dims(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
   if (options.defaults_resolved) return options.diskann_disk_pq_dims;
@@ -391,12 +373,9 @@ uint32_t effective_diskann_disk_pq_dims(
 }
 
 bool effective_diskann_accelerate_build(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return false;
   }
   if (options.defaults_resolved) return options.diskann_accelerate_build;
@@ -407,12 +386,9 @@ bool effective_diskann_accelerate_build(
 }
 
 bool effective_diskann_shuffle_build(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return false;
   }
   if (options.defaults_resolved) return options.diskann_shuffle_build;
@@ -423,12 +399,9 @@ bool effective_diskann_shuffle_build(
 }
 
 bool effective_diskann_use_bfs_cache(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return false;
   }
   if (options.defaults_resolved) return options.diskann_use_bfs_cache;
@@ -439,12 +412,9 @@ bool effective_diskann_use_bfs_cache(
 }
 
 uint32_t effective_diskann_search_complexity(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
   if (options.defaults_resolved) return options.diskann_search_complexity;
@@ -452,12 +422,9 @@ uint32_t effective_diskann_search_complexity(
 }
 
 uint32_t effective_diskann_search_beamwidth(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kDiskAnn) {
+  if (provider != vector_index::backend_provider::kDiskAnn) {
     return 0;
   }
   if (options.defaults_resolved) return options.diskann_search_beamwidth;
@@ -465,12 +432,9 @@ uint32_t effective_diskann_search_beamwidth(
 }
 
 uint32_t effective_faiss_build_threads(
-    const std::string &provider,
+    vector_index::backend_provider provider,
     const vector_index_registry::create_index_options &options) {
-  vector_index::backend_provider provider_value =
-      vector_index::backend_provider::kNative;
-  if (!vector_index::parse_backend_provider(provider, &provider_value) ||
-      provider_value != vector_index::backend_provider::kFaiss) {
+  if (provider != vector_index::backend_provider::kFaiss) {
     return 0;
   }
   if (options.defaults_resolved) return options.build_threads;
@@ -848,15 +812,15 @@ bool resolve_create_index_definition(
   switch (provider_value) {
     case vector_index::backend_provider::kHnswlib:
       resolved.build_threads =
-          effective_hnsw_build_threads(*resolved_provider, requested_options);
+          effective_hnsw_build_threads(provider_value, requested_options);
       break;
     case vector_index::backend_provider::kFaiss:
       resolved.build_threads =
-          effective_faiss_build_threads(*resolved_provider, requested_options);
+          effective_faiss_build_threads(provider_value, requested_options);
       break;
     case vector_index::backend_provider::kDiskAnn:
       resolved.build_threads =
-          effective_diskann_build_threads(*resolved_provider, requested_options);
+          effective_diskann_build_threads(provider_value, requested_options);
       break;
     case vector_index::backend_provider::kNative:
       resolved.build_threads = 0;
@@ -864,30 +828,26 @@ bool resolve_create_index_definition(
   }
   resolved.build_threads_specified = true;
   resolved.diskann_max_degree =
-      effective_diskann_max_degree(*resolved_provider, requested_options);
+      effective_diskann_max_degree(provider_value, requested_options);
   resolved.diskann_build_complexity =
-      effective_diskann_build_complexity(*resolved_provider, requested_options);
+      effective_diskann_build_complexity(provider_value, requested_options);
   resolved.diskann_pq_code_budget_size =
-      effective_diskann_pq_code_budget_size(*resolved_provider,
-                                            requested_options);
+      effective_diskann_pq_code_budget_size(provider_value, requested_options);
   resolved.diskann_disk_pq_dims =
-      effective_diskann_disk_pq_dims(*resolved_provider, requested_options);
+      effective_diskann_disk_pq_dims(provider_value, requested_options);
   resolved.diskann_accelerate_build =
-      effective_diskann_accelerate_build(*resolved_provider,
-                                         requested_options);
+      effective_diskann_accelerate_build(provider_value, requested_options);
   resolved.diskann_accelerate_build_specified = true;
   resolved.diskann_shuffle_build =
-      effective_diskann_shuffle_build(*resolved_provider, requested_options);
+      effective_diskann_shuffle_build(provider_value, requested_options);
   resolved.diskann_shuffle_build_specified = true;
   resolved.diskann_use_bfs_cache =
-      effective_diskann_use_bfs_cache(*resolved_provider, requested_options);
+      effective_diskann_use_bfs_cache(provider_value, requested_options);
   resolved.diskann_use_bfs_cache_specified = true;
   resolved.diskann_search_complexity =
-      effective_diskann_search_complexity(*resolved_provider,
-                                          requested_options);
+      effective_diskann_search_complexity(provider_value, requested_options);
   resolved.diskann_search_beamwidth =
-      effective_diskann_search_beamwidth(*resolved_provider,
-                                         requested_options);
+      effective_diskann_search_beamwidth(provider_value, requested_options);
   if (!resolved.consistency_mode_specified) {
     resolved.consistency_mode = vector_index::global_index_consistency_mode();
   }
@@ -951,8 +911,6 @@ bool create_index_locked(
                                       &committed_entry_count)) {
     return rollback_failed_create();
   }
-  const std::string effective_provider =
-      vector_index::backend_provider_to_string(registered_config.provider);
   vector_index::index_consistency_mode consistency_mode =
       vector_index::index_consistency_mode::kTransactional;
   if (binding == nullptr) {
@@ -970,24 +928,24 @@ bool create_index_locked(
     return rollback_failed_create();
   }
   const uint32_t hnsw_build_threads =
-      effective_hnsw_build_threads(effective_provider, options);
+      effective_hnsw_build_threads(registered_config.provider, options);
   if (hnsw_build_threads != 0 &&
       !g_index_service.set_hnsw_build_threads(index_name, hnsw_build_threads)) {
     return rollback_failed_create();
   }
   const uint32_t faiss_build_threads =
-      effective_faiss_build_threads(effective_provider, options);
+      effective_faiss_build_threads(registered_config.provider, options);
   if (faiss_build_threads != 0 &&
       !g_index_service.set_faiss_build_threads(index_name,
                                                faiss_build_threads)) {
     return rollback_failed_create();
   }
   const uint32_t diskann_build_threads =
-      effective_diskann_build_threads(effective_provider, options);
+      effective_diskann_build_threads(registered_config.provider, options);
   const uint32_t diskann_max_degree =
-      effective_diskann_max_degree(effective_provider, options);
+      effective_diskann_max_degree(registered_config.provider, options);
   const uint32_t diskann_build_complexity =
-      effective_diskann_build_complexity(effective_provider, options);
+      effective_diskann_build_complexity(registered_config.provider, options);
   const bool diskann_build_params_applied =
       diskann_max_degree != 0 && diskann_build_complexity != 0;
   if (diskann_build_params_applied &&
@@ -1002,21 +960,22 @@ bool create_index_locked(
     return rollback_failed_create();
   }
   const uint64_t diskann_pq_code_budget_size =
-      effective_diskann_pq_code_budget_size(effective_provider, options);
+      effective_diskann_pq_code_budget_size(registered_config.provider,
+                                            options);
   if (diskann_pq_code_budget_size != 0 &&
       !g_index_service.set_diskann_pq_code_budget_size(
           index_name, diskann_pq_code_budget_size)) {
     return rollback_failed_create();
   }
   const uint32_t diskann_disk_pq_dims =
-      effective_diskann_disk_pq_dims(effective_provider, options);
+      effective_diskann_disk_pq_dims(registered_config.provider, options);
   if (diskann_disk_pq_dims != 0 &&
       !g_index_service.set_diskann_disk_pq_dims(index_name,
                                                 diskann_disk_pq_dims)) {
     return rollback_failed_create();
   }
   const bool diskann_accelerate_build =
-      effective_diskann_accelerate_build(effective_provider, options);
+      effective_diskann_accelerate_build(registered_config.provider, options);
   if ((diskann_accelerate_build ||
        options.diskann_accelerate_build_specified) &&
       !g_index_service.set_diskann_accelerate_build(
@@ -1024,28 +983,28 @@ bool create_index_locked(
     return rollback_failed_create();
   }
   const bool diskann_shuffle_build =
-      effective_diskann_shuffle_build(effective_provider, options);
+      effective_diskann_shuffle_build(registered_config.provider, options);
   if ((diskann_shuffle_build || options.diskann_shuffle_build_specified) &&
       !g_index_service.set_diskann_shuffle_build(index_name,
                                                  diskann_shuffle_build)) {
     return rollback_failed_create();
   }
   const bool diskann_use_bfs_cache =
-      effective_diskann_use_bfs_cache(effective_provider, options);
+      effective_diskann_use_bfs_cache(registered_config.provider, options);
   if ((diskann_use_bfs_cache || options.diskann_use_bfs_cache_specified) &&
       !g_index_service.set_diskann_use_bfs_cache(index_name,
                                                  diskann_use_bfs_cache)) {
     return rollback_failed_create();
   }
   const uint32_t diskann_search_complexity =
-      effective_diskann_search_complexity(effective_provider, options);
+      effective_diskann_search_complexity(registered_config.provider, options);
   if (diskann_search_complexity != 0 &&
       !g_index_service.set_diskann_search_complexity(
           index_name, diskann_search_complexity)) {
     return rollback_failed_create();
   }
   const uint32_t diskann_search_beamwidth =
-      effective_diskann_search_beamwidth(effective_provider, options);
+      effective_diskann_search_beamwidth(registered_config.provider, options);
   if (diskann_search_beamwidth != 0 &&
       !g_index_service.set_diskann_search_beamwidth(index_name,
                                                     diskann_search_beamwidth)) {
@@ -2720,30 +2679,34 @@ bool restore_runtime_state_for_testing(
 effective_index_options_for_testing effective_options_for_testing(
     const std::string &provider, const create_index_options &options) {
   effective_index_options_for_testing effective;
+  vector_index::backend_provider provider_value;
+  if (!vector_index::parse_backend_provider(provider, &provider_value)) {
+    return effective;
+  }
   effective.hnsw_build_threads =
-      effective_hnsw_build_threads(provider, options);
+      effective_hnsw_build_threads(provider_value, options);
   effective.faiss_build_threads =
-      effective_faiss_build_threads(provider, options);
+      effective_faiss_build_threads(provider_value, options);
   effective.diskann_build_threads =
-      effective_diskann_build_threads(provider, options);
+      effective_diskann_build_threads(provider_value, options);
   effective.diskann_max_degree =
-      effective_diskann_max_degree(provider, options);
+      effective_diskann_max_degree(provider_value, options);
   effective.diskann_build_complexity =
-      effective_diskann_build_complexity(provider, options);
+      effective_diskann_build_complexity(provider_value, options);
   effective.diskann_pq_code_budget_size =
-      effective_diskann_pq_code_budget_size(provider, options);
+      effective_diskann_pq_code_budget_size(provider_value, options);
   effective.diskann_disk_pq_dims =
-      effective_diskann_disk_pq_dims(provider, options);
+      effective_diskann_disk_pq_dims(provider_value, options);
   effective.diskann_accelerate_build =
-      effective_diskann_accelerate_build(provider, options);
+      effective_diskann_accelerate_build(provider_value, options);
   effective.diskann_shuffle_build =
-      effective_diskann_shuffle_build(provider, options);
+      effective_diskann_shuffle_build(provider_value, options);
   effective.diskann_use_bfs_cache =
-      effective_diskann_use_bfs_cache(provider, options);
+      effective_diskann_use_bfs_cache(provider_value, options);
   effective.diskann_search_complexity =
-      effective_diskann_search_complexity(provider, options);
+      effective_diskann_search_complexity(provider_value, options);
   effective.diskann_search_beamwidth =
-      effective_diskann_search_beamwidth(provider, options);
+      effective_diskann_search_beamwidth(provider_value, options);
   return effective;
 }
 
