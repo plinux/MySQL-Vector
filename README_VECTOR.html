@@ -4374,14 +4374,15 @@ SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann', 16);
 </li>
 </ul>
 <h2 id="cn-performance-results">9. 性能测试结果</h2>
-<p>这里列出 MySQL-Vector 在固定环境中的最新有效数据，不含其他产品的测试结果。数据取自同一发布审计轮保存的结果汇总、CMakeCache、启动命令、资源监控和 <code>perf</code> 记录。</p>
+<p>这里列出 MySQL-Vector 在固定环境中的最新有效数据，不含其他产品的测试结果。数据取自 2026-09-01 完成的全新构建同机 A/B 回归轮，以及该轮保存的结果汇总、CMakeCache、启动命令、资源监控和 <code>perf</code> 记录。</p>
 <h3>9.1 测试时间与代码版本</h3>
 <table>
 <thead><tr><th>项目</th><th>实测值</th></tr></thead>
 <tbody>
-<tr><td>测试日期</td><td>2026-08-31</td></tr>
+<tr><td>测试日期</td><td>2026-09-01</td></tr>
 <tr><td>MySQL 版本与分支</td><td>MySQL 8.0.46，<code>mysql-vector-8046</code></td></tr>
-<tr><td>性能测试代码基线提交</td><td><code>b813945bbdacc5411290c0246a76e469f08e7dd8</code>；后续提交只更新用户文档</td></tr>
+<tr><td>性能对照基线提交</td><td><code>b813945bbdacc5411290c0246a76e469f08e7dd8</code></td></tr>
+<tr><td>实际测试源码提交</td><td><code>9a6657ef2435e691a70b7ad50e75b2c80a1e9ad6</code></td></tr>
 <tr><td>测试范围</td><td>Linux Release、standalone、HNSWLIB / FAISS / DiskANN、关闭二进制日志；不包含竞品数据</td></tr>
 </tbody>
 </table>
@@ -4404,7 +4405,8 @@ SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann', 16);
 <h3>9.3 编译参数</h3>
 <p>实测 CMakeCache 对应下面的命令，其中机器路径已改为可移植变量。FAISS 与 DiskANN 静态链接，
 HNSWLIB 以源码仅头文件方式集成；<code>ldd mysqld</code> 不包含动态 FAISS 或 DiskANN
-依赖。<code>MYSQL_VECTOR_FAISS_OPT_LEVEL</code> 未显式设置，使用原生 SIMD 的默认分派策略。</p>
+依赖。<code>MYSQL_VECTOR_FAISS_OPT_LEVEL</code> 未显式设置，使用原生 SIMD 的默认分派策略。
+本节依赖表记录本轮实测源码；页首支持版本表记录当前发布文档覆盖的版本，两者用途不同。</p>
 <pre><code class="language-bash">cmake -S "${MYSQL_SOURCE_DIR}" -B "${BUILD_DIR}" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DWITH_DEBUG=0 \
@@ -4438,7 +4440,7 @@ cmake --build "${BUILD_DIR}" --parallel 32</code></pre>
 <tbody>
 <tr><td>Boost</td><td>1.77.0</td><td>MySQL 构建依赖</td></tr>
 <tr><td>HNSWLIB</td><td>v0.9.0，<code>d9b3608c83d83b46c96e25088cb1d729b29dcfe9</code></td><td>源码，仅头文件</td></tr>
-<tr><td>FAISS</td><td>v1.15.0，<code>20f14b31a6d54e243a3d1de6ae193fc4c3ec18ed</code></td><td>源码构建，静态链接</td></tr>
+<tr><td>FAISS</td><td>FAISS 项目版本 1.14.2，<code>ca87f41dfe58336245a013118e38ddaad0f7cab3</code>（<code>v1.14.2-5-gca87f41df</code>）</td><td>源码构建，静态链接</td></tr>
 <tr><td>DiskANN C++</td><td><code>cpp_main@78256bbab4685e1774e78d331e081a153be26823</code></td><td>源码构建，静态链接，离线适配器</td></tr>
 </tbody>
 </table>
@@ -4482,18 +4484,41 @@ cmake --build "${BUILD_DIR}" --parallel 32</code></pre>
 </tr>
 </thead>
 <tbody>
-<tr><td>HNSW M64</td><td>723.448s</td><td>724.049s</td><td>0.99830</td><td>2729.894 / c32 / 3.16%</td><td>3690.974 / c1 / 1.74%</td><td>2.989 GiB 原始/来源分段；构建后的 HNSW 索引图结构保存在内存中</td><td>12.166 GiB</td></tr>
-<tr><td>FAISS IVF</td><td>45.123s</td><td>45.739s</td><td>0.97930</td><td>1017.865 / c32 / 0.51%</td><td>866.819 / c1 / 0.71%</td><td>5.996 GiB，包含原始/来源数据与 FAISS 快照</td><td>15.464 GiB</td></tr>
-<tr><td>DiskANN offline</td><td>96.685s</td><td>103.643s</td><td>1.00000</td><td>79.275 / c1 / 3.68%</td><td>194.068 / c1 / 0.64%</td><td>原始数据 1.004 GiB + 索引 0.483 GiB</td><td>7.037 GiB</td></tr>
+<tr><td>HNSW M64</td><td>696.224s</td><td>696.796s</td><td>0.99830</td><td>2985.085 / c32 / 1.75%</td><td>4262.638 / c1 / 0.10%</td><td>2.989 GiB（3,208,969,252 字节）原始/来源分段；构建后的 HNSW 索引图结构保存在内存中</td><td>12.166 GiB</td></tr>
+<tr><td>FAISS IVF</td><td>35.895s</td><td>36.452s</td><td>0.97930</td><td>1067.929 / c32 / 0.43%</td><td>943.856 / c1 / 0.03%</td><td>5.996 GiB（6,437,762,216 字节），包含原始/来源数据与 FAISS 快照</td><td>15.464 GiB</td></tr>
+<tr><td>DiskANN offline</td><td>90.434s</td><td>96.587s</td><td>0.999805</td><td>94.846 / c1 / 0.50%</td><td>219.536 / c1 / 0.02%</td><td>原始数据 1.004 GiB（1,077,936,549 字节）+ 索引 0.483 GiB（518,634,981 字节）</td><td>7.037 GiB</td></tr>
 </tbody>
 </table>
 <p><strong>构建时间</strong>是后端构建耗时；<strong>就绪时间</strong>从准备或加载输入文件开始，
 到索引可以查询为止，不包含编译和 <code>mysqld</code> 初始化。批量 QPS 按处理的查询向量数量计算，
 不是按 SQL 请求数计算。</p>
-<h3>9.7 适用范围与限制</h3>
+<h4>9.6.1 相对性能基线的同机 A/B 变化</h4>
+<p>耗时变化为正表示最新版本更慢；QPS 变化为正表示最新版本更快。召回率一栏为绝对差值。</p>
+<table class="performance-table">
+<thead><tr><th>场景</th><th>构建时间</th><th>就绪时间</th><th>精确召回率@10</th><th>单向量 QPS</th><th>批量 32 QPS</th><th>判定</th></tr></thead>
+<tbody>
+<tr><td>HNSW M64</td><td>+0.79%</td><td>+0.79%</td><td>-0.00010</td><td>+0.71%</td><td>-0.71%</td><td>通过</td></tr>
+<tr><td>FAISS IVF</td><td>-3.44%</td><td>-3.39%</td><td>0</td><td>-0.12%</td><td>+0.74%</td><td>通过</td></tr>
+<tr><td>DiskANN offline</td><td>+0.07%</td><td>+0.34%</td><td>-0.000195</td><td>+0.18%</td><td>+0.004%</td><td>通过</td></tr>
+</tbody>
+</table>
+<p>三个 ANN 场景中，所有构建/就绪变慢和 QPS 下降均小于 1%，精确召回率变化均未达到 0.002 复核阈值；正式查询 CV 均小于 1.8%，资源监控未发现 CPU、内存、交换空间或 IO 争用。因此相对性能基线未发现达到判定阈值的性能回退。</p>
+<h3>9.7 标量函数 A-B-B-A 微基准</h3>
+<p>微基准使用服务端 <code>BENCHMARK()</code>、单一持久连接和固定 768D 向量，按 A1 基线、B1 最新版本、B2 最新版本、A2 基线执行。每项在每个提交上汇总 6 个正式样本；负的耗时变化表示最新版本更快。</p>
+<table class="performance-table">
+<thead><tr><th>项目</th><th>固定迭代数</th><th>基线中位数 / CV</th><th>最新版本中位数 / CV</th><th>最新版本耗时变化</th><th>95% 自助法置信区间</th></tr></thead>
+<tbody>
+<tr><td><code>VEC_DOT_PRODUCT</code></td><td>9,952,627</td><td>1986.317 ns / 0.45%</td><td>1808.294 ns / 0.70%</td><td>-8.96%</td><td>[-9.81%, -8.05%]</td></tr>
+<tr><td><code>VEC_DISTANCE(..., 'IP')</code></td><td>11,555,682</td><td>1684.210 ns / 0.86%</td><td>1522.750 ns / 0.85%</td><td>-9.59%</td><td>[-10.47%, -7.98%]</td></tr>
+<tr><td>算术控制项</td><td>284,997,736</td><td>67.729 ns / 0.56%</td><td>66.452 ns / 0.77%</td><td>-1.89%</td><td>[-2.73%, -0.57%]</td></tr>
+</tbody>
+</table>
+<p>两项向量函数在前后配对中均同方向改善，置信区间不跨 0；算术控制项变化仍在 3% 环境漂移门槛内。</p>
+<h3>9.8 适用范围与限制</h3>
 <ul>
 <li>这些结果只代表 standalone、原始 FBIN、关闭二进制日志的高性能路径，不代表表绑定的 transactional 模式。</li>
 <li>HNSW/FAISS 还使用了 <code>innodb_flush_log_at_trx_commit=2</code> 和 <code>sync_binlog=0</code>；不能据此推断完整持久性配置下的性能。</li>
+<li>标量函数数据是隔离服务端函数求值成本的微基准，不代表包含网络、SQL 解析或表 IO 的端到端查询延迟。</li>
 <li>结果只适用于表中列出的硬件、编译器、后端版本和参数，用于复现当前 MySQL-Vector 的实测表现；这里不做跨产品比较。</li>
 </ul>
 <h2 id="cn-acknowledgements">10. 致谢</h2>
@@ -8037,14 +8062,15 @@ SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann', 16);
 </li>
 </ul>
 <h2 id="en-performance-results">9. Performance test results</h2>
-<p>These are the latest valid MySQL-Vector measurements from one fixed test environment. The chapter does not include competitor results. The figures come from the same release-audit run and its saved summaries, CMakeCache data, startup commands, resource monitoring, and <code>perf</code> records.</p>
+<p>These are the latest valid MySQL-Vector measurements from one fixed test environment. The chapter does not include competitor results. The figures come from the fresh-build same-host A/B regression completed on 2026-09-01 and its saved summaries, CMakeCache data, startup commands, resource monitoring, and <code>perf</code> records.</p>
 <h3>9.1 Test date and code version</h3>
 <table>
 <thead><tr><th>Item</th><th>Measured value</th></tr></thead>
 <tbody>
-<tr><td>Test date</td><td>2026-08-31</td></tr>
+<tr><td>Test date</td><td>2026-09-01</td></tr>
 <tr><td>MySQL version and branch</td><td>MySQL 8.0.46, <code>mysql-vector-8046</code></td></tr>
-<tr><td>Tested source baseline commit</td><td><code>b813945bbdacc5411290c0246a76e469f08e7dd8</code>; later commits update user documentation only</td></tr>
+<tr><td>Performance comparison baseline</td><td><code>b813945bbdacc5411290c0246a76e469f08e7dd8</code></td></tr>
+<tr><td>Actually tested source commit</td><td><code>9a6657ef2435e691a70b7ad50e75b2c80a1e9ad6</code></td></tr>
 <tr><td>Test scope</td><td>Linux Release, Standalone, HNSWLIB / FAISS / DiskANN, binlog disabled; no competitor data</td></tr>
 </tbody>
 </table>
@@ -8065,7 +8091,7 @@ SELECT VEC_INDEX_SET_DISKANN_SEARCH_BEAMWIDTH('idx_diskann', 16);
 </tbody>
 </table>
 <h3>9.3 Build configuration</h3>
-<p>The measured CMakeCache maps to the command below; machine-specific paths use portable variables. FAISS and DiskANN are statically linked, while HNSWLIB uses its source header-only integration. <code>ldd mysqld</code> contains no dynamic FAISS or DiskANN dependency. <code>MYSQL_VECTOR_FAISS_OPT_LEVEL</code> was not set, so the build used the Native SIMD default dispatch policy.</p>
+<p>The measured CMakeCache maps to the command below; machine-specific paths use portable variables. FAISS and DiskANN are statically linked, while HNSWLIB uses its source header-only integration. <code>ldd mysqld</code> contains no dynamic FAISS or DiskANN dependency. <code>MYSQL_VECTOR_FAISS_OPT_LEVEL</code> was not set, so the build used the Native SIMD default dispatch policy. The dependency table in this section records the exact sources used by this run; the supported-version table at the top records the versions covered by the current release documentation.</p>
 <pre><code class="language-bash">cmake -S "${MYSQL_SOURCE_DIR}" -B "${BUILD_DIR}" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DWITH_DEBUG=0 \
@@ -8099,7 +8125,7 @@ cmake --build "${BUILD_DIR}" --parallel 32</code></pre>
 <tbody>
 <tr><td>Boost</td><td>1.77.0</td><td>MySQL build dependency</td></tr>
 <tr><td>HNSWLIB</td><td>v0.9.0, <code>d9b3608c83d83b46c96e25088cb1d729b29dcfe9</code></td><td>Source, header-only</td></tr>
-<tr><td>FAISS</td><td>v1.15.0, <code>20f14b31a6d54e243a3d1de6ae193fc4c3ec18ed</code></td><td>Source build, static link</td></tr>
+<tr><td>FAISS</td><td>FAISS project version 1.14.2, <code>ca87f41dfe58336245a013118e38ddaad0f7cab3</code> (<code>v1.14.2-5-gca87f41df</code>)</td><td>Source build, static link</td></tr>
 <tr><td>DiskANN C++</td><td><code>cpp_main@78256bbab4685e1774e78d331e081a153be26823</code></td><td>Source build, static link, offline adapter</td></tr>
 </tbody>
 </table>
@@ -8142,16 +8168,39 @@ cmake --build "${BUILD_DIR}" --parallel 32</code></pre>
 </tr>
 </thead>
 <tbody>
-<tr><td>HNSW M64</td><td>723.448s</td><td>724.049s</td><td>0.99830</td><td>2729.894 / c32 / 3.16%</td><td>3690.974 / c1 / 1.74%</td><td>2.989 GiB raw/source segment; the built HNSW index graph remains in memory</td><td>12.166 GiB</td></tr>
-<tr><td>FAISS IVF</td><td>45.123s</td><td>45.739s</td><td>0.97930</td><td>1017.865 / c32 / 0.51%</td><td>866.819 / c1 / 0.71%</td><td>5.996 GiB including raw/source and FAISS snapshot</td><td>15.464 GiB</td></tr>
-<tr><td>DiskANN offline</td><td>96.685s</td><td>103.643s</td><td>1.00000</td><td>79.275 / c1 / 3.68%</td><td>194.068 / c1 / 0.64%</td><td>raw 1.004 GiB + index 0.483 GiB</td><td>7.037 GiB</td></tr>
+<tr><td>HNSW M64</td><td>696.224s</td><td>696.796s</td><td>0.99830</td><td>2985.085 / c32 / 1.75%</td><td>4262.638 / c1 / 0.10%</td><td>2.989 GiB (3,208,969,252 bytes) raw/source segment; the built HNSW index graph remains in memory</td><td>12.166 GiB</td></tr>
+<tr><td>FAISS IVF</td><td>35.895s</td><td>36.452s</td><td>0.97930</td><td>1067.929 / c32 / 0.43%</td><td>943.856 / c1 / 0.03%</td><td>5.996 GiB (6,437,762,216 bytes) including raw/source and FAISS snapshot</td><td>15.464 GiB</td></tr>
+<tr><td>DiskANN offline</td><td>90.434s</td><td>96.587s</td><td>0.999805</td><td>94.846 / c1 / 0.50%</td><td>219.536 / c1 / 0.02%</td><td>raw 1.004 GiB (1,077,936,549 bytes) + index 0.483 GiB (518,634,981 bytes)</td><td>7.037 GiB</td></tr>
 </tbody>
 </table>
 <p><strong>Build</strong> is backend build time. <strong>Ready</strong> starts at input-file preparation/loading and ends when the index becomes queryable; it excludes compilation and mysqld initialization. Batch QPS counts processed query vectors, not SQL requests.</p>
-<h3>9.7 Scope and limitations</h3>
+<h4>9.6.1 Same-host A/B changes relative to the performance baseline</h4>
+<p>A positive time change means the latest version is slower; a positive QPS change means it is faster. Recall changes are absolute deltas.</p>
+<table class="performance-table">
+<thead><tr><th>Scenario</th><th>Build</th><th>Ready</th><th>exact recall@10</th><th>Single-vector QPS</th><th>Batch-32 QPS</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td>HNSW M64</td><td>+0.79%</td><td>+0.79%</td><td>-0.00010</td><td>+0.71%</td><td>-0.71%</td><td>Pass</td></tr>
+<tr><td>FAISS IVF</td><td>-3.44%</td><td>-3.39%</td><td>0</td><td>-0.12%</td><td>+0.74%</td><td>Pass</td></tr>
+<tr><td>DiskANN offline</td><td>+0.07%</td><td>+0.34%</td><td>-0.000195</td><td>+0.18%</td><td>+0.004%</td><td>Pass</td></tr>
+</tbody>
+</table>
+<p>Across the three ANN scenarios, every build/ready slowdown and QPS decrease is below 1%, and no exact-recall change reaches the 0.002 review threshold. All formal query CVs are below 1.8%, and resource monitoring found no CPU, memory, swap, or IO contention. No regression reached the decision threshold relative to the performance baseline.</p>
+<h3>9.7 Scalar-function A-B-B-A microbenchmark</h3>
+<p>The microbenchmark uses server-side <code>BENCHMARK()</code>, one persistent connection, and a fixed 768D vector. It runs A1 baseline, B1 latest, B2 latest, and A2 baseline; each item aggregates six formal samples per commit. A negative time change means the latest version is faster.</p>
+<table class="performance-table">
+<thead><tr><th>Item</th><th>Fixed iterations</th><th>Baseline median / CV</th><th>Latest median / CV</th><th>Latest time change</th><th>95% bootstrap CI</th></tr></thead>
+<tbody>
+<tr><td><code>VEC_DOT_PRODUCT</code></td><td>9,952,627</td><td>1986.317 ns / 0.45%</td><td>1808.294 ns / 0.70%</td><td>-8.96%</td><td>[-9.81%, -8.05%]</td></tr>
+<tr><td><code>VEC_DISTANCE(..., 'IP')</code></td><td>11,555,682</td><td>1684.210 ns / 0.86%</td><td>1522.750 ns / 0.85%</td><td>-9.59%</td><td>[-10.47%, -7.98%]</td></tr>
+<tr><td>Arithmetic control</td><td>284,997,736</td><td>67.729 ns / 0.56%</td><td>66.452 ns / 0.77%</td><td>-1.89%</td><td>[-2.73%, -0.57%]</td></tr>
+</tbody>
+</table>
+<p>Both vector functions improve in the same direction in the early and late pairs, and neither confidence interval crosses zero. The arithmetic control remains within the 3% environment-drift threshold.</p>
+<h3>9.8 Scope and limitations</h3>
 <ul>
 <li>These results cover only the high-performance Standalone raw-FBIN path with the binlog disabled; they do not represent table-bound Transactional mode.</li>
 <li>HNSW/FAISS also use <code>innodb_flush_log_at_trx_commit=2</code> and <code>sync_binlog=0</code>; the table is not a full-durability performance guarantee.</li>
+<li>The scalar-function figures are microbenchmarks that isolate server-side function evaluation. They do not represent end-to-end query latency including the network, SQL parsing, or table IO.</li>
 <li>The results apply to the listed hardware, compiler, backend versions, and parameters. They document current MySQL-Vector behavior; this chapter does not compare products.</li>
 </ul>
 <h2 id="en-acknowledgements">10. Acknowledgements</h2>
